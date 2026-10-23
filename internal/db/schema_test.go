@@ -348,3 +348,18 @@ func TestImportOrderNeedsDeferredConstraints(t *testing.T) {
 		t.Errorf("load with deferred constraints: %v", err)
 	}
 }
+
+func TestForumPositionDefaultsToZero(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+
+	var position int
+	err := pool.QueryRow(ctx,
+		`insert into forums (kind, name) values ('forum', 'General') returning position`).Scan(&position)
+	if err != nil {
+		t.Fatalf("insert a forum without position: %v", err)
+	}
+	if position != 0 {
+		t.Errorf("position = %d, want 0", position)
+	}
+}

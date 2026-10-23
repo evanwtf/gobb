@@ -132,7 +132,7 @@ create table forums (
 	rules         text   not null default '',
 	link_url      text   null,
 	locked        bool   not null default false,
-	position      int    not null,
+	position      int    not null default 0,
 	topic_count   int    not null default 0,
 	post_count    int    not null default 0,
 	last_post_id  bigint null
