@@ -37,6 +37,19 @@ line only. Do not try to work out what the list contains; reword the line.
 - Work lands on `main` until the forum has real users. After that, use pull
   requests.
 
+## Commands
+
+```sh
+go build ./cmd/gobb && ./gobb version                                    # build and smoke-run
+go test ./...                                                            # tests
+uvx pre-commit install --hook-type pre-commit --hook-type commit-msg     # once per clone
+uvx pre-commit run --all-files                                           # all hooks
+sh scripts/check-public.sh                                               # the public-repo guard alone
+```
+
+Tests that need PostgreSQL read `GOBB_TEST_DATABASE_URL` and skip when it is unset.
+A skipped test is not a pass: CI sets the variable and fails on any skip.
+
 ## Conventions
 
 General conventions live in https://github.com/evanwtf/baseline (private).

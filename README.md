@@ -2,6 +2,16 @@
 
 A small forum server in Go.
 
+## Bootstrap
+
+```sh
+brew install go            # or https://go.dev/dl/ — Go 1.27
+git clone https://github.com/evanwtf/gobb && cd gobb
+go build ./cmd/gobb && ./gobb version
+go test ./...
+uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
 ## Status
 
 In design. There is no code yet. The design is in

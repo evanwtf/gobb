@@ -1,0 +1,45 @@
+# Local mirror of CI. Install with:
+#   uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
+repos:
+  - repo: local
+    hooks:
+      # The data guard runs first, before any hook can rewrite a file.
+      - id: check-public
+        name: check-public
+        entry: scripts/check-public.sh
+        language: script
+        pass_filenames: true
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -l -w
+        language: system
+        types: [go]
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: refuse-session-ids
+        name: refuse-session-ids
+        entry: scripts/refuse-session-ids.sh
+        language: script
+        stages: [commit-msg]
