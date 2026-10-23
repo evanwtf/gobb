@@ -109,9 +109,11 @@ jobs:
               | sed -n 's/,"OutputType":"[a-z-]*"//; s/.*"Output":"\(.*\)"}$/\1/p' \
               | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g'
           fi
-          if grep -q '"Action":"skip"' test.json; then
+          # A package with no test files also emits a skip event, but with no
+          # "Test" field. Only a skipped test counts.
+          if grep -F '"Action":"skip"' test.json | grep -q -F '"Test":'; then
             echo "unexpected skipped test"
-            grep -F '"Action":"skip"' test.json | grep -F '"Test":' || true
+            grep -F '"Action":"skip"' test.json | grep -F '"Test":'
             exit 1
           fi
           echo "tests: $(grep -c '"Action":"pass"' test.json) pass events, no skips"
