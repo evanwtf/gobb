@@ -157,6 +157,40 @@ func TestCheckPublicUsesDenylist(t *testing.T) {
 	}
 }
 
+// pre-commit passes the commit message file at the commit-msg stage. The file
+// sits outside the index, so the guard must scan a named file that git ignores.
+func TestCheckPublicFlagsCommitMessageFile(t *testing.T) {
+	word := "examplecorp"
+	list := filepath.Join(t.TempDir(), "deny")
+	if err := os.WriteFile(list, []byte(word+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := repo(t, nil)
+	msg := filepath.Join(dir, "COMMIT_EDITMSG")
+	body := "repo: fix thing\n\nMoves the ExampleCorp import path.\n"
+	if err := os.WriteFile(msg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"DENYLIST_FILE=" + list}
+	out, code := run(t, dir, env, "check-public.sh", "COMMIT_EDITMSG")
+	if code != 1 {
+		t.Fatalf("exit %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "COMMIT_EDITMSG:3") {
+		t.Errorf("output lacks COMMIT_EDITMSG:3: %q", out)
+	}
+	if strings.Contains(strings.ToLower(out), word) {
+		t.Errorf("output leaks the word: %q", out)
+	}
+
+	if err := os.WriteFile(msg, []byte("repo: fix thing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code = run(t, dir, env, "check-public.sh", "COMMIT_EDITMSG"); code != 0 {
+		t.Fatalf("clean message: exit %d, want 0\n%s", code, out)
+	}
+}
+
 func TestCheckPublicChecksOnlyNamedFiles(t *testing.T) {
 	dir := repo(t, map[string]string{
 		"bad.txt":  "host is " + "192." + "168." + "0.1\n",

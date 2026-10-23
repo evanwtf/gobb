@@ -11,6 +11,9 @@ repos:
         entry: scripts/check-public.sh
         language: script
         pass_filenames: true
+        # At commit-msg, pre-commit passes the message file, so a private word
+        # in a commit message is refused too.
+        stages: [pre-commit, commit-msg]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
