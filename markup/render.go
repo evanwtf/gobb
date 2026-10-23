@@ -33,11 +33,6 @@ type Rendered struct {
 	ScriptSrc []string
 }
 
-// maxRenderNodes is the most nodes that [Render] visits. [Validate] already
-// rejects a tree that shares a node or holds a cycle, but the renderer must
-// still stop on one. Render closes every tag it has opened before it stops.
-const maxRenderNodes = 1 << 19
-
 // renderItem is one entry of the render stack. An entry with a nil n closes an
 // element: it writes close and, for a block, ends the line of text.
 type renderItem struct {
@@ -51,14 +46,14 @@ type renderItem struct {
 
 // renderer holds the state of one [Render] call.
 type renderer struct {
-	rc        RenderContext
-	html      strings.Builder
-	text      strings.Builder
-	textNL    bool // the text so far ends with a newline
-	stack     []renderItem
-	frames    map[string]struct{}
-	scripts   map[string]struct{}
-	remaining int
+	rc      RenderContext
+	html    strings.Builder
+	text    strings.Builder
+	textNL  bool // the text so far ends with a newline
+	stack   []renderItem
+	frames  map[string]struct{}
+	scripts map[string]struct{}
+	seen    map[*Node]struct{} // the nodes that Render has already visited
 }
 
 // Render turns a tree into HTML. It is the one place that writes the HTML of a
@@ -76,10 +71,12 @@ type renderer struct {
 //   - A node of unknown kind, or a nil node, renders nothing.
 //
 // Render walks the tree with an explicit stack, so a deep tree cannot exhaust
-// the call stack. It also stops after a fixed number of nodes, so a tree with a
-// cycle ends.
+// the call stack. It keeps the set of nodes it has visited, as [Validate] does,
+// and renders nothing for a node that it has seen before. A cycle ends, and the
+// work and the memory stay in proportion to the size of the tree. A valid tree
+// shares no node, so the set never changes its output.
 func Render(n *Node, rc RenderContext) Rendered {
-	r := &renderer{rc: rc, remaining: maxRenderNodes}
+	r := &renderer{rc: rc, seen: map[*Node]struct{}{}}
 	switch {
 	case n == nil:
 	case n.Kind == Root:
@@ -97,9 +94,10 @@ func Render(n *Node, rc RenderContext) Rendered {
 			}
 			continue
 		}
-		if r.remaining--; r.remaining < 0 {
+		if _, dup := r.seen[it.n]; dup {
 			continue
 		}
+		r.seen[it.n] = struct{}{}
 		r.node(it)
 	}
 	return Rendered{
@@ -276,7 +274,7 @@ func cleanLinkTarget(raw string) (string, bool) {
 }
 
 // cleanImageTarget returns the value that CheckImageURL checked, or false. An
-// http URL becomes an https URL.
+// http URL becomes an https URL. It serves img and smiley images.
 func cleanImageTarget(raw string) (string, bool) {
 	v, ok := cleanURL(raw)
 	if !ok || !CheckImageURL(raw) {
@@ -295,6 +293,11 @@ func (r *renderer) link(it renderItem) {
 	if !ok {
 		r.children(it)
 		return
+	}
+	// A mailto: target takes the same path as an email element, so the address
+	// is percent-encoded: a raw "," would add a recipient.
+	if len(href) >= len("mailto:") && strings.EqualFold(href[:len("mailto:")], "mailto:") {
+		href = mailtoHref(href[len("mailto:"):])
 	}
 	open := `<a href="` + html.EscapeString(href) + `" rel="nofollow ugc noopener">`
 	if display := n.Attrs["display"]; display != "" {
@@ -315,13 +318,12 @@ func mailtoHref(address string) string {
 // email renders an email element.
 func (r *renderer) email(it renderItem) {
 	n := it.n
-	raw := "mailto:" + n.Attrs["address"]
-	v, ok := cleanURL(raw)
-	if !ok || !CheckLinkURL(raw) {
+	// Check the raw address, as Validate does. Do not decode entities in it.
+	address := n.Attrs["address"]
+	if !isEmail(address) {
 		r.children(it)
 		return
 	}
-	address := v[len("mailto:"):]
 	open := `<a href="` + html.EscapeString(mailtoHref(address)) + `">`
 	if len(n.Children) == 0 {
 		r.html.WriteString(open + html.EscapeString(address) + "</a>")
@@ -352,7 +354,7 @@ func (r *renderer) smiley(it renderItem) {
 	r.addText(code, it.quote)
 	if r.rc.SmileyURL != nil {
 		if raw, ok := r.rc.SmileyURL(code); ok {
-			if src, ok := cleanURL(raw); ok && CheckImageURL(raw) {
+			if src, ok := cleanImageTarget(raw); ok {
 				r.html.WriteString(`<img class="smiley" src="` + html.EscapeString(src) +
 					`" alt="` + html.EscapeString(code) + `">`)
 				return
@@ -369,7 +371,7 @@ func (r *renderer) embed(it renderItem) {
 	if !ok {
 		return
 	}
-	out, frame, script := embedHTML(n.Name, id)
+	out, frame, scripts := embedHTML(n.Name, id)
 	if out == "" {
 		return
 	}
@@ -378,7 +380,7 @@ func (r *renderer) embed(it renderItem) {
 		r.frames = map[string]struct{}{}
 	}
 	r.frames[frame] = struct{}{}
-	if script != "" {
+	for _, script := range scripts {
 		if r.scripts == nil {
 			r.scripts = map[string]struct{}{}
 		}
@@ -403,7 +405,7 @@ const (
 	originYouTube    = "https://www.youtube-nocookie.com"
 	originVimeo      = "https://player.vimeo.com"
 	originXFrame     = "https://platform.twitter.com"
-	originXScript    = "https://platform.x.com"
+	originXHost      = "https://platform.x.com"
 	originInstagram  = "https://www.instagram.com"
 	originReddit     = "https://embed.reddit.com"
 	originTikTok     = "https://www.tiktok.com"
@@ -413,13 +415,13 @@ const (
 )
 
 // embedHTML returns the HTML of an embed for a canonical ID, the origin it
-// loads in a frame, and the origin of the script it needs ("" for none). It
+// loads in a frame, and the origins of the scripts it needs (nil for none). It
 // returns empty strings when the ID has the wrong shape for the tag.
 //
 // Every iframe has loading="lazy" and a title. None has a sandbox attribute:
 // the providers' players need both scripts and their own origin, and the
 // pair allow-scripts with allow-same-origin removes the sandbox.
-func embedHTML(tag, id string) (out, frame, script string) {
+func embedHTML(tag, id string) (out, frame string, scripts []string) {
 	switch tag {
 	case "youtube":
 		// https://support.google.com/youtube/answer/171780 (privacy-enhanced mode
@@ -427,67 +429,73 @@ func embedHTML(tag, id string) (out, frame, script string) {
 		// markup that https://www.youtube.com/oembed returns.
 		return `<iframe class="embed youtube" src="` + originYouTube + `/embed/` + pathEsc(id) +
 			`" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen"` +
-			` allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`, originYouTube, ""
+			` allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`, originYouTube, nil
 	case "vimeo":
 		// https://help.vimeo.com/hc/en-us/articles/12426260232977-About-Player-parameters
 		// shows src="https://player.vimeo.com/video/{id}" with allowfullscreen.
 		return `<iframe class="embed vimeo" src="` + originVimeo + `/video/` + pathEsc(id) +
 				`" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`,
-			originVimeo, ""
+			originVimeo, nil
 	case "tweet":
 		// https://docs.x.com/x-for-websites/embedded-posts/overview, and the markup
 		// that https://publish.x.com/oembed returns: a blockquote.twitter-tweet with a
 		// link to x.com, and a script from platform.x.com/widgets.js. That script
 		// builds its iframes on platform.twitter.com.
+		//
+		// ScriptSrc lists both hosts. platform.x.com/widgets.js answers with a 302 to
+		// platform.twitter.com/widgets.js, and that script loads its chunks from
+		// https://platform.twitter.com/js/. A CSP checks each redirect, so a policy
+		// with only platform.x.com blocks the script and the tweet never renders.
 		return `<blockquote class="twitter-tweet"><a href="https://x.com/i/status/` + pathEsc(id) +
-			`">View post on X</a></blockquote>`, originXFrame, originXScript
+			`">View post on X</a></blockquote>`, originXFrame, []string{originXFrame, originXHost}
 	case "instagram":
 		// https://developers.facebook.com/docs/instagram/embedding : a
 		// blockquote.instagram-media that the script at www.instagram.com/embed.js
 		// turns into a frame.
 		link := "https://www.instagram.com/p/" + pathEsc(id) + "/"
 		return `<blockquote class="instagram-media" data-instgrm-permalink="` + link + `"><a href="` + link +
-			`">View on Instagram</a></blockquote>`, originInstagram, originInstagram
+			`">View on Instagram</a></blockquote>`, originInstagram, []string{originInstagram}
 	case "reddit":
 		// The widget script is https://embed.reddit.com/widgets.js. It selects
 		// blockquote.reddit-embed-bq and loads its frames from embed.reddit.com.
 		sub, post, ok := strings.Cut(id, "/")
 		if !ok {
-			return "", "", ""
+			return "", "", nil
 		}
 		return `<blockquote class="reddit-embed-bq"><a href="https://www.reddit.com/r/` + pathEsc(sub) +
-			`/comments/` + pathEsc(post) + `/">View post on Reddit</a></blockquote>`, originReddit, originReddit
+			`/comments/` + pathEsc(post) + `/">View post on Reddit</a></blockquote>`, originReddit, []string{originReddit}
 	case "tiktok":
 		// https://developers.tiktok.com/doc/embed-player : the player is
 		// www.tiktok.com/player/v1/{post_id}.
 		return `<iframe class="embed tiktok" src="` + originTikTok + `/player/v1/` + pathEsc(id) +
-			`" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`, originTikTok, ""
+			`" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`, originTikTok, nil
 	case "threads":
 		// https://developers.facebook.com/docs/threads/tools-and-resources/embed-a-threads-post :
 		// a blockquote.text-post-media with data-text-post-permalink, and a
-		// script (embed.js) from www.threads.com.
+		// script (embed.js) from www.threads.com. The docs show a trailing "/" on the
+		// permalink.
 		user, post, ok := strings.Cut(id, "/")
 		if !ok {
-			return "", "", ""
+			return "", "", nil
 		}
-		link := "https://www.threads.com/@" + pathEsc(user) + "/post/" + pathEsc(post)
+		link := "https://www.threads.com/@" + pathEsc(user) + "/post/" + pathEsc(post) + "/"
 		return `<blockquote class="text-post-media" data-text-post-permalink="` + link + `"><a href="` + link +
-			`">View on Threads</a></blockquote>`, originThreads, originThreads
+			`">View on Threads</a></blockquote>`, originThreads, []string{originThreads}
 	case "spotify":
 		// https://developer.spotify.com/documentation/embeds : the iframe src is
 		// open.spotify.com/embed/{type}/{id}.
 		kind, item, ok := strings.Cut(id, "/")
 		if !ok {
-			return "", "", ""
+			return "", "", nil
 		}
 		return `<iframe class="embed spotify" src="` + originSpotify + `/embed/` + pathEsc(kind) + `/` + pathEsc(item) +
 				`" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`,
-			originSpotify, ""
+			originSpotify, nil
 	case "soundcloud":
 		// https://developers.soundcloud.com/docs/api/html5-widget : an iframe whose
 		// src is w.soundcloud.com/player/?url={escaped resource URL}.
 		return `<iframe class="embed soundcloud" src="` + originSoundCloud + `/player/?url=https%3A//soundcloud.com/` +
-			pathEsc(id) + `" title="SoundCloud" loading="lazy"></iframe>`, originSoundCloud, ""
+			pathEsc(id) + `" title="SoundCloud" loading="lazy"></iframe>`, originSoundCloud, nil
 	}
-	return "", "", ""
+	return "", "", nil
 }

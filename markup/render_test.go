@@ -3,6 +3,7 @@ package markup
 import (
 	"html/template"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -100,7 +101,7 @@ func TestRenderTable(t *testing.T) {
 		{"tiktok", renderEmbed("tiktok", "6718335390845095173"),
 			`<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/6718335390845095173" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`},
 		{"threads", renderEmbed("threads", "zuck/C04flh-M8ii"),
-			`<blockquote class="text-post-media" data-text-post-permalink="https://www.threads.com/@zuck/post/C04flh-M8ii"><a href="https://www.threads.com/@zuck/post/C04flh-M8ii">View on Threads</a></blockquote>`},
+			`<blockquote class="text-post-media" data-text-post-permalink="https://www.threads.com/@zuck/post/C04flh-M8ii/"><a href="https://www.threads.com/@zuck/post/C04flh-M8ii/">View on Threads</a></blockquote>`},
 		{"spotify", renderEmbed("spotify", "track/4cOdK2wGLETKBW3PvgPWqT"),
 			`<iframe class="embed spotify" src="https://open.spotify.com/embed/track/4cOdK2wGLETKBW3PvgPWqT" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`},
 		{"soundcloud track", renderEmbed("soundcloud", "forss/flickermood"),
@@ -291,7 +292,7 @@ func TestRenderOrigins(t *testing.T) {
 	)
 	r := Render(n, RenderContext{})
 	wantFrame := []string{"https://platform.twitter.com", "https://www.youtube-nocookie.com"}
-	wantScript := []string{"https://platform.x.com"}
+	wantScript := []string{"https://platform.twitter.com", "https://platform.x.com"}
 	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
 		t.Errorf("FrameSrc = %v, want %v", r.FrameSrc, wantFrame)
 	}
@@ -317,7 +318,8 @@ func TestRenderOriginsEveryEmbed(t *testing.T) {
 		"https://www.threads.com", "https://www.tiktok.com", "https://www.youtube-nocookie.com",
 	}
 	wantScript := []string{
-		"https://embed.reddit.com", "https://platform.x.com", "https://www.instagram.com", "https://www.threads.com",
+		"https://embed.reddit.com", "https://platform.twitter.com", "https://platform.x.com",
+		"https://www.instagram.com", "https://www.threads.com",
 	}
 	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
 		t.Errorf("FrameSrc = %v\nwant %v", r.FrameSrc, wantFrame)
@@ -481,21 +483,95 @@ func TestRenderCycleTerminates(t *testing.T) {
 	loop := el("b", nil)
 	loop.Children = []*Node{loop}
 	s := string(Render(tree(loop), RenderContext{}).HTML)
-	if strings.Count(s, "<strong>") != strings.Count(s, "</strong>") {
-		t.Errorf("cycle: unbalanced output")
+	if s != "<strong></strong>" {
+		t.Errorf("cycle: got %q, want one empty strong", s)
 	}
-	// A node that appears many times (a wide DAG) also stops at the cap.
+	// A node that appears many times (a wide DAG) renders once.
 	shared := el("b", nil, txt("x"))
-	wide := tree(para(shared))
-	for i := 0; i < 20; i++ {
-		p := el("p", nil)
-		for j := 0; j < 1000; j++ {
-			p.Children = append(p.Children, shared)
-		}
-		wide.Children = append(wide.Children, p)
+	wide := tree(para(shared, shared))
+	if got, want := string(Render(wide, RenderContext{}).HTML), "<p><strong>x</strong></p>"; got != want {
+		t.Errorf("shared node: got %q, want %q", got, want)
 	}
-	if got := string(Render(wide, RenderContext{}).HTML); !strings.Contains(got, "<strong>x</strong>") {
-		t.Errorf("wide tree rendered nothing useful")
+}
+
+// TestRenderSelfReferenceBoundedMemory checks that a node with a large fan-out
+// that lists itself costs memory in proportion to the tree, not to the fan-out
+// raised to a depth.
+func TestRenderSelfReferenceBoundedMemory(t *testing.T) {
+	loop := el("b", nil)
+	for i := 0; i < 10; i++ {
+		loop.Children = append(loop.Children, loop)
+	}
+	root := tree(loop)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	r := Render(root, RenderContext{})
+	runtime.ReadMemStats(&after)
+	if got := string(r.HTML); got != "<strong></strong>" {
+		t.Errorf("self reference: got %q", got)
+	}
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 10<<20 {
+		t.Errorf("self reference allocated %d bytes, want under 10 MB", alloc)
+	}
+}
+
+// TestRenderLargeValidTree checks that no cap cuts off a valid tree: a p with
+// 300,000 text and br pairs (600,000 nodes, past the old cap of 1<<19) renders every line in the HTML and the text.
+func TestRenderLargeValidTree(t *testing.T) {
+	const pairs = 300_000
+	p := el("p", nil)
+	p.Children = make([]*Node, 0, 2*pairs)
+	for i := 0; i < pairs; i++ {
+		p.Children = append(p.Children, txt("l"), el("br", nil))
+	}
+	root := tree(p)
+	if err := Validate(root); err != nil {
+		t.Fatalf("test premise: Validate rejects the tree: %v", err)
+	}
+	r := Render(root, RenderContext{})
+	if got := strings.Count(string(r.HTML), "<br>"); got != pairs {
+		t.Errorf("HTML holds %d br, want %d", got, pairs)
+	}
+	if got := strings.Count(r.Text, "l\n") + 1; got != pairs {
+		t.Errorf("Text holds %d lines, want %d", got, pairs)
+	}
+}
+
+func TestRenderMailtoURLEncoded(t *testing.T) {
+	const addr = "a,b@c.example"
+	for _, tc := range []struct {
+		name string
+		node *Node
+	}{
+		{"url", el("url", at("href", "mailto:"+addr), txt("t"))},
+		{"url upper", el("url", at("href", "MAILTO:"+addr), txt("t"))},
+		{"email", el("email", at("address", addr), txt("t"))},
+	} {
+		out := renderHTML(tree(para(tc.node)))
+		if !strings.Contains(out, `href="mailto:a%2Cb@c.example"`) {
+			t.Errorf("%s: got %s, want an encoded comma", tc.name, out)
+		}
+	}
+}
+
+func TestRenderEmailDoesNotDecodeEntities(t *testing.T) {
+	// Validate rejects this address (it holds "&"), so the renderer must not
+	// decode it into a working link.
+	out := renderHTML(tree(para(el("email", at("address", "a&#64;c.example"), txt("m")))))
+	if want := "<p>m</p>"; out != want {
+		t.Errorf("got %s, want %s", out, want)
+	}
+}
+
+func TestRenderSmileyHTTPUpgraded(t *testing.T) {
+	rc := RenderContext{SmileyURL: func(code string) (string, bool) {
+		return "http://img.example/s.gif", code == ":)"
+	}}
+	out := string(Render(tree(para(el("smiley", at("code", ":)")))), rc).HTML)
+	want := `<p><img class="smiley" src="https://img.example/s.gif" alt=":)"></p>`
+	if out != want {
+		t.Errorf("got %s, want %s", out, want)
 	}
 }
 
