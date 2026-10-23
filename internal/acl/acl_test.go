@@ -150,6 +150,12 @@ func TestRegistry(t *testing.T) {
 	if o, ok := Lookup("admin"); !ok || o.Scope != Board {
 		t.Errorf("admin must be a Board option, got %v, %v", o, ok)
 	}
+	if o, ok := Lookup("post.markdown"); !ok || o.Scope != Forum {
+		t.Errorf("post.markdown must be a Forum option, got %v, %v", o, ok)
+	}
+	if o, ok := Lookup("pm.markdown"); !ok || o.Scope != Board {
+		t.Errorf("pm.markdown must be a Board option, got %v, %v", o, ok)
+	}
 	if _, ok := Lookup("no.such.option"); ok {
 		t.Error("Lookup must fail for an unknown name")
 	}

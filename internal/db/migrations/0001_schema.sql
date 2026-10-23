@@ -176,9 +176,9 @@ create table posts (
 	body_tree       jsonb  not null,
 	-- Plain text for search.
 	body_text       text   not null,
-	enable_bbcode   bool   not null default false,
+	enable_markdown bool   not null default false,
 	enable_smilies  bool   not null default false,
-	enable_magic_url bool  not null default false,
+	enable_autolink bool   not null default false,
 	enable_sig      bool   not null default false,
 	visibility      text   not null
 		check (visibility in ('approved', 'unapproved', 'deleted')),
@@ -261,9 +261,9 @@ create table pms (
 	body_source      text   not null default '',
 	body_tree        jsonb  not null,
 	body_text        text   not null default '',
-	enable_bbcode    bool   not null default false,
+	enable_markdown  bool   not null default false,
 	enable_smilies   bool   not null default false,
-	enable_magic_url bool   not null default false,
+	enable_autolink  bool   not null default false,
 	enable_sig       bool   not null default false,
 	author_deleted   bool   not null default false
 );
@@ -350,13 +350,6 @@ create table smilies (
 	image_path  text   not null default '',
 	description text   not null default '',
 	position    int    not null default 0
-);
-
-create table tag_aliases (
-	name  text primary key,
-	tag   text not null check (tag in ('b', 'i', 'u', 'shout', 'comic', 'spoiler')),
-	-- Only for the spoiler tag.
-	label text null
 );
 
 create table legacy_routes (

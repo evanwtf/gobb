@@ -19,7 +19,7 @@ var schemaTables = []string{
 	"polls", "poll_options", "poll_votes",
 	"attachments", "pms", "pm_recipients",
 	"topic_watches", "bookmarks", "topic_marks", "forum_marks",
-	"bans", "ranks", "smilies", "tag_aliases",
+	"bans", "ranks", "smilies",
 	"legacy_routes", "legacy_files",
 	"sessions", "user_ips", "settings", "mod_log",
 	"email_queue", "email_tokens", "static_pages",
@@ -292,17 +292,25 @@ func TestPostSearchVector(t *testing.T) {
 	}
 }
 
-func TestTagAliasTarget(t *testing.T) {
+// Each post and private message stores three markup flags.
+func TestMarkupFlagColumns(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t)
 
-	if _, err := pool.Exec(ctx,
-		`insert into tag_aliases (name, tag) values ('yell', 'shout')`); err != nil {
-		t.Errorf("alias to shout: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`insert into tag_aliases (name, tag) values ('js', 'script')`); err == nil {
-		t.Error("alias to script succeeded, want a constraint error")
+	for _, table := range []string{"posts", "pms"} {
+		for _, column := range []string{"enable_markdown", "enable_smilies", "enable_autolink"} {
+			var n int
+			err := pool.QueryRow(ctx,
+				`select count(*) from information_schema.columns
+				 where table_schema = current_schema() and table_name = $1 and column_name = $2`,
+				table, column).Scan(&n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Errorf("column %s.%s: found %d, want 1", table, column, n)
+			}
+		}
 	}
 }
 
