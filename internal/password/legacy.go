@@ -17,6 +17,13 @@ import (
 // maxLegacyForm is the longest legacy form VerifyLegacy hashes, in bytes.
 const maxLegacyForm = 4096
 
+// Limits on the work that a stored bcrypt or phpass hash may demand. Each step up in
+// a bcrypt cost doubles the work. A phpass index n gives 2^n MD5 rounds.
+const (
+	maxBcryptCost  = 14
+	maxPhpassIndex = 18
+)
+
 // Limits on the cost that a stored argon2id hash may demand. A stored hash must
 // not make a login use unbounded memory or time.
 const (
@@ -54,13 +61,30 @@ func VerifyLegacy(raw, stored string) bool {
 	return false
 }
 
-// bcryptMatches compares input with a bcrypt hash. The Go library does not know
-// the $2y$ marker, which names the same algorithm as $2a$ for these inputs.
+// bcryptMatches compares input with a bcrypt hash. It refuses a cost above
+// maxBcryptCost before any bcrypt work. x/crypto accepts the $2y$ marker, so the
+// rewrite to $2a$ is defensive.
 func bcryptMatches(hash, input string) bool {
-	if strings.HasPrefix(hash, "$2y$") {
-		hash = "$2a$" + hash[len("$2y$"):]
+	if !bcryptCostOK(hash) {
+		return false
 	}
+	hash = normalizeBcryptPrefix(hash)
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(input)) == nil
+}
+
+// bcryptCostOK reports whether hash is a bcrypt hash with a cost of at most
+// maxBcryptCost. It does no bcrypt work.
+func bcryptCostOK(hash string) bool {
+	cost, err := bcrypt.Cost([]byte(hash))
+	return err == nil && cost <= maxBcryptCost
+}
+
+// normalizeBcryptPrefix changes a $2y$ prefix to $2a$. It changes nothing else.
+func normalizeBcryptPrefix(hash string) string {
+	if rest, ok := strings.CutPrefix(hash, "$2y$"); ok {
+		return "$2a$" + rest
+	}
+	return hash
 }
 
 func argon2idMatches(stored, form string) bool {
@@ -80,8 +104,9 @@ func chainMatches(rest, form string) bool {
 		return false
 	}
 	setting, bc := rest[:phpassSettingLen], rest[phpassSettingLen:]
-	// Refuse a malformed bcrypt hash before the slow portable-hash work.
-	if _, err := bcrypt.Cost([]byte(strings.Replace(bc, "$2y$", "$2a$", 1))); err != nil {
+	// Refuse work above the limits, and a malformed bcrypt hash, before the
+	// portable-hash loop.
+	if strings.IndexByte(phpassAlphabet, setting[0]) > maxPhpassIndex || !bcryptCostOK(bc) {
 		return false
 	}
 	sum := md5.Sum([]byte(form))

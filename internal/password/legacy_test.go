@@ -50,6 +50,7 @@ func TestVerifyLegacyVectors(t *testing.T) {
 	}
 	for _, v := range vs {
 		t.Run(v.Name, func(t *testing.T) {
+			t.Parallel()
 			raw, err := base64.StdEncoding.DecodeString(v.RawB64)
 			if err != nil {
 				t.Fatalf("decode raw_b64: %v", err)
@@ -203,6 +204,102 @@ func TestVerifyLegacyArgon2Caps(t *testing.T) {
 	}
 }
 
+// A bcrypt cost above the limit is refused before any bcrypt work. The hash is the
+// real cost-10 vector with its cost edited to 15. The test never runs a cost-15 bcrypt.
+func TestVerifyLegacyRefusesHighBcryptCost(t *testing.T) {
+	v := vectorByName(t, "bcrypt-horse")
+	raw, err := base64.StdEncoding.DecodeString(v.RawB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyLegacy(string(raw), v.Hash) {
+		t.Fatal("precondition: bcrypt vector does not verify")
+	}
+	high := strings.Replace(v.Hash, "$10$", "$15$", 1)
+	if high == v.Hash {
+		t.Fatal("no cost 10 in the vector hash")
+	}
+	start := time.Now()
+	ok := VerifyLegacy(string(raw), high)
+	elapsed := time.Since(start)
+	if ok {
+		t.Error("bcrypt hash with cost 15 verified")
+	}
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("bcrypt hash with cost 15 took %v, want under 50ms", elapsed)
+	}
+}
+
+// The same cost limit applies to the bcrypt part of a chain hash.
+func TestVerifyLegacyRefusesHighChainBcryptCost(t *testing.T) {
+	v := vectorByName(t, "chain-horse")
+	raw, err := base64.StdEncoding.DecodeString(v.RawB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyLegacy(string(raw), v.Hash) {
+		t.Fatal("precondition: chain vector does not verify")
+	}
+	high := strings.Replace(v.Hash, "$2y$10$", "$2y$15$", 1)
+	if high == v.Hash {
+		t.Fatal("no cost 10 in the chain bcrypt part")
+	}
+	start := time.Now()
+	ok := VerifyLegacy(string(raw), high)
+	elapsed := time.Since(start)
+	if ok {
+		t.Error("chain hash with bcrypt cost 15 verified")
+	}
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("chain hash with bcrypt cost 15 took %v, want under 50ms", elapsed)
+	}
+}
+
+// A phpass count index above the limit is refused before the portable-hash loop.
+// Index 19 is 'H' in the alphabet. It means 2^19 MD5 rounds.
+func TestVerifyLegacyRefusesHighPhpassIndex(t *testing.T) {
+	v := vectorByName(t, "chain-horse")
+	raw, err := base64.StdEncoding.DecodeString(v.RawB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyLegacy(string(raw), v.Hash) {
+		t.Fatal("precondition: chain vector does not verify")
+	}
+	rest := strings.TrimPrefix(v.Hash, chainPrefix)
+	setting, bc := rest[:phpassSettingLen], rest[phpassSettingLen:]
+	high := chainPrefix + string(phpassAlphabet[19]) + setting[1:] + bc
+	start := time.Now()
+	ok := VerifyLegacy(string(raw), high)
+	elapsed := time.Since(start)
+	if ok {
+		t.Error("chain hash with phpass index 19 verified")
+	}
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("chain hash with phpass index 19 took %v, want under 50ms", elapsed)
+	}
+}
+
+// The $2y$ rewrite changes the prefix and nothing else.
+func TestNormalizeBcryptPrefix(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"2y prefix becomes 2a", "$2y$10$abc", "$2a$10$abc"},
+		{"2a prefix stays", "$2a$10$abc", "$2a$10$abc"},
+		{"2b prefix stays", "$2b$10$abc", "$2b$10$abc"},
+		{"2y later in the string stays", "$2b$10$abc$2y$", "$2b$10$abc$2y$"},
+		{"2y not at the start stays", "x$2y$10$abc", "x$2y$10$abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeBcryptPrefix(tc.in); got != tc.want {
+				t.Errorf("normalizeBcryptPrefix(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParsePHC(t *testing.T) {
 	enc := base64.RawStdEncoding
 	salt := enc.EncodeToString([]byte("0123456789abcdef"))
@@ -284,16 +381,33 @@ func TestParsePHC(t *testing.T) {
 }
 
 func FuzzVerifyLegacy(f *testing.F) {
-	for _, v := range loadVectors(f) {
-		raw, err := base64.StdEncoding.DecodeString(v.RawB64)
-		if err != nil {
-			f.Fatalf("decode: %v", err)
-		}
-		if len(raw) > 100 {
-			continue
-		}
-		f.Add(string(raw), v.Hash)
+	// The seeds use cheap parameters. TestVerifyLegacyVectors runs the real vectors.
+	const form = "test12345"
+	salt := []byte("0123456789abcdef")
+	enc := base64.RawStdEncoding
+	key := argon2.IDKey([]byte(form), salt, 1, 8, 1, 32)
+	f.Add(form, "$argon2id$v=19$m=8,t=1,p=1$"+enc.EncodeToString(salt)+"$"+enc.EncodeToString(key))
+
+	// bcrypt at cost 4. The board writes $2y$, so the second seed uses that marker.
+	bc, err := bcrypt.GenerateFromPassword([]byte(form), 4)
+	if err != nil {
+		f.Fatalf("bcrypt: %v", err)
 	}
+	f.Add(form, string(bc))
+	f.Add(form, "$2y$"+string(bc[len("$2a$"):]))
+
+	// A chain hash at cost 4 with phpass index 7, which is '5' in the alphabet.
+	const setting = "5IQRaTwmf"
+	digest, ok := phpassDigest(setting, form)
+	if !ok {
+		f.Fatal("phpass digest refused the setting")
+	}
+	cbc, err := bcrypt.GenerateFromPassword([]byte(digest), 4)
+	if err != nil {
+		f.Fatalf("bcrypt: %v", err)
+	}
+	f.Add(form, chainPrefix+setting+"$2y$"+string(cbc[len("$2a$"):]))
+
 	f.Add("x", "$chain$phpass,")
 	f.Add("x", "$chain$phpass,12345678$2")
 	f.Add("x", "$argon2id$v=19$m=8,t=1,p=1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA")
