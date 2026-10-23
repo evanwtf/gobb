@@ -122,6 +122,12 @@ func TestEmbedID(t *testing.T) {
 		{"threads", "https://threads.net/@someone", "", false},
 		{"threads", "https://threads.org/@someone/post/Cabc123", "", false},
 		{"threads", "https://threads.net/@bad user/post/Cabc123", "", false},
+		{"threads", "../x", "", false},
+		{"threads", "./x", "", false},
+		{"threads", "...../x", "", false},
+		{"threads", "https://threads.net/@../post/x", "", false},
+		{"threads", "https://threads.net/@./post/x", "", false},
+		{"threads", "a./x", "a./x", true},
 		{"threads", "someone", "", false},
 		{"threads", "someone/bad post", "", false},
 		// spotify

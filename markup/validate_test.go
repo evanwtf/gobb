@@ -77,27 +77,29 @@ func TestValidateAccepts(t *testing.T) {
 		"list in li":   tree(el("list", nil, el("li", nil, el("list", nil, el("li", nil))))),
 		"quote in li":  tree(el("list", nil, el("li", nil, el("quote", nil, para())))),
 		// url
-		"url http":      tree(para(el("url", at("href", "http://example.com"), txt("x")))),
-		"url upper":     tree(para(el("url", at("href", "HTTPS://EXAMPLE.com/p?q=1&amp;r=2#f")))),
-		"url site":      tree(para(el("url", at("href", "/t/5")))),
-		"url root":      tree(para(el("url", at("href", "/")))),
-		"url mailto":    tree(para(el("url", at("href", "mailto:a@b.example")))),
-		"url padded":    tree(para(el("url", at("href", " https://a.example/ ")))),
-		"url display":   tree(para(el("url", at("href", "https://a.example", "display", strings.Repeat("é", 255))))),
-		"url nested b":  tree(para(el("url", at("href", "https://example.com"), el("b", nil, el("img", at("src", "https://example.com/a.png")))))),
-		"url spoiler":   tree(para(el("url", at("href", "https://a.example"), el("spoiler", nil, txt("x"))))),
-		"link after":    tree(para(el("url", at("href", "https://a.example"), txt("x")), el("url", at("href", "https://b.example"), txt("y")))),
-		"email":         tree(para(el("email", at("address", "a.b+c@example.com")))),
-		"email in b":    tree(para(el("email", at("address", "a@b.example"), el("b", nil, txt("x"))))),
-		"img":           tree(para(el("img", at("src", "https://example.com/a.png")))),
-		"img site":      tree(para(el("img", at("src", "/files/a.png")))),
-		"img alt":       tree(para(el("img", at("src", "/a.png", "alt", strings.Repeat("é", 1000))))),
-		"img empty alt": tree(para(el("img", at("src", "/a.png", "alt", "")))),
-		"spoiler":       tree(para(el("spoiler", nil, txt("x"), el("i", nil, txt("y"))))),
-		"spoiler link":  tree(para(el("spoiler", nil, el("url", at("href", "https://a.example"))))),
-		"spoilers next": tree(para(el("spoiler", nil), el("spoiler", nil))),
-		"smiley":        tree(para(el("smiley", at("code", ":-)")))),
-		"smiley 32":     tree(para(el("smiley", at("code", strings.Repeat("é", 32))))),
+		"url http":            tree(para(el("url", at("href", "http://example.com"), txt("x")))),
+		"url upper":           tree(para(el("url", at("href", "HTTPS://EXAMPLE.com/p?q=1&amp;r=2#f")))),
+		"url site":            tree(para(el("url", at("href", "/t/5")))),
+		"url root":            tree(para(el("url", at("href", "/")))),
+		"url mailto":          tree(para(el("url", at("href", "mailto:a@b.example")))),
+		"url padded":          tree(para(el("url", at("href", " https://a.example/ ")))),
+		"url display":         tree(para(el("url", at("href", "https://a.example", "display", strings.Repeat("é", 255))))),
+		"url nested b":        tree(para(el("url", at("href", "https://example.com"), el("b", nil, el("img", at("src", "https://example.com/a.png")))))),
+		"url spoiler":         tree(para(el("url", at("href", "https://a.example"), el("spoiler", nil, txt("x"))))),
+		"link after":          tree(para(el("url", at("href", "https://a.example"), txt("x")), el("url", at("href", "https://b.example"), txt("y")))),
+		"email":               tree(para(el("email", at("address", "a.b+c@example.com")))),
+		"email in b":          tree(para(el("email", at("address", "a@b.example"), el("b", nil, txt("x"))))),
+		"img":                 tree(para(el("img", at("src", "https://example.com/a.png")))),
+		"img site":            tree(para(el("img", at("src", "/files/a.png")))),
+		"img alt":             tree(para(el("img", at("src", "/a.png", "alt", strings.Repeat("é", 1000))))),
+		"img empty alt":       tree(para(el("img", at("src", "/a.png", "alt", "")))),
+		"spoiler":             tree(para(el("spoiler", nil, txt("x"), el("i", nil, txt("y"))))),
+		"spoiler link":        tree(para(el("spoiler", nil, el("url", at("href", "https://a.example"))))),
+		"alt tab newline":     tree(para(el("img", at("src", "/a.png", "alt", "a\tb\r\nc")))),
+		"display tab newline": tree(para(el("url", at("href", "https://a.example", "display", "a\tb\nc\r")))),
+		"spoilers next":       tree(para(el("spoiler", nil), el("spoiler", nil))),
+		"smiley":              tree(para(el("smiley", at("code", ":-)")))),
+		"smiley 32":           tree(para(el("smiley", at("code", strings.Repeat("é", 32))))),
 		// embeds
 		"youtube":        tree(el("youtube", at("id", "dQw4w9WgXcQ"))),
 		"vimeo":          tree(el("vimeo", at("id", "1"))),
@@ -126,12 +128,16 @@ func TestValidateAccepts(t *testing.T) {
 
 func TestValidateRejects(t *testing.T) {
 	const (
-		urlA   = "https://a.example"
-		onlyLi = "list may hold only li elements"
-		noNest = "url and email may not nest inside url or email"
-		noURL  = "href not allowed"
-		noSrc  = "src not allowed"
-		noMail = "address is not a plain email address"
+		urlA    = "https://a.example"
+		onlyLi  = "list may hold only li elements"
+		noNest  = "url and email may not nest inside url or email"
+		noURL   = "href not allowed"
+		noSrc   = "src not allowed"
+		noMail  = "address is not a plain email address"
+		dispCtl = "display must be 1 to 255 characters, with no control characters"
+		altCtl  = "alt must be at most 1000 characters, with no control characters"
+		codeCtl = "code must be 1 to 32 characters, with no control characters"
+		langMsg = "lang must be 1 to 32 characters from A-Z a-z 0-9 _ + . # -"
 	)
 	yt := at("id", "dQw4w9WgXcQ")
 	two := tree(para())
@@ -303,8 +309,8 @@ func TestValidateRejects(t *testing.T) {
 		{"url opaque", tree(hrefCase("http:a.example")), "/p[0]/url[0]", noURL},
 		{"url empty", tree(hrefCase("")), "/p[0]/url[0]", noURL},
 		{"url blank", tree(hrefCase(" \t ")), "/p[0]/url[0]", noURL},
-		{"url display empty", tree(para(el("url", at("href", urlA, "display", "")))), "/p[0]/url[0]", "display must be 1 to 255 characters"},
-		{"url display long", tree(para(el("url", at("href", urlA, "display", strings.Repeat("a", 256))))), "/p[0]/url[0]", "display must be 1 to 255 characters"},
+		{"url display empty", tree(para(el("url", at("href", urlA, "display", "")))), "/p[0]/url[0]", "display must be 1 to 255 characters, with no control characters"},
+		{"url display long", tree(para(el("url", at("href", urlA, "display", strings.Repeat("a", 256))))), "/p[0]/url[0]", "display must be 1 to 255 characters, with no control characters"},
 		{"url display bad utf-8", tree(para(el("url", at("href", urlA, "display", "\xff")))), "/p[0]/url[0]", "display is not valid UTF-8"},
 		{"url href bad utf-8", tree(hrefCase("https://a.example/\xff")), "/p[0]/url[0]", "href is not valid UTF-8"},
 
@@ -329,13 +335,47 @@ func TestValidateRejects(t *testing.T) {
 		{"img mailto", tree(srcCase("mailto:a@b.example")), "/p[0]/img[0]", noSrc},
 		{"img javascript", tree(srcCase("javascript:x")), "/p[0]/img[0]", noSrc},
 		{"img relative", tree(srcCase("x.png")), "/p[0]/img[0]", noSrc},
-		{"img alt long", tree(para(el("img", at("src", "/x.png", "alt", strings.Repeat("a", 1001))))), "/p[0]/img[0]", "alt must be at most 1000 characters"},
+		{"img alt long", tree(para(el("img", at("src", "/x.png", "alt", strings.Repeat("a", 1001))))), "/p[0]/img[0]", "alt must be at most 1000 characters, with no control characters"},
 		{"img alt bad utf-8", tree(para(el("img", at("src", "/x.png", "alt", "\xff")))), "/p[0]/img[0]", "alt is not valid UTF-8"},
+
+		// control characters in attribute values
+		{"display NUL", tree(para(el("url", at("href", urlA, "display", "a\x00b")))), "/p[0]/url[0]", dispCtl},
+		{"display escape", tree(para(el("url", at("href", urlA, "display", "a\x1bb")))), "/p[0]/url[0]", dispCtl},
+		{"display DEL", tree(para(el("url", at("href", urlA, "display", "a\x7fb")))), "/p[0]/url[0]", dispCtl},
+		{"alt NUL", tree(para(el("img", at("src", "/x.png", "alt", "a\x00b")))), "/p[0]/img[0]", altCtl},
+		{"alt bell", tree(para(el("img", at("src", "/x.png", "alt", "a\x07")))), "/p[0]/img[0]", altCtl},
+		{"smiley code tab", tree(para(el("smiley", at("code", ":\t)")))), "/p[0]/smiley[0]", codeCtl},
+		{"smiley code newline", tree(para(el("smiley", at("code", ":\n)")))), "/p[0]/smiley[0]", codeCtl},
+		{"smiley code NUL", tree(para(el("smiley", at("code", ":\x00")))), "/p[0]/smiley[0]", codeCtl},
+		{"pre lang tab", tree(el("pre", at("lang", "c\tc"))), "/pre[0]", langMsg},
+		{"pre lang NUL", tree(el("pre", at("lang", "c\x00"))), "/pre[0]", langMsg},
+		{"pre lang newline", tree(el("pre", at("lang", "c\n"))), "/pre[0]", langMsg},
+
+		// email address: characters that change a mailto: URL
+		{"email question", tree(mailCase("a@b.example?subject=x")), "/p[0]/email[0]", noMail},
+		{"email hash", tree(mailCase("a@b.example#x")), "/p[0]/email[0]", noMail},
+		{"email percent", tree(mailCase("a@b.example%0D%0ABcc")), "/p[0]/email[0]", noMail},
+		{"email percent local", tree(mailCase("a%40c@b.example")), "/p[0]/email[0]", noMail},
+		{"email ampersand", tree(mailCase("a@b.example&cc=x")), "/p[0]/email[0]", noMail},
+		{"email slash", tree(mailCase("/a@b")), "/p[0]/email[0]", noMail},
+		{"url mailto query", tree(hrefCase("mailto:a@b.example?subject=x")), "/p[0]/url[0]", noURL},
+		{"url mailto entity query", tree(hrefCase("mailto:a@b.example&#63;cc=x")), "/p[0]/url[0]", noURL},
+		{"url mailto percent", tree(hrefCase("mailto:a@b.example%0D%0ABcc%3Ax")), "/p[0]/url[0]", noURL},
+		{"url zero-width space", tree(hrefCase("https://a.example/\u200bx")), "/p[0]/url[0]", noURL},
+		{"url bidi override", tree(hrefCase("https://a.example/\u202ex")), "/p[0]/url[0]", noURL},
+		{"url soft hyphen", tree(hrefCase("https://a.exam\u00adple/")), "/p[0]/url[0]", noURL},
+		{"img zero-width space", tree(srcCase("/\u200bx.png")), "/p[0]/img[0]", noSrc},
+		{"url no host one slash", tree(hrefCase("http:/x")), "/p[0]/url[0]", noURL},
+		{"url opaque https", tree(hrefCase("https:evil")), "/p[0]/url[0]", noURL},
+
+		// threads user made of dots
+		{"threads dotdot", tree(el("threads", at("id", "../x"))), "/threads[0]", "id is not a canonical threads ID"},
+		{"threads dot", tree(el("threads", at("id", "./x"))), "/threads[0]", "id is not a canonical threads ID"},
 
 		// smiley
 		{"smiley missing code", tree(para(el("smiley", nil))), "/p[0]/smiley[0]", "missing attribute code"},
-		{"smiley empty code", tree(para(el("smiley", at("code", "")))), "/p[0]/smiley[0]", "code must be 1 to 32 characters"},
-		{"smiley long code", tree(para(el("smiley", at("code", strings.Repeat("a", 33))))), "/p[0]/smiley[0]", "code must be 1 to 32 characters"},
+		{"smiley empty code", tree(para(el("smiley", at("code", "")))), "/p[0]/smiley[0]", "code must be 1 to 32 characters, with no control characters"},
+		{"smiley long code", tree(para(el("smiley", at("code", strings.Repeat("a", 33))))), "/p[0]/smiley[0]", "code must be 1 to 32 characters, with no control characters"},
 
 		// embeds
 		{"youtube bad id", tree(el("youtube", at("id", "not an id"))), "/youtube[0]", "id is not a canonical youtube ID"},
@@ -489,8 +529,9 @@ func TestValidateHugeChain(t *testing.T) {
 	start := time.Now()
 	err := Validate(root)
 	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("want an error for a 100000-deep chain")
+	var ve *Error
+	if !errors.As(err, &ve) || ve.Msg != "element nesting deeper than 32" {
+		t.Fatalf("100000-deep chain: got %v, want the nesting error", err)
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("took %v, want under 100ms", elapsed)
@@ -498,17 +539,20 @@ func TestValidateHugeChain(t *testing.T) {
 }
 
 func TestValidateCycleAndSharing(t *testing.T) {
-	// A cycle reaches the depth cap, so it fails fast.
+	const dup = "node appears more than once in the tree"
+	// A cycle is a node that appears twice: the shared-node check stops it at
+	// depth 2, long before the depth cap.
 	b := el("b", nil)
 	b.Children = []*Node{b}
-	if err := Validate(tree(para(b))); err == nil {
-		t.Error("cycle: want an error")
+	err := Validate(tree(para(b)))
+	var ve *Error
+	if !errors.As(err, &ve) || ve.Msg != dup || ve.Path != "/p[0]/b[0]/b[0]" {
+		t.Errorf("cycle: got %v, want %q at /p[0]/b[0]/b[0]", err, dup)
 	}
 	// A node shared twice would let a small input expand without limit.
 	shared := el("b", nil, txt("x"))
-	err := Validate(tree(para(shared, shared)))
-	var ve *Error
-	if !errors.As(err, &ve) || ve.Msg != "node appears more than once in the tree" {
+	err = Validate(tree(para(shared, shared)))
+	if !errors.As(err, &ve) || ve.Msg != dup {
 		t.Errorf("shared node: got %v", err)
 	}
 	// A chain of doubling shares must fail at once, not after 2^30 visits.
@@ -517,8 +561,8 @@ func TestValidateCycleAndSharing(t *testing.T) {
 		cur = el("b", nil, cur, cur)
 	}
 	start := time.Now()
-	if err := Validate(tree(para(cur))); err == nil {
-		t.Error("doubling shares: want an error")
+	if err := Validate(tree(para(cur))); !errors.As(err, &ve) || ve.Msg != dup {
+		t.Errorf("doubling shares: got %v, want %q", err, dup)
 	}
 	if time.Since(start) > 500*time.Millisecond {
 		t.Errorf("doubling shares took %v", time.Since(start))
@@ -540,13 +584,17 @@ func TestCheckURLs(t *testing.T) {
 		"https://a.example/x", "http://a.example", "HTTPS://A.EXAMPLE/p?q=1&amp;r=2#f",
 		"/t/5", "/files/a.png", "/", "/a?b=c#d", " /t/5 ",
 		"mailto:a@b.example", "MAILTO:a@b.example", "mailto:a.b+c@example.com",
+		"/%5Cevil", "/%2F/evil", "/%5C%5Cevil",
 	}
 	linkBad := []string{
 		"//a.example", "/\\a", "javascript:x", "mailto:", "mailto:a", "ftp://a.example",
 		"data:image/png;base64,x", "", " ", "a", "http://", "http:a.example", "//",
 		"/&#47;a", "/&bsol;a", "/a b", "/a\tb", "/a\x00", "https://a.example/a b",
 		"mailto:a@b@c", "mailto:a b@c.example", "mailto:a@b.example\nx", "mailto:a<@b.example",
-		"mailto:\x01a@b.example", "/" + strings.Repeat("a", 9000),
+		"mailto:\x01a@b.example", "http:/x", "https:evil", "https:/evil",
+		"mailto:a@b.example?subject=x", "mailto:a@b.example%0D%0ABcc%3Ax", "mailto:a%40c@b.example",
+		"mailto:a@b.example#x", "mailto:a@b.example&#63;cc=x", "mailto:/a@b", "mailto:a@b.example&amp;cc=x",
+		"https://a.example/\u200bx", "https://a.example/a\u00adb", "/\u202ex", "/a\ufeffb", "/" + strings.Repeat("a", 9000),
 	}
 	for _, s := range linkOK {
 		if !CheckLinkURL(s) {

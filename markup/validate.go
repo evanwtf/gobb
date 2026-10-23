@@ -101,15 +101,15 @@ func buildRules() map[string]*elemRule {
 		"br":   inline(kidsNone),
 		"url": inline(kidsInline,
 			attrRule{name: "href", required: true, ok: CheckLinkURL, msg: "href not allowed"},
-			attrRule{name: "display", ok: runeLen(1, 255), msg: "display must be 1 to 255 characters"}),
+			attrRule{name: "display", ok: textLen(1, 255), msg: "display must be 1 to 255 characters, with no control characters"}),
 		"email": inline(kidsInline,
 			attrRule{name: "address", required: true, ok: isEmail, msg: "address is not a plain email address"}),
 		"img": inline(kidsNone,
 			attrRule{name: "src", required: true, ok: CheckImageURL, msg: "src not allowed"},
-			attrRule{name: "alt", ok: runeLen(0, 1000), msg: "alt must be at most 1000 characters"}),
+			attrRule{name: "alt", ok: textLen(0, 1000), msg: "alt must be at most 1000 characters, with no control characters"}),
 		"spoiler": inline(kidsInline),
 		"smiley": inline(kidsNone,
-			attrRule{name: "code", required: true, ok: runeLen(1, 32), msg: "code must be 1 to 32 characters"}),
+			attrRule{name: "code", required: true, ok: tokenLen(1, 32), msg: "code must be 1 to 32 characters, with no control characters"}),
 	}
 	for name := range embedRules {
 		rules[name] = embed(name)
@@ -399,6 +399,32 @@ func runeLen(minLen, maxLen int) func(string) bool {
 	}
 }
 
+// textLen accepts a string of minLen to maxLen characters. It may hold tab,
+// newline and carriage return, but no other control character.
+func textLen(minLen, maxLen int) func(string) bool {
+	n := runeLen(minLen, maxLen)
+	return func(s string) bool {
+		if !n(s) {
+			return false
+		}
+		for _, r := range s {
+			if unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r' {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// tokenLen accepts a string of minLen to maxLen characters with no control
+// character at all.
+func tokenLen(minLen, maxLen int) func(string) bool {
+	n := runeLen(minLen, maxLen)
+	return func(s string) bool {
+		return n(s) && strings.IndexFunc(s, unicode.IsControl) < 0
+	}
+}
+
 // isListStart accepts 1 to 9 digits with no leading zero. That also rules out 0.
 func isListStart(v string) bool { return digitsOnly(v, 1, 9) && v[0] != '0' }
 
@@ -421,8 +447,10 @@ func isLang(v string) bool {
 
 // cleanURL prepares a link or image target for checking. It decodes HTML
 // entities once and trims ASCII whitespace at both ends. It then rejects an
-// empty value, an over-long value, and any whitespace, control character or
-// backslash. It returns the cleaned value and whether it passed.
+// empty value, an over-long value, and any whitespace, control character,
+// Unicode format character (such as U+200B, U+00AD or U+202E) or backslash. It
+// returns the cleaned value and whether it passed. The cleaned value is the
+// string that the renderer emits.
 func cleanURL(v string) (string, bool) {
 	if len(v) > 8192 {
 		return "", false
@@ -432,7 +460,7 @@ func cleanURL(v string) (string, bool) {
 		return "", false
 	}
 	for _, r := range v {
-		if r == '\\' || unicode.IsSpace(r) || unicode.IsControl(r) {
+		if r == '\\' || unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return "", false
 		}
 	}
@@ -465,11 +493,15 @@ func isHTTPURL(v string) bool {
 // CheckLinkURL reports whether s is allowed as the target of a link. It is the
 // one rule that [Validate], the parser and the renderer share. It decodes HTML
 // entities once and trims ASCII whitespace at both ends. It then rejects any
-// whitespace, control character or backslash. It accepts the result only in one
-// of these forms: an http or https URL with a host; "mailto:" followed by an
-// address that passes the email rule; or a site path, which starts with "/" but
-// not with "//" or "/\". Anything else fails, including every obfuscated form
-// of another scheme.
+// whitespace, control character, format character or backslash. It accepts the
+// result only in one of these forms: an http or https URL with a host;
+// "mailto:" followed by an address that passes the email rule; or a site path,
+// which starts with "/" but not with "//" or "/\". Anything else fails,
+// including every obfuscated form of another scheme.
+//
+// The check approves the decoded, trimmed string, not s. The renderer emits
+// that same string: the value of cleanURL. It HTML-escapes the value, and it
+// percent-encodes a mailto: address. It must not decode s again.
 func CheckLinkURL(s string) bool {
 	v, ok := cleanURL(s)
 	if !ok {
@@ -483,14 +515,17 @@ func CheckLinkURL(s string) bool {
 
 // CheckImageURL reports whether s is allowed as the source of an image. It
 // applies the same cleaning as [CheckLinkURL] and accepts an http or https URL
-// with a host, or a site path. It rejects every mailto: value.
+// with a host, or a site path. It rejects every mailto: value. As with
+// [CheckLinkURL], the renderer emits the decoded, trimmed string that the
+// check approved.
 func CheckImageURL(s string) bool {
 	v, ok := cleanURL(s)
 	return ok && (isSitePath(v) || isHTTPURL(v))
 }
 
 // isEmail accepts one "@" with text on both sides, and no whitespace, control
-// character, colon, angle bracket or quote.
+// character, colon, angle bracket, quote, or any of "?#%&/". The last group
+// would change the meaning of a mailto: URL built from the address.
 func isEmail(v string) bool {
 	if len(v) > 1024 || strings.Count(v, "@") != 1 {
 		return false
@@ -500,7 +535,7 @@ func isEmail(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune(":<>\"'", r) {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune(":<>\"'?#%&/", r) {
 			return false
 		}
 	}

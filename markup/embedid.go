@@ -204,7 +204,7 @@ var embedRules = map[string]embedRule{
 	"threads": {
 		hosts: hostSet([]string{"threads.net", "threads.com"}, nil),
 		bare: func(s string) bool {
-			return idPair(s, func(a string) bool { return userChars(a, 30) }, func(b string) bool { return idChars(b, 1, 64, true) })
+			return idPair(s, func(a string) bool { return userChars(a, 30) && strings.Trim(a, ".") != "" }, func(b string) bool { return idChars(b, 1, 64, true) })
 		},
 		url: func(_, path string, _ url.Values) string {
 			segs := segments(path)
