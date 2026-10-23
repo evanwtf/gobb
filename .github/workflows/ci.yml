@@ -98,7 +98,7 @@ jobs:
           if [ "$status" -ne 0 ]; then
             echo "go test failed with status $status; output follows."
             cat test.err
-            grep -F '"Action":"output"' test.json \
+            grep -F '"Output":"' test.json \
               | sed -n 's/,"OutputType":"[a-z-]*"//; s/.*"Output":"\(.*\)"}$/\1/p' \
               | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g'
           fi
