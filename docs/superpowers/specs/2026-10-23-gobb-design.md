@@ -1,0 +1,561 @@
+# gobb: design
+
+Date: 2026-10-23. Status: waiting for the owner's approval.
+
+Labels used below:
+
+- **(owner)** — the owner decided this in the design conversation.
+- **(designer's call)** — the designer chose this; the owner can overturn it.
+- Anything unlabeled follows from the data or from the goals.
+
+## 1. Intent
+
+gobb is a forum server in Go: one binary, PostgreSQL, server-rendered pages. It is built
+first for one existing community board (the "first board"), which moves onto gobb from
+its old forum software through an import bundle (section 8). **(owner)**
+
+Why:
+
+- The first board's old software is a large, aging codebase that stays safe only with
+  constant updates. gobb aims for few dependencies and little to patch.
+- Sign-up on the first board is closed because spam accounts overran it: about 10,000
+  of 10,300 accounts are inactive, and about 2,600 sign-up attempts arrived in two weeks.
+  With its own code, the board can put spam defenses where they help and reopen sign-up.
+  **(owner)**
+
+Scope: built for the first board's needs. **(owner)** The repo is public under the MIT
+license. **(owner)**
+
+**Clean room. (owner)** gobb is written from this document, its plans and its own tests.
+It contains no code, templates, stylesheets or images from any other forum software, and
+nobody who works on it reads such source. It keeps the basic look and the behavior that
+members rely on, and nothing more. The converter that builds the first board's bundle
+needs to know the old system, so it lives with the private deployment, outside this
+repo.
+
+## 2. The first board
+
+Sizes from a dump taken 2026-10-23. The import and the pages must handle them.
+
+| Item | Count |
+|---|---|
+| Posts / topics | 31,759 / 2,194 |
+| Post visibility | 31,757 approved, 2 waiting for approval, 0 deleted |
+| Posts with BBCode off / smilies off / URL linking off | 458 / 459 / 3 |
+| Topic kinds | 2,187 normal, 3 sticky, 3 announcement, 1 global; 1 moved-topic marker |
+| Forums | 16, in 3 categories, nested up to 2 levels |
+| Members to import | 204 (the inactive spam accounts are not imported) |
+| Guest posts | 24 |
+| Groups | 24 |
+| Grants | about 500, with NEVER at group level, at user level and inside roles |
+| Private messages | 519 (3 in the last year) |
+| Polls | 19 (the last one in 2019) |
+| Attachments | 322 image files, about 172 MB |
+| Avatars | 39 |
+| Bans | 125: 84 IP, 40 email, 1 user; all exact, none with an end date |
+| Smilies / ranks | 42 / 30 |
+| Posts in 2026 | 51, by about 10 people |
+| Production host | 1 GB of RAM and 2 GB of swap |
+
+## 3. Who it serves
+
+- **Occasional members.** They drop in about once a month to see what is new. **(owner)**
+  Their key screen is "new since your last visit".
+- **Archive readers and crawlers.** Fourteen years of posts, with links all over the web.
+- **New members,** once sign-up reopens.
+- **One admin.** Day to day the admin deletes posts and bans people. **(owner)**
+
+## 4. Goals
+
+1. Members can do about 99% of what they do on the first board today (section 7).
+   **(owner)**
+2. Every post, topic, private message, poll, attachment and avatar comes over. Forum,
+   topic, post and user IDs stay the same.
+3. Members log in with their current passwords (section 10).
+4. Groups and permissions give the same result as today, NEVER included. **(owner)**
+5. Old URLs answer with a 301 to the matching new page (section 14).
+6. Email works, and sign-up reopens behind spam defenses (release 2; section 17).
+7. A small admin panel that is much better than the old one. **(owner)**
+8. One opinionated, good-looking design. **(owner)**
+
+## 5. Non-goals
+
+- Databases other than PostgreSQL.
+- Plugins, extensions, uploadable themes or templates, a theme editor, language packs.
+  English only. **(owner,** on themes)
+- Warnings, karma, friends and foes, PM folders and rules, drafts, post reports, custom
+  profile fields, OAuth login, Jabber, feeds, birthdays, age checks. **(designer's call:**
+  each is unused or nearly so on the first board.)
+- A JSON API, real-time updates, a mobile app.
+- Converters for other forum software in this repo. Any converter can write a bundle.
+
+## 6. Anti-goals
+
+The build fails, even if it runs, if any of these happen:
+
+- A post, private message, poll vote or attachment is lost or shown under the wrong
+  author.
+- A member cannot log in with the password they use today.
+- Someone can read a forum that their permissions hide from them.
+- An old link that works today returns 404. (One exception: profiles of accounts that
+  were not imported return 410; section 14.)
+- Sign-up reopens and spam floods in again.
+- Any path lets post text, a signature, a profile field or a tag emit unsanitized HTML or
+  script.
+- The dependency tree needs constant patching. Keep dependencies few.
+- Code, text or images copied from another forum product. **(owner)**
+
+## 7. Features at launch
+
+**Reading**
+
+- Board index, forum pages, topic pages with pagination, member profiles, member list,
+  "the team" page.
+- "New since your last visit". It uses imported read-tracking data, so it is right on
+  day one.
+- Search over posts (title and body), with filters for forum and author.
+- Restricted forums stay hidden from members who lack the right.
+
+**Accounts**
+
+- Register and verify email (switched on in release 2; section 17), log in with
+  username or email **(designer's call)**, log out, reset password by email.
+- Edit profile: email (re-verified), password, avatar (upload), signature, time zone,
+  color scheme.
+
+**Posting**
+
+- New topic, reply, quote, edit own post, delete own post (as permissions allow).
+- Markup toolbar, preview, smilies.
+- Attach images.
+- Vote in polls. Create polls (permission `poll.start`).
+
+**Private messages**
+
+- Inbox and sent; read the imported messages; send, reply and quote; multiple
+  recipients.
+
+**Notifications**
+
+- Watch a topic (auto-watch on posting, as an account setting).
+- Email on a new reply: one email per topic until the member visits that topic again.
+- Email on a new private message.
+- An unread-PM count in the header. There is no notification center.
+
+**Moderation and admin:** section 11.
+
+**Static pages:** terms, privacy, FAQ. The admin edits them as text.
+
+## 8. Import
+
+### 8.1 The bundle
+
+Data comes into gobb as a bundle: a directory, or a `.tar.gz` of one. **(designer's
+call)** The format is gobb's own and is documented in this repo, so any converter can
+write it.
+
+- `manifest.json`: the format name `gobb-bundle`, the format version (1), the creation
+  time, a free-text source label, and the row count of every data file.
+- One JSON Lines file per entity: users, gone users, groups, group members, roles,
+  grants, forums, topics, posts, polls, poll votes, attachments, private messages,
+  watches, bookmarks, read marks, bans, ranks, smilies, tag aliases, legacy routes,
+  legacy file paths, static pages. Board settings are in `settings.json`.
+- `files/`: attachments, avatars, smilies, rank images, the header image. Every row that
+  names a file gives its path under `files/`, its size and its SHA-256.
+
+Rules:
+
+- A bundle's IDs become gobb's IDs. Rows refer to each other by ID.
+- Times are RFC 3339 with an offset. Text is UTF-8.
+- A post, signature or private message carries its markup source and its flags
+  (markup on, smilies on, URL linking on, signature shown). It may also carry a parse
+  tree (section 12.1). A converter supplies the tree when it has the old system's own
+  parse, so imported posts render as they did. Without a tree, gobb parses the source.
+- A password carries a scheme and a hash (section 10).
+- Gone users are IDs that the source had but the bundle does not import. Their profile
+  URLs answer 410.
+- Unknown fields, unknown enum values, broken references, a tree that fails validation,
+  and a count that disagrees with the manifest all stop the import. gobb does not guess
+  at data it does not model.
+
+Plan 2 fixes every file and field.
+
+### 8.2 `gobb import`
+
+- Loads one bundle into an empty gobb database, in one transaction. It refuses a
+  non-empty database unless told to replace it.
+- Copies the files into the data directory after it checks each size and SHA-256.
+- Validates every stored tree against the node schema (section 12.1), and renders every
+  post, signature and private message once. Any error stops the import.
+- Prints the count loaded for each entity.
+
+### 8.3 Checks that need the old system
+
+The converter owns every check that needs the old system's data or rules. For the first
+board those checks are private: exact permission equivalence against the old rules, a
+parse comparison for every post, the old URLs from the access logs, and a login test on
+a rehearsal copy. gobb gives the converter two tools:
+
+- `gobb perms export` writes each user's effective permissions as JSON Lines.
+- The `bbcode` package is public, so a converter can call `Parse` and `Compare`.
+
+The public repo tests the importer with hand-written bundles only.
+
+## 9. Groups and permissions
+
+### 9.1 Model **(designer's call)**
+
+- **Options** name single rights (table below).
+- **Roles** bundle option settings.
+- **Grants** give a role, or single option settings, to a group or a user, per forum or
+  board-wide.
+- A setting is YES, NO or NEVER. For a user, gobb combines the user's own grants and
+  the grants of every group the user belongs to (pending memberships excluded). Any
+  NEVER gives NO. Otherwise any YES gives YES. Otherwise NO.
+- Forum options apply per forum. Board options apply board-wide; grants on a forum do
+  not change them. Moderator options exist at both levels: the result in a forum is the
+  board-wide result OR the forum result.
+- **Owners** are the accounts that run the board. They always have `admin`. Their forum
+  rights still come from grants.
+
+| Scope | Options |
+|---|---|
+| Forum | `forum.list` (see it listed), `forum.read`, `forum.search`, `topic.start`, `topic.reply`, `topic.sticky`, `topic.announce`, `topic.global`, `topic.lock_own`, `topic.watch`, `post.edit_own`, `post.delete_own`, `post.bbcode`, `post.smilies`, `post.images`, `post.signatures`, `post.no_approval`, `post.counts` (counts toward the member's post count), `attach.upload`, `attach.download`, `poll.start`, `poll.vote`, `poll.change_vote` |
+| Moderator | `mod.edit`, `mod.delete`, `mod.approve`, `mod.lock`, `mod.move`, `mod.view_ip` |
+| Board | `mod.ban`, `pm.send`, `pm.read`, `pm.send_many`, `pm.bbcode`, `pm.smilies`, `pm.images`, `pm.edit`, `pm.delete`, `account.signature`, `account.avatar`, `account.profile`, `account.email`, `account.password`, `account.attach`, `account.download`, `account.search`, `account.view_profiles`, `admin` |
+
+An upload needs both `account.attach` and the forum's `attach.upload`. A download needs
+both `account.download` and `attach.download`. Search needs `account.search`, and shows
+results only from forums with `forum.search` and `forum.read`.
+
+Built-in groups: `guests`, `members`, `moderators`, `admins`. Bundle grants for them
+replace gobb's defaults. A new sign-up joins `members`.
+
+### 9.2 Admin rights
+
+The admin pages and the log need the single `admin` right.
+
+## 10. Accounts and spam defense
+
+**Passwords**
+
+Two schemes:
+
+- **`gobb`:** an argon2id PHC string over the password in Unicode NFC. Every new or
+  changed password uses it.
+- **`legacy`:** hashes from the first board's old software. Before it checks a legacy
+  hash, gobb turns the password into its *legacy form*, in this order:
+  1. Replace CR LF and a lone CR with LF. Remove NUL and U+FEFF.
+  2. Escape `&` as `&amp;`, `"` as `&quot;`, `<` as `&lt;` and `>` as `&gt;`. Single
+     quotes stay. Invalid UTF-8 never matches.
+  3. Normalize to Unicode NFC.
+  4. Remove space, tab, LF, CR, NUL and vertical tab from both ends.
+
+| Legacy format | Check |
+|---|---|
+| `$2y$`, `$2a$`, `$2b$` | bcrypt |
+| `$argon2id$` | argon2id PHC string (`m`, `t`, `p` from the string) |
+| `$chain$phpass,` + 9 characters + a bcrypt hash | Two steps. (1) The phpass portable hash (public domain) of the input, with the 9 characters as its setting (a count character and an 8-character salt); keep its 22-character encoded digest. (2) Check that digest against the bcrypt hash. The input is the legacy form, or the lowercase hex MD5 of the legacy form; either may match. |
+| empty | never matches |
+
+- Test vectors (made-up passwords, their hashes, and the old software's own verdicts)
+  come from the private converter tooling, which runs the old software in a throwaway
+  container. The repo holds the vectors file only.
+- A password over 4,096 bytes never matches, and gobb does not hash it.
+- After a successful legacy login, gobb stores a `gobb` hash and switches the account's
+  scheme. **(designer's call)**
+
+**Login**
+
+- Username or email. If an email belongs to more than one account (2 addresses on the
+  first board), ask for the username. **(designer's call)**
+- Login and password-reset responses do not reveal whether an account exists.
+  Registration does say "username taken"; it cannot avoid that.
+
+**Sessions** (designer's calls throughout)
+
+- Server-side sessions; secure, HttpOnly, SameSite=Lax cookie.
+- "Remember me" lasts a year, because members visit about monthly.
+- A password change, a password reset, a ban or the Spammer action ends all of that
+  user's sessions.
+- A CSRF token on every state-changing request.
+- Rate limits on login per IP and per account.
+- "Last visit" updates when a new session starts.
+- Store each session's IP and user agent. Keep login IPs for 90 days; the Spammer
+  action uses them.
+
+**Email** (designer's calls, except the sending account — see the private deployment
+notes)
+
+- SMTP with STARTTLS or implicit TLS, and optional auth.
+- A queue in the database with retries and backoff. A failed send never blocks a
+  request. Failures show in the admin log.
+- Verification links are single-use and last 48 hours; reset links last 1 hour.
+- A member can ask for a new verification email. The admin can verify an account by
+  hand.
+- A board setting turns reply and PM notifications on or off. It starts off at
+  cutover; the admin turns it on after a test send works.
+
+**Registration** (all built in; nothing third-party by default — designer's call)
+
+- Admin setting: closed, open, or open with admin approval.
+- A hidden honeypot field and a minimum time between page load and submit.
+- Rate limits per IP and per IP range.
+- A question-and-answer challenge; the admin writes the questions.
+- Email verification before the account can post.
+- Bans on email domains and IP ranges apply at sign-up.
+- An optional hosted captcha (for example Cloudflare Turnstile) behind a setting, off by
+  default.
+
+**Holding area**
+
+- A new member's first posts wait for approval before others see them. The number is a
+  setting.
+- The author sees a held post, marked as waiting, and can edit or delete it.
+- While a member is in the holding area, an edit to any of their posts sends that post
+  back to the queue. After they leave it, edits are not re-checked. **(designer's
+  call)**
+- The admin approves or rejects from a queue, or uses "Spammer" (section 11).
+
+## 11. Moderation and admin panel
+
+**In place, on any post** (for those with the rights): delete (soft; restorable), edit,
+move topic, lock topic, approve.
+
+**Spammer action** on a user: ban the account, its email and its last IPs, and delete
+all its posts and PMs. One click with a confirm. **(owner:** "deleting posts, banning
+people") Details **(designer's calls)**:
+
+- IP bans are exact: each address the account used in the last 30 days (IPv4 /32,
+  IPv6 /64). No ranges, so a shared address bans only what it must.
+- Deletes are soft. A topic the spammer started is hidden with its replies. Their PMs
+  disappear from recipients' inboxes. Replies by others elsewhere stay.
+- The log entry has an Undo for 30 days that restores everything and lifts the bans.
+
+**Who sees what**
+
+- Moderation actions appear in place for anyone with the matching `mod.*` right in that
+  forum (or board-wide). The approval queue shows them the held posts in their forums.
+- The admin pages and the log need `admin` (section 9.2).
+
+**Admin pages**
+
+- **New members:** recent sign-ups with IP, email, time to submit and post count;
+  approve, delete, Spammer.
+- **Approval queue:** held posts.
+- **Bans:** by username, email or IP range; reason; optional expiry.
+- **Settings:** board name and description, sign-up mode, registration questions,
+  holding-area size, email settings test, default color scheme, header image upload.
+- **Permissions:** for each forum, a grid of groups against roles. A list of per-user
+  grants. A role editor for the options inside a role.
+- **Groups:** members, leaders, join requests, group type.
+- **Forums:** create, edit, reorder, nest.
+- **Smilies and tag aliases.**
+- **Log:** every moderator and admin action, with who, what, when.
+
+## 12. Content rendering
+
+### 12.1 Markup and the tree
+
+- Members keep writing BBCode. **(designer's call:** members know it, and the quote
+  button inserts it.)
+- gobb parses source into a tree: a root, text nodes, and elements with a name and
+  string attributes. The tree is stored as JSON with each post, signature and private
+  message, and pages render from it.
+- The node schema (element names, allowed attributes and their value patterns, which
+  children an element may hold, nesting caps) is part of gobb. It is the contract for
+  bundle trees.
+- The renderer builds HTML from an allowlist of elements and attributes. Link schemes:
+  `http`, `https`, `mailto`.
+
+### 12.2 Tags
+
+| Tag | Source forms | Output |
+|---|---|---|
+| `b`, `i`, `u` | `[b]…[/b]` | bold, italic, underline |
+| `quote` | `[quote]`, `[quote=Name]`, `[quote="Name" post_id=N time=T user_id=U]` | a quote block; the name links to the quoted post when `post_id` is given |
+| `code` | `[code]…[/code]` | preformatted; no tags or smilies inside |
+| `list`, `*` | `[list]`, `[list=1]` (also `a`, `A`, `i`, `I`, `disc`, `circle`, `square`) | a bulleted or numbered list |
+| `url` | `[url]…[/url]`, `[url=…]text[/url]` | a link with `rel="nofollow ugc noopener"` |
+| `email` | `[email]…[/email]`, `[email=…]text[/email]` | a `mailto:` link |
+| `img` | `[img]…[/img]` | a hotlinked image; `http://` becomes `https://` |
+| `color` | `#rgb`, `#rrggbb`, or a CSS color name | colored text |
+| `size` | 50 to 200 (percent) | resized text |
+| `attachment` | `[attachment=N]name[/attachment]` | the post's Nth attachment, inline |
+| `spoiler` | `[spoiler]`, `[spoiler=Label]` | a collapsed block |
+| `shout` | `[shout]…[/shout]` | large bold uppercase text |
+| `comic` | `[comic]…[/comic]` | large Comic Sans text |
+| `youtube` | a video ID or URL | a privacy-enhanced player **(owner)** |
+| `vimeo` | a video ID or URL | a Vimeo player **(designer's call)** |
+| `tweet` | a post ID or URL | a live embed; the script loads only on pages that need it **(owner)** |
+| `instagram` | a post ID or URL | an Instagram embed **(designer's call)** |
+
+- **Smilies** are images the admin manages. A smiley code matches only at a word
+  boundary, and never inside `code`, `url` or `img`.
+- **URL linking** turns bare `http://`, `https://` and `www.` addresses into links. Link
+  text longer than 55 characters shows the first 39, then ` ... `, then the last 10.
+- **Tag aliases.** The admin can give an extra name to `b`, `i`, `u`, `shout`, `comic`
+  or `spoiler` (with a fixed label). The first board's own tag names come in this way,
+  so old posts and old habits keep working. Nobody can define new output. **(owner:**
+  "opinionated and good"; aliases are the designer's call)
+- Unknown tags, bad attribute values, unclosed tags and nesting past the caps render as
+  literal text.
+- Embeds for services that no longer exist are the converter's business: it rewrites
+  them as plain links.
+- Remote images (`img`, about 1,600 posts) stay hotlinked. No image proxy at launch: it
+  would be a large feature with server-side request risk. **(designer's call)**
+- A strict Content-Security-Policy, set per response. Frames only from the embed
+  providers above. The tweet and Instagram scripts are allowed only on responses whose
+  page contains such an embed. No inline script.
+
+**Uploads** (attachments, avatars, header image; designer's calls)
+
+- Accept PNG, JPEG, GIF and WebP only, checked by content, not by name. No SVG.
+- Limits on bytes and on pixel dimensions, checked before decoding the full image.
+- Avatars are resized and re-encoded to a static image. Attachments and the header
+  image are stored as uploaded, so animated GIFs keep moving.
+- Serve uploads with the verified content type and `X-Content-Type-Options: nosniff`.
+
+## 13. Look
+
+- One design. **(owner)** It keeps the classic board layout that members know: category
+  bars, forum rows with topic and post counts and the last post, and topic pages with
+  the author on the left. gobb's HTML and CSS are written from scratch. **(owner:** basic
+  look kept, clean room)
+- Server-rendered HTML that works without JavaScript; a little JavaScript for quote
+  insertion, preview and collapsible blocks. It works on phones.
+- Color schemes are built in and members pick one in their profile. **(owner)** The
+  admin sets the default. No uploads, no editor. **(owner)**
+- **Slate** is the default. It comes from the first board's original header image:
+
+| Role | Color |
+|---|---|
+| Header and brand | `#2e425b` slate navy |
+| Accent (scrawl) | `#009aff` azure |
+| Secondary | `#596d86` muted slate |
+| "New" badge only | `#ff0000` red |
+
+  The Slate page uses `#233346` for the page, `#2a3c52` for rows, `#596d86` for
+  category bars, `#4fc0ff` for links on dark rows, and `#dbe3ec` for text. **(owner
+  chose this "B2 Slate" mock.)**
+- Two more schemes: **Slate Deep** (near-black navy page, header blue for bars) and
+  **Slate Light** (light page, same navy and azure). **(designer's call)**
+- Every scheme must pass WCAG AA contrast for body text and links.
+- The admin can replace the header image (PNG, GIF including animated, JPEG, WebP).
+  **(owner:** "header graphics")
+
+## 14. URLs
+
+- New pages get clean URLs that contain the preserved IDs. The exact shapes are the
+  builder's.
+- **Legacy routes** come from the bundle. Each maps an old path, plus query parameters
+  that must have given values, to a gobb page: home, forum, topic, post, user,
+  member list, team, attachment, avatar, search, account, or a static page. The target's ID comes from a
+  named query parameter, or is fixed in the route. An offset parameter picks the page of
+  a forum or topic. A post target goes to the topic page that holds the post, with the
+  anchor `#p<id>`. Other query parameters are ignored. The answer is a 301.
+- **Legacy file paths** come from the bundle. Each maps an old path prefix to one of
+  gobb's file directories (smilies, ranks), since old posts and other sites link to
+  those images directly.
+- A moved-topic marker redirects to the topic.
+- The permission check runs before any redirect. A target the visitor cannot see gets
+  the same 404 as a missing one, so a redirect never reveals a hidden topic.
+- A gone user's profile returns 410 Gone. This is the one accepted exception to the "no
+  new 404s" anti-goal. **(designer's call)**
+- The base path is a setting, so the board can stay under its current path.
+- Guests see times in the board time zone. **(designer's call:** `America/New_York` for
+  the first board.)
+
+## 15. Architecture
+
+- Go (latest stable), one binary; templates, CSS and JavaScript embedded.
+  **(owner:** single Go binary)
+- Two packages are public, for converters: `bbcode` (tree, parser, renderer,
+  comparison) and `bundle` (the import format). Everything else is under `internal/`.
+- PostgreSQL 16 or later, in gobb's own schema. **(owner)** Numbered SQL migrations,
+  embedded, never edited after release.
+- Attachments, avatars and the header image live on disk under a data directory.
+- Search uses PostgreSQL full-text search. **(designer's call)**
+- Runs behind a reverse proxy that terminates TLS. gobb trusts `X-Forwarded-For` only
+  from configured proxy addresses (`GOBB_TRUSTED_PROXIES`, a list of CIDRs), because IP
+  bans depend on it. Inside a container the proxy's connections arrive from the
+  container network's gateway, not from 127.0.0.1, so the compose file sets this.
+- **Deployable with Docker Compose. (owner)** The repo ships a `Dockerfile` and a
+  `compose.yaml` with two services, each built or pulled from an image registry
+  **(owner)**:
+  - `gobb` names both its GitHub Container Registry image (`ghcr.io/evanwtf/gobb`, tag
+    from `GOBB_VERSION`) and the local build context. `docker compose pull && docker
+    compose up -d` runs the published image; `docker compose up -d --build` builds it
+    from source.
+  - `postgres` is always pulled.
+  - The image builds on Chainguard: build stage `cgr.dev/chainguard/go`, runtime
+    `cgr.dev/chainguard/static`, user `nonroot`, CGO off. The data directory is a volume
+    owned by `nonroot`.
+  - The PostgreSQL service uses the official `postgres:16` image, pinned to the major
+    version, because a data directory cannot cross major versions unattended. This
+    reason covers only this service.
+  - The release binaries remain for anyone who runs gobb without Docker.
+- Configuration from environment variables; secrets from the environment.
+- Logs go to stdout with `log/slog`.
+- Background work (email queue, cleanup) runs inside the process. No cron entry point.
+- Few dependencies: a PostgreSQL driver, `golang.org/x/crypto` and `golang.org/x/text`
+  are expected. Each additional one needs a reason in the changelog.
+
+## 16. Build, test, release
+
+- CI on GitHub Actions, on the self-hosted Linux runner, with a guard that keeps pull
+  requests from forks off that runner. Steps: `gofmt` check, `go vet`, `staticcheck`,
+  `govulncheck`, `go test -race`, integration tests against PostgreSQL.
+- A guard in CI and in pre-commit refuses private network addresses, home-directory
+  paths, and a private list of identifying words (kept as a repository secret). A hit
+  prints the file and line, never the word.
+- Test-first for the renderer, the importer, password verification and permission
+  resolution. Fixtures are hand-written; no real forum data.
+- CI builds the exact production image on every push and runs it
+  (`docker run --rm <image> version`). Building alone does not prove the entry point
+  boots.
+- Releases on a `v*` tag: binaries for Linux and macOS on amd64 and arm64, with
+  checksums **(owner:** binaries in GitHub releases), and a multi-arch (amd64, arm64)
+  image in GitHub Container Registry tagged with the version **(owner:** Docker
+  Compose). The workflow refuses a tag that disagrees with the version, and takes the
+  notes from `docs/changelog.md`.
+
+## 17. Two releases **(owner)**
+
+- **Release 1 — cutover.** Everything in sections 7 to 16 except open sign-up. Sign-up
+  stays closed, as it is on the first board today. The sign-up form, the question
+  challenge and the holding area may ship in this release but stay switched off.
+- **Release 2 — reopen sign-up.** Turn on registration with every defense in section 10,
+  after email has worked in production and the board has run on gobb for a while.
+
+The order of work follows from this: schema and migrations; then permission
+resolution, password verification and the renderer, all test-first; then the bundle
+format and the importer; then the pages on top of imported data; then release 1 and
+cutover; then release 2.
+
+## 18. Cutover (general shape)
+
+1. Rehearse: the private converter builds a bundle from a recent dump, gobb imports it,
+   and the checks in sections 8.2 and 8.3 pass. Time one rehearsal on the production
+   host itself, because it is much smaller than a development machine.
+2. Before cutover day, run gobb on the production host under Docker Compose and test it
+   through an SSH tunnel: base path, forwarded headers, CSP, email. The public proxy
+   stays on the old board.
+3. Put the old board in maintenance mode and take a final dump. Downtime budget: one
+   hour. **(designer's call:** the board gets about 50 posts a year.)
+4. Build the bundle, import it, and run the checks.
+5. Point the reverse proxy at gobb; smoke-test reading, login, posting, an old URL.
+6. Keep the old board's files and final dump for rollback for an agreed window.
+7. Remove the old software from the host.
+
+Host-specific steps live with the deployment, outside this repo.
+
+## 19. Left to the builder
+
+- Schema details, package layout, router, template structure, CSS approach.
+- The exact new URL shapes (within section 14).
+- Search ranking.
+- Whether to cache rendered HTML or render on read.
+- Default numbers: holding-area size, rate limits, upload limits, argon2id cost. The
+  production host has 1 GB of RAM; size argon2id memory for that (for example 19 MiB,
+  t=2, p=1) and test the server under a memory cap.
