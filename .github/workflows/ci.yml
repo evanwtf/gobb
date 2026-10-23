@@ -99,7 +99,7 @@ jobs:
             echo "go test failed with status $status; output follows."
             cat test.err
             grep -F '"Action":"output"' test.json \
-              | sed -n 's/.*"Output":"\(.*\)"}$/\1/p' \
+              | sed -n 's/,"OutputType":"[a-z-]*"//; s/.*"Output":"\(.*\)"}$/\1/p' \
               | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g'
           fi
           if grep -q '"Action":"skip"' test.json; then
