@@ -280,6 +280,50 @@ func TestVerifyLegacyRefusesHighPhpassIndex(t *testing.T) {
 	}
 }
 
+// The bcrypt cost cap is 14. Cost 14 passes the check and cost 15 does not. Only the
+// digits of a real cost-10 hash change, and bcryptCostOK runs no bcrypt work.
+func TestBcryptCostCapBoundary(t *testing.T) {
+	v := vectorByName(t, "bcrypt-horse")
+	for _, tc := range []struct {
+		cost string
+		want bool
+	}{
+		{"14", true},
+		{"15", false},
+	} {
+		hash := strings.Replace(v.Hash, "$10$", "$"+tc.cost+"$", 1)
+		if hash == v.Hash {
+			t.Fatal("no cost 10 in the vector hash")
+		}
+		if got := bcryptCostOK(hash); got != tc.want {
+			t.Errorf("bcryptCostOK with cost %s = %t, want %t", tc.cost, got, tc.want)
+		}
+	}
+}
+
+// The phpass count cap is index 18. Index 18 ('G') is allowed and index 19 ('H') is
+// refused. The helper runs no MD5 work, so the test is fast. A character outside the
+// alphabet is refused too.
+func TestPhpassIndexCapBoundary(t *testing.T) {
+	cases := []struct {
+		name string
+		char byte
+		want bool
+	}{
+		{"index 18 allowed", phpassAlphabet[18], true},
+		{"index 19 refused", phpassAlphabet[19], false},
+		{"outside the alphabet refused", '!', false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setting := string(tc.char) + "IQRaTwmf"
+			if got := phpassIndexOK(setting); got != tc.want {
+				t.Errorf("phpassIndexOK = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 // The $2y$ rewrite changes the prefix and nothing else.
 func TestNormalizeBcryptPrefix(t *testing.T) {
 	cases := []struct {
@@ -383,18 +427,26 @@ func TestParsePHC(t *testing.T) {
 func FuzzVerifyLegacy(f *testing.F) {
 	// The seeds use cheap parameters. TestVerifyLegacyVectors runs the real vectors.
 	const form = "test12345"
+	// seed adds a stored hash that must verify for form. A typo fails here, so it
+	// cannot quietly weaken the seed set.
+	seed := func(name, stored string) {
+		if !VerifyLegacy(form, stored) {
+			f.Fatalf("%s seed does not verify", name)
+		}
+		f.Add(form, stored)
+	}
 	salt := []byte("0123456789abcdef")
 	enc := base64.RawStdEncoding
 	key := argon2.IDKey([]byte(form), salt, 1, 8, 1, 32)
-	f.Add(form, "$argon2id$v=19$m=8,t=1,p=1$"+enc.EncodeToString(salt)+"$"+enc.EncodeToString(key))
+	seed("argon2id", "$argon2id$v=19$m=8,t=1,p=1$"+enc.EncodeToString(salt)+"$"+enc.EncodeToString(key))
 
 	// bcrypt at cost 4. The board writes $2y$, so the second seed uses that marker.
 	bc, err := bcrypt.GenerateFromPassword([]byte(form), 4)
 	if err != nil {
 		f.Fatalf("bcrypt: %v", err)
 	}
-	f.Add(form, string(bc))
-	f.Add(form, "$2y$"+string(bc[len("$2a$"):]))
+	seed("bcrypt", string(bc))
+	seed("bcrypt with $2y$", "$2y$"+string(bc[len("$2a$"):]))
 
 	// A chain hash at cost 4 with phpass index 7, which is '5' in the alphabet.
 	const setting = "5IQRaTwmf"
@@ -406,7 +458,7 @@ func FuzzVerifyLegacy(f *testing.F) {
 	if err != nil {
 		f.Fatalf("bcrypt: %v", err)
 	}
-	f.Add(form, chainPrefix+setting+"$2y$"+string(cbc[len("$2a$"):]))
+	seed("chain", chainPrefix+setting+"$2y$"+string(cbc[len("$2a$"):]))
 
 	f.Add("x", "$chain$phpass,")
 	f.Add("x", "$chain$phpass,12345678$2")

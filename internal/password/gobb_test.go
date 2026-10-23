@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,16 @@ func argon2PHC(form string, memory, passes uint32, lanes uint8, saltLen, keyLen 
 		memory, passes, lanes, enc.EncodeToString(salt), enc.EncodeToString(key))
 }
 
+// capStoredHash returns a gobb-format PHC string at the parsePHC caps. The key is all
+// zero bytes, so no password matches it.
+func capStoredHash() string {
+	enc := base64.RawStdEncoding
+	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
+		maxArgonMemory, maxArgonTime, maxArgonParallelism,
+		enc.EncodeToString([]byte("0123456789abcdef")),
+		enc.EncodeToString(make([]byte, 32)))
+}
+
 func TestHashRoundTrip(t *testing.T) {
 	ok, rehash := Verify("s3cret", mustHash(t, "s3cret"), "gobb")
 	if !ok || rehash {
@@ -52,7 +63,7 @@ func TestHashWrongPassword(t *testing.T) {
 
 // The hash is made from the precomposed form. The check uses the decomposed form.
 func TestHashNFCEquivalence(t *testing.T) {
-	ok, rehash := Verify("café", mustHash(t, "café"), "gobb")
+	ok, rehash := Verify("cafe\u0301", mustHash(t, "caf\u00e9"), "gobb")
 	if !ok || rehash {
 		t.Errorf("decomposed form: Verify = %t, %t; want true, false", ok, rehash)
 	}
@@ -84,7 +95,7 @@ func TestHashRejectsBadPasswords(t *testing.T) {
 		{"4,097 bytes", strings.Repeat("a", 4097), ErrTooLong},
 		// 2,048 copies of U+0344 are 4,096 bytes raw. NFC makes each one two
 		// characters, so the form is 8,192 bytes.
-		{"NFC grows past 4,096", strings.Repeat("̈́", 2048), ErrTooLong},
+		{"NFC grows past 4,096", strings.Repeat("\u0344", 2048), ErrTooLong},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,6 +107,15 @@ func TestHashRejectsBadPasswords(t *testing.T) {
 	}
 }
 
+// ErrTooLong names the limit. Its text follows maxGobbForm, so a change to the limit
+// also changes the message.
+func TestErrTooLongNamesTheLimit(t *testing.T) {
+	want := strconv.Itoa(maxGobbForm) + " bytes"
+	if !strings.Contains(ErrTooLong.Error(), want) {
+		t.Errorf("ErrTooLong = %q; want it to contain %q", ErrTooLong.Error(), want)
+	}
+}
+
 // The limit counts bytes after NFC. A password of 4,096 bytes is accepted. So is
 // decomposed text of 4,500 bytes, which is 3,000 bytes after NFC.
 func TestHashLengthLimit(t *testing.T) {
@@ -104,7 +124,7 @@ func TestHashLengthLimit(t *testing.T) {
 		raw  string
 	}{
 		{"4,096 bytes", strings.Repeat("a", 4096)},
-		{"decomposed, 4,500 bytes raw", strings.Repeat("é", 1500)},
+		{"decomposed, 4,500 bytes raw", strings.Repeat("e\u0301", 1500)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -116,17 +136,21 @@ func TestHashLengthLimit(t *testing.T) {
 	}
 }
 
-// A bad password gives false, false before any hashing. The stored hash is real, so
-// the result does not come from a parse error.
+// A bad password gives false, false before any hashing. The stored hash sits at the
+// parsePHC caps, so a check that ran argon2 would exceed the 100 ms bound. The bound
+// is loose on purpose, so scheduler delays on a shared runner do not fail it.
 func TestVerifyRefusesBadPasswords(t *testing.T) {
-	stored := mustHash(t, "s3cret")
+	stored := capStoredHash()
+	if _, err := parsePHC(stored); err != nil {
+		t.Fatalf("precondition: parsePHC refuses capStoredHash: %v", err)
+	}
 	cases := []struct {
 		name string
 		raw  string
 	}{
 		{"invalid UTF-8", "\xff"},
 		{"empty", ""},
-		{"NFC grows past 4,096", strings.Repeat("̈́", 2048)},
+		{"NFC grows past 4,096", strings.Repeat("\u0344", 2048)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,8 +160,8 @@ func TestVerifyRefusesBadPasswords(t *testing.T) {
 			if ok || rehash {
 				t.Errorf("Verify = %t, %t; want false, false", ok, rehash)
 			}
-			if elapsed > 5*time.Millisecond {
-				t.Errorf("Verify took %v, want under 5ms", elapsed)
+			if elapsed > 100*time.Millisecond {
+				t.Errorf("Verify took %v, want under 100ms", elapsed)
 			}
 		})
 	}
@@ -179,6 +203,7 @@ func TestVerifyOldParamsNeedRehash(t *testing.T) {
 		{"time 1", argon2PHC("s3cret", 19456, 1, 1, 16, 32)},
 		{"memory 16 KiB", argon2PHC("s3cret", 16, 2, 1, 16, 32)},
 		{"two lanes", argon2PHC("s3cret", 16, 2, 2, 16, 32)},
+		{"two lanes only", argon2PHC("s3cret", 19456, 2, 2, 16, 32)},
 		{"key 16 bytes", argon2PHC("s3cret", 19456, 2, 1, 16, 16)},
 		{"salt 8 bytes", argon2PHC("s3cret", 19456, 2, 1, 8, 32)},
 	}

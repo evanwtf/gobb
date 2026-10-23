@@ -79,6 +79,16 @@ func bcryptCostOK(hash string) bool {
 	return err == nil && cost <= maxBcryptCost
 }
 
+// phpassIndexOK reports whether the count character of a phpass setting is in the
+// alphabet, at an index of at most maxPhpassIndex. It runs no MD5 work.
+func phpassIndexOK(setting string) bool {
+	if setting == "" {
+		return false
+	}
+	idx := strings.IndexByte(phpassAlphabet, setting[0])
+	return idx >= 0 && idx <= maxPhpassIndex
+}
+
 // normalizeBcryptPrefix changes a $2y$ prefix to $2a$. It changes nothing else.
 func normalizeBcryptPrefix(hash string) string {
 	if rest, ok := strings.CutPrefix(hash, "$2y$"); ok {
@@ -106,7 +116,7 @@ func chainMatches(rest, form string) bool {
 	setting, bc := rest[:phpassSettingLen], rest[phpassSettingLen:]
 	// Refuse work above the limits, and a malformed bcrypt hash, before the
 	// portable-hash loop.
-	if strings.IndexByte(phpassAlphabet, setting[0]) > maxPhpassIndex || !bcryptCostOK(bc) {
+	if !phpassIndexOK(setting) || !bcryptCostOK(bc) {
 		return false
 	}
 	sum := md5.Sum([]byte(form))

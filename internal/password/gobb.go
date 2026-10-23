@@ -16,7 +16,7 @@ import (
 var (
 	ErrNotUTF8 = errors.New("password: not valid UTF-8")
 	ErrEmpty   = errors.New("password: empty")
-	ErrTooLong = errors.New("password: longer than 4096 bytes")
+	ErrTooLong = fmt.Errorf("password: longer than %d bytes", maxGobbForm)
 )
 
 // maxGobbForm is the longest form that Hash and Verify accept, in bytes.
