@@ -4,10 +4,10 @@
 # Usage: check-public.sh [--commit-msg] [files...]
 #   With no arguments, checks every file from `git ls-files`.
 #   With arguments (pre-commit passes the staged names), checks only those.
-#   With --commit-msg, each file is a commit message. The script first drops what
-#   git drops: the scissors line and everything after it (the verbose diff), and
-#   every line that starts with #. Line numbers in the output stay those of the
-#   original file.
+#   With --commit-msg, each file is a commit message. The script first drops the
+#   scissors line and everything after it (the verbose diff), which never reaches
+#   history. It keeps lines that start with #: git keeps them for -m and -F, so
+#   the guard scans them too. Line numbers in the output stay those of the file.
 #
 # Private patterns: LAN addresses, home-directory paths, private DNS suffixes.
 # Owner's denylist: one fixed string per line, from $DENYLIST_FILE if set,
@@ -50,10 +50,11 @@ skip() {
 	return 1
 }
 
-# strip_msg writes a commit message to $tmp.msg the way git cleans it. It blanks
-# the dropped lines instead of deleting them, so line numbers stay the same.
+# strip_msg writes a commit message to $tmp.msg without the scissors line and
+# what follows it. It blanks those lines instead of deleting them, so line
+# numbers stay the same.
 strip_msg() {
-	awk '/^# -+ >8 -+$/ { skip = 1 } skip || /^#/ { print ""; next } { print }' "$1" >"$tmp.msg"
+	awk '/^# -+ >8 -+$/ { skip = 1 } skip { print ""; next } { print }' "$1" >"$tmp.msg"
 }
 
 # scan prints name:line for each hit in file $1 and succeeds if any.

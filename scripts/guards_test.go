@@ -241,7 +241,7 @@ func TestRefuseSessionIDs(t *testing.T) {
 		{"short word", "fix session_store\n", 0},
 		{"lower trailer", "repo: x\n\nclaude-" + "session: abc\n", 1},
 		{"github casing", "repo: x\n\nCo-authored-" + "by: Claude <noreply@example.invalid>\n", 1},
-		{"comment line", "repo: x\n\n# Claude-" + "Session: abc\n", 0},
+		{"comment line", "repo: x\n\n# Claude-" + "Session: abc\n", 1},
 		{"verbose diff", "repo: x\n\n# " + strings.Repeat("-", 24) + " >8 " + strings.Repeat("-", 24) +
 			"\n-Claude-" + "Session: abc\n", 0},
 		{"person", "repo: x\n\nCo-Authored-" + "By: Pat Example <pat@example.invalid>\n", 0},
@@ -293,7 +293,7 @@ func TestCheckPublicScansNonASCIIFileNames(t *testing.T) {
 
 // git -v puts a scissors line and the full diff below the message. A commit that
 // removes a private word shows the word on a "-" line there; that must pass.
-func TestCheckPublicCommitMessageModeCleansLikeGit(t *testing.T) {
+func TestCheckPublicCommitMessageModeSkipsOnlyTheDiff(t *testing.T) {
 	list := filepath.Join(t.TempDir(), "deny")
 	if err := os.WriteFile(list, []byte("examplecorp\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -313,13 +313,17 @@ func TestCheckPublicCommitMessageModeCleansLikeGit(t *testing.T) {
 	if out, code := check(verbose); code != 0 {
 		t.Fatalf("word below scissors: exit %d, want 0\n%s", code, out)
 	}
-	if out, code := check("repo: ExampleCorp # not a comment\n# ExampleCorp\n"); code != 1 ||
-		!strings.Contains(out, "MSG:1") || strings.Contains(out, "MSG:2") {
+	if out, code := check("repo: ExampleCorp\n"); code != 1 || !strings.Contains(out, "MSG:1") {
 		t.Fatalf("word in body: exit %d, output %q", code, out)
 	}
-	// The word on line 3, after a comment line, keeps its original line number.
-	out, code := check("repo: x\n# note\nExampleCorp in the body\n" + scissors + "\n")
+	// git -m keeps a # line, so the word on one reaches history: refuse it.
+	out, code := check("repo: x\n\n# ExampleCorp\n" + scissors + "\n")
 	if code != 1 || !strings.Contains(out, "MSG:3") {
+		t.Fatalf("word on # line above scissors: exit %d, output %q", code, out)
+	}
+	// The word on line 4, after a comment line, keeps its original line number.
+	out, code = check("repo: x\n# note\n\nExampleCorp in the body\n" + scissors + "\n")
+	if code != 1 || !strings.Contains(out, "MSG:4") {
 		t.Fatalf("body after comment: exit %d, output %q", code, out)
 	}
 }

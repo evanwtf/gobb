@@ -9,11 +9,11 @@ if [ "$#" -ne 1 ]; then
 	exit 2
 fi
 
-# Clean the message the way git does before it stores it: drop the scissors line
-# and everything after it (the verbose diff), then drop lines that start with #.
+# Drop the scissors line and everything after it (the verbose diff), which never
+# reaches history. Keep lines that start with #: git keeps them for -m and -F.
 msg=$(mktemp "${TMPDIR:-/tmp}/refuse-session-ids.XXXXXX") || exit 2
 trap 'rm -f "$msg"' EXIT HUP INT TERM
-awk '/^# -+ >8 -+$/ { skip = 1 } skip || /^#/ { next } { print }' "$1" >"$msg"
+awk '/^# -+ >8 -+$/ { skip = 1 } skip { next } { print }' "$1" >"$msg"
 
 # Match without regard to case: "Co-authored-by:" is how GitHub writes it.
 if grep -q -i -E -e 'claude\.ai/code/session' \
