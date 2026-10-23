@@ -9,6 +9,7 @@ tool (
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
+	golang.org/x/crypto v0.43.0
 	golang.org/x/text v0.43.0
 )
 
