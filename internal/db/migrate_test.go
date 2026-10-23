@@ -163,3 +163,43 @@ func TestMigrateRollsBackFailedFile(t *testing.T) {
 		t.Fatal("table a exists after a failed migration")
 	}
 }
+
+func TestMigrateRejectsDuplicateNumber(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.NewEmpty(t)
+	fsys := fstest.MapFS{
+		"0001_a.sql": {Data: []byte("create table a (id int);")},
+		"0002_a.sql": {Data: []byte("create table b (id int);")},
+		"0002_b.sql": {Data: []byte("create table c (id int);")},
+	}
+	_, err := db.MigrateFS(ctx, pool, fsys)
+	if err == nil || !strings.Contains(err.Error(), "0002_a.sql") || !strings.Contains(err.Error(), "0002_b.sql") {
+		t.Fatalf("want an error that names both files, got %v", err)
+	}
+	// Nothing ran, not even the unique file.
+	var n int
+	if err := pool.QueryRow(ctx, "select count(*) from pg_tables where tablename in ('a','b','c')").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("tables created = %d, err = %v; want 0", n, err)
+	}
+}
+
+func TestMigrateRefusesUnknownAppliedVersion(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.NewEmpty(t)
+	if _, err := db.MigrateFS(ctx, pool, twoFiles()); err != nil {
+		t.Fatal(err)
+	}
+	// An older binary: it knows 0001 only, and a new file 0003 is pending.
+	older := fstest.MapFS{
+		"0001_a.sql": twoFiles()["0001_a.sql"],
+		"0003_c.sql": {Data: []byte("create table c (id int);")},
+	}
+	_, err := db.MigrateFS(ctx, pool, older)
+	if err == nil || !strings.Contains(err.Error(), "0002_b.sql") {
+		t.Fatalf("want an error that names 0002_b.sql, got %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "select count(*) from pg_tables where tablename = 'c'").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("table c exists = %d, err = %v; want it absent", n, err)
+	}
+}

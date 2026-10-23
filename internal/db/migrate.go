@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -92,7 +93,23 @@ func MigrateFS(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) (applied []s
 		return nil, fmt.Errorf("db: read schema_migrations: %w", err)
 	}
 
-	// Check every applied file before the run changes anything.
+	// Check every applied version before the run changes anything. A version
+	// with no file means an older binary runs against a newer database, or
+	// someone deleted a migration.
+	known := make(map[string]bool, len(files))
+	for _, m := range files {
+		known[m.name] = true
+	}
+	var unknown []string
+	for version := range have {
+		if !known[version] {
+			unknown = append(unknown, version)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("db: the database has applied migration %s, which has no file", strings.Join(unknown, ", "))
+	}
 	for _, m := range files {
 		if sum, ok := have[m.name]; ok && sum != m.checksum {
 			return nil, fmt.Errorf("db: migration %s changed after it was applied", m.name)
@@ -152,6 +169,13 @@ func readMigrations(fsys fs.FS) ([]migration, error) {
 		files = append(files, migration{name: name, sql: string(data), checksum: hex.EncodeToString(sum[:])})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
+	// Sorted by name, files with one number are next to each other.
+	for i := 1; i < len(files); i++ {
+		if files[i-1].name[:4] == files[i].name[:4] {
+			return nil, fmt.Errorf("db: migrations %s and %s have the same number",
+				files[i-1].name, files[i].name)
+		}
+	}
 	return files, nil
 }
 
