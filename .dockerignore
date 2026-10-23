@@ -1,0 +1,13 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+.public-denylist
+.superpowers
+docs
+/gobb
+/dist
+*.test
+test.json
+test.err

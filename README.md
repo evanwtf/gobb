@@ -12,6 +12,29 @@ go test ./...
 uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
+## Run with Docker Compose
+
+The stack is gobb and PostgreSQL 16. gobb listens on `127.0.0.1` only. Put a reverse
+proxy in front of it.
+
+```sh
+cp .env.example .env
+# Set POSTGRES_PASSWORD in .env.
+docker compose up -d --build --wait
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+`gobb serve` applies the pending migrations at startup, then serves `GET /healthz`.
+It stops cleanly on SIGTERM. Set `GOBB_PORT` in `.env` if port 8080 is busy.
+
+The compose network uses the subnet `10.231.0.0/24`, so a reverse proxy on the host
+reaches gobb from `10.231.0.1`, the default in `GOBB_TRUSTED_PROXIES`. If the subnet
+collides with another network, change the subnet in `compose.yaml` and
+`GOBB_TRUSTED_PROXIES` together.
+
+To stop the stack and keep the data, run `docker compose down`. To delete the data
+too, run `docker compose down -v`.
+
 ## Status
 
 In design. There is no code yet. The design is in

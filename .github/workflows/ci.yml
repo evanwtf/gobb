@@ -126,3 +126,45 @@ jobs:
           rm -f "$RUNNER_TEMP/denylist" "$RUNNER_TEMP/commit-messages.txt"
           chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
           rm -rf "$GOMODCACHE" "$GOCACHE"
+
+  image:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 15
+    env:
+      # Every name carries the run ID: the runner is shared.
+      IMAGE: gobb:ci-${{ github.run_id }}
+      COMPOSE_PROJECT_NAME: gobb-ci-${{ github.run_id }}
+      # compose.yaml tags the image it builds as ghcr.io/evanwtf/gobb:$GOBB_VERSION.
+      GOBB_VERSION: ci-${{ github.run_id }}
+      POSTGRES_PASSWORD: ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Build the exact production target, then run it.
+      - name: Build the image and run it
+        run: |
+          docker build -t "$IMAGE" .
+          out=$(docker run --rm "$IMAGE" version)
+          echo "$out"
+          [ "$out" = "gobb 0.1.0" ]
+
+      # --wait returns once postgres and gobb both report healthy.
+      - name: Start the stack
+        run: |
+          docker compose -f compose.yaml -f .github/compose.ci.yaml up -d --build --wait
+          port=$(docker compose -f compose.yaml -f .github/compose.ci.yaml port gobb 8080)
+          curl -fsS "http://$port/healthz"
+
+      - name: Show the logs after a failure
+        if: failure()
+        run: docker compose -f compose.yaml -f .github/compose.ci.yaml logs --no-color || true
+
+      # Leave no containers, volumes, networks or images on the shared runner.
+      - name: Clean up
+        if: always()
+        run: |
+          docker compose -f compose.yaml -f .github/compose.ci.yaml down -v --remove-orphans || true
+          docker image rm "$IMAGE" "ghcr.io/evanwtf/gobb:$GOBB_VERSION" || true

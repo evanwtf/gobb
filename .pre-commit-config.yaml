@@ -26,6 +26,9 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: check-yaml
+        # --unsafe parses the syntax only. It accepts the !override and !reset
+        # tags in .github/compose.ci.yaml.
+        args: [--unsafe]
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: detect-private-key

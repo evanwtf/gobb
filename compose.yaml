@@ -1,0 +1,56 @@
+name: gobb
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: gobb
+      POSTGRES_DB: gobb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    command: ["postgres", "-c", "shared_buffers=64MB"]
+    volumes:
+      - gobb-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gobb -d gobb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  gobb:
+    # Pull the published image, or build it here with `docker compose build`.
+    image: ghcr.io/evanwtf/gobb:${GOBB_VERSION:-latest}
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GOBB_DSN: postgres://gobb:${POSTGRES_PASSWORD}@postgres:5432/gobb?sslmode=disable
+      GOBB_BASE_PATH: ${GOBB_BASE_PATH:-/}
+      GOBB_TRUSTED_PROXIES: ${GOBB_TRUSTED_PROXIES:-10.231.0.1/32}
+    ports:
+      - "127.0.0.1:${GOBB_PORT:-8080}:8080"
+    volumes:
+      - gobb-data:/var/lib/gobb
+    healthcheck:
+      test: ["CMD", "/usr/bin/gobb", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  gobb-pg:
+  gobb-data:
+
+# The default network has a fixed subnet, so a reverse proxy on the host always
+# reaches gobb from the gateway address 10.231.0.1. If this subnet collides with
+# another network, change it and GOBB_TRUSTED_PROXIES together.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.231.0.0/24
