@@ -1,0 +1,541 @@
+package markup
+
+import (
+	"html/template"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// renderSmileys is the smiley table that the render tests use.
+func renderSmileys() RenderContext {
+	return RenderContext{SmileyURL: func(code string) (string, bool) {
+		if code == ":)" {
+			return "/static/smilies/smile.gif", true
+		}
+		return "", false
+	}}
+}
+
+// renderHTML renders n with the test smiley table and returns the HTML.
+func renderHTML(n *Node) string { return string(Render(n, renderSmileys()).HTML) }
+
+// renderLi builds an li that holds one paragraph of text.
+func renderLi(s string) *Node { return el("li", nil, para(txt(s))) }
+
+// renderEmbed builds the one-element tree for an embed.
+func renderEmbed(tag, id string) *Node { return tree(el(tag, at("id", id))) }
+
+func TestRenderTable(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *Node
+		want string
+	}{
+		{"p", tree(para(txt("hi"))), `<p>hi</p>`},
+		{"br", tree(para(txt("a"), el("br", nil), txt("b"))), `<p>a<br>b</p>`},
+		{"h1", tree(el("h", at("level", "1"), txt("t"))), `<h3>t</h3>`},
+		{"h2", tree(el("h", at("level", "2"), txt("t"))), `<h4>t</h4>`},
+		{"h3", tree(el("h", at("level", "3"), txt("t"))), `<h5>t</h5>`},
+		{"h4", tree(el("h", at("level", "4"), txt("t"))), `<h6>t</h6>`},
+		{"h5", tree(el("h", at("level", "5"), txt("t"))), `<h6>t</h6>`},
+		{"h6", tree(el("h", at("level", "6"), txt("t"))), `<h6>t</h6>`},
+		{"h bad level", tree(el("h", at("level", "9"), txt("t"))), `<h6>t</h6>`},
+		{"hr", tree(el("hr", nil)), `<hr>`},
+		{"quote", tree(el("quote", nil, para(txt("q")))), `<blockquote><p>q</p></blockquote>`},
+		{"ul", tree(el("list", nil, renderLi("a"), renderLi("b"))),
+			`<ul><li><p>a</p></li><li><p>b</p></li></ul>`},
+		{"ol", tree(el("list", at("ordered", "true"), renderLi("a"))), `<ol><li><p>a</p></li></ol>`},
+		{"ol start", tree(el("list", at("ordered", "true", "start", "3"), renderLi("a"))),
+			`<ol start="3"><li><p>a</p></li></ol>`},
+		{"ul ignores start", tree(el("list", at("start", "3"), renderLi("a"))), `<ul><li><p>a</p></li></ul>`},
+		{"ol bad start", tree(el("list", at("ordered", "true", "start", `3" x="`), renderLi("a"))),
+			`<ol><li><p>a</p></li></ol>`},
+		{"pre", tree(el("pre", nil, txt("a<b\nc"))), "<pre class=\"code\"><code>a&lt;b\nc</code></pre>"},
+		{"pre lang", tree(el("pre", at("lang", "c++"), txt("x"))),
+			`<pre class="code"><code class="language-c++">x</code></pre>`},
+		{"pre bad lang", tree(el("pre", at("lang", `x" onclick="y`), txt("x"))),
+			`<pre class="code"><code>x</code></pre>`},
+		{"code", tree(para(el("code", nil, txt("x := 1")))), `<p><code>x := 1</code></p>`},
+		{"b i", tree(para(el("b", nil, txt("a")), el("i", nil, txt("b")))),
+			`<p><strong>a</strong><em>b</em></p>`},
+		{"url", tree(para(el("url", at("href", "https://example.com/a?b=c"), txt("link")))),
+			`<p><a href="https://example.com/a?b=c" rel="nofollow ugc noopener">link</a></p>`},
+		{"url display", tree(para(el("url", at("href", "https://example.com/", "display", "short"), txt("long")))),
+			`<p><a href="https://example.com/" rel="nofollow ugc noopener">short</a></p>`},
+		{"url site path", tree(para(el("url", at("href", "/t/5"), txt("t")))),
+			`<p><a href="/t/5" rel="nofollow ugc noopener">t</a></p>`},
+		{"url keeps http", tree(para(el("url", at("href", "http://example.com/"), txt("t")))),
+			`<p><a href="http://example.com/" rel="nofollow ugc noopener">t</a></p>`},
+		{"url mailto", tree(para(el("url", at("href", "mailto:a@example.com"), txt("t")))),
+			`<p><a href="mailto:a@example.com" rel="nofollow ugc noopener">t</a></p>`},
+		{"email", tree(para(el("email", at("address", "a@example.com"), txt("mail")))),
+			`<p><a href="mailto:a@example.com">mail</a></p>`},
+		{"email no children", tree(para(el("email", at("address", "a@example.com")))),
+			`<p><a href="mailto:a@example.com">a@example.com</a></p>`},
+		{"img", tree(para(el("img", at("src", "https://example.com/a.png", "alt", "cat")))),
+			`<p><img src="https://example.com/a.png" alt="cat" loading="lazy" class="post-img"></p>`},
+		{"img no alt", tree(para(el("img", at("src", "/f/a.png")))),
+			`<p><img src="/f/a.png" alt="" loading="lazy" class="post-img"></p>`},
+		{"spoiler", tree(para(el("spoiler", nil, txt("s")))), `<p><span class="spoiler" tabindex="0">s</span></p>`},
+		{"smiley", tree(para(el("smiley", at("code", ":)")))),
+			`<p><img class="smiley" src="/static/smilies/smile.gif" alt=":)"></p>`},
+		{"smiley unknown", tree(para(el("smiley", at("code", ":x:")))), `<p>:x:</p>`},
+		{"unknown element", tree(para(el("marquee", at("onclick", "x()"), txt("hi"), el("b", nil, txt("!"))))),
+			`<p>hi<strong>!</strong></p>`},
+		{"unknown block", tree(el("section", at("class", "x"), para(txt("a")))), `<p>a</p>`},
+		{"text at root", tree(txt("loose")), `loose`},
+		{"empty root", tree(), ``},
+
+		{"youtube", renderEmbed("youtube", "M7lc1UVf-VE"),
+			`<iframe class="embed youtube" src="https://www.youtube-nocookie.com/embed/M7lc1UVf-VE" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`},
+		{"vimeo", renderEmbed("vimeo", "76979871"),
+			`<iframe class="embed vimeo" src="https://player.vimeo.com/video/76979871" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`},
+		{"tweet", renderEmbed("tweet", "20"),
+			`<blockquote class="twitter-tweet"><a href="https://x.com/i/status/20">View post on X</a></blockquote>`},
+		{"instagram", renderEmbed("instagram", "CxYz_12-ab"),
+			`<blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/CxYz_12-ab/"><a href="https://www.instagram.com/p/CxYz_12-ab/">View on Instagram</a></blockquote>`},
+		{"reddit", renderEmbed("reddit", "programming/abc123"),
+			`<blockquote class="reddit-embed-bq"><a href="https://www.reddit.com/r/programming/comments/abc123/">View post on Reddit</a></blockquote>`},
+		{"tiktok", renderEmbed("tiktok", "6718335390845095173"),
+			`<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/6718335390845095173" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`},
+		{"threads", renderEmbed("threads", "zuck/C04flh-M8ii"),
+			`<blockquote class="text-post-media" data-text-post-permalink="https://www.threads.com/@zuck/post/C04flh-M8ii"><a href="https://www.threads.com/@zuck/post/C04flh-M8ii">View on Threads</a></blockquote>`},
+		{"spotify", renderEmbed("spotify", "track/4cOdK2wGLETKBW3PvgPWqT"),
+			`<iframe class="embed spotify" src="https://open.spotify.com/embed/track/4cOdK2wGLETKBW3PvgPWqT" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`},
+		{"soundcloud track", renderEmbed("soundcloud", "forss/flickermood"),
+			`<iframe class="embed soundcloud" src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/forss/flickermood" title="SoundCloud" loading="lazy"></iframe>`},
+		{"soundcloud set", renderEmbed("soundcloud", "forss/sets/soulhack"),
+			`<iframe class="embed soundcloud" src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/forss/sets/soulhack" title="SoundCloud" loading="lazy"></iframe>`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := renderHTML(tc.in); got != tc.want {
+				t.Errorf("HTML mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderEmbedsAlwaysLazyAndTitled(t *testing.T) {
+	ids := map[string]string{
+		"youtube": "M7lc1UVf-VE", "vimeo": "76979871", "tiktok": "6718335390845095173",
+		"spotify": "track/4cOdK2wGLETKBW3PvgPWqT", "soundcloud": "forss/flickermood",
+	}
+	for tag, id := range ids {
+		out := renderHTML(renderEmbed(tag, id))
+		if !strings.Contains(out, ` loading="lazy"`) || !strings.Contains(out, ` title="`) {
+			t.Errorf("%s: iframe lacks loading or title: %s", tag, out)
+		}
+		if strings.Contains(out, "sandbox") {
+			t.Errorf("%s: sandbox attribute present: %s", tag, out)
+		}
+	}
+}
+
+func TestRenderEscapes(t *testing.T) {
+	got := renderHTML(tree(para(txt(`<script>&"`))))
+	if want := `<p>&lt;script&gt;&amp;&#34;</p>`; got != want {
+		t.Errorf("text: got %s, want %s", got, want)
+	}
+	hostile := `"><script>alert(1)</script>`
+	esc := `&#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;`
+	checks := map[string]*Node{
+		"img alt":     tree(para(el("img", at("src", "/a.png", "alt", hostile)))),
+		"url display": tree(para(el("url", at("href", "/a", "display", hostile)))),
+		"smiley code": tree(para(el("smiley", at("code", hostile)))),
+		"pre text":    tree(el("pre", nil, txt(hostile))),
+		"img bad src": tree(para(el("img", at("src", "javascript:x", "alt", hostile)))),
+	}
+	for name, n := range checks {
+		out := renderHTML(n)
+		if strings.Contains(out, "<script") || !strings.Contains(out, esc) {
+			t.Errorf("%s: output not escaped: %s", name, out)
+		}
+	}
+}
+
+// TestRenderEmitsWhatItChecked pins the rule that the attribute holds the
+// decoded value that passed the check, escaped once.
+func TestRenderEmitsWhatItChecked(t *testing.T) {
+	cases := []struct{ name, href, want string }{
+		{"entity quote is decoded then escaped", `https://example.com/?a=&quot;onmouseover=x`,
+			`href="https://example.com/?a=&#34;onmouseover=x"`},
+		{"amp entity", `https://example.com/?a=1&amp;b=2`, `href="https://example.com/?a=1&amp;b=2"`},
+		{"padding trimmed", "  https://example.com/x \n", `href="https://example.com/x"`},
+		{"entity padding trimmed", "&#32;https://example.com/x", `href="https://example.com/x"`},
+		{"entity colon", `https&#58;//example.com/x`, `href="https://example.com/x"`},
+	}
+	for _, tc := range cases {
+		out := renderHTML(tree(para(el("url", at("href", tc.href), txt("l")))))
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("%s: got %s, want it to contain %s", tc.name, out, tc.want)
+		}
+	}
+	out := renderHTML(tree(para(el("img", at("src", "&#32;http&#58;//example.com/a.png"), el("b", nil)))))
+	if !strings.Contains(out, `src="https://example.com/a.png"`) {
+		t.Errorf("img src: got %s", out)
+	}
+}
+
+func TestRenderRejectsDangerousSchemes(t *testing.T) {
+	bad := []string{
+		"javascript:alert(1)", "JaVaScRiPt:x", "data:text/html,x", "vbscript:x", "&#106;avascript:x",
+		"&amp;#106;avascript:x", "java\tscript:x", " javascript:x", "//evil.example/x", "/\\evil.example",
+		"file:///etc/passwd", "",
+	}
+	for _, v := range bad {
+		for _, tc := range []struct{ name, attr, fallback string }{
+			{"url", "href", "TXT"}, {"img", "src", "ALT"}, {"email", "address", "TXT"},
+		} {
+			var n *Node
+			switch tc.name {
+			case "url":
+				n = tree(para(el("url", at("href", v), txt("TXT"))))
+			case "img":
+				n = tree(para(el("img", at("src", v, "alt", "ALT"))))
+			case "email":
+				n = tree(para(el("email", at("address", v), txt("TXT"))))
+			}
+			out := renderHTML(n)
+			if strings.Contains(out, "href") || strings.Contains(out, "src") || strings.Contains(out, "<a") ||
+				strings.Contains(out, "<img") {
+				t.Errorf("%s %q: output has a link or image: %s", tc.name, v, out)
+			}
+			if !strings.Contains(out, tc.fallback) {
+				t.Errorf("%s %q: fallback %q missing: %s", tc.name, v, tc.fallback, out)
+			}
+		}
+	}
+	// mailto: is a link target but never an image source.
+	out := renderHTML(tree(para(el("img", at("src", "mailto:a@b.example", "alt", "ALT")))))
+	if strings.Contains(out, "src") {
+		t.Errorf("img with mailto source: %s", out)
+	}
+	// A smiley table that returns a bad URL gives the code as text.
+	rc := RenderContext{SmileyURL: func(string) (string, bool) { return "javascript:x", true }}
+	if out := string(Render(tree(para(el("smiley", at("code", ":)")))), rc).HTML); strings.Contains(out, "src") {
+		t.Errorf("smiley with bad URL: %s", out)
+	}
+	// A nil SmileyURL is allowed.
+	if out := string(Render(tree(para(el("smiley", at("code", ":)")))), RenderContext{}).HTML); out != "<p>:)</p>" {
+		t.Errorf("nil SmileyURL: %s", out)
+	}
+}
+
+// TestMailtoHref tests the encoder alone, so it holds whatever the address
+// rule accepts.
+func TestMailtoHref(t *testing.T) {
+	cases := []struct{ addr, want string }{
+		{"a@b.example", "mailto:a@b.example"},
+		{"a@b.example?cc=x", "mailto:a@b.example%3Fcc=x"},
+		{"a@b.example#frag", "mailto:a@b.example%23frag"},
+		{"a&b@c.example", "mailto:a%26b@c.example"},
+		{"a%41@c.example", "mailto:a%2541@c.example"},
+		{"a+tag@c.example", "mailto:a+tag@c.example"},
+		{"a@b.example/x", "mailto:a@b.example%2Fx"},
+	}
+	for _, tc := range cases {
+		if got := mailtoHref(tc.addr); got != tc.want {
+			t.Errorf("mailtoHref(%q) = %q, want %q", tc.addr, got, tc.want)
+		}
+		if got := mailtoHref(tc.addr); strings.ContainsAny(got, "?#&") {
+			t.Errorf("mailtoHref(%q) = %q holds ?, # or &", tc.addr, got)
+		}
+	}
+}
+
+// TestRenderEmailNoRawDelimiter checks the whole path. Whether the address rule
+// accepts these values or not, the output has no raw "?" "#" or "&" in a
+// mailto: link, and no link carries a header.
+func TestRenderEmailNoRawDelimiter(t *testing.T) {
+	for _, addr := range []string{
+		"a@b.example?cc=x", "a@b.example#frag", "a&b@c.example", "a%41@c.example", "a@b.example?bcc=x&subject=y",
+	} {
+		out := renderHTML(tree(para(el("email", at("address", addr), txt("m")))))
+		if strings.Contains(out, "?") || strings.Contains(out, "#frag") {
+			t.Errorf("%q: raw delimiter in %s", addr, out)
+		}
+		if i := strings.Index(out, `href="`); i >= 0 {
+			href := out[i+6:]
+			href = href[:strings.Index(href, `"`)]
+			if strings.ContainsAny(href, "?#") || strings.Contains(href, "&") {
+				t.Errorf("%q: raw delimiter in href %s", addr, href)
+			}
+		}
+	}
+}
+
+func TestRenderHTTPImageUpgraded(t *testing.T) {
+	cases := []struct{ src, want string }{
+		{"http://img.example/a.png", `src="https://img.example/a.png"`},
+		{"HTTP://img.example/a.png", `src="https://img.example/a.png"`},
+		{"http&#58;//img.example/a.png", `src="https://img.example/a.png"`},
+		{"https://img.example/a.png", `src="https://img.example/a.png"`},
+		{"/f/a.png", `src="/f/a.png"`},
+		{"/f/http://x.png", `src="/f/http://x.png"`},
+	}
+	for _, tc := range cases {
+		out := renderHTML(tree(para(el("img", at("src", tc.src, "alt", "a")))))
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("%q: got %s, want it to contain %s", tc.src, out, tc.want)
+		}
+	}
+}
+
+func TestRenderOrigins(t *testing.T) {
+	n := tree(
+		renderEmbed("youtube", "M7lc1UVf-VE").Children[0],
+		renderEmbed("youtube", "dQw4w9WgXcQ").Children[0],
+		renderEmbed("tweet", "20").Children[0],
+	)
+	r := Render(n, RenderContext{})
+	wantFrame := []string{"https://platform.twitter.com", "https://www.youtube-nocookie.com"}
+	wantScript := []string{"https://platform.x.com"}
+	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
+		t.Errorf("FrameSrc = %v, want %v", r.FrameSrc, wantFrame)
+	}
+	if !reflect.DeepEqual(r.ScriptSrc, wantScript) {
+		t.Errorf("ScriptSrc = %v, want %v", r.ScriptSrc, wantScript)
+	}
+}
+
+func TestRenderOriginsEveryEmbed(t *testing.T) {
+	ids := []struct{ tag, id string }{
+		{"youtube", "M7lc1UVf-VE"}, {"vimeo", "76979871"}, {"tweet", "20"}, {"instagram", "CxYz_12-ab"},
+		{"reddit", "programming/abc123"}, {"tiktok", "6718335390845095173"}, {"threads", "zuck/C04flh-M8ii"},
+		{"spotify", "track/4cOdK2wGLETKBW3PvgPWqT"}, {"soundcloud", "forss/flickermood"},
+	}
+	var kids []*Node
+	for _, e := range ids {
+		kids = append(kids, el(e.tag, at("id", e.id)))
+	}
+	r := Render(tree(kids...), RenderContext{})
+	wantFrame := []string{
+		"https://embed.reddit.com", "https://open.spotify.com", "https://platform.twitter.com",
+		"https://player.vimeo.com", "https://w.soundcloud.com", "https://www.instagram.com",
+		"https://www.threads.com", "https://www.tiktok.com", "https://www.youtube-nocookie.com",
+	}
+	wantScript := []string{
+		"https://embed.reddit.com", "https://platform.x.com", "https://www.instagram.com", "https://www.threads.com",
+	}
+	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
+		t.Errorf("FrameSrc = %v\nwant %v", r.FrameSrc, wantFrame)
+	}
+	if !reflect.DeepEqual(r.ScriptSrc, wantScript) {
+		t.Errorf("ScriptSrc = %v\nwant %v", r.ScriptSrc, wantScript)
+	}
+}
+
+func TestRenderOriginsNoneForNoEmbed(t *testing.T) {
+	r := Render(tree(para(txt("hi")), renderEmbed("youtube", "not an id").Children[0]), RenderContext{})
+	if len(r.FrameSrc) != 0 || len(r.ScriptSrc) != 0 {
+		t.Errorf("origins for a tree with no valid embed: %v %v", r.FrameSrc, r.ScriptSrc)
+	}
+}
+
+func TestRenderInvalidEmbedRendersNothing(t *testing.T) {
+	bad := map[string]string{
+		"youtube": `x"><script>`, "vimeo": "abc", "tweet": "javascript:x", "instagram": "a b",
+		"reddit": "only-one", "tiktok": "12x", "threads": "zuck", "spotify": "track/short",
+		"soundcloud": "forss/sets", "": "x", "unknownembed": "x",
+	}
+	for tag, id := range bad {
+		if tag == "" || tag == "unknownembed" {
+			continue
+		}
+		if out := renderHTML(renderEmbed(tag, id)); out != "" {
+			t.Errorf("%s %q: got %s, want nothing", tag, id, out)
+		}
+	}
+	if out := renderHTML(tree(el("youtube", nil))); out != "" {
+		t.Errorf("embed with no id: %s", out)
+	}
+}
+
+func TestRenderEmbedUsesCanonicalID(t *testing.T) {
+	out := renderHTML(renderEmbed("youtube", "https://www.youtube.com/watch?v=M7lc1UVf-VE&x=1"))
+	if !strings.Contains(out, `src="https://www.youtube-nocookie.com/embed/M7lc1UVf-VE"`) {
+		t.Errorf("URL-form ID not reduced to the canonical ID: %s", out)
+	}
+}
+
+func TestRenderUnknownKind(t *testing.T) {
+	if out := renderHTML(tree(&Node{Kind: Kind(99), Children: []*Node{txt("hidden")}}, para(txt("shown")))); out != "<p>shown</p>" {
+		t.Errorf("unknown kind: got %s", out)
+	}
+	if out := renderHTML(&Node{Kind: Kind(7), Children: []*Node{txt("hidden")}}); out != "" {
+		t.Errorf("unknown kind at the top: got %s", out)
+	}
+	if out := renderHTML(tree(nil, para(txt("a")), nil)); out != "<p>a</p>" {
+		t.Errorf("nil children: got %s", out)
+	}
+	if r := Render(nil, RenderContext{}); r.HTML != "" || r.Text != "" {
+		t.Errorf("nil root: got %+v", r)
+	}
+	if out := renderHTML(tree(para(&Node{Kind: Root, Children: []*Node{txt("inner")}}))); out != "<p></p>" {
+		t.Errorf("root node inside the tree: got %s", out)
+	}
+}
+
+func TestRenderTextExcludesQuotes(t *testing.T) {
+	n := tree(
+		para(txt("before")),
+		el("quote", nil, para(txt("quoted")), el("quote", nil, para(txt("deep")))),
+		renderEmbed("youtube", "M7lc1UVf-VE").Children[0],
+		para(txt("after")),
+	)
+	r := Render(n, RenderContext{})
+	if want := "before\nafter"; r.Text != want {
+		t.Errorf("Text = %q, want %q", r.Text, want)
+	}
+	if !strings.Contains(string(r.HTML), "quoted") {
+		t.Errorf("quote missing from HTML: %s", r.HTML)
+	}
+}
+
+func TestRenderText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *Node
+		want string
+	}{
+		{"blocks join with newline", tree(para(txt("a")), el("h", at("level", "1"), txt("b")), para(txt("c"))), "a\nb\nc"},
+		{"br is a newline", tree(para(txt("a"), el("br", nil), txt("b"))), "a\nb"},
+		{"inline joins with no space", tree(para(txt("a"), el("b", nil, txt("b")), txt("c"))), "abc"},
+		{"list items", tree(el("list", nil, renderLi("a"), renderLi("b"))), "a\nb"},
+		{"nested list", tree(el("list", nil, el("li", nil, para(txt("a")), el("list", nil, renderLi("b"))), renderLi("c"))), "a\nb\nc"},
+		{"pre", tree(para(txt("a")), el("pre", nil, txt("x\ny")), para(txt("b"))), "a\nx\ny\nb"},
+		{"hr does not add text", tree(para(txt("a")), el("hr", nil), para(txt("b"))), "a\nb"},
+		{"url display", tree(para(el("url", at("href", "/a", "display", "shown"), txt("hidden")))), "shown"},
+		{"rejected link keeps text", tree(para(el("url", at("href", "javascript:x"), txt("kept")))), "kept"},
+		{"spoiler", tree(para(el("spoiler", nil, txt("secret")))), "secret"},
+		{"unknown element", tree(para(el("zzz", nil, txt("in")))), "in"},
+		{"no double newline", tree(para(txt("a"), el("br", nil)), para(txt("b"))), "a\nb"},
+		{"quote in a list item", tree(el("list", nil, el("li", nil, para(txt("a")), el("quote", nil, para(txt("q")))))), "a"},
+		{"empty", tree(), ""},
+	}
+	for _, tc := range cases {
+		if got := Render(tc.in, RenderContext{}).Text; got != tc.want {
+			t.Errorf("%s: Text = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRenderTightList(t *testing.T) {
+	tight := tree(el("list", at("tight", "true"), renderLi("a"), renderLi("b")))
+	if got, want := renderHTML(tight), `<ul><li>a</li><li>b</li></ul>`; got != want {
+		t.Errorf("tight: got %s, want %s", got, want)
+	}
+	loose := tree(el("list", nil, renderLi("a"), renderLi("b")))
+	if got, want := renderHTML(loose), `<ul><li><p>a</p></li><li><p>b</p></li></ul>`; got != want {
+		t.Errorf("loose: got %s, want %s", got, want)
+	}
+	// A paragraph in a quote in a tight item keeps its p. A nested loose list
+	// inside a tight list keeps its own paragraphs.
+	nested := tree(el("list", at("tight", "true"),
+		el("li", nil, para(txt("a")), el("list", nil, renderLi("b")), el("quote", nil, para(txt("q"))))))
+	want := `<ul><li>a<ul><li><p>b</p></li></ul><blockquote><p>q</p></blockquote></li></ul>`
+	if got := renderHTML(nested); got != want {
+		t.Errorf("nested: got %s, want %s", got, want)
+	}
+	ordered := tree(el("list", at("tight", "true", "ordered", "true", "start", "2"), renderLi("a")))
+	if got, want := renderHTML(ordered), `<ol start="2"><li>a</li></ol>`; got != want {
+		t.Errorf("ordered: got %s, want %s", got, want)
+	}
+}
+
+// deepChain builds a chain of total nested elements named name, ending in text.
+func deepChain(name string, total int) *Node {
+	leaf := txt("x")
+	cur := leaf
+	for i := 0; i < total; i++ {
+		cur = el(name, nil, cur)
+	}
+	return tree(cur)
+}
+
+func TestRenderDeepChainDoesNotOverflow(t *testing.T) {
+	const depth = 100_000
+	if Validate(deepChain("b", depth)) == nil {
+		t.Fatal("test premise: Validate must reject the chain")
+	}
+	for _, name := range []string{"b", "quote", "li", "list", "unknown", "spoiler"} {
+		r := Render(deepChain(name, depth), RenderContext{})
+		if len(r.HTML) == 0 && name != "li" {
+			t.Errorf("%s: empty HTML", name)
+		}
+		if name == "b" {
+			s := string(r.HTML)
+			if strings.Count(s, "<strong>") != depth || strings.Count(s, "</strong>") != depth {
+				t.Errorf("b: unbalanced tags (%d open, %d close)", strings.Count(s, "<strong>"), strings.Count(s, "</strong>"))
+			}
+			if r.Text != "x" {
+				t.Errorf("b: Text = %q", r.Text)
+			}
+		}
+	}
+}
+
+func TestRenderCycleTerminates(t *testing.T) {
+	loop := el("b", nil)
+	loop.Children = []*Node{loop}
+	s := string(Render(tree(loop), RenderContext{}).HTML)
+	if strings.Count(s, "<strong>") != strings.Count(s, "</strong>") {
+		t.Errorf("cycle: unbalanced output")
+	}
+	// A node that appears many times (a wide DAG) also stops at the cap.
+	shared := el("b", nil, txt("x"))
+	wide := tree(para(shared))
+	for i := 0; i < 20; i++ {
+		p := el("p", nil)
+		for j := 0; j < 1000; j++ {
+			p.Children = append(p.Children, shared)
+		}
+		wide.Children = append(wide.Children, p)
+	}
+	if got := string(Render(wide, RenderContext{}).HTML); !strings.Contains(got, "<strong>x</strong>") {
+		t.Errorf("wide tree rendered nothing useful")
+	}
+}
+
+func TestRenderNeverEmitsRawScript(t *testing.T) {
+	n := tree(
+		para(txt("<script>alert(1)</script>"), el("b", nil, txt("<img src=x onerror=y>"))),
+		el("pre", at("lang", "x"), txt("</code></pre><script>")),
+		el("zzz", at("href", "javascript:x"), txt("<svg onload=x>")),
+	)
+	out := renderHTML(n)
+	for _, bad := range []string{"<script", "<img src=x", "<svg", "</code></pre><script"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output contains %q: %s", bad, out)
+		}
+	}
+}
+
+func TestRenderHTMLType(t *testing.T) {
+	var _ template.HTML = Render(tree(), RenderContext{}).HTML
+}
+
+func FuzzRender(f *testing.F) {
+	seeds := []string{
+		`{"k":0,"c":[{"k":2,"n":"p","c":[{"k":1,"t":"hi"}]}]}`,
+		`{"k":0,"c":[{"k":2,"n":"p","c":[{"k":2,"n":"url","a":{"href":"javascript:x"},"c":[{"k":1,"t":"x"}]}]}]}`,
+		`{"k":0,"c":[{"k":2,"n":"youtube","a":{"id":"\"><script>"}}]}`,
+		`{"k":0,"c":[{"k":2,"n":"email","a":{"address":"a@b?c#d"}}]}`,
+		`{"k":9,"c":[{"k":2,"n":"img","a":{"src":"&#106;avascript:x"}}]}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		n, err := Decode(data)
+		if err != nil {
+			return
+		}
+		r := Render(n, renderSmileys())
+		if strings.Contains(string(r.HTML), "<script") {
+			t.Fatalf("raw script tag in output: %s", r.HTML)
+		}
+	})
+}

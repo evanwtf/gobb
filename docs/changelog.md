@@ -12,3 +12,4 @@
 - Add `password.VerifyLegacy` for bcrypt, argon2id and chain hashes from the imported board, with the portable-hash digest and a strict argon2id PHC parser.
 - Rename the post and PM flags to `enable_markdown` and `enable_autolink`, and the permissions to `post.markdown` and `pm.markdown`. Drop the `tag_aliases` table.
 - Add `password.Hash` and `password.Verify` for gobb's own argon2id hashes, with a signal to rehash legacy hashes and hashes with old parameters.
+- Add `markup.Render`: an allowlist renderer that turns a tree into HTML, checks each `href` and `src` again and emits the value it checked, renders the nine embeds, and reports the frame and script origins they need.
