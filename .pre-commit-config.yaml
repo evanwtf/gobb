@@ -50,6 +50,6 @@ repos:
         pass_filenames: false
       - id: refuse-session-ids
         name: refuse-session-ids
-        entry: scripts/refuse-session-ids.sh
+        entry: scripts/refuse-session-ids.sh --commit-msg
         language: script
         stages: [commit-msg]

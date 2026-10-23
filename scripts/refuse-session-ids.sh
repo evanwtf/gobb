@@ -1,19 +1,32 @@
 #!/bin/sh
 # Refuse a commit message that carries an agent session link, ID or trailer.
-# Usage: refuse-session-ids.sh <commit-msg-file>
-# Exit status: 0 clean, 1 hit.
+# Usage: refuse-session-ids.sh [--commit-msg] <file>
+#   Plain mode scans the whole file. Use it on a log of many commits: one
+#   scissors line in a message must not hide the rest of the log.
+#   With --commit-msg, the file is one commit message from git. The script drops
+#   the scissors line and everything after it (the verbose diff), which never
+#   reaches history. It keeps lines that start with #: git keeps them for -m
+#   and -F.
+# Exit status: 0 clean, 1 hit, 2 usage error.
 set -u
 
+msgmode=0
+if [ "${1:-}" = "--commit-msg" ]; then
+	msgmode=1
+	shift
+fi
 if [ "$#" -ne 1 ]; then
-	echo "usage: refuse-session-ids.sh <commit-msg-file>" >&2
+	echo "usage: refuse-session-ids.sh [--commit-msg] <file>" >&2
 	exit 2
 fi
 
-# Drop the scissors line and everything after it (the verbose diff), which never
-# reaches history. Keep lines that start with #: git keeps them for -m and -F.
 msg=$(mktemp "${TMPDIR:-/tmp}/refuse-session-ids.XXXXXX") || exit 2
 trap 'rm -f "$msg"' EXIT HUP INT TERM
-awk '/^# -+ >8 -+$/ { skip = 1 } skip { next } { print }' "$1" >"$msg"
+if [ "$msgmode" = 1 ]; then
+	awk '/^# -+ >8 -+$/ { skip = 1 } skip { next } { print }' "$1" >"$msg"
+else
+	cat -- "$1" >"$msg"
+fi
 
 # Match without regard to case: "Co-authored-by:" is how GitHub writes it.
 if grep -q -i -E -e 'claude\.ai/code/session' \

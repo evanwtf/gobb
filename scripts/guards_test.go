@@ -229,22 +229,31 @@ func TestCheckPublicCleanRepo(t *testing.T) {
 
 func TestRefuseSessionIDs(t *testing.T) {
 	id := strings.Repeat("a1B2", 6) // 24 made-up characters
+	scissors := "# " + strings.Repeat("-", 24) + " >8 " + strings.Repeat("-", 24)
+	trailer := "Claude-" + "Session: abc\n"
+	msgMode := []string{"--commit-msg"}
 	cases := []struct {
 		name string
+		args []string // flags before the file name
 		msg  string
 		want int
 	}{
-		{"url", "repo: x\n\nhttps://claude." + "ai/code/session_" + id + "\n", 1},
-		{"trailer", "repo: x\n\nClaude-" + "Session: abc\n", 1},
-		{"coauthor", "repo: x\n\nCo-Authored-" + "By: Claude <noreply@example.invalid>\n", 1},
-		{"bare token", "repo: x\n\nsession" + "_" + id + "\n", 1},
-		{"short word", "fix session_store\n", 0},
-		{"lower trailer", "repo: x\n\nclaude-" + "session: abc\n", 1},
-		{"github casing", "repo: x\n\nCo-authored-" + "by: Claude <noreply@example.invalid>\n", 1},
-		{"comment line", "repo: x\n\n# Claude-" + "Session: abc\n", 1},
-		{"verbose diff", "repo: x\n\n# " + strings.Repeat("-", 24) + " >8 " + strings.Repeat("-", 24) +
-			"\n-Claude-" + "Session: abc\n", 0},
-		{"person", "repo: x\n\nCo-Authored-" + "By: Pat Example <pat@example.invalid>\n", 0},
+		{"url", nil, "repo: x\n\nhttps://claude." + "ai/code/session_" + id + "\n", 1},
+		{"trailer", nil, "repo: x\n\n" + trailer, 1},
+		{"coauthor", nil, "repo: x\n\nCo-Authored-" + "By: Claude <noreply@example.invalid>\n", 1},
+		{"bare token", nil, "repo: x\n\nsession" + "_" + id + "\n", 1},
+		{"short word", nil, "fix session_store\n", 0},
+		{"lower trailer", nil, "repo: x\n\nclaude-" + "session: abc\n", 1},
+		{"github casing", nil, "repo: x\n\nCo-authored-" + "by: Claude <noreply@example.invalid>\n", 1},
+		{"comment line", nil, "repo: x\n\n# " + trailer, 1},
+		{"person", nil, "repo: x\n\nCo-Authored-" + "By: Pat Example <pat@example.invalid>\n", 0},
+		// Plain mode scans a whole log. A scissors line must not hide what follows.
+		{"plain: scissors then trailer", nil, "abc\nrepo: x\n\n" + scissors + "\n-x\n\ndef\nrepo: y\n\n" + trailer, 1},
+		{"plain: trailer then scissors", nil, "abc\nrepo: x\n\n" + trailer + scissors + "\n", 1},
+		// --commit-msg mode drops the verbose diff below the scissors line.
+		{"msg: trailer only below scissors", msgMode, "repo: x\n\n" + scissors + "\n-" + trailer, 0},
+		{"msg: trailer above scissors", msgMode, "repo: x\n\n" + trailer + scissors + "\n", 1},
+		{"msg: trailer", msgMode, "repo: x\n\n" + trailer, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -252,7 +261,8 @@ func TestRefuseSessionIDs(t *testing.T) {
 			if err := os.WriteFile(msg, []byte(c.msg), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			out, code := run(t, t.TempDir(), nil, "refuse-session-ids.sh", msg)
+			args := append(append([]string{}, c.args...), msg)
+			out, code := run(t, t.TempDir(), nil, "refuse-session-ids.sh", args...)
 			if code != c.want {
 				t.Fatalf("exit %d, want %d\n%s", code, c.want, out)
 			}

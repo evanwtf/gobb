@@ -22,13 +22,14 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 15
-    # The official image has Go and a C compiler, so the race detector always runs.
-    container: golang:1.27-bookworm
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: gobb
+        ports:
+          # A random host port: the runner is shared.
+          - "5432"
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -39,6 +40,8 @@ jobs:
         with:
           # The commit-message scan reads the whole history.
           fetch-depth: 0
+          # No step needs git credentials, and branch code runs later.
+          persist-credentials: false
 
       - name: Scope the Go caches to this run
         run: |
@@ -47,9 +50,10 @@ jobs:
             echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           } >> "$GITHUB_ENV"
 
-      # The image's Go (1.27, GOTOOLCHAIN=local) satisfies go.mod, so no setup-go.
-      - name: Trust the checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
 
       - name: Public-repo guards
         env:
@@ -60,6 +64,8 @@ jobs:
             exit 1
           fi
           umask 077
+          # Branch code runs in later steps. Do not leave the list on disk.
+          trap 'rm -f "$RUNNER_TEMP/denylist"' EXIT
           printf '%s\n' "$PUBLIC_DENYLIST" > "$RUNNER_TEMP/denylist"
           status=0
           DENYLIST_FILE="$RUNNER_TEMP/denylist" sh scripts/check-public.sh || status=$?
@@ -67,6 +73,7 @@ jobs:
           msgs="$RUNNER_TEMP/commit-messages.txt"
           git log --format='%H%n%B' > "$msgs"
           DENYLIST_FILE="$RUNNER_TEMP/denylist" sh scripts/check-public.sh "$msgs" || status=$?
+          # Plain mode: a scissors line in one message must not hide the rest.
           sh scripts/refuse-session-ids.sh "$msgs" || status=$?
           echo "guards: tree and commit messages scanned, status $status"
           exit "$status"
@@ -75,10 +82,13 @@ jobs:
         run: |
           status=0
           note() { [ "$status" -ne 0 ] || status=$1; }
-          out=$(gofmt -l .)
-          if [ -n "$out" ]; then
-            echo "gofmt: these files need formatting:"
+          # The shell runs with -e. Capture each status so no tool stops the rest.
+          fmt_status=0
+          out=$(gofmt -l . 2>&1) || fmt_status=$?
+          if [ "$fmt_status" -ne 0 ] || [ -n "$out" ]; then
+            echo "gofmt: these files need formatting, or gofmt failed:"
             echo "$out"
+            note "$fmt_status"
             note 1
           fi
           go vet ./... || note $?
@@ -88,7 +98,7 @@ jobs:
 
       - name: Test
         env:
-          GOBB_TEST_DATABASE_URL: postgres://postgres:gobb@postgres:5432/postgres?sslmode=disable
+          GOBB_TEST_DATABASE_URL: postgres://postgres:gobb@localhost:${{ job.services.postgres.ports['5432'] }}/postgres?sslmode=disable
         run: |
           status=0
           go test -race -json ./... > test.json 2> test.err || status=$?
@@ -109,11 +119,10 @@ jobs:
           echo "tests: $(grep -c '"Action":"pass"' test.json) pass events, no skips"
           exit "$status"
 
-      # The container runs as root. Leave nothing the runner user cannot delete.
+      # The module cache is read-only; make it writable so rm can remove it.
       - name: Clean up
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/denylist"
+          rm -f "$RUNNER_TEMP/denylist" "$RUNNER_TEMP/commit-messages.txt"
           chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
           rm -rf "$GOMODCACHE" "$GOCACHE"
-          chown -R --reference="$RUNNER_TEMP" "$RUNNER_TEMP" "$GITHUB_WORKSPACE"

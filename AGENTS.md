@@ -22,6 +22,10 @@ secret-manager item names. This covers files, commit messages, issues, PRs and
 comments. Describe a deployment by its role ("the production host"), not its
 address.
 
+Never approve a workflow run for a pull request from a fork. A maintainer pushes
+the branch to this repo instead. The shared self-hosted runner runs the code of
+any workflow it is given, and a fork PR brings its own workflow file.
+
 Do not commit forum data: no database dumps, no attachments, no avatars, no real
 usernames or posts. Tests use fixtures that you write by hand.
 
