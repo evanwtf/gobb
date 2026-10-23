@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the gobb repo with its guards and CI, the database layer and the release-1 schema, the cores every later plan depends on (legacy and gobb password checks, permission resolution, the public `bbcode` package), and a container image that runs under Docker Compose.
+**Goal:** Stand up the gobb repo with its guards and CI, the database layer and the release-1 schema, the cores every later plan depends on (legacy and gobb password checks, permission resolution, the public `markup` package), and a container image that runs under Docker Compose.
 
-**Architecture:** One Go module, one binary (`cmd/gobb`) with subcommands. The `bbcode` package is public, at the module root, because converters import it. Everything else lives under `internal/`, one package per responsibility: `config`, `db` (pool, migrations, schema), `dbtest` (throwaway databases for tests), `password`, `acl`, `web`. Posts are stored as BBCode source plus a parse tree (`bbcode.Node`, as JSON); pages render from the tree.
+**Architecture:** One Go module, one binary (`cmd/gobb`) with subcommands. The `markup` package is public, at the module root, because converters import it. Everything else lives under `internal/`, one package per responsibility: `config`, `db` (pool, migrations, schema), `dbtest` (throwaway databases for tests), `password`, `acl`, `web`. Posts are stored as Markdown source plus a parse tree (`markup.Node`, as JSON); pages render from the tree.
 
-**Tech Stack:** Go 1.27; PostgreSQL 16+; Docker (Chainguard images) and Docker Compose; `github.com/jackc/pgx/v5`; `golang.org/x/crypto` (bcrypt, argon2); `golang.org/x/text/unicode/norm`; tool dependencies `honnef.co/go/tools/cmd/staticcheck` and `golang.org/x/vuln/cmd/govulncheck` (via `go get -tool`).
+**Tech Stack:** Go 1.27; PostgreSQL 16+; Docker (Chainguard images) and Docker Compose; `github.com/jackc/pgx/v5`; `golang.org/x/crypto` (bcrypt, argon2); `golang.org/x/text/unicode/norm`; `github.com/yuin/goldmark` (Markdown); tool dependencies `honnef.co/go/tools/cmd/staticcheck` and `golang.org/x/vuln/cmd/govulncheck` (via `go get -tool`).
 
 **Spec:** `docs/superpowers/specs/2026-10-23-gobb-design.md` (sections 1, 8, 9, 10, 12, 15, 16). Roadmap: `docs/superpowers/plans/2026-10-23-gobb-roadmap.md`.
 
@@ -16,7 +16,7 @@
 
 - **Clean room.** Work only from this repo and public standards. Do not read, search for or copy the source, templates, stylesheets or images of any other forum software. If a task needs a fact about another system, stop and ask. (`AGENTS.md`; spec 1.)
 - Module path `github.com/evanwtf/gobb`; `go 1.27` in `go.mod`; build with the latest Go 1.27.x.
-- Runtime dependencies: only pgx v5, `golang.org/x/crypto`, `golang.org/x/text`. Anything more needs a reason in `docs/changelog.md` (spec 15).
+- Runtime dependencies: only pgx v5, `golang.org/x/crypto`, `golang.org/x/text`, and `github.com/yuin/goldmark` (Task 10). Anything more needs a reason in `docs/changelog.md` (spec 15).
 - Add each dependency at its latest release at the time of the task (`go get <module>@latest`); `go.sum` pins it.
 - This repo is public. Never commit hostnames, IP addresses other than `10.x`, home-directory paths, secret values, secret-manager item names, or any forum data. Tests use hand-written fixtures only.
 - Commit subjects: `area: imperative summary` (for example `password: verify legacy chain hashes`). No agent session URLs or IDs, no `Claude-Session:` or `Co-Authored-By` agent trailers.
@@ -29,10 +29,25 @@
 ## Review Focus
 
 1. **Hostile or huge passwords** — a password over 4,096 bytes, or invalid UTF-8, must return false quickly, without running argon2 or bcrypt. Tests: `TestVerifyLegacyRejectsHugeAndInvalid` (Task 6), `TestVerifyGobbRejectsHuge` (Task 7).
-2. **Deeply nested or unbalanced BBCode** — 10,000 nested `[quote]` tags or a post full of unclosed tags must parse in linear time and must not exhaust the stack. Nesting beyond the caps becomes literal text. Test: `TestParseNestingCaps` (Task 10).
-3. **Dangerous link schemes** — `javascript:`, `data:`, `vbscript:`, mixed-case or entity-encoded variants in `url`, `img` or `email` must never reach an `href` or `src`. Tests: `TestValidateRejects` (Task 9), `TestRenderRejectsDangerousSchemes` (Task 11).
+2. **Deeply nested or unbalanced Markdown** — 10,000 nested `>` quotes, or a post full of unclosed `**`, `||` or `[`, must parse in near-linear time and must not exhaust the stack. Nesting beyond the caps becomes plain text. Test: `TestParseNestingCaps` (Task 10).
+3. **Dangerous link schemes** — `javascript:`, `data:`, `vbscript:`, mixed-case or entity-encoded variants in `url`, `img` or `email` must never reach an `href` or `src`. Tests: `TestValidateRejects` (Tasks 9, 14), `TestParseDangerousLinks` (Task 10), `TestRenderRejectsDangerousSchemes` (Task 11).
 4. **Hostile imported trees** — a bundle tree with unknown elements, bad attributes, wrong children or extreme depth must fail `Validate` with an error, never a panic or a stack overflow. Tests: `TestValidateRejects`, `TestValidateDeepTree` (Task 9).
 5. **Two processes migrating at once, or an edited migration** — concurrent `Migrate` calls must apply each migration once. An applied migration whose file changed must make `Migrate` refuse. Tests: `TestMigrateConcurrent`, `TestMigrateRefusesChangedChecksum` (Task 3).
+
+---
+
+## Revision 1 (2026-10-23): Markdown replaces BBCode
+
+The owner chose Markdown for posts, with no BBCode (spec 12). Spoilers use `||text||`.
+A bare link to a supported site, alone on its line, becomes an embed. There is no
+underline, color, size, shout or comic, and there are no tag aliases.
+
+- Task 9 landed as package `bbcode`. **Task 14** reshapes it into package `markup`.
+- Tasks 10, 11 and 12 below are rewritten for Markdown.
+- **Task 15** renames the schema columns and the two permission options, and drops the
+  `tag_aliases` table.
+- Order: Task 15 at any time. Task 14 first; then Tasks 10 and 11 in parallel (they
+  touch different files); then Task 12.
 
 ---
 
@@ -467,6 +482,8 @@ Rules:
 
 ### Task 9: The tree, its schema, and embed IDs
 
+Revision 1: Task 14 reshapes this package for Markdown.
+
 **Files:**
 - Create: `bbcode/doc.go`, `bbcode/node.go`, `bbcode/validate.go`, `bbcode/embedid.go`, `bbcode/node_test.go`, `bbcode/validate_test.go`, `bbcode/embedid_test.go`
 
@@ -529,145 +546,204 @@ URL forms accept `http` or `https`, an optional `www.`, and trailing query strin
 
 ---
 
-### Task 10: BBCode parser
+### Task 10: Markdown parser
+
+Revision 1: this replaces the BBCode parser. It needs Task 14.
 
 **Files:**
-- Create: `bbcode/parse.go`, `bbcode/tags.go`, `bbcode/parse_test.go`
+- Create: `markup/parse.go`, `markup/spoiler.go`, `markup/parse_test.go`
+- Modify: `go.mod`, `go.sum` (add `github.com/yuin/goldmark` at its latest release), `docs/changelog.md` (the reason for the dependency: spec 12.1)
 
 **Interfaces:**
-- Consumes: `Node`, `Validate`, `EmbedID`, `MaxDepth`, `MaxQuoteDepth` (Task 9).
+- Consumes: `Node`, `Validate`, `EmbedID`, `CheckLinkURL`, `CheckImageURL`, `MaxDepth`, `MaxQuoteDepth` (Task 14).
 - Produces:
   - `type Smiley struct { Code, Image, Alt string }`.
-  - `type Alias struct { Tag, Label string }`.
-  - `type Options struct { BBCode, Smilies, MagicURL bool; SmileyList []Smiley; Aliases map[string]Alias }`.
-  - `func Parse(src string, opt Options) *Node` — never fails. Text it cannot parse stays literal. Its output always passes `Validate`.
-
-Tags (names are case-insensitive in source):
-
-| Source | Tree |
-|---|---|
-| `[b]`, `[i]`, `[u]`, `[shout]`, `[comic]` | element, no attributes |
-| `[quote]`, `[quote=Name]`, `[quote="Name"]`, `[quote="Name" post_id=1 time=2 user_id=3]` (any of the three keys, in any order) | `quote` with `author`, `post`, `time`, `user` as present |
-| `[code]…[/code]` | `code` holding the raw text; no tags or smilies inside |
-| `[list]`, `[list=T]` with items `[*]` | `list` (`type` attribute) with `li` children; an item ends at the next `[*]` or `[/list]` |
-| `[url]u[/url]`, `[url=u]text[/url]` | `url` with `href`; children are the link text |
-| `[email]a[/email]`, `[email=a]text[/email]` | `email` with `address` |
-| `[img]u[/img]` | `img` with `src`, no children |
-| `[color=V]`, `[size=N]` | `color` / `size` with `value` |
-| `[attachment=N]name[/attachment]` | `attachment` with `index` and `name`, no children |
-| `[spoiler]`, `[spoiler=Label]` | `spoiler` with optional `label` |
-| `[youtube]v[/youtube]`, and `vimeo`, `tweet`, `instagram` | element with `id` from `EmbedID`, no children |
+  - `type Options struct { Markdown, Smilies, Autolink bool; SmileyList []Smiley }`.
+  - `func Parse(src string, opt Options) *Node`. It never fails, and its output always passes `Validate`.
 
 Rules:
 
-- **Flags.** With `opt.BBCode` false, the whole input is one text node. With `opt.Smilies` false, there are no `smiley` nodes. With `opt.MagicURL` false, there is no URL linking.
-- **Aliases.** A tag name in `opt.Aliases` parses as its `Tag`. A `spoiler` alias takes the alias's `Label`. An alias name that matches a built-in tag is ignored.
-- **Smilies.** A code matches only at a word boundary, never inside `code`, `url` or `img`, longest code first. It becomes `smiley` with `code`.
-- **URL linking.** Bare `http://`, `https://` and `www.` addresses become `url` (`www.` gets `http://`); the link text is a text child. When that text is over 55 characters, set `display` to its first 39 characters + ` ... ` + its last 10.
-- **Bad values.** A tag whose value fails the Task 9 schema (scheme, color, size, ID, address) stays literal text.
-- **Bad nesting.** An unclosed tag stays literal text. A closing tag closes the innermost open tag of that name; tags opened in between and not closed become literal text.
-- **Caps.** Tags beyond `MaxQuoteDepth` quotes or `MaxDepth` elements stay literal text.
+- **Input.** Replace invalid UTF-8 with U+FFFD first (`strings.ToValidUTF8`).
+- **Parsing.** goldmark parses CommonMark. Its Linkify extension is on when `opt.Autolink` is on. Map goldmark's tree to `Node`. goldmark renders nothing.
+- **Line breaks.** A soft line break becomes `br`, the same as a hard break.
+- **Spoilers.** `||…||` is a spoiler. It is an inline delimiter extension in this package and pairs like emphasis. An unpaired `||` stays text. A spoiler cannot hold a spoiler.
+- **Raw HTML**, inline or block, becomes text with its exact source.
+- **Bad destinations.**
+  - `[text](url)` whose destination fails `CheckLinkURL` becomes its text children, with no link.
+  - `![alt](src)` whose source fails `CheckImageURL` becomes its alt text.
+  - Link titles are dropped. Reference links resolve as CommonMark says.
+- **Bare links.**
+  - A bare `www.` link gets `http://`.
+  - A bare link whose text is over 55 runes gets `display`: the first 39 runes, then ` ... `, then the last 10.
+  - `[text](url)` never gets `display`.
+- **Embeds.** When `opt.Autolink` is on, a line that holds only one bare link becomes an embed block, if `EmbedID` accepts the URL for an embed tag.
+  - The paragraph splits around it: `a⏎<link>⏎b` gives `p(a)`, the embed, `p(b)`.
+  - This applies in the root, in quotes and in list items.
+  - A link with its own text, a link inside a sentence, and a link inside a spoiler stay `url`.
+- **Smilies**, when `opt.Smilies` is on:
+  - A code matches only between word boundaries. A boundary is the edge of the text, or a character that is not a letter or digit.
+  - The longest code wins.
+  - Codes never match inside `code`, `pre`, `url`, `email` or an image's alt text.
+- **Code blocks.** `pre` takes `lang` from the first word of the info string when the word fits the pattern. Otherwise `pre` has no `lang`.
+- **Lists** carry `ordered`, `start` (only when it is not 1) and `tight`. A tight list's items still hold `p` blocks.
+- **Markdown off.** The source is plain text. Blank lines split paragraphs, and each line break is `br`. Autolinks, embeds and smilies still follow their own flags.
+- **Caps.** Content nested deeper than `MaxDepth` elements or `MaxQuoteDepth` quotes becomes plain text: its text, without the markup.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `TestParseBasic` — for each row of the tag table, one input and its expected tree.
-  - `TestParseFlagsOff` — with `BBCode:false`, `[b]x[/b]` stays text.
-  - `TestParseAliases` — with `Aliases{"yell": {Tag:"shout"}, "secret": {Tag:"spoiler", Label:"show"}}`: `[yell]x[/yell]` → `shout`; `[secret]x[/secret]` → `spoiler` with `label` `show`; an alias named `b` is ignored.
-  - `TestParseSmilies` — `:)` → `smiley`; inside `code` → text; `a:)b` → text.
-  - `TestParseAutolink` — a short URL becomes `url`; a 70-character URL gets `display` of 39 + ` ... ` + 10 characters.
-  - `TestParseUnclosed` — `[b]x` → text `[b]x`.
-  - `TestParseMisnested` — `[b][i]x[/b]` → `b` containing text `[i]x`.
-  - `TestParseBadAttrs` — `[size=500]x[/size]`, `[url=javascript:x]y[/url]`, `[youtube]not an id[/youtube]` → literal text.
-  - `TestParseNestingCaps` — 10,000 nested `[quote]`: under 200 ms, quote depth ≤ 10, no panic; 50,000 `[b]` with no closing tags: under 200 ms.
-  - `FuzzParse` — never panics, and `Validate(Parse(s, allOn))` is always nil.
-- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./bbcode/ -run Parse`. Expected: FAIL.
-- [ ] **Step 3: Implement** as a single left-to-right scan with an explicit stack of open tags (no recursion over the input).
-- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./bbcode/ && go test ./bbcode/ -fuzz FuzzParse -fuzztime 30s`. Expected: PASS; the fuzzer finds nothing.
-- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "bbcode: parser with caps, aliases, autolink and smilies" && git push`
+  - `TestParseBasic`: for each element row of spec 12.2, one input and its expected tree.
+  - `TestParseLineBreaks`:
+    - `a\nb` gives `p(a, br, b)`.
+    - `a\n\nb` gives two `p`.
+  - `TestParseSpoiler`:
+    - `||x||` gives a spoiler.
+    - `||x` gives the text `||x`.
+    - `||a **b**||` gives a spoiler holding text and `b`.
+    - `||a\nb||` gives one spoiler across a `br`.
+    - `||a\n\nb||` gives text.
+  - `TestParseEmbeds`:
+    - A YouTube link alone gives a `youtube` block.
+    - `see https://youtu.be/<id> now` gives a `url`.
+    - `[clip](https://youtu.be/<id>)` gives a `url`.
+    - `x⏎<post on X>⏎y` gives `p`, `tweet`, `p`.
+    - There is one case for each embed tag.
+    - A `redd.it` short link gives a `url`.
+  - `TestParseRawHTML`: `<script>x</script>` gives text with that exact source.
+  - `TestParseDangerousLinks`: `[x](javascript:alert(1))`, `[x](JaVaScRiPt:x)`, `[x](data:text/html,x)`, `![a](data:image/png;base64,x)` and `<javascript:x>` give no `url` and no `img`.
+  - `TestParseFlagsOff`:
+    - With Markdown off, `**x**` stays text.
+    - With Smilies off, there is no `smiley`.
+    - With Autolink off, there are no bare links and no embeds.
+  - `TestParseSmilies`:
+    - `:)` gives a smiley.
+    - `` `:)` `` gives code.
+    - `a:)b` gives text.
+    - `:):)` gives two smilies.
+  - `TestParseAutolink`:
+    - A short URL gives a `url` with no `display`.
+    - A 70-character URL gets the 39 + ` ... ` + 10 `display`.
+    - `www.a.example` gets `http://`.
+  - `TestParseNestingCaps`: each case finishes in under 200 ms with no panic.
+    - 10,000 nested `>`, with quote depth ≤ 10.
+    - 50,000 `**` with no closing.
+    - 10,000 `[`.
+    - 10,000 nested `- ` list markers.
+  - `FuzzParse`: it never panics, and `Validate(Parse(s, allOn))` is always nil.
+- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./markup/ -run Parse`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./markup/ && go test ./markup/ -run '^$' -fuzz FuzzParse -fuzztime 60s`. Expected: PASS, and the fuzzer finds nothing.
+- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "markup: Markdown parser with spoilers, embeds and smilies" && git push`
 
 ---
 
 ### Task 11: Renderer
 
+Revision 1: the element set is Task 14's. This task needs Task 14, not Task 10.
+
 **Files:**
-- Create: `bbcode/render.go`, `bbcode/render_test.go`
+- Create: `markup/render.go`, `markup/render_test.go`
 
 **Interfaces:**
-- Consumes: `Node`, `EmbedID` (Task 9).
+- Consumes: `Node`, `EmbedID`, `CheckLinkURL`, `CheckImageURL` (Task 14).
 - Produces:
-  - `type Attachment struct { URL, Name string; IsImage bool; Width, Height int }`.
-  - `type RenderContext struct { SmileyURL func(code string) (string, bool); Attachment func(index int) (Attachment, bool); PostURL func(postID int64) string }`.
-  - `type Rendered struct { HTML template.HTML; Text string; NeedsTweetScript, NeedsInstagramScript bool }`.
+  - `type RenderContext struct { SmileyURL func(code string) (string, bool) }`.
+  - `type Rendered struct { HTML template.HTML; Text string; FrameSrc, ScriptSrc []string }`. `FrameSrc` and `ScriptSrc` are the origins this tree's embeds need, sorted, with no duplicates.
   - `func Render(n *Node, rc RenderContext) Rendered`.
 
-Output (escape all text; a newline becomes `<br>`):
+Output. Escape all text and every attribute value.
 
 | Node | HTML |
 |---|---|
-| `b`, `i`, `u` | `<strong>`, `<em>`, `<u>` |
-| `quote` | `<blockquote><cite>{author} wrote:</cite>…</blockquote>`; with `post`, `{author}` links to `PostURL(post)`; no author → no `cite` |
-| `code` | `<pre class="code"><code>…</code></pre>` |
-| `list`, `li` | `<ol type="…">` for `1 a A i I`; `<ul>` otherwise, with `style="list-style-type:…"` for `disc circle square`; `<li>` |
+| `p` | `<p>…</p>`; in an `li` of a `tight` list, the children only |
+| `br` | `<br>` |
+| `h` | level 1 → `<h3>`, 2 → `<h4>`, 3 → `<h5>`, 4–6 → `<h6>` |
+| `hr` | `<hr>` |
+| `quote` | `<blockquote>…</blockquote>` |
+| `list`, `li` | `<ol>` (with `start="N"` when set) or `<ul>`; `<li>` |
+| `pre` | `<pre class="code"><code>…</code></pre>`; with `lang`, `<code class="language-{lang}">` |
+| `code` | `<code>…</code>` |
+| `b`, `i` | `<strong>`, `<em>` |
 | `url` | `<a href="{href}" rel="nofollow ugc noopener">`; the text is `display` when set, else the children |
-| `email` | `<a href="mailto:{address}">` |
-| `img` | `<img src="{src}" alt="" loading="lazy" class="post-img">`; `http://` becomes `https://` |
-| `color` | `<span style="color:{value}">` |
-| `size` | `<span style="font-size:{value}%">` |
+| `email` | `<a href="mailto:{address, percent-encoded}">` |
+| `img` | `<img src="{src}" alt="{alt}" loading="lazy" class="post-img">`; `http://` becomes `https://` |
+| `spoiler` | `<span class="spoiler" tabindex="0">…</span>` |
 | `smiley` | `<img class="smiley" src="{SmileyURL(code)}" alt="{code}">`; an unknown code → the code as text |
-| `attachment` | an image → `<img class="attachment" src=… width=… height=… alt="{name}">`; otherwise `<a class="attachment" href=…>{name}</a>`; missing → `name` as text |
-| `spoiler` | `<details class="spoiler"><summary>{label, or "Spoiler"}</summary>…</details>` |
-| `shout` | `<span class="shout">…</span>` |
-| `comic` | `<span class="comic">…</span>` |
-| `youtube` | `<iframe class="embed youtube" src="https://www.youtube-nocookie.com/embed/{id}" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>` |
-| `vimeo` | `<iframe class="embed vimeo" src="https://player.vimeo.com/video/{id}" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>` |
-| `tweet` | `<blockquote class="twitter-tweet"><a href="https://twitter.com/i/status/{id}">View post on X</a></blockquote>`; sets `NeedsTweetScript` |
-| `instagram` | `<blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/{id}/"><a href="https://www.instagram.com/p/{id}/">View on Instagram</a></blockquote>`; sets `NeedsInstagramScript` |
 | unknown element | its children only |
 
+Embeds. Check each entry against the provider's published embed documentation, and cite that page in a comment by the entry. If the docs disagree with this table, follow the docs and say so in the report.
+
+| Tag | HTML | FrameSrc | ScriptSrc |
+|---|---|---|---|
+| `youtube` | `<iframe class="embed youtube" src="https://www.youtube-nocookie.com/embed/{id}" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>` | `https://www.youtube-nocookie.com` | — |
+| `vimeo` | `<iframe class="embed vimeo" src="https://player.vimeo.com/video/{id}" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>` | `https://player.vimeo.com` | — |
+| `tweet` | `<blockquote class="twitter-tweet"><a href="https://twitter.com/i/status/{id}">View post on X</a></blockquote>` | `https://platform.twitter.com` | `https://platform.twitter.com` |
+| `instagram` | `<blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/{id}/"><a href="https://www.instagram.com/p/{id}/">View on Instagram</a></blockquote>` | `https://www.instagram.com` | `https://www.instagram.com` |
+| `reddit` | `<blockquote class="reddit-embed-bq"><a href="https://www.reddit.com/r/{sub}/comments/{post}/">View post on Reddit</a></blockquote>` | `https://embed.reddit.com` | `https://embed.reddit.com` |
+| `tiktok` | `<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/{id}" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>` | `https://www.tiktok.com` | — |
+| `threads` | `<blockquote class="text-post-media" data-text-post-permalink="https://www.threads.com/@{user}/post/{post}"><a href="https://www.threads.com/@{user}/post/{post}">View on Threads</a></blockquote>` | `https://www.threads.com` | `https://www.threads.com` |
+| `spotify` | `<iframe class="embed spotify" src="https://open.spotify.com/embed/{type}/{id}" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>` | `https://open.spotify.com` | — |
+| `soundcloud` | `<iframe class="embed soundcloud" src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/{path}" title="SoundCloud" loading="lazy"></iframe>` | `https://w.soundcloud.com` | — |
+
 The renderer checks again what `Validate` checks, because a stored tree may predate a rule:
-- A `url` or `email` whose value fails the scheme check renders its children as text, with no link.
-- An `img` whose `src` fails renders the `src` as escaped text.
+- A `url` or `email` whose value fails renders its children as text, with no link.
+- An `img` whose `src` fails renders its alt text.
 - An embed whose `id` fails `EmbedID` renders nothing.
 
-`Rendered.Text` is the plain text of everything except `quote` contents. It feeds `posts.body_text`.
+`Rendered.Text` is the plain text of everything except `quote` contents and embeds. It feeds `posts.body_text`.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `TestRenderTable` — one case per row above: a tree in, the exact HTML out.
-  - `TestRenderEscapes` — text `<script>&"` → `&lt;script&gt;&amp;&#34;`.
-  - `TestRenderRejectsDangerousSchemes` — `url`, `img` and `email` with `javascript:alert(1)`, `JaVaScRiPt:x`, `data:text/html,x`, `vbscript:x`, `&#106;avascript:x` → no `href` or `src` in the output, and the value appears escaped where the rules above say.
+  - `TestRenderTable`: for each row of both tables, a tree in and the exact HTML out.
+  - `TestRenderEscapes`: the text `<script>&"` gives `&lt;script&gt;&amp;&#34;`.
+  - `TestRenderRejectsDangerousSchemes`: trees built in code, without `Validate`. Each of `url`, `img` and `email` gets `javascript:alert(1)`, `JaVaScRiPt:x`, `data:text/html,x`, `vbscript:x` and `&#106;avascript:x`. The output has no `href` or `src` for any of them.
   - `TestRenderHTTPImageUpgraded`.
-  - `TestRenderNeedsFlags`.
+  - `TestRenderOrigins`: a tree with two `youtube` and one `tweet` gives `FrameSrc` [platform.twitter.com, youtube-nocookie.com] and `ScriptSrc` [platform.twitter.com].
   - `TestRenderTextExcludesQuotes`.
-  - `FuzzRender` — `Render(Parse(s))` never panics, and the output never contains `<script` or `javascript:`.
-- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./bbcode/ -run Render`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Write into a `strings.Builder`, with `html.EscapeString` for text and attribute values. Build the tag HTML by hand from the table; the output is never passed through `html/template` again.
-- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./bbcode/ && go test ./bbcode/ -fuzz FuzzRender -fuzztime 30s`. Expected: PASS.
-- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "bbcode: allowlist renderer with embeds" && git push`
+  - `TestRenderTightList`.
+- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./markup/ -run Render`. Expected: FAIL.
+- [ ] **Step 3: Implement.** Write into a `strings.Builder`, with `html.EscapeString` for text and attribute values. Build the tag HTML by hand from the tables. The output never goes through `html/template` again.
+- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./markup/`. Expected: PASS.
+- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "markup: allowlist renderer with embeds" && git push`
 
 ---
 
 ### Task 12: Tree comparison
 
+Revision 1: the fixtures are Markdown. `FuzzRender` moves here from Task 11. This task needs Tasks 10 and 11.
+
 **Files:**
-- Create: `bbcode/compare.go`, `bbcode/compare_test.go`, `bbcode/testdata/roundtrip/*.bbcode`, `bbcode/testdata/roundtrip/*.json`
+- Create: `markup/compare.go`, `markup/compare_test.go`, `markup/render_fuzz_test.go`, `markup/testdata/roundtrip/*.md`, `markup/testdata/roundtrip/*.json`
 
 **Interfaces:**
-- Consumes: `Node`, `Validate`, `Parse` (Tasks 9–10).
+- Consumes: `Node`, `Validate`, `Parse`, `Render` (Tasks 10, 11, 14).
 - Produces:
   - `type Diff struct { Path, Want, Got string }`.
-  - `func Compare(want, got *Node) []Diff` — compares kind, name, attributes (as a sorted `k=v` list) and text, depth-first, with an explicit stack. `Path` names each step by element and index, for example `/quote[0]/b[1]`. An empty result means equal.
+  - `func Compare(want, got *Node) []Diff`. It compares kind, name, attributes (as a sorted `k=v` list) and text, depth-first, with an explicit stack. `Path` names each step by element and index, for example `/quote[0]/b[1]`. An empty result means the trees are equal.
 
-A converter runs `Compare(itsTree, Parse(source, flags))` over every post. This task builds and tests the tool.
+A converter from another markup writes Markdown. It runs `Compare(expectedTree, Parse(itsMarkdown, flags))` over every post. This task builds and tests that tool.
 
-- [ ] **Step 1: Write the fixtures and the failing tests.** Hand-write pairs `<name>.bbcode` (source) and `<name>.json` (the expected tree) for: plain text, bold inside a list, a quote with all four attributes, an autolinked long URL, smilies, a YouTube URL, entities in text (`&`, `<`, `"`), an alias (`[yell]` → `shout`), and a spoiler with a label.
-  - `TestCompareEqual` — identical trees → no diffs.
-  - `TestCompareText` — one text differs → one diff whose path names it.
-  - `TestCompareAttrs` — an attribute value and an attribute set differ.
-  - `TestCompareShape` — a missing child.
-  - `TestRoundTripFixtures` — for every pair, `Compare(fixtureTree, Parse(source, Options{BBCode:true, Smilies:true, MagicURL:true, SmileyList: fixtureSmilies, Aliases: fixtureAliases}))` is empty, and the fixture tree passes `Validate`.
-- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./bbcode/ -run 'Compare|RoundTrip'`. Expected: FAIL.
+- [ ] **Step 1: Write the fixtures and the failing tests.** Hand-write pairs: `<name>.md` (the source) and `<name>.json` (the expected tree). Write one pair for each of these:
+  - plain text with line breaks;
+  - bold inside a list;
+  - a quote whose first line names its author and links to a post;
+  - an autolinked long URL;
+  - smilies;
+  - a YouTube link alone on its line;
+  - a link to a post on X inside a sentence;
+  - entities in text (`&`, `<`, `"`);
+  - escaped asterisks (`\*sigh\*` stays literal);
+  - a spoiler;
+  - a fenced code block with a language.
+
+  Then write the tests:
+  - `TestCompareEqual`: identical trees give no diffs.
+  - `TestCompareText`: one text differs, which gives one diff whose path names it.
+  - `TestCompareAttrs`: an attribute value differs, and an attribute set differs.
+  - `TestCompareShape`: a child is missing.
+  - `TestRoundTripFixtures`: for every pair, `Compare(fixtureTree, Parse(source, Options{Markdown: true, Smilies: true, Autolink: true, SmileyList: fixtureSmilies}))` is empty, and the fixture tree passes `Validate`.
+  - `FuzzRender`: `Render(Parse(s, allOn))` never panics. The output never contains `<script` (in any case). Every `href` and `src` value in the output passes `CheckLinkURL` or `CheckImageURL` once it is unescaped.
+- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./markup/ -run 'Compare|RoundTrip'`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./...`. Expected: PASS across the repo; CI is green after the push.
-- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "bbcode: tree comparison" && git push`
+- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./... && go test ./markup/ -run '^$' -fuzz FuzzRender -fuzztime 60s`. Expected: PASS across the repo, and CI is green after the push.
+- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "markup: tree comparison and render fuzzing" && git push`
 
 ---
 
@@ -731,6 +807,127 @@ gh run watch --exit-status $(gh run list --workflow ci.yml --limit 1 --json data
 ```
 
 Expected: the `check` and `image` jobs both pass.
+
+---
+
+### Task 14: The Markdown tree
+
+Revision 1. This task reshapes Task 9's package for Markdown.
+
+**Files:**
+- Rename: `bbcode/` to `markup/` (`git mv`). The package is `markup`; the import path is `github.com/evanwtf/gobb/markup`.
+- Modify: `markup/doc.go`, `markup/node.go`, `markup/validate.go`, `markup/embedid.go` and their tests; `docs/changelog.md`
+
+**Interfaces:**
+- Consumes: Task 9's `Node`, `Kind`, `Validate`, `Decode`, `EmbedID`, `MaxDepth`, `MaxQuoteDepth`.
+- Produces:
+  - The same names, in package `markup`, with the schema below.
+  - `func CheckLinkURL(s string) bool` and `func CheckImageURL(s string) bool`: the one URL rule. `Validate`, `Parse` and `Render` all use it.
+  - `func IsEmbed(name string) bool`.
+
+The schema:
+- The blocks are `p`, `h`, `hr`, `quote`, `list`, `pre` and the embeds.
+- The inlines are text, `b`, `i`, `code`, `br`, `url`, `email`, `img`, `spoiler` and `smiley`.
+- The root holds blocks.
+
+| Element | Attributes | Children |
+|---|---|---|
+| `p` | none | inlines |
+| `h` | `level` required, `1` to `6` | inlines |
+| `hr`, `br` | none | none |
+| `quote` | none | blocks |
+| `list` | `ordered` optional (`true`); `start` optional, 1–9 digits with no leading zero, only with `ordered`; `tight` optional (`true`) | `li` only |
+| `li` | none | blocks; only inside `list` |
+| `pre` | `lang` optional, `^[A-Za-z0-9_+.#-]{1,32}$` | text only |
+| `code` | none | text only |
+| `b`, `i` | none | inlines |
+| `url` | `href` required (`CheckLinkURL`); `display` optional, 1–255 characters | inlines, except `url` and `email` |
+| `email` | `address` required (Task 9's rule) | inlines, except `url` and `email` |
+| `img` | `src` required (`CheckImageURL`); `alt` optional, up to 1,000 characters | none |
+| `spoiler` | none | inlines, except `spoiler` |
+| `smiley` | `code` required, 1–32 characters | none |
+| `youtube`, `vimeo`, `tweet`, `instagram`, `reddit`, `tiktok`, `threads`, `spotify`, `soundcloud` | `id` required, and `EmbedID(name, id)` returns it unchanged | none |
+
+Removed: `u`, `color`, `size`, `attachment`, `shout`, `comic`, the `quote` attributes, `list type`, and the `spoiler` label.
+
+URL rules. Keep Task 9's steps: decode entities, trim, and reject control characters, whitespace and backslashes.
+- `CheckLinkURL` accepts any of these:
+  - `http` or `https` with a host;
+  - `mailto:` followed by an address that passes the `email` rule;
+  - a site path: it starts with `/`, but not with `//` or `/\`.
+- `CheckImageURL` accepts `http` or `https` with a host, or a site path.
+
+`MaxDepth` stays 32. `MaxQuoteDepth` stays 10, and it now counts `quote` blocks.
+
+`EmbedID` adds the entries below. URL forms take `http` or `https` and an optional `www.` or a listed subdomain. They ignore query strings unless the table names one.
+
+| Tag | Canonical ID | URL forms |
+|---|---|---|
+| `youtube` | as Task 9 | Task 9's forms, plus `m.youtube.com`, `music.youtube.com` and `youtube.com/live/<id>` |
+| `tweet` | as Task 9 | Task 9's forms, plus `mobile.twitter.com` |
+| `instagram` | as Task 9 | `instagram.com/p/<id>`, `/reel/<id>`, `/tv/<id>` |
+| `reddit` | `<subreddit>/<post>`: `^[A-Za-z0-9_]{2,21}/[a-z0-9]{1,12}$` | `reddit.com/r/<sub>/comments/<post>`, with an optional `/<slug>` and trailing slash; also on `old.` and `new.` |
+| `tiktok` | `^[0-9]{1,20}$` | `tiktok.com/@<user>/video/<id>` |
+| `threads` | `<user>/<post>`: `^[A-Za-z0-9_.]{1,30}/[A-Za-z0-9_-]{1,64}$` | `threads.net/@<user>/post/<post>`, `threads.com/@<user>/post/<post>` |
+| `spotify` | `<type>/<id>`: type one of `track album playlist episode show`; id `^[A-Za-z0-9]{22}$` | `open.spotify.com/<type>/<id>`, also with an `intl-<lang>/` segment first |
+| `soundcloud` | `<user>/<track>` or `<user>/sets/<set>`; each segment `^[a-z0-9_-]{1,100}$` | `soundcloud.com/<user>/<track>`, `soundcloud.com/<user>/sets/<set>` |
+
+Short links need a server lookup, so `EmbedID` returns false for them: `redd.it`, `vm.tiktok.com`, `spotify.link` and `on.soundcloud.com`. `youtu.be` keeps working, as in Task 9.
+
+- [ ] **Step 1: Update the tests first.**
+  - `TestTreeJSONRoundTrip` and `TestValidateAccepts`: one valid tree for each row of the schema.
+  - `TestValidateRejects`: Task 9's cases that still apply, and these:
+    - a removed element (`u`, `color`, `shout`) gives an error that names it;
+    - text directly in the root;
+    - a `p` inside `b`;
+    - an `li` that holds text directly;
+    - `h` with level 7;
+    - `list` with `start=0`, and `start` without `ordered`;
+    - `pre` with an element child;
+    - `img` with `src` `//evil.example/x`;
+    - `url` with `href` `/\evil.example`;
+    - a `spoiler` inside a `spoiler`;
+    - an embed inside a `p`.
+  - `TestCheckURLs`:
+    - Accepted: `https://a.example/x`, `/t/5`, `/files/a.png`, `mailto:a@b.example`.
+    - Rejected: `//a.example`, `/\a`, `javascript:x`, `mailto:`, `mailto:a`, `ftp://a.example`, `data:image/png;base64,x`.
+    - `CheckImageURL` also rejects every `mailto:` value.
+  - `TestValidateDeepTree`:
+    - 33 nested `b` give an error.
+    - 11 nested `quote` give an error.
+    - A chain 100,000 deep gives an error in under 100 ms.
+  - `TestEmbedID`: for each tag, a canonical ID, each URL form and one invalid value; also each short link listed above, which returns false.
+- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./markup/`. Expected: FAIL.
+- [ ] **Step 3: Implement.** `doc.go` states three things:
+  - the package's purpose;
+  - that the schema is the contract for converters;
+  - the renderer contract: every attribute value is HTML-escaped on output, and `mailto:` addresses are percent-encoded.
+- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./...`. Expected: PASS. `git grep -n bbcode -- '*.go'` prints nothing.
+- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "markup: reshape the tree for Markdown" && git push`
+
+---
+
+### Task 15: Markdown names in the schema and permissions
+
+Revision 1. **Worker: Haiku, max effort.**
+
+**Files:**
+- Modify: `internal/db/migrations/0001_schema.sql`, `internal/db/schema_test.go`, `internal/acl/options.go`, `internal/acl/acl_test.go`, `docs/changelog.md`
+
+`0001_schema.sql` is not released yet, so edit it in place:
+- In every table, rename `enable_bbcode` to `enable_markdown` and `enable_magic_url` to `enable_autolink`. `enable_smilies` keeps its name.
+- Drop the `tag_aliases` table and `TestTagAliasTarget`.
+
+Permissions: rename `post.bbcode` to `post.markdown` and `pm.bbcode` to `pm.markdown`. The counts stay 23 / 6 / 19.
+
+- [ ] **Step 1: Update the tests.**
+  - The table list has no `tag_aliases`.
+  - A test that `posts` and `pms` have `enable_markdown` and `enable_autolink`.
+  - The registry test names `post.markdown` and `pm.markdown`.
+- [ ] **Step 2: Run them to verify they fail.** Run: `go test ./internal/db/ ./internal/acl/`. Expected: FAIL.
+- [ ] **Step 3: Edit** the schema and the registry.
+- [ ] **Step 4: Run them to verify they pass.** Run: `go test -race ./internal/db/ ./internal/acl/`. Expected: PASS. `git grep -n -i 'bbcode\|magic_url\|tag_alias' -- internal cmd` prints nothing.
+- [ ] **Step 5: Commit and push.** `git add -A && git commit -m "db: Markdown names in the schema and permissions" && git push`
 
 ---
 

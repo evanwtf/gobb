@@ -46,7 +46,8 @@ and the build order is in
 
 - One Go binary serves the forum as server-rendered HTML.
 - The forum stores its data in PostgreSQL, in its own schema.
-- Members write BBCode. Pages render from a parsed tree through an allowlist.
+- Members write Markdown, with `||spoilers||` and embeds for links to video and social
+  sites. Pages render from a parsed tree through an allowlist.
 - Groups and roles grant permissions per forum or board-wide, with YES, NO and NEVER.
 - Data moves in through a documented bundle format, so any converter can feed it.
 - It runs under Docker Compose, or as a single binary behind a reverse proxy.

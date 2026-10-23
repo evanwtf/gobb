@@ -41,7 +41,7 @@ Sizes from a dump taken 2026-10-23. The import and the pages must handle them.
 |---|---|
 | Posts / topics | 31,759 / 2,194 |
 | Post visibility | 31,757 approved, 2 waiting for approval, 0 deleted |
-| Posts with BBCode off / smilies off / URL linking off | 458 / 459 / 3 |
+| Posts with markup off / smilies off / URL linking off | 458 / 459 / 3 |
 | Topic kinds | 2,187 normal, 3 sticky, 3 announcement, 1 global; 1 moved-topic marker |
 | Forums | 16, in 3 categories, nested up to 2 levels |
 | Members to import | 204 (the inactive spam accounts are not imported) |
@@ -100,7 +100,7 @@ The build fails, even if it runs, if any of these happen:
 - An old link that works today returns 404. (One exception: profiles of accounts that
   were not imported return 410; section 14.)
 - Sign-up reopens and spam floods in again.
-- Any path lets post text, a signature, a profile field or a tag emit unsanitized HTML or
+- Any path lets post text, a signature, a profile field or an embed emit unsanitized HTML or
   script.
 - The dependency tree needs constant patching. Keep dependencies few.
 - Code, text or images copied from another forum product. **(owner)**
@@ -158,7 +158,7 @@ write it.
   time, a free-text source label, and the row count of every data file.
 - One JSON Lines file per entity: users, gone users, groups, group members, roles,
   grants, forums, topics, posts, polls, poll votes, attachments, private messages,
-  watches, bookmarks, read marks, bans, ranks, smilies, tag aliases, legacy routes,
+  watches, bookmarks, read marks, bans, ranks, smilies, legacy routes,
   legacy file paths, static pages. Board settings are in `settings.json`.
 - `files/`: attachments, avatars, smilies, rank images, the header image. Every row that
   names a file gives its path under `files/`, its size and its SHA-256.
@@ -167,14 +167,14 @@ Rules:
 
 - A bundle's IDs become gobb's IDs. Rows refer to each other by ID.
 - Times are RFC 3339 with an offset. Text is UTF-8.
-- A post, signature or private message carries its markup source and its flags
-  (markup on, smilies on, URL linking on, signature shown). It may also carry a parse
-  tree (section 12.1). A converter supplies the tree when it has the old system's own
-  parse, so imported posts render as they did. Without a tree, gobb parses the source.
+- A post, signature or private message carries its Markdown source and its flags
+  (Markdown on, smilies on, URL linking on, signature shown). gobb parses the source.
+  A converter from another markup writes Markdown and checks it with the `markup`
+  package before it writes the bundle (section 8.3).
 - A password carries a scheme and a hash (section 10).
 - Gone users are IDs that the source had but the bundle does not import. Their profile
   URLs answer 410.
-- Unknown fields, unknown enum values, broken references, a tree that fails validation,
+- Unknown fields, unknown enum values, broken references,
   and a count that disagrees with the manifest all stop the import. gobb does not guess
   at data it does not model.
 
@@ -185,8 +185,8 @@ Plan 2 fixes every file and field.
 - Loads one bundle into an empty gobb database, in one transaction. It refuses a
   non-empty database unless told to replace it.
 - Copies the files into the data directory after it checks each size and SHA-256.
-- Validates every stored tree against the node schema (section 12.1), and renders every
-  post, signature and private message once. Any error stops the import.
+- Parses and renders every post, signature and private message once, and checks each
+  tree against the node schema (section 12.1). Any error stops the import.
 - Prints the count loaded for each entity.
 
 ### 8.3 Checks that need the old system
@@ -197,7 +197,8 @@ parse comparison for every post, the old URLs from the access logs, and a login 
 a rehearsal copy. gobb gives the converter two tools:
 
 - `gobb perms export` writes each user's effective permissions as JSON Lines.
-- The `bbcode` package is public, so a converter can call `Parse` and `Compare`.
+- The `markup` package is public, so a converter can parse the Markdown it writes and
+  `Compare` the tree with the one it expects.
 
 The public repo tests the importer with hand-written bundles only.
 
@@ -220,9 +221,9 @@ The public repo tests the importer with hand-written bundles only.
 
 | Scope | Options |
 |---|---|
-| Forum | `forum.list` (see it listed), `forum.read`, `forum.search`, `topic.start`, `topic.reply`, `topic.sticky`, `topic.announce`, `topic.global`, `topic.lock_own`, `topic.watch`, `post.edit_own`, `post.delete_own`, `post.bbcode`, `post.smilies`, `post.images`, `post.signatures`, `post.no_approval`, `post.counts` (counts toward the member's post count), `attach.upload`, `attach.download`, `poll.start`, `poll.vote`, `poll.change_vote` |
+| Forum | `forum.list` (see it listed), `forum.read`, `forum.search`, `topic.start`, `topic.reply`, `topic.sticky`, `topic.announce`, `topic.global`, `topic.lock_own`, `topic.watch`, `post.edit_own`, `post.delete_own`, `post.markdown`, `post.smilies`, `post.images`, `post.signatures`, `post.no_approval`, `post.counts` (counts toward the member's post count), `attach.upload`, `attach.download`, `poll.start`, `poll.vote`, `poll.change_vote` |
 | Moderator | `mod.edit`, `mod.delete`, `mod.approve`, `mod.lock`, `mod.move`, `mod.view_ip` |
-| Board | `mod.ban`, `pm.send`, `pm.read`, `pm.send_many`, `pm.bbcode`, `pm.smilies`, `pm.images`, `pm.edit`, `pm.delete`, `account.signature`, `account.avatar`, `account.profile`, `account.email`, `account.password`, `account.attach`, `account.download`, `account.search`, `account.view_profiles`, `admin` |
+| Board | `mod.ban`, `pm.send`, `pm.read`, `pm.send_many`, `pm.markdown`, `pm.smilies`, `pm.images`, `pm.edit`, `pm.delete`, `account.signature`, `account.avatar`, `account.profile`, `account.email`, `account.password`, `account.attach`, `account.download`, `account.search`, `account.view_profiles`, `admin` |
 
 An upload needs both `account.attach` and the forum's `attach.upload`. A download needs
 both `account.download` and `attach.download`. Search needs `account.search`, and shows
@@ -350,63 +351,92 @@ people") Details **(designer's calls)**:
   grants. A role editor for the options inside a role.
 - **Groups:** members, leaders, join requests, group type.
 - **Forums:** create, edit, reorder, nest.
-- **Smilies and tag aliases.**
+- **Smilies.**
 - **Log:** every moderator and admin action, with who, what, when.
 
 ## 12. Content rendering
 
-### 12.1 Markup and the tree
+### 12.1 Markdown and the tree
 
-- Members keep writing BBCode. **(designer's call:** members know it, and the quote
-  button inserts it.)
+- Members write Markdown. There is no BBCode. **(owner)** The syntax is CommonMark,
+  with the changes below.
+- A line break in the source is a line break on the page, as in chat apps.
+  **(designer's call)**
+- Bare `http://`, `https://` and `www.` addresses, and bare email addresses, become
+  links. Link text longer than 55 characters shows the first 39, then ` ... `, then the
+  last 10.
+- `||text||` hides text until the reader clicks it. **(owner:** Discord's syntax.) A
+  spoiler is inline: it can hold text, emphasis, links and images, and it can cross a
+  line break, but not a paragraph break.
+- A bare link to a supported site, alone on its line, becomes an embed (section 12.2).
+  **(owner)** A link inside a sentence, or a link with its own text, stays a link.
+- Smiley codes, such as `:)`, show the admin's smiley images. A code matches only at a
+  word boundary, and never inside code or a link.
+- Raw HTML in the source shows as text. **(designer's call)**
+- No underline, color, size or other styling. **(owner)**
+- Each post, signature and private message has three flags: Markdown on, smilies on,
+  URL linking on. With Markdown off, the source shows as plain text with its line
+  breaks. Embeds need URL linking on. The posting form offers the flags.
+- The quote button inserts a block quote. Its first line names the author and links to
+  the quoted post.
+- An attachment shows inline where the source has a Markdown image whose URL is the
+  attachment's URL. The page lists the post's other attachments below it.
 - gobb parses source into a tree: a root, text nodes, and elements with a name and
   string attributes. The tree is stored as JSON with each post, signature and private
   message, and pages render from it.
 - The node schema (element names, allowed attributes and their value patterns, which
-  children an element may hold, nesting caps) is part of gobb. It is the contract for
-  bundle trees.
-- The renderer builds HTML from an allowlist of elements and attributes. Link schemes:
-  `http`, `https`, `mailto`.
+  children an element may hold, nesting caps) is part of gobb.
+- The renderer builds HTML from an allowlist of elements and attributes. Link URLs:
+  `http`, `https`, `mailto`, or a path on this site. Image URLs: `http`, `https`, or a
+  path on this site.
+- The parser is goldmark, a CommonMark library for Go (MIT license, no dependencies of
+  its own). **(designer's call:** CommonMark has hundreds of edge cases, and a tested
+  parser makes posts behave the way members expect from other sites.)
 
-### 12.2 Tags
+### 12.2 Elements
 
-| Tag | Source forms | Output |
+| Element | Markdown | Output |
 |---|---|---|
-| `b`, `i`, `u` | `[b]…[/b]` | bold, italic, underline |
-| `quote` | `[quote]`, `[quote=Name]`, `[quote="Name" post_id=N time=T user_id=U]` | a quote block; the name links to the quoted post when `post_id` is given |
-| `code` | `[code]…[/code]` | preformatted; no tags or smilies inside |
-| `list`, `*` | `[list]`, `[list=1]` (also `a`, `A`, `i`, `I`, `disc`, `circle`, `square`) | a bulleted or numbered list |
-| `url` | `[url]…[/url]`, `[url=…]text[/url]` | a link with `rel="nofollow ugc noopener"` |
-| `email` | `[email]…[/email]`, `[email=…]text[/email]` | a `mailto:` link |
-| `img` | `[img]…[/img]` | a hotlinked image; `http://` becomes `https://` |
-| `color` | `#rgb`, `#rrggbb`, or a CSS color name | colored text |
-| `size` | 50 to 200 (percent) | resized text |
-| `attachment` | `[attachment=N]name[/attachment]` | the post's Nth attachment, inline |
-| `spoiler` | `[spoiler]`, `[spoiler=Label]` | a collapsed block |
-| `shout` | `[shout]…[/shout]` | large bold uppercase text |
-| `comic` | `[comic]…[/comic]` | large Comic Sans text |
-| `youtube` | a video ID or URL | a privacy-enhanced player **(owner)** |
-| `vimeo` | a video ID or URL | a Vimeo player **(designer's call)** |
-| `tweet` | a post ID or URL | a live embed; the script loads only on pages that need it **(owner)** |
-| `instagram` | a post ID or URL | an Instagram embed **(designer's call)** |
+| `p`, `br` | a paragraph, a line break | a paragraph, a line break |
+| `h` | `#` to `######` | a heading, scaled down to fit inside a post |
+| `hr` | `---` | a horizontal rule |
+| `quote` | `>` | a quote block |
+| `list`, `li` | `-`, `*`, `+`, `1.` | a bulleted or numbered list |
+| `pre` | a fenced or indented code block | preformatted; no smilies or links inside |
+| `code` | `` `code` `` | inline code |
+| `b`, `i` | `**bold**`, `*italic*` | bold, italic |
+| `url`, `email` | `[text](url)`, `<url>`, a bare address | a link with `rel="nofollow ugc noopener"` |
+| `img` | `![alt](url)` | a hotlinked image; `http://` becomes `https://` |
+| `spoiler` | `\|\|text\|\|` | hidden text, shown on click |
+| `smiley` | a smiley code | the smiley's image |
 
-- **Smilies** are images the admin manages. A smiley code matches only at a word
-  boundary, and never inside `code`, `url` or `img`.
-- **URL linking** turns bare `http://`, `https://` and `www.` addresses into links. Link
-  text longer than 55 characters shows the first 39, then ` ... `, then the last 10.
-- **Tag aliases.** The admin can give an extra name to `b`, `i`, `u`, `shout`, `comic`
-  or `spoiler` (with a fixed label). The first board's own tag names come in this way,
-  so old posts and old habits keep working. Nobody can define new output. **(owner:**
-  "opinionated and good"; aliases are the designer's call)
-- Unknown tags, bad attribute values, unclosed tags and nesting past the caps render as
-  literal text.
+Embeds **(owner:** YouTube, X, Instagram, Reddit "etc."; the other sites are the
+designer's call):
+
+| Element | Link | Output |
+|---|---|---|
+| `youtube` | a YouTube video, short or live stream | a privacy-enhanced player |
+| `vimeo` | a Vimeo video | Vimeo's player |
+| `tweet` | a post on X | the post, through X's embed script |
+| `instagram` | an Instagram post or reel | the post, through Instagram's embed script |
+| `reddit` | a Reddit post | the post, through Reddit's embed script |
+| `tiktok` | a TikTok video | TikTok's player |
+| `threads` | a Threads post | the post, through Threads' embed script |
+| `spotify` | a Spotify track, album, playlist, episode or show | Spotify's player |
+| `soundcloud` | a SoundCloud track or playlist | SoundCloud's player |
+
+- To add a site later, add one entry to the embed table: its link patterns, its output,
+  and the origins it needs in the Content-Security-Policy.
+- Links that need a server-side lookup to embed (short links, or Bluesky links by
+  handle) stay links at launch. Link previews for other sites (a title and image that
+  the server fetches) are a possible later feature; they bring server-side request
+  risk. **(designer's call)**
 - Embeds for services that no longer exist are the converter's business: it rewrites
   them as plain links.
-- Remote images (`img`, about 1,600 posts) stay hotlinked. No image proxy at launch: it
-  would be a large feature with server-side request risk. **(designer's call)**
-- A strict Content-Security-Policy, set per response. Frames only from the embed
-  providers above. The tweet and Instagram scripts are allowed only on responses whose
-  page contains such an embed. No inline script.
+- Remote images (about 1,600 posts) stay hotlinked. No image proxy at launch: it would
+  be a large feature with server-side request risk. **(designer's call)**
+- A strict Content-Security-Policy, set per response. Each embed adds only the frame
+  and script origins it needs, and only on pages that contain it. No inline script.
 
 **Uploads** (attachments, avatars, header image; designer's calls)
 
@@ -470,8 +500,8 @@ people") Details **(designer's calls)**:
 
 - Go (latest stable), one binary; templates, CSS and JavaScript embedded.
   **(owner:** single Go binary)
-- Two packages are public, for converters: `bbcode` (tree, parser, renderer,
-  comparison) and `bundle` (the import format). Everything else is under `internal/`.
+- Two packages are public, for converters: `markup` (Markdown parser, tree,
+  renderer, comparison) and `bundle` (the import format). Everything else is under `internal/`.
 - PostgreSQL 16 or later, in gobb's own schema. **(owner)** Numbered SQL migrations,
   embedded, never edited after release.
 - Attachments, avatars and the header image live on disk under a data directory.
@@ -498,8 +528,8 @@ people") Details **(designer's calls)**:
 - Configuration from environment variables; secrets from the environment.
 - Logs go to stdout with `log/slog`.
 - Background work (email queue, cleanup) runs inside the process. No cron entry point.
-- Few dependencies: a PostgreSQL driver, `golang.org/x/crypto` and `golang.org/x/text`
-  are expected. Each additional one needs a reason in the changelog.
+- Few dependencies: a PostgreSQL driver, `golang.org/x/crypto`, `golang.org/x/text`
+  and goldmark (section 12.1) are expected. Each additional one needs a reason in the changelog.
 
 ## 16. Build, test, release
 
