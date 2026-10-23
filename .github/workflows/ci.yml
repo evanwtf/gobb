@@ -1,0 +1,113 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fork-guard:
+    # The secrets and the shared runner are not for fork code.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "A maintainer must push this branch to the repo to run the tests."
+          exit 1
+
+  check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: gobb
+        ports:
+          # A random host port: the runner is shared.
+          - "5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The commit-message scan reads the whole history.
+          fetch-depth: 0
+
+      - name: Scope the Go caches to this run
+        run: |
+          {
+            echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Public-repo guards
+        env:
+          PUBLIC_DENYLIST: ${{ secrets.PUBLIC_DENYLIST }}
+        run: |
+          if [ -z "$PUBLIC_DENYLIST" ]; then
+            echo "PUBLIC_DENYLIST secret is empty"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$PUBLIC_DENYLIST" > "$RUNNER_TEMP/denylist"
+          status=0
+          DENYLIST_FILE="$RUNNER_TEMP/denylist" sh scripts/check-public.sh || status=$?
+          # Local hooks can be bypassed, so scan every commit message too.
+          msgs="$RUNNER_TEMP/commit-messages.txt"
+          git log --format='%H%n%B' > "$msgs"
+          DENYLIST_FILE="$RUNNER_TEMP/denylist" sh scripts/check-public.sh "$msgs" || status=$?
+          sh scripts/refuse-session-ids.sh "$msgs" || status=$?
+          echo "guards: tree and commit messages scanned, status $status"
+          exit "$status"
+
+      - name: Format, vet, staticcheck, govulncheck
+        run: |
+          status=0
+          note() { [ "$status" -ne 0 ] || status=$1; }
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "gofmt: these files need formatting:"
+            echo "$out"
+            note 1
+          fi
+          go vet ./... || note $?
+          go tool staticcheck ./... || note $?
+          go tool govulncheck ./... || note $?
+          exit "$status"
+
+      - name: Test
+        env:
+          GOBB_TEST_DATABASE_URL: postgres://postgres:gobb@localhost:${{ job.services.postgres.ports['5432'] }}/postgres?sslmode=disable
+        run: |
+          status=0
+          go test -race -json ./... > test.json || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "go test failed with status $status; output follows."
+            grep -F '"Action":"output"' test.json \
+              | sed -n 's/.*"Output":"\(.*\)"}$/\1/p' \
+              | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g'
+          fi
+          if grep -q '"Action":"skip"' test.json; then
+            echo "unexpected skipped test"
+            grep -F '"Action":"skip"' test.json | grep -F '"Test":' || true
+            exit 1
+          fi
+          echo "tests: $(grep -c '"Action":"pass"' test.json) pass events, no skips"
+          exit "$status"
+
+      - name: Remove the denylist file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/denylist"
