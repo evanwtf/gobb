@@ -1,4 +1,4 @@
-package bbcode
+package markup
 
 import (
 	"encoding/json"
@@ -47,7 +47,7 @@ type Node struct {
 func Decode(data []byte) (*Node, error) {
 	var n Node
 	if err := json.Unmarshal(data, &n); err != nil {
-		return nil, fmt.Errorf("bbcode: decode tree: %w", err)
+		return nil, fmt.Errorf("markup: decode tree: %w", err)
 	}
 	canonicalize(&n)
 	return &n, nil
