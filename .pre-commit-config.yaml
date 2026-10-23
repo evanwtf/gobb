@@ -1,5 +1,7 @@
 # Local mirror of CI. Install with:
 #   uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
+# Without this, every hook also runs at the commit-msg stage.
+default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
