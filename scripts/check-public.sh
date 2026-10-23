@@ -1,24 +1,44 @@
 #!/bin/sh
 # Refuse private details in a public repo.
 #
-# Usage: check-public.sh [files...]
+# Usage: check-public.sh [--commit-msg] [files...]
 #   With no arguments, checks every file from `git ls-files`.
 #   With arguments (pre-commit passes the staged names), checks only those.
+#   With --commit-msg, each file is a commit message. The script first drops what
+#   git drops: the scissors line and everything after it (the verbose diff), and
+#   every line that starts with #. Line numbers in the output stay those of the
+#   original file.
 #
 # Private patterns: LAN addresses, home-directory paths, private DNS suffixes.
 # Owner's denylist: one fixed string per line, from $DENYLIST_FILE if set,
 # else .public-denylist if present. Blank lines and # comments are ignored.
 #
 # On a hit the script prints file:line and never the matched text.
-# Exit status: 0 clean, 1 hit.
+# A DENYLIST_FILE that is set but unreadable is an error, not "no denylist".
+# Exit status: 0 clean, 1 hit, 2 error.
 set -u
 
 PATTERNS='192\.168\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+|/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/|\.(internal|lan|home\.arpa|localdomain)\b'
 
-tmp=$(mktemp "${TMPDIR:-/tmp}/check-public.XXXXXX") || exit 2
-trap 'rm -f "$tmp" "$tmp.list"' EXIT HUP INT TERM
+msgmode=0
+if [ "${1:-}" = "--commit-msg" ]; then
+	msgmode=1
+	shift
+fi
 
-deny=${DENYLIST_FILE:-.public-denylist}
+tmp=$(mktemp "${TMPDIR:-/tmp}/check-public.XXXXXX") || exit 2
+trap 'rm -f "$tmp" "$tmp.list" "$tmp.msg"' EXIT HUP INT TERM
+
+if [ "${DENYLIST_FILE+set}" = set ]; then
+	# Fail closed: a wrong path in CI must not turn the guard off.
+	if [ ! -r "${DENYLIST_FILE}" ] || [ ! -f "${DENYLIST_FILE}" ]; then
+		echo "check-public: DENYLIST_FILE is set but is not a readable file" >&2
+		exit 2
+	fi
+	deny=$DENYLIST_FILE
+else
+	deny=.public-denylist
+fi
 if [ -f "$deny" ]; then
 	grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$deny" >"$tmp"
 fi
@@ -30,16 +50,23 @@ skip() {
 	return 1
 }
 
-# scan prints file:line for each hit in one file and succeeds if any.
+# strip_msg writes a commit message to $tmp.msg the way git cleans it. It blanks
+# the dropped lines instead of deleting them, so line numbers stay the same.
+strip_msg() {
+	awk '/^# -+ >8 -+$/ { skip = 1 } skip || /^#/ { print ""; next } { print }' "$1" >"$tmp.msg"
+}
+
+# scan prints name:line for each hit in file $1 and succeeds if any.
+# $2 is the name to print; it differs from $1 for a cleaned commit message.
 scan() {
 	hits=$(
-		grep -I -n -H -E -e "$PATTERNS" -- "$1"
+		grep -I -n -E -e "$PATTERNS" -- "$1"
 		if [ -s "$tmp" ]; then
-			grep -I -n -H -i -F -f "$tmp" -- "$1"
+			grep -I -n -i -F -f "$tmp" -- "$1"
 		fi
 	)
 	if [ -n "$hits" ]; then
-		printf '%s\n' "$hits" | cut -d: -f1,2 | sort -u -t: -k2,2n
+		printf '%s\n' "$hits" | cut -d: -f1 | sort -u -n | sed "s|^|$2:|"
 		return 0
 	fi
 	return 1
@@ -50,7 +77,12 @@ check() {
 	f=${1#./}
 	skip "$f" && return
 	[ -f "$f" ] || return
-	if scan "$f"; then
+	if [ "$msgmode" -eq 1 ]; then
+		strip_msg "$f"
+		if scan "$tmp.msg" "$f"; then
+			status=1
+		fi
+	elif scan "$f" "$f"; then
 		status=1
 	fi
 }
@@ -61,7 +93,7 @@ if [ "$#" -gt 0 ]; then
 	done
 else
 	# Read the list into a file so `status` stays in this shell.
-	git ls-files >"$tmp.list" || exit 2
+	git -c core.quotePath=false ls-files >"$tmp.list" || exit 2
 	while IFS= read -r f; do
 		check "$f"
 	done <"$tmp.list"

@@ -17,7 +17,14 @@ func run(t *testing.T, dir string, env []string, script string, args ...string) 
 	}
 	cmd := exec.Command("sh", append([]string{abs}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	// Drop any inherited DENYLIST_FILE so a test reads only the list it names.
+	var base []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "DENYLIST_FILE=") {
+			base = append(base, kv)
+		}
+	}
+	cmd.Env = append(base, env...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(out), 0
@@ -50,14 +57,21 @@ func repo(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// noDenylist points the guard at a missing denylist so the owner's real
+// noDenylist points the guard at an empty denylist so the owner's real
 // list in the working tree never reaches the test.
-var noDenylist = []string{"DENYLIST_FILE=/nonexistent/denylist"}
+func noDenylist(t *testing.T) []string {
+	t.Helper()
+	list := filepath.Join(t.TempDir(), "empty")
+	if err := os.WriteFile(list, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"DENYLIST_FILE=" + list}
+}
 
 func TestCheckPublicFlagsLANAddress(t *testing.T) {
 	addr := "192." + "168." + "7.42"
 	dir := repo(t, map[string]string{"notes.txt": "host is " + addr + "\n"})
-	out, code := run(t, dir, noDenylist, "check-public.sh")
+	out, code := run(t, dir, noDenylist(t), "check-public.sh")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1\n%s", code, out)
 	}
@@ -71,7 +85,7 @@ func TestCheckPublicFlagsLANAddress(t *testing.T) {
 
 func TestCheckPublicFlags172Private(t *testing.T) {
 	dir := repo(t, map[string]string{"notes.txt": "host is " + "172." + "20." + "1." + "9\n"})
-	out, code := run(t, dir, noDenylist, "check-public.sh")
+	out, code := run(t, dir, noDenylist(t), "check-public.sh")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1\n%s", code, out)
 	}
@@ -79,7 +93,7 @@ func TestCheckPublicFlags172Private(t *testing.T) {
 
 func TestCheckPublicAllows10Net(t *testing.T) {
 	dir := repo(t, map[string]string{"notes.txt": "host is " + "10." + "1." + "2." + "3\n"})
-	out, code := run(t, dir, noDenylist, "check-public.sh")
+	out, code := run(t, dir, noDenylist(t), "check-public.sh")
 	if code != 0 {
 		t.Fatalf("exit %d, want 0\n%s", code, out)
 	}
@@ -92,7 +106,7 @@ func TestCheckPublicFlagsHomePath(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := repo(t, map[string]string{"notes.txt": body})
-			out, code := run(t, dir, noDenylist, "check-public.sh")
+			out, code := run(t, dir, noDenylist(t), "check-public.sh")
 			if code != 1 {
 				t.Fatalf("exit %d, want 1\n%s", code, out)
 			}
@@ -104,7 +118,7 @@ func TestCheckPublicFlagsPrivateDNS(t *testing.T) {
 	for _, suffix := range []string{"internal", "lan", "home.arpa", "localdomain"} {
 		t.Run(suffix, func(t *testing.T) {
 			dir := repo(t, map[string]string{"notes.txt": "host box." + suffix + " here\n"})
-			out, code := run(t, dir, noDenylist, "check-public.sh")
+			out, code := run(t, dir, noDenylist(t), "check-public.sh")
 			if code != 1 {
 				t.Fatalf("exit %d, want 1\n%s", code, out)
 			}
@@ -196,10 +210,10 @@ func TestCheckPublicChecksOnlyNamedFiles(t *testing.T) {
 		"bad.txt":  "host is " + "192." + "168." + "0.1\n",
 		"good.txt": "ordinary text\n",
 	})
-	if out, code := run(t, dir, noDenylist, "check-public.sh", "good.txt"); code != 0 {
+	if out, code := run(t, dir, noDenylist(t), "check-public.sh", "good.txt"); code != 0 {
 		t.Fatalf("exit %d, want 0\n%s", code, out)
 	}
-	out, code := run(t, dir, noDenylist, "check-public.sh", "good.txt", "bad.txt")
+	out, code := run(t, dir, noDenylist(t), "check-public.sh", "good.txt", "bad.txt")
 	if code != 1 || !strings.Contains(out, "bad.txt:1") {
 		t.Fatalf("exit %d, output %q", code, out)
 	}
@@ -207,7 +221,7 @@ func TestCheckPublicChecksOnlyNamedFiles(t *testing.T) {
 
 func TestCheckPublicCleanRepo(t *testing.T) {
 	dir := repo(t, map[string]string{"notes.txt": "Just ordinary text.\nNothing private.\n"})
-	out, code := run(t, dir, noDenylist, "check-public.sh")
+	out, code := run(t, dir, noDenylist(t), "check-public.sh")
 	if code != 0 {
 		t.Fatalf("exit %d, want 0\n%s", code, out)
 	}
@@ -225,6 +239,11 @@ func TestRefuseSessionIDs(t *testing.T) {
 		{"coauthor", "repo: x\n\nCo-Authored-" + "By: Claude <noreply@example.invalid>\n", 1},
 		{"bare token", "repo: x\n\nsession" + "_" + id + "\n", 1},
 		{"short word", "fix session_store\n", 0},
+		{"lower trailer", "repo: x\n\nclaude-" + "session: abc\n", 1},
+		{"github casing", "repo: x\n\nCo-authored-" + "by: Claude <noreply@example.invalid>\n", 1},
+		{"comment line", "repo: x\n\n# Claude-" + "Session: abc\n", 0},
+		{"verbose diff", "repo: x\n\n# " + strings.Repeat("-", 24) + " >8 " + strings.Repeat("-", 24) +
+			"\n-Claude-" + "Session: abc\n", 0},
 		{"person", "repo: x\n\nCo-Authored-" + "By: Pat Example <pat@example.invalid>\n", 0},
 	}
 	for _, c := range cases {
@@ -238,5 +257,69 @@ func TestRefuseSessionIDs(t *testing.T) {
 				t.Fatalf("exit %d, want %d\n%s", code, c.want, out)
 			}
 		})
+	}
+}
+
+func TestCheckPublicFailsClosedOnUnreadableDenylist(t *testing.T) {
+	dir := repo(t, map[string]string{"notes.txt": "ordinary text\n"})
+	missing := []string{"DENYLIST_FILE=" + filepath.Join(t.TempDir(), "absent")}
+	out, code := run(t, dir, missing, "check-public.sh")
+	if code != 2 {
+		t.Fatalf("missing file: exit %d, want 2\n%s", code, out)
+	}
+	if !strings.Contains(out, "DENYLIST_FILE") {
+		t.Errorf("error does not name the variable: %q", out)
+	}
+	// An empty value is what an unset CI secret produces.
+	if out, code = run(t, dir, []string{"DENYLIST_FILE="}, "check-public.sh"); code != 2 {
+		t.Fatalf("empty value: exit %d, want 2\n%s", code, out)
+	}
+}
+
+func TestCheckPublicScansNonASCIIFileNames(t *testing.T) {
+	list := filepath.Join(t.TempDir(), "deny")
+	if err := os.WriteFile(list, []byte("examplecorp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := repo(t, map[string]string{"caf\u00e9.txt": "ExampleCorp\n"})
+	out, code := run(t, dir, []string{"DENYLIST_FILE=" + list}, "check-public.sh")
+	if code != 1 {
+		t.Fatalf("exit %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "caf\u00e9.txt:1") {
+		t.Errorf("output lacks the file name: %q", out)
+	}
+}
+
+// git -v puts a scissors line and the full diff below the message. A commit that
+// removes a private word shows the word on a "-" line there; that must pass.
+func TestCheckPublicCommitMessageModeCleansLikeGit(t *testing.T) {
+	list := filepath.Join(t.TempDir(), "deny")
+	if err := os.WriteFile(list, []byte("examplecorp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"DENYLIST_FILE=" + list}
+	scissors := "# " + strings.Repeat("-", 24) + " >8 " + strings.Repeat("-", 24)
+	check := func(body string) (string, int) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "MSG"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return run(t, dir, env, "check-public.sh", "--commit-msg", "MSG")
+	}
+
+	verbose := "repo: drop old name\n\n# Please enter the commit message\n# on branch main\n" +
+		scissors + "\ndiff --git a/x b/x\n-ExampleCorp\n+ordinary\n"
+	if out, code := check(verbose); code != 0 {
+		t.Fatalf("word below scissors: exit %d, want 0\n%s", code, out)
+	}
+	if out, code := check("repo: ExampleCorp # not a comment\n# ExampleCorp\n"); code != 1 ||
+		!strings.Contains(out, "MSG:1") || strings.Contains(out, "MSG:2") {
+		t.Fatalf("word in body: exit %d, output %q", code, out)
+	}
+	// The word on line 3, after a comment line, keeps its original line number.
+	out, code := check("repo: x\n# note\nExampleCorp in the body\n" + scissors + "\n")
+	if code != 1 || !strings.Contains(out, "MSG:3") {
+		t.Fatalf("body after comment: exit %d, output %q", code, out)
 	}
 }

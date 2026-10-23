@@ -11,9 +11,14 @@ repos:
         entry: scripts/check-public.sh
         language: script
         pass_filenames: true
-        # At commit-msg, pre-commit passes the message file, so a private word
-        # in a commit message is refused too.
-        stages: [pre-commit, commit-msg]
+      # At commit-msg, pre-commit passes the message file. --commit-msg makes the
+      # guard drop git's comments and the verbose diff first.
+      - id: check-public-msg
+        name: check-public (commit message)
+        entry: scripts/check-public.sh --commit-msg
+        language: script
+        pass_filenames: true
+        stages: [commit-msg]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
