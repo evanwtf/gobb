@@ -90,12 +90,14 @@ jobs:
 
       - name: Test
         env:
+          CGO_ENABLED: "1"
           GOBB_TEST_DATABASE_URL: postgres://postgres:gobb@localhost:${{ job.services.postgres.ports['5432'] }}/postgres?sslmode=disable
         run: |
           status=0
-          go test -race -json ./... > test.json || status=$?
+          go test -race -json ./... > test.json 2> test.err || status=$?
           if [ "$status" -ne 0 ]; then
             echo "go test failed with status $status; output follows."
+            cat test.err
             grep -F '"Action":"output"' test.json \
               | sed -n 's/.*"Output":"\(.*\)"}$/\1/p' \
               | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g'
