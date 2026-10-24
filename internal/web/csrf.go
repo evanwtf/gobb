@@ -10,8 +10,12 @@ import (
 	"github.com/evanwtf/gobb/internal/session"
 )
 
-// maxFormBytes is the largest form body that a POST route reads.
-const maxFormBytes = 32 << 10
+// The largest body that a POST route reads. A sign-in form carries a password
+// of up to 4,096 bytes and a name, so it gets the larger cap.
+const (
+	maxLoginBody = 16 << 10
+	maxPostBody  = 4 << 10
+)
 
 // newCSRFSecret returns 32 random bytes in base64url, the value of a guest's
 // gobb_csrf cookie.
@@ -28,9 +32,12 @@ func newCSRFSecret() (string, error) {
 // carry the csrf token of the visitor. The handler then reads the parsed form
 // from r.PostForm. A request that fails either check gets 403 and the handler
 // does not run.
-func (s *site) protect(h http.HandlerFunc) http.Handler {
+//
+// The body is capped at limit bytes before anything reads it, so a large body
+// never reaches the csrf check: it gets 413 in the layout.
+func (s *site) protect(limit int64, h http.HandlerFunc) http.Handler {
 	return s.crossOrigin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if err := r.ParseForm(); err != nil {
 			var tooBig *http.MaxBytesError
 			if errors.As(err, &tooBig) {

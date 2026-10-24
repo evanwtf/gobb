@@ -49,6 +49,12 @@ type Options struct {
 	// LoginFloor is the least time that a failed sign-in takes. Zero means the
 	// default of 400 ms. Tests set it small.
 	LoginFloor time.Duration
+	// LoginGate replaces the memory gate of password checks. Nil means a gate
+	// with the default budget. Tests use it to fill the gate.
+	LoginGate *login.Gate
+	// LoginGateWait is how long a password check waits for the gate. Zero means
+	// the default of 5 seconds. Tests set it small.
+	LoginGateWait time.Duration
 }
 
 // site holds what the handlers share: the pool, the options and the parsed
@@ -83,10 +89,17 @@ var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "
 // templates once, so a broken template fails here and not on a request. It reads
 // the legacy routes once too.
 func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
-	s := &site{pool: pool, opt: opt, login: login.New(pool), crossOrigin: http.NewCrossOriginProtection()}
+	lo := login.DefaultOptions()
+	if opt.LoginGate != nil {
+		lo.Gate = opt.LoginGate
+	}
+	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection()}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	if opt.LoginFloor != 0 {
 		s.login.Floor = opt.LoginFloor
+	}
+	if opt.LoginGateWait != 0 {
+		s.login.GateWait = opt.LoginGateWait
 	}
 	if s.opt.Now == nil {
 		s.opt.Now = time.Now
@@ -108,8 +121,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /t/{id}", s.topic)
 	inner.HandleFunc("GET /t/{id}/new", s.topicNew)
 	inner.HandleFunc("GET /new", s.newPage)
-	inner.Handle("POST /read", s.protect(s.markAllRead))
-	inner.Handle("POST /f/{id}/read", s.protect(s.markForumRead))
+	inner.Handle("POST /read", s.protect(maxPostBody, s.markAllRead))
+	inner.Handle("POST /f/{id}/read", s.protect(maxPostBody, s.markForumRead))
 	inner.HandleFunc("GET /p/{id}", s.post)
 	inner.HandleFunc("GET /a/{id}", s.attachment)
 	inner.HandleFunc("GET /u/{id}", s.profile)
@@ -119,9 +132,9 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /account", s.account)
 	inner.HandleFunc("GET /search", s.search)
 	inner.HandleFunc("GET /login", s.loginPage)
-	inner.Handle("POST /login", s.protect(s.loginSubmit))
-	inner.Handle("POST /logout", s.protect(s.logout))
-	inner.Handle("POST /scheme", s.protect(s.setScheme))
+	inner.Handle("POST /login", s.protect(maxLoginBody, s.loginSubmit))
+	inner.Handle("POST /logout", s.protect(maxPostBody, s.logout))
+	inner.Handle("POST /scheme", s.protect(maxPostBody, s.setScheme))
 	inner.HandleFunc("GET /static/{name}", s.static)
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
 	// Without this, the mux would redirect /files/avatars to /files/avatars/.

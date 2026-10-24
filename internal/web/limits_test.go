@@ -1,0 +1,246 @@
+package web
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"net/url"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/login"
+)
+
+// proxied sends form to target as a client at addr behind a trusted proxy: the
+// peer is 10.0.0.1 and X-Forwarded-For names the client.
+func proxied(t *testing.T, h http.Handler, target, addr string, cookies []*http.Cookie, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.RemoteAddr = "10.0.0.1:4000"
+	r.Header.Set("X-Forwarded-For", addr)
+	for _, c := range cookies {
+		r.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+func proxyOptions() Options {
+	return Options{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}}
+}
+
+// csrfFor returns the guest cookies and the csrf token that the sign-in page gives.
+func csrfFor(t *testing.T, h http.Handler) ([]*http.Cookie, string) {
+	t.Helper()
+	page := getAs(t, h, "/login", nil)
+	m := csrfField.FindStringSubmatch(bodyOf(t, page))
+	if m == nil {
+		t.Fatal("the sign-in page has no csrf field")
+	}
+	return jar(nil, page), m[1]
+}
+
+func TestLoginHTTPLimits(t *testing.T) {
+	h, _ := siteAndPool(t, bundletest.Small(), proxyOptions())
+	cookies, token := csrfFor(t, h)
+
+	// A 1 MiB body answers 413, in the layout, before the csrf check.
+	big := proxied(t, h, "/login", "2001:db8::5", cookies, url.Values{"name": {"alice"}, "password": {strings.Repeat("x", 1<<20)}})
+	if big.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("1 MiB POST /login = %d, want 413", big.Code)
+	}
+	if body := bodyOf(t, big); !strings.Contains(body, "Request too large") || !strings.Contains(body, "<html") {
+		t.Errorf("the 413 page is not the layout:\n%s", body)
+	}
+
+	form := func(pw string) url.Values {
+		return url.Values{"name": {"alice"}, "password": {pw}, "csrf": {token}}
+	}
+	for i := range 10 {
+		rec := proxied(t, h, "/login", "2001:db8::5", cookies, form("wrong"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("failure %d = %d, want 200", i+1, rec.Code)
+		}
+	}
+	limited := proxied(t, h, "/login", "2001:db8::5", cookies, form(testPassword))
+	if limited.Code != http.StatusTooManyRequests {
+		t.Fatalf("11th try = %d, want 429", limited.Code)
+	}
+	secs, err := strconv.Atoi(limited.Header().Get("Retry-After"))
+	if err != nil || secs < 1 || secs > 15*60 {
+		t.Errorf("Retry-After = %q (%v), want 1 to 900 seconds", limited.Header().Get("Retry-After"), err)
+	}
+	body := bodyOf(t, limited)
+	// The same layout as /login, the message, and the form still there.
+	for _, want := range []string{
+		"Try again in 15 minutes.", "Too many sign-in attempts.",
+		`action="/login"`, `name="name"`, `name="password"`, `name="csrf"`, `value="alice"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the 429 page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, testPassword) || strings.Contains(body, "wrong") {
+		t.Error("the 429 page echoes a password")
+	}
+	if limited.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q", limited.Header().Get("Cache-Control"))
+	}
+	// Another address signs in at once.
+	if ok := proxied(t, h, "/login", "2001:db8::6", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
+		t.Errorf("another address = %d, want 303", ok.Code)
+	}
+}
+
+// With no proxy, the peer address is the client (the owner's local browser).
+func TestLoginLimitsOnPeerAddress(t *testing.T) {
+	h, _ := siteAndPool(t, bundletest.Small(), Options{})
+	for i := range 10 {
+		rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {"wrong"}})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("failure %d = %d", i+1, rec.Code)
+		}
+	}
+	rec, cookies := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {testPassword}})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("11th try = %d, want 429", rec.Code)
+	}
+	if body := bodyOf(t, rec); !strings.Contains(body, `name="password"`) {
+		t.Error("the form is gone from the 429 page")
+	}
+	_ = cookies
+}
+
+// The limit is the name's, and a success clears it: here the name limit is
+// reached from many addresses, and the right password works after the wait.
+func TestLoginNameLimitHTTP(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	clock := now
+	opt := proxyOptions()
+	opt.Now = func() time.Time { return clock }
+	h, _ := siteAndPool(t, bundletest.Small(), opt)
+	cookies, token := csrfFor(t, h)
+	form := func(pw string) url.Values {
+		return url.Values{"name": {"bob"}, "password": {pw}, "csrf": {token}}
+	}
+	for i := range 20 {
+		addr := "2001:db8::" + strconv.Itoa(0x100+i)
+		if rec := proxied(t, h, "/login", addr, cookies, form("wrong")); rec.Code != http.StatusOK {
+			t.Fatalf("failure %d = %d", i+1, rec.Code)
+		}
+	}
+	rec := proxied(t, h, "/login", "2001:db8::900", cookies, form(testPassword))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("21st = %d, want 429", rec.Code)
+	}
+	if body := bodyOf(t, rec); !strings.Contains(body, "Try again in 60 minutes.") {
+		t.Errorf("the page does not state the wait:\n%s", body)
+	}
+	// After the wait, the right password works.
+	clock = clock.Add(61 * time.Minute)
+	if ok := proxied(t, h, "/login", "2001:db8::900", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
+		t.Errorf("after the wait = %d, want 303", ok.Code)
+	}
+}
+
+func TestLimitedMinutes(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "1 minute"},
+		{time.Millisecond, "1 minute"},
+		{time.Second, "1 minute"},
+		{time.Minute, "1 minute"},
+		{time.Minute + time.Nanosecond, "2 minutes"},
+		{90 * time.Second, "2 minutes"},
+		{14*time.Minute + 59*time.Second, "15 minutes"},
+		{15 * time.Minute, "15 minutes"},
+		{time.Hour, "60 minutes"},
+	} {
+		if got := waitText(tc.d); got != tc.want {
+			t.Errorf("waitText(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+	if secs := retrySeconds(0); secs != 1 {
+		t.Errorf("retrySeconds(0) = %d, want 1", secs)
+	}
+	if secs := retrySeconds(1500 * time.Millisecond); secs != 2 {
+		t.Errorf("retrySeconds(1.5s) = %d, want 2", secs)
+	}
+}
+
+// A busy gate answers 503 with Retry-After 5, in the sign-in layout.
+func TestLoginBusy(t *testing.T) {
+	gate := login.NewGate(1024)
+	hold, err := gate.Acquire(t.Context(), 1024, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold()
+	h, _ := siteAndPool(t, bundletest.Small(), Options{LoginGate: gate, LoginGateWait: 20 * time.Millisecond})
+	rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {testPassword}})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("busy POST /login = %d, want 503", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "5" {
+		t.Errorf("Retry-After = %q, want 5", rec.Header().Get("Retry-After"))
+	}
+	if body := bodyOf(t, rec); !strings.Contains(body, `name="password"`) {
+		t.Error("the form is gone from the 503 page")
+	}
+}
+
+var bodyCaps = []struct {
+	route string
+	limit int
+}{
+	{"/login", 16 << 10},
+	{"/logout", 4 << 10},
+	{"/scheme", 4 << 10},
+	{"/read", 4 << 10},
+	{"/f/1/read", 4 << 10},
+}
+
+// Every POST route has a cap on its body. A body over it answers 413 in the
+// layout, even without a csrf token. A body just under it reaches the csrf check.
+func TestPostBodyCaps(t *testing.T) {
+	h, _ := smallSite(t)
+	for _, tc := range bodyCaps {
+		t.Run(tc.route, func(t *testing.T) {
+			over := url.Values{"junk": {strings.Repeat("x", tc.limit)}}
+			rec := request(t, h, http.MethodPost, tc.route, nil, over)
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Errorf("body of %d bytes = %d, want 413", len(over.Encode()), rec.Code)
+			}
+			if body := bodyOf(t, rec); !strings.Contains(body, "Request too large") || !strings.Contains(body, "<html") {
+				t.Errorf("the 413 is not the layout: %.200s", body)
+			}
+			under := url.Values{"junk": {strings.Repeat("x", tc.limit-100)}}
+			rec = request(t, h, http.MethodPost, tc.route, nil, under)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("body of %d bytes = %d, want 403 from the csrf check", len(under.Encode()), rec.Code)
+			}
+		})
+	}
+}
+
+// The caps cover every POST route that exists: the test fails when a route is
+// added with no row in bodyCaps.
+func TestPostRoutesHaveCaps(t *testing.T) {
+	src, err := os.ReadFile("site.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := regexp.MustCompile(`Handle\("POST ([^"]+)"`).FindAllStringSubmatch(string(src), -1)
+	if len(routes) != len(bodyCaps) {
+		t.Fatalf("site.go has %d POST routes, bodyCaps lists %d", len(routes), len(bodyCaps))
+	}
+}

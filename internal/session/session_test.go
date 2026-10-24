@@ -207,3 +207,81 @@ func TestLookupRequiresActiveUser(t *testing.T) {
 		t.Errorf("Lookup after the user is active again: %v", err)
 	}
 }
+
+func TestCleanup(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	now := t0.Add(100 * 24 * time.Hour)
+
+	// An expired session, a live one and a remembered one that has not expired.
+	expired, _, err := session.Create(ctx, pool, 1, false, netip.MustParseAddr("10.1.0.1"), "", now.Add(-48*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, _, err := session.Create(ctx, pool, 1, false, netip.MustParseAddr("10.1.0.2"), "", now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remembered, _, err := session.Create(ctx, pool, 2, true, netip.MustParseAddr("10.1.0.3"), "", now.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rows of user_ips at 91 days, 89 days, and just past 90 days.
+	for ip, age := range map[string]time.Duration{
+		"10.1.0.1": 91 * 24 * time.Hour,
+		"10.1.0.2": 89 * 24 * time.Hour,
+		"10.1.0.3": 90*24*time.Hour + time.Second,
+	} {
+		if _, err := pool.Exec(ctx, `update user_ips set last_seen_at = $2 where host(ip) = $1`, ip, now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sessions, ips, err := session.Cleanup(ctx, pool, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 || ips != 2 {
+		t.Errorf("Cleanup = %d sessions, %d ips; want 1, 2", sessions, ips)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `select count(*) from sessions`).Scan(&n); err != nil || n != 2 {
+		t.Errorf("sessions left = %d (%v), want 2", n, err)
+	}
+	for name, token := range map[string]string{"live": live, "remembered": remembered} {
+		if _, err := session.Lookup(ctx, pool, token, now); err != nil {
+			t.Errorf("the %s session is gone: %v", name, err)
+		}
+	}
+	var gone int
+	if err := pool.QueryRow(ctx, `select count(*) from sessions where id = $1`, mustHash(expired)).Scan(&gone); err != nil || gone != 0 {
+		t.Errorf("the expired session stays (%d, %v)", gone, err)
+	}
+	var ipsLeft []string
+	rows, err := pool.Query(ctx, `select host(ip) from user_ips order by 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			t.Fatal(err)
+		}
+		ipsLeft = append(ipsLeft, ip)
+	}
+	if len(ipsLeft) != 1 || ipsLeft[0] != "10.1.0.2" {
+		t.Errorf("user_ips left = %v, want [10.1.0.2]", ipsLeft)
+	}
+
+	// A second run finds nothing.
+	if s, i, err := session.Cleanup(ctx, pool, now); err != nil || s != 0 || i != 0 {
+		t.Errorf("second Cleanup = %d, %d, %v; want 0, 0, nil", s, i, err)
+	}
+}
+
+// mustHash returns the stored id of a token.
+func mustHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}

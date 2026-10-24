@@ -27,6 +27,7 @@ import (
 	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/importer"
+	"github.com/evanwtf/gobb/internal/session"
 	"github.com/evanwtf/gobb/internal/version"
 	"github.com/evanwtf/gobb/internal/web"
 	"github.com/jackc/pgx/v5"
@@ -247,7 +248,53 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		return err
 	}
 	slog.Info("listening", "addr", ln.Addr().String(), "base_path", cfg.BasePath)
-	return serveUntil(ctx, newHTTPServer(h), ln, pool.Close, sigs, exit)
+	// The cleanup stops with the server. The pool closes after it has stopped.
+	cleanCtx, stopClean := context.WithCancel(ctx)
+	cleaned := make(chan struct{})
+	go func() {
+		defer close(cleaned)
+		ticker := time.NewTicker(cleanupEvery)
+		defer ticker.Stop()
+		cleanupLoop(cleanCtx, ticker.C, func(c context.Context) { cleanup(c, pool, time.Now) })
+	}()
+	closePool := func() {
+		stopClean()
+		<-cleaned
+		pool.Close()
+	}
+	return serveUntil(ctx, newHTTPServer(h), ln, closePool, sigs, exit)
+}
+
+// cleanupEvery is the time between two runs of the session cleanup.
+const cleanupEvery = time.Hour
+
+// cleanupLoop calls run once at once, then once for each value on tick, until
+// ctx ends. A run that has started finishes; none starts after ctx ends.
+func cleanupLoop(ctx context.Context, tick <-chan time.Time, run func(context.Context)) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		run(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick:
+		}
+	}
+}
+
+// cleanup deletes the expired sessions and the old user_ips rows, and logs how
+// many of each it removed. A failure is logged and does not stop the server.
+func cleanup(ctx context.Context, q db.Querier, now func() time.Time) {
+	sessions, ips, err := session.Cleanup(ctx, q, now())
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Error("session cleanup failed", "err", err)
+		}
+		return
+	}
+	slog.Info("session cleanup", "sessions", sessions, "ips", ips)
 }
 
 // setup opens the pool, applies the migrations and builds the handler. On an

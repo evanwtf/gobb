@@ -187,3 +187,23 @@ func CheckCSRF(secret, got string) bool {
 	}
 	return subtle.ConstantTimeCompare([]byte(CSRFToken(secret)), []byte(got)) == 1
 }
+
+// ipKeepFor is how long user_ips keeps an address after its last sighting
+// (spec 10).
+const ipKeepFor = 90 * 24 * time.Hour
+
+// Cleanup deletes the sessions that have expired by now, and the user_ips rows
+// last seen more than 90 days before now. It returns how many of each. A session
+// that has expired is dead to [Lookup] already, so the delete only frees space.
+func Cleanup(ctx context.Context, q db.Querier, now time.Time) (sessions, ips int64, err error) {
+	tag, err := q.Exec(ctx, `delete from sessions where expires_at <= $1`, now)
+	if err != nil {
+		return 0, 0, fmt.Errorf("session: cleanup sessions: %w", err)
+	}
+	sessions = tag.RowsAffected()
+	tag, err = q.Exec(ctx, `delete from user_ips where last_seen_at < $1`, now.Add(-ipKeepFor))
+	if err != nil {
+		return sessions, 0, fmt.Errorf("session: cleanup user_ips: %w", err)
+	}
+	return sessions, tag.RowsAffected(), nil
+}

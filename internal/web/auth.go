@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -280,7 +281,18 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	now := s.opt.Now()
 	userID, err := s.login.Check(r.Context(), d.Name, form.Get("password"), ip, now)
 	var banned *login.BannedError
+	var limited *login.LimitedError
 	switch {
+	case errors.As(err, &limited):
+		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(limited.RetryAfter)))
+		d.Error = "Too many sign-in attempts. Try again in " + waitText(limited.RetryAfter) + "."
+		s.renderLogin(w, p, http.StatusTooManyRequests, d)
+		return
+	case errors.Is(err, login.ErrBusy):
+		w.Header().Set("Retry-After", strconv.Itoa(busyRetrySeconds))
+		d.Error = "The server is busy. Try again in a few seconds."
+		s.renderLogin(w, p, http.StatusServiceUnavailable, d)
+		return
 	case errors.Is(err, login.ErrWrong):
 		d.Error = "The name or password is wrong."
 		s.renderLogin(w, p, http.StatusOK, d)
@@ -326,6 +338,25 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setCookie(w, s.cookie(sessionCookie, token, maxAge))
 	http.Redirect(w, r, d.Next, http.StatusSeeOther)
+}
+
+// busyRetrySeconds is the Retry-After of a sign-in that found the gate full.
+const busyRetrySeconds = 5
+
+// retrySeconds returns d in whole seconds, rounded up, and at least 1, for the
+// Retry-After header.
+func retrySeconds(d time.Duration) int {
+	return max(1, int((d+time.Second-1)/time.Second))
+}
+
+// waitText returns d in whole minutes, rounded up, and at least one: "1 minute"
+// or "N minutes". It never says "0 minutes".
+func waitText(d time.Duration) string {
+	n := max(1, int((d+time.Minute-1)/time.Minute))
+	if n == 1 {
+		return "1 minute"
+	}
+	return strconv.Itoa(n) + " minutes"
 }
 
 // logout serves POST /logout.
