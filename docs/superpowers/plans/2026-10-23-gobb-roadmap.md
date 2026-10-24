@@ -44,6 +44,8 @@ Decisions and limits that Plan 1 found and later plans must honor:
   - Set server read, write and idle timeouts, and a header-size limit.
   - Bound `pool.Close` inside the 25 s shutdown window. Let a second signal force an exit.
   - The CSP for an X embed also needs `connect-src` and `img-src` for X's syndication hosts.
+  - Serve the content paths that Plan 2 fixes (`/p/`, `/t/`, `/f/`, `/u/`, `/a/` plus an ID), and make `Render` add the base path to site paths.
+  - Serve files from the five data directories that Plan 2 fixes, and read the board settings from the keys that Plan 2 stores.
 - **Plan 4 (write side).**
   - Cap a post body at 60,000 bytes, and rate-limit posting and preview per member. goldmark's worst case is about 1 s at that size (a repeated `[a](`). Parse a post once, when it is saved, never when it is viewed.
   - The quote button inserts `> **Name** [wrote](/p/N):` and then a `>` line, so the attribution is its own paragraph.
