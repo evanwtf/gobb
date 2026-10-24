@@ -87,21 +87,21 @@ func (v *vet) text(field, s string) bool {
 
 func hasControl(s string) bool { return strings.IndexFunc(s, unicode.IsControl) >= 0 }
 
-// name checks a "name": 1 to 255 bytes after trimming Unicode white space (as
-// strings.TrimSpace does). The value holds no control character anywhere, ends
-// included, so a trailing newline is refused.
+// name checks a "name": at most 255 bytes, and not empty after trimming Unicode
+// white space (as strings.TrimSpace does). The length is that of the raw value,
+// because gobb stores the value as given. The value holds no control character
+// anywhere, ends included, so a trailing newline is refused.
 func (v *vet) name(field, s string) {
 	if !v.text(field, s) {
 		return
 	}
-	t := strings.TrimSpace(s)
 	switch {
 	case hasControl(s):
 		v.add(field, "holds a control character")
-	case t == "":
+	case strings.TrimSpace(s) == "":
 		v.add(field, "is empty after trimming white space")
-	case len(t) > maxName:
-		v.add(field, "is %d bytes; the limit is %d", len(t), maxName)
+	case len(s) > maxName:
+		v.add(field, "is %d bytes; the limit is %d", len(s), maxName)
 	}
 }
 
@@ -616,7 +616,7 @@ func (a Attachment) check() []*Error {
 	v.id("id", a.ID)
 	v.optID("post_id", a.PostID)
 	v.count("position", a.Position)
-	v.id("uploader_id", a.UploaderID)
+	v.optID("uploader_id", a.UploaderID)
 	v.label("name", a.Name)
 	v.file("file", a.File, "attachments")
 	v.enum("mime", a.Mime, mimeTypes)
@@ -630,12 +630,13 @@ func (a Attachment) check() []*Error {
 func (p PM) check() []*Error {
 	var v vet
 	v.id("id", p.ID)
-	v.id("author_id", p.AuthorID)
+	v.optID("author_id", p.AuthorID)
+	v.label("author_name", p.AuthorName)
 	v.ip("author_ip", p.AuthorIP)
 	v.label("subject", p.Subject)
 	v.body("body", p.Body)
-	if len(p.Recipients) == 0 {
-		v.add("recipients", "has no recipient; a message needs 1 or more")
+	if len(p.Recipients) == 0 && p.AuthorID == nil {
+		v.add("recipients", "has no recipient; a message with no author_id needs 1 or more, so that somebody can see it")
 	}
 	seen := map[int64]bool{}
 	for i, r := range p.Recipients {

@@ -435,12 +435,12 @@ func Small() *Board {
 
 	b.Attachments = []bundle.Attachment{
 		{
-			ID: 1, PostID: ptr(int64(2)), Position: 0, UploaderID: 2, Name: "diagram.png",
+			ID: 1, PostID: ptr(int64(2)), Position: 0, UploaderID: ptr(int64(2)), Name: "diagram.png",
 			File: ref("attachments/1.png"), Mime: "image/png", Width: ptr(1), Height: ptr(1),
 			DownloadCount: 7, Comment: "A diagram", CreatedAt: at(2019, 5, 2, 9, 30),
 		},
 		{
-			ID: 2, Position: 0, UploaderID: 1, Name: "unused.gif",
+			ID: 2, Position: 0, UploaderID: ptr(int64(1)), Name: "unused.gif",
 			File: ref("attachments/2.gif"), Mime: "image/gif", Width: ptr(1), Height: ptr(1),
 			CreatedAt: at(2019, 6, 1, 8, 0),
 		},
@@ -448,7 +448,7 @@ func Small() *Board {
 
 	b.PMs = []bundle.PM{
 		{
-			ID: 1, AuthorID: 1, AuthorIP: ptr("10.0.0.5"), CreatedAt: at(2019, 6, 10, 14, 30),
+			ID: 1, AuthorID: ptr(int64(1)), AuthorName: "alice", AuthorIP: ptr("10.0.0.5"), CreatedAt: at(2019, 6, 10, 14, 30),
 			Subject: "Welcome aboard", Body: body("Glad you joined, bob."), ShowSignature: true,
 			Recipients: []bundle.Recipient{
 				{UserID: 2, Kind: "to", Read: true},
@@ -456,7 +456,7 @@ func Small() *Board {
 			},
 		},
 		{
-			ID: 2, AuthorID: 2, CreatedAt: at(2019, 6, 11, 7, 0),
+			ID: 2, AuthorID: ptr(int64(2)), AuthorName: "bob", CreatedAt: at(2019, 6, 11, 7, 0),
 			Subject: "Re: Welcome aboard", Body: body("Thanks, alice."), AuthorDeleted: true,
 			Recipients: []bundle.Recipient{{UserID: 1, Kind: "to", Read: true, Deleted: true}},
 		},

@@ -289,7 +289,7 @@ func TestWriterAddFile(t *testing.T) {
 		t.Errorf("copy differs: %v", err)
 	}
 	for _, f := range []FileRef{fr} {
-		if errs := (Attachment{ID: 1, UploaderID: 1, Name: "a", File: f, Mime: "image/png", CreatedAt: testTime}).check(); len(errs) != 0 {
+		if errs := (Attachment{ID: 1, UploaderID: ptr(int64(1)), Name: "a", File: f, Mime: "image/png", CreatedAt: testTime}).check(); len(errs) != 0 {
 			t.Errorf("the ref fails its check: %v", errs[0])
 		}
 	}

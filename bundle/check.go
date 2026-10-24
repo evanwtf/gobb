@@ -59,7 +59,8 @@ var errFull = errors.New("bundle: error limit reached")
 //     prefix of a legacy file and the slug of a static page;
 //   - every reference names a row that exists;
 //   - each of the four built-in groups appears exactly once;
-//   - at least one active user is an owner;
+//   - at least one active user is an owner, and at least one active owner has a
+//     password hash, so that an owner can log in;
 //   - cleaned user names are unique;
 //   - the forum parent chain has no cycle;
 //   - a topic is in a forum of kind forum;
@@ -244,8 +245,9 @@ type whole struct {
 	votes                                               map[voteKey]int
 
 	clean       map[string]int64 // cleaned user name -> user ID
-	activeOwner bool
-	builtin     map[string]int // built-in group name -> line
+	activeOwner bool             // an active user is an owner
+	loginOwner  bool             // an active owner has a password hash
+	builtin     map[string]int   // built-in group name -> line
 
 	members, watches, bookmarks, topicMarks, forumMarks pairSet
 	smileys, routes, prefixes, pages                    keySet
@@ -384,12 +386,19 @@ func (w *whole) user(line int, u User) {
 	}
 	if u.Owner && u.State == "active" {
 		w.activeOwner = true
+		if u.Password.Hash != "" {
+			w.loginOwner = true
+		}
 	}
 }
 
 func (w *whole) endUsers() {
-	if !w.halt && !w.activeOwner {
+	switch {
+	case w.halt:
+	case !w.activeOwner:
 		w.bad("users.jsonl", 0, "owner", "no active user is an owner; the board needs one")
+	case !w.loginOwner:
+		w.bad("users.jsonl", 0, "owner", "no active owner has a password hash; the board needs an owner who can log in")
 	}
 }
 
@@ -675,14 +684,14 @@ func (w *whole) attachment(line int, a Attachment) {
 	const file = "attachments.jsonl"
 	w.unique(file, line, w.attachments, a.ID)
 	w.optRef(file, line, "post_id", w.posts, a.PostID, "posts.jsonl")
-	w.ref(file, line, "uploader_id", w.users, a.UploaderID, "users.jsonl")
+	w.optRef(file, line, "uploader_id", w.users, a.UploaderID, "users.jsonl")
 	w.nameFile(file, line, "file", a.File)
 }
 
 func (w *whole) pm(line int, m PM) {
 	const file = "pms.jsonl"
 	w.unique(file, line, w.pms, m.ID)
-	w.ref(file, line, "author_id", w.users, m.AuthorID, "users.jsonl")
+	w.optRef(file, line, "author_id", w.users, m.AuthorID, "users.jsonl")
 	for i, r := range m.Recipients {
 		w.ref(file, line, "recipients["+strconv.Itoa(i)+"].user_id", w.users, r.UserID, "users.jsonl")
 	}

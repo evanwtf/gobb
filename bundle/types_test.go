@@ -65,12 +65,13 @@ func fullRows() []Row {
 		},
 		PollVote{TopicID: 1, OptionID: 1, UserID: 1, VoterIP: ptr("10.0.0.2")},
 		Attachment{
-			ID: 1, PostID: ptr(int64(1)), Position: 0, UploaderID: 1, Name: "a.png",
+			ID: 1, PostID: ptr(int64(1)), Position: 0, UploaderID: ptr(int64(1)), Name: "a.png",
 			File: ref("attachments"), Mime: "image/png", Width: ptr(10), Height: ptr(20),
 			DownloadCount: 1, Comment: "c", CreatedAt: testTime,
 		},
 		PM{
-			ID: 1, AuthorID: 1, AuthorIP: ptr("10.0.0.3"), CreatedAt: testTime, Subject: "s",
+			ID: 1, AuthorID: ptr(int64(1)), AuthorName: "alice", AuthorIP: ptr("10.0.0.3"),
+			CreatedAt: testTime, Subject: "s",
 			Body: body(), ShowSignature: true, AuthorDeleted: true,
 			Recipients: []Recipient{{UserID: 2, Kind: "to", Read: true, Deleted: true}},
 		},
@@ -169,14 +170,15 @@ func validPoll() Poll {
 
 func validAttachment() Attachment {
 	return Attachment{
-		ID: 1, UploaderID: 1, Name: "a.png", File: ref("attachments"), Mime: "image/png",
+		ID: 1, UploaderID: ptr(int64(1)), Name: "a.png", File: ref("attachments"), Mime: "image/png",
 		CreatedAt: testTime,
 	}
 }
 
 func validPM() PM {
 	return PM{
-		ID: 1, AuthorID: 1, CreatedAt: testTime, Subject: "s", Body: body(),
+		ID: 1, AuthorID: ptr(int64(1)), AuthorName: "alice", CreatedAt: testTime,
+		Subject: "s", Body: body(),
 		Recipients: []Recipient{{UserID: 2, Kind: "to"}, {UserID: 3, Kind: "bcc"}},
 	}
 }
@@ -512,7 +514,18 @@ func TestCheckFields(t *testing.T) {
 		{"attachment height", func() Row { a := validAttachment(); a.Height = ptr(-2); return a }(), "height"},
 		{"attachment position", func() Row { a := validAttachment(); a.Position = -1; return a }(), "position"},
 		{"attachment downloads", func() Row { a := validAttachment(); a.DownloadCount = -1; return a }(), "download_count"},
-		{"pm no recipients", func() Row { p := validPM(); p.Recipients = nil; return p }(), "recipients"},
+		{"pm gone author and no recipients", func() Row {
+			p := validPM()
+			p.AuthorID, p.AuthorName, p.Recipients = nil, "ghost", nil
+			return p
+		}(), "recipients"},
+		{"pm author id zero", func() Row { p := validPM(); p.AuthorID = ptr(int64(0)); return p }(), "author_id"},
+		{"pm author name long", func() Row { p := validPM(); p.AuthorName = strings.Repeat("a", 256); return p }(), "author_name"},
+		{"pm author name control", func() Row { p := validPM(); p.AuthorName = "a\nb"; return p }(), "author_name"},
+		{"attachment uploader id zero", func() Row { a := validAttachment(); a.UploaderID = ptr(int64(0)); return a }(), "uploader_id"},
+		{"username 3 bytes and 300 spaces", func() Row { u := validUser(); u.Username = "bob" + strings.Repeat(" ", 300); return u }(), "username"},
+		{"group name 3 bytes and 300 spaces", func() Row { g := validGroup(); g.Name = "bob" + strings.Repeat(" ", 300); return g }(), "name"},
+		{"page title 3 bytes and 300 spaces", func() Row { p := validPage(); p.Title = "bob" + strings.Repeat(" ", 300); return p }(), "title"},
 		{"pm recipient kind", func() Row { p := validPM(); p.Recipients[0].Kind = "cc"; return p }(), "recipients[0].kind"},
 		{"pm recipient twice", func() Row { p := validPM(); p.Recipients[1].UserID = 2; return p }(), "recipients[1].user_id"},
 		{"pm recipient id", func() Row { p := validPM(); p.Recipients[0].UserID = 0; return p }(), "recipients[0].user_id"},
@@ -773,5 +786,39 @@ func TestCheckInt32Bounds(t *testing.T) {
 	r.Position = math.MinInt32 - 1
 	if errs := r.check(); len(errs) == 0 {
 		t.Error("position below the 32-bit minimum passes")
+	}
+}
+
+// TestCheckGonePeople covers a private message and an attachment whose person
+// is gone: the ID is null and the label stays.
+func TestCheckGonePeople(t *testing.T) {
+	gone := validPM()
+	gone.AuthorID, gone.AuthorName = nil, "ghost"
+	live := validPM()
+	live.Recipients = nil
+	upload := validAttachment()
+	upload.UploaderID = nil
+	for name, row := range map[string]Row{
+		"gone author with a recipient":  gone,
+		"live author and no recipients": live,
+		"gone uploader":                 upload,
+	} {
+		if errs := firstError(row); errs != nil {
+			t.Errorf("%s: %v", name, errs)
+		}
+	}
+}
+
+// TestCheckNameLimitIsRaw proves that a name is measured as given: 255 bytes pass,
+// and 255 bytes plus trailing spaces do not.
+func TestCheckNameLimitIsRaw(t *testing.T) {
+	u := validUser()
+	u.Username = strings.Repeat("a", 255)
+	if err := firstError(u); err != nil {
+		t.Errorf("255 bytes: %v", err)
+	}
+	u.Username += " "
+	if err := firstError(u); err == nil || !strings.Contains(err.Error(), "256 bytes") {
+		t.Errorf("255 bytes and a space = %v, want a length error", err)
 	}
 }

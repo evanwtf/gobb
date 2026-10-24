@@ -80,7 +80,8 @@ only on a field with a `?`. A list or an object that the tables name (`settings`
   says less. A JSON escape for half of a surrogate pair (`\ud800` to `\udfff`) is an
   error unless the two halves of a pair follow each other, because a decoder turns a
   lone half into U+FFFD.
-- **name**: 1 to 255 bytes after gobb trims Unicode white space from both ends. A
+- **name**: at most 255 bytes, measured on the value as written, and not empty after
+  gobb trims Unicode white space from both ends. gobb stores the value as written. A
   control character is refused anywhere in the value, at the ends too. A trailing
   newline or tab is an error.
 - **label**: at most 255 bytes, with no control characters. It may be empty.
@@ -94,6 +95,8 @@ only on a field with a `?`. A list or an object that the tables name (`settings`
   `forum.read` or `topic.reply`. An option is one of three kinds. A *forum* option
   applies per forum. A *board* option applies to the whole board. A *moderator* option
   applies at both levels.
+
+Every length limit in this format is in bytes of UTF-8, not in characters.
 
 These integer fields land in 32-bit database columns, so each is at most
 2,147,483,647: `users.post_count`, `topics.view_count`, `posts.edit_count`,
@@ -249,7 +252,8 @@ A count that disagrees with its file stops the import.
 | `notify_on_post` | bool | |
 
 Cross-row rules: user names are unique after gobb cleans them (case folding and
-Unicode normalization). At least one active user is an owner.
+Unicode normalization). At least one active user is an owner, and at least one active
+owner has a non-empty `password.hash`, so that an owner can log in after the cutover.
 
 ```json
 {"id":1,"username":"alice","email":"alice@example.com","password":{"scheme":"gobb","hash":"$argon2id$v=19$m=19456,t=2,p=1$nIWkXeM7L5FA7XDKfH36lQ$lxqRFYzVFEIy5o0i5Or7n6g0FyBsBN3Mfl8PA1WJdMo"},"state":"active","owner":true,"email_verified":true,"registered_at":"2019-05-01T10:00:00Z","last_visit_at":"2026-01-10T08:30:00Z","last_mark_at":null,"post_count":120,"rank_id":1,"avatar":null,"signature":{"source":"Example signature","markdown":true,"smilies":true,"autolink":true},"timezone":"America/New_York","color_scheme":"slate","notify_on_post":true}
@@ -451,7 +455,7 @@ rows than its `votes`. A user has no more vote rows in a poll than its `max_opti
 | `id` | id | |
 | `post_id`? | id | A row of `posts.jsonl`. `null` for an upload that no post uses. |
 | `position` | count | The order of the attachments of one post. |
-| `uploader_id` | id | A row of `users.jsonl`. |
+| `uploader_id`? | id | A row of `users.jsonl`, or `null` when the uploader is gone. |
 | `name` | label | The file name that members see. |
 | `file` | file | A file under `attachments/`. It holds `path`, `size` and `sha256`. |
 | `mime` | string | `image/png`, `image/jpeg`, `image/gif` or `image/webp`. |
@@ -472,20 +476,24 @@ One row is one private message with all its recipients.
 | Field | Type | Rule |
 |---|---|---|
 | `id` | id | |
-| `author_id` | id | A row of `users.jsonl`. |
+| `author_id`? | id | A row of `users.jsonl`, or `null` when the author is gone. |
+| `author_name` | label | The name to show. |
 | `author_ip`? | ip | |
 | `created_at` | time | |
 | `subject` | label | |
 | `body` | body | Holds `source`, `markdown`, `smilies` and `autolink`. |
 | `show_signature` | bool | |
 | `author_deleted` | bool | Whether the author deleted their copy. |
-| `recipients` | list | 1 or more items. Each has `user_id`, `kind`, `read` and `deleted`. |
+| `recipients` | list | Each has `user_id`, `kind`, `read` and `deleted`. It may be empty only when `author_id` is set. |
 
 In a recipient, `user_id` is a row of `users.jsonl`, `kind` is `to` or `bcc`, and `read`
-and `deleted` are bools. A user appears once per message.
+and `deleted` are bools. A user appears once per message. A message with no
+`author_id` needs 1 or more recipients, so that somebody can see it. The rule for
+`author_name` is the same as in `posts.jsonl`: it is a label, and gobb does not tie it
+to `author_id`.
 
 ```json
-{"id":1,"author_id":1,"author_ip":null,"created_at":"2025-12-01T18:00:00Z","subject":"Hello","body":{"source":"Hi Bob.","markdown":true,"smilies":true,"autolink":true},"show_signature":false,"author_deleted":false,"recipients":[{"user_id":2,"kind":"to","read":true,"deleted":false}]}
+{"id":1,"author_id":1,"author_name":"alice","author_ip":null,"created_at":"2025-12-01T18:00:00Z","subject":"Hello","body":{"source":"Hi Bob.","markdown":true,"smilies":true,"autolink":true},"show_signature":false,"author_deleted":false,"recipients":[{"user_id":2,"kind":"to","read":true,"deleted":false}]}
 ```
 
 ## topic_watches.jsonl
@@ -599,7 +607,8 @@ of `id_param` and `target_id`. The kind `page` needs `target_slug`, which names 
 `static_pages.jsonl`, and nothing else. The other kinds need neither `id_param` nor
 `target_id`. Only `forum` and `topic` may set `offset_param`. A fixed `target_id`
 names a row that exists: a forum, a topic, a post, a user or an attachment, by kind. For
-`avatar` it names a user. The pair (`path`, `match`) is unique.
+`avatar` it names a user. A fixed `user` route target may also name a gone user: a row of
+`gone_users.jsonl`. The pair (`path`, `match`) is unique.
 
 ```json
 {"path":"old/thread.cgi","match":{"view":"full"},"id_param":"id","target_kind":"topic","target_id":null,"target_slug":null,"offset_param":"page","position":1}

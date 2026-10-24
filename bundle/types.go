@@ -304,12 +304,13 @@ type PollVote struct {
 	VoterIP  *string `json:"voter_ip"`
 }
 
-// Attachment is a row of attachments.jsonl.
+// Attachment is a row of attachments.jsonl. An upload whose uploader is gone has
+// a nil UploaderID.
 type Attachment struct {
 	ID            int64     `json:"id"`
 	PostID        *int64    `json:"post_id"`
 	Position      int       `json:"position"`
-	UploaderID    int64     `json:"uploader_id"`
+	UploaderID    *int64    `json:"uploader_id"`
 	Name          string    `json:"name"`
 	File          FileRef   `json:"file"`
 	Mime          string    `json:"mime"`
@@ -320,10 +321,12 @@ type Attachment struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// PM is a row of pms.jsonl: one private message with all its recipients.
+// PM is a row of pms.jsonl: one private message with all its recipients. A
+// message whose author is gone has a nil AuthorID and keeps AuthorName.
 type PM struct {
 	ID            int64       `json:"id"`
-	AuthorID      int64       `json:"author_id"`
+	AuthorID      *int64      `json:"author_id"`
+	AuthorName    string      `json:"author_name"`
 	AuthorIP      *string     `json:"author_ip"`
 	CreatedAt     time.Time   `json:"created_at"`
 	Subject       string      `json:"subject"`

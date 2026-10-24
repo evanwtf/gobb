@@ -1,9 +1,11 @@
 package bundle_test
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,6 +101,29 @@ func TestCheckRefuses(t *testing.T) {
 		{"the only owner is inactive", func(b *bundletest.Board) {
 			b.Users[0].State = "inactive"
 		}, "users.jsonl: owner: no active user is an owner"},
+		{"the only active owner cannot log in", func(b *bundletest.Board) {
+			b.Users[0].Password = bundle.Password{Scheme: "legacy", Hash: ""}
+		}, "users.jsonl: owner: no active owner has a password hash"},
+		{"an owner with a hash is inactive, the active owner has none", func(b *bundletest.Board) {
+			b.Users[0].Password = bundle.Password{Scheme: "legacy", Hash: ""}
+			b.Users[1].Owner = true
+			b.Users[1].State = "inactive"
+		}, "users.jsonl: owner: no active owner has a password hash"},
+		{"pm author that does not exist", func(b *bundletest.Board) {
+			b.PMs[0].AuthorID = p(int64(99))
+		}, "pms.jsonl:1: author_id: no row in users.jsonl has id 99"},
+		{"attachment uploader that does not exist", func(b *bundletest.Board) {
+			b.Attachments[0].UploaderID = p(int64(99))
+		}, "attachments.jsonl:1: uploader_id: no row in users.jsonl has id 99"},
+		{"pm from a gone author", func(b *bundletest.Board) {
+			b.PMs[0].AuthorID, b.PMs[0].AuthorName = nil, "ghost"
+		}, ""},
+		{"pm from a live author with no recipients", func(b *bundletest.Board) {
+			b.PMs[0].Recipients = nil
+		}, ""},
+		{"attachment from a gone uploader", func(b *bundletest.Board) {
+			b.Attachments[0].UploaderID = nil
+		}, ""},
 		{"forum cycle", func(b *bundletest.Board) {
 			b.Forums[0].ParentID = p(int64(3))
 		}, "forums.jsonl:1: parent_id: the parent chain loops: 1, 3, 2, 1"},
@@ -462,5 +487,38 @@ func TestCheckStopsAtAFailingRow(t *testing.T) {
 	var errs bundle.Errors
 	if err := bundle.Check(r); !errors.As(err, &errs) || len(errs) != 1 || errs[0].File != "posts.jsonl" || errs[0].Line != 7 {
 		t.Fatalf("Check = %v, want one error at posts.jsonl:7", err)
+	}
+}
+
+// TestCheckPMWithNobodyToSeeIt writes a message that has no author ID and no
+// recipient. The writer refuses such a row, so the test edits the file.
+func TestCheckPMWithNobodyToSeeIt(t *testing.T) {
+	b := bundletest.Small()
+	b.PMs[0].AuthorID, b.PMs[0].AuthorName = nil, "ghost"
+	dir := bundletest.Write(t, b)
+	path := filepath.Join(dir, "pms.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := regexp.MustCompile(`"recipients":\[[^\]]*\]`).ReplaceAll(data, []byte(`"recipients":[]`))
+	if bytes.Equal(edited, data) {
+		t.Fatal("the edit changed nothing")
+	}
+	if err := os.WriteFile(path, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := bundle.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err = bundle.Check(r)
+	var errs bundle.Errors
+	if !errors.As(err, &errs) {
+		t.Fatalf("Check = %v (%T), want bundle.Errors", err, err)
+	}
+	want := "pms.jsonl:1: recipients: "
+	if len(errs) != 1 || !strings.HasPrefix(errs[0].Error(), want) {
+		t.Fatalf("Check = %v\nwant one error that starts with %q", err, want)
 	}
 }
