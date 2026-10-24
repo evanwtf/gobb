@@ -2,6 +2,7 @@ package board
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,8 +22,8 @@ const (
 	changeApprove
 )
 
-// DeletePost deletes post postID. The row stays, with visibility deleted, so a
-// moderator can restore it.
+// DeletePost deletes post postID. The row stays, with visibility deleted and the
+// state it had kept in visibility_before_delete, so a moderator can restore it.
 //
 //   - A post that v cannot see is [ErrNotFound].
 //   - An author with post.delete_own may delete the own post, unless it is the
@@ -41,19 +42,20 @@ func DeletePost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64,
 	return changePostVisibility(ctx, pool, v, postID, now, changeDelete)
 }
 
-// RestorePost brings back a deleted post, with visibility approved. It needs
-// mod.delete in the forum. Restoring the first post of a deleted topic restores
-// the topic. A post that is not deleted is left alone.
-//
-// A post that was held when it was deleted comes back approved, and the same
-// goes for a held topic: gobb does not store the state before the delete.
+// RestorePost brings back a deleted post in the state it had before the delete,
+// approved or held. It needs mod.delete in the forum. Restoring the first post of
+// a deleted topic restores the topic to the state it had before its delete. A row
+// with no kept state (deleted before gobb kept it, or imported as deleted) comes
+// back approved when the restorer holds mod.approve in the forum, and held
+// otherwise. A post that is not deleted is left alone.
 func RestorePost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, now time.Time) error {
 	return changePostVisibility(ctx, pool, v, postID, now, changeRestore)
 }
 
 // ApprovePost approves a held post. It needs mod.approve in the forum. Approving
-// the first post of a held topic approves the topic. A post that is already
-// approved is left alone. A deleted post gives [ErrForbidden]: restore it first.
+// the first post of a held topic approves the topic, also when the post is
+// approved already. A post and a topic that are approved are left alone. A deleted
+// post gives [ErrForbidden]: restore it first.
 func ApprovePost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, now time.Time) error {
 	return changePostVisibility(ctx, pool, v, postID, now, changeApprove)
 }
@@ -68,8 +70,12 @@ func changePostVisibility(ctx context.Context, pool *pgxpool.Pool, v Viewer, pos
 			return ErrForbidden
 		}
 		var (
-			target, action string
-			own            bool
+			action    string
+			postTo    = p.visibility // the new state of the post
+			topicTo   = t.visibility // the new state of the topic, when the post is its first
+			own       bool           // the own right alone allows the action: no log row
+			changePst bool
+			changeTop bool
 		)
 		switch change {
 		case changeDelete:
@@ -90,7 +96,10 @@ func changePostVisibility(ctx context.Context, pool *pgxpool.Pool, v Viewer, pos
 			if p.visibility == "deleted" {
 				return nil
 			}
-			target, action = "deleted", "post.delete"
+			action, postTo, changePst = "post.delete", "deleted", true
+			if p.first {
+				topicTo, changeTop = "deleted", t.visibility != "deleted"
+			}
 		case changeRestore:
 			if !v.Perms.Has("mod.delete", p.forumID) {
 				return ErrForbidden
@@ -98,39 +107,54 @@ func changePostVisibility(ctx context.Context, pool *pgxpool.Pool, v Viewer, pos
 			if p.visibility != "deleted" {
 				return nil
 			}
-			target, action = "approved", "post.restore"
+			action, changePst = "post.restore", true
+			postTo = restoredState(v, p.forumID, p.before)
+			if p.first && t.visibility == "deleted" {
+				topicTo, changeTop = restoredState(v, p.forumID, t.before), true
+			}
 		case changeApprove:
 			if !v.Perms.Has("mod.approve", p.forumID) {
 				return ErrForbidden
 			}
-			switch p.visibility {
-			case "approved":
-				return nil
-			case "deleted":
+			if p.visibility == "deleted" {
 				return ErrForbidden
 			}
-			target, action = "approved", "post.approve"
+			action = "post.approve"
+			if p.visibility == "unapproved" {
+				postTo, changePst = "approved", true
+			}
+			// A held topic follows its first post, also when that post is approved
+			// already (imported data can hold such a topic).
+			if p.first && t.visibility == "unapproved" {
+				topicTo, changeTop = "approved", true
+			}
+			if !changePst && !changeTop {
+				return nil
+			}
 		}
 
 		// The rights are checked. The counters of the forum change next, so lock it.
 		if _, _, err := lockForum(ctx, tx, p.forumID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `update posts set visibility = $2 where id = $1`, p.id, target); err != nil {
-			return fmt.Errorf("board: change post %d: %w", p.id, err)
-		}
-		if p.first {
-			// The topic follows its first post. A restore or an approval changes only
-			// a topic that waits for it.
-			var from string
-			switch change {
-			case changeRestore:
-				from = "deleted"
-			case changeApprove:
-				from = "unapproved"
+		if changePst {
+			// A delete keeps the state of the row; every other change clears it.
+			var before any
+			if change == changeDelete {
+				before = p.visibility
 			}
-			if _, err := tx.Exec(ctx, `update topics set visibility = $2 where id = $1 and ($3 = '' or visibility = $3)`,
-				t.id, target, from); err != nil {
+			if _, err := tx.Exec(ctx, `update posts set visibility = $2, visibility_before_delete = $3 where id = $1`,
+				p.id, postTo, before); err != nil {
+				return fmt.Errorf("board: change post %d: %w", p.id, err)
+			}
+		}
+		if changeTop {
+			var before any
+			if change == changeDelete {
+				before = t.visibility
+			}
+			if _, err := tx.Exec(ctx, `update topics set visibility = $2, visibility_before_delete = $3 where id = $1`,
+				t.id, topicTo, before); err != nil {
 				return fmt.Errorf("board: change topic %d: %w", t.id, err)
 			}
 		}
@@ -141,7 +165,7 @@ func changePostVisibility(ctx context.Context, pool *pgxpool.Pool, v Viewer, pos
 			return err
 		}
 		// The post count follows the approved state of the post.
-		if delta := countOf(target) - countOf(p.visibility); delta != 0 {
+		if delta := countOf(postTo) - countOf(p.visibility); delta != 0 {
 			counts, err := authorCounts(ctx, tx, v, p.authorID, p.forumID)
 			if err != nil {
 				return err
@@ -159,6 +183,22 @@ func changePostVisibility(ctx context.Context, pool *pgxpool.Pool, v Viewer, pos
 	})
 }
 
+// restoredState is the state that a restore gives to a deleted row. A row that
+// kept its state before the delete gets that state back. A row with no kept state
+// (deleted before the state was kept, or imported as deleted) comes back approved
+// only when the restorer may approve in the forum, and held otherwise: a
+// restore must not approve what no moderator with the right approved.
+func restoredState(v Viewer, forumID int64, before string) string {
+	switch before {
+	case "approved", "unapproved":
+		return before
+	}
+	if v.Perms.Has("mod.approve", forumID) {
+		return "approved"
+	}
+	return "unapproved"
+}
+
 // countOf is 1 for the visibility that a post count includes.
 func countOf(visibility string) int {
 	if visibility == "approved" {
@@ -172,6 +212,11 @@ func countOf(visibility string) int {
 // [ErrNotFound]; a guest, and anyone else, gets [ErrForbidden], and so does a
 // moved-topic marker. A topic that is already in the state asked for is left
 // alone. A change writes one mod_log row, whoever makes it.
+//
+// An author who holds topic.lock_own and not mod.lock may unlock the topic only
+// when the latest topic.lock row of the topic names the author as actor. A topic
+// that a moderator locked, or that was imported locked and has no row, stays
+// locked for the author: [ErrForbidden].
 func SetTopicLock(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, locked bool, now time.Time) error {
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
 		sc, err := newScope(ctx, tx, v)
@@ -194,6 +239,20 @@ func SetTopicLock(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int
 		}
 		if t.locked == locked {
 			return nil
+		}
+		if !locked && !v.Perms.Has("mod.lock", t.forumID) {
+			// The author unlocks only a lock that the author made: a moderator's
+			// lock, and a lock that was imported with no row, stay.
+			var actor *int64
+			err := tx.QueryRow(ctx, `
+select actor_id from mod_log where target_type = 'topic' and target_id = $1 and action = 'topic.lock'
+ order by id desc limit 1`, t.id).Scan(&actor)
+			if errors.Is(err, pgx.ErrNoRows) || (err == nil && (actor == nil || *actor != v.UserID)) {
+				return ErrForbidden
+			}
+			if err != nil {
+				return fmt.Errorf("board: read the lock of topic %d: %w", t.id, err)
+			}
 		}
 		if _, err := tx.Exec(ctx, `update topics set locked = $2 where id = $1`, t.id, locked); err != nil {
 			return fmt.Errorf("board: lock topic %d: %w", t.id, err)

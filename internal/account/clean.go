@@ -50,3 +50,14 @@ func dropInvisible(r rune) rune {
 func CleanEmail(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }
+
+// PlainName reports whether CleanUsername changes s by case folding and nothing
+// else: it drops no invisible rune and makes no compatibility change (a
+// full-width letter, a ligature, a decomposed accent). A name for which PlainName
+// is false would look different on a page from the form that was compared, so a
+// caller that shows a name next to a comparison of its clean form refuses it. The
+// ends of s are trimmed first.
+func PlainName(s string) bool {
+	s = strings.TrimSpace(s)
+	return CleanUsername(s) == strings.ToLower(cases.Fold().String(s))
+}

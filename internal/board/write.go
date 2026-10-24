@@ -40,7 +40,8 @@ const duplicateWindow = 60 * time.Second
 // The messages that a page shows to the writer. Each one names the problem.
 const (
 	msgNoImages       = "You may not post images in this forum."
-	msgNoSigImages    = "A signature may not hold images."
+	msgNoSigImages    = "You may not use images in a signature."
+	msgGuestNameChars = "Use letters, digits, spaces and common punctuation only."
 	msgGuestNameTaken = "That name belongs to a member. Sign in, or choose another name."
 	msgGuestName      = "Enter a name of 1 to 40 characters, with no line breaks."
 )
@@ -78,8 +79,9 @@ type Draft struct {
 	Source string
 	// GuestName is the name of a guest. A member's write ignores it.
 	GuestName string
-	// IP is the address of the writer. It is stored with every new post. A guest
-	// write needs it: it keeps duplicates apart and enforces address bans.
+	// IP is the address of the writer. It is stored with every new post, and a new
+	// post without it is an error. For a guest it also keeps duplicates apart and
+	// enforces address bans.
 	IP netip.Addr
 }
 
@@ -100,6 +102,14 @@ type Draft struct {
 // the right to post it, or a tree that fails [markup.Validate] gives an
 // [*InputError] on the field "body".
 func ParseBody(ctx context.Context, q db.Querier, v Viewer, forumID int64, src string, flags *markup.Options) (Body, error) {
+	return ParseBodyKeeping(ctx, q, v, forumID, src, flags, nil)
+}
+
+// ParseBodyKeeping is [ParseBody] for an edit. stored is the tree of the post
+// before the edit (nil for a new post). A writer without the right to post images
+// may keep the images that stored holds, by address, and may add none: the
+// refusal is the same [*InputError]. A writer with the right is not limited.
+func ParseBodyKeeping(ctx context.Context, q db.Querier, v Viewer, forumID int64, src string, flags *markup.Options, stored *markup.Node) (Body, error) {
 	signature := forumID == 0
 	if signature && flags == nil {
 		return Body{}, errors.New("board: a signature needs its stored flags")
@@ -129,12 +139,31 @@ func ParseBody(ctx context.Context, q db.Querier, v Viewer, forumID int64, src s
 	if err := markup.Validate(tree); err != nil {
 		return Body{}, inputError("body", "The text is too complex to save. Make it simpler and try again.")
 	}
-	if hasElement(tree, "img") {
-		switch {
-		case signature:
-			return Body{}, inputError("body", msgNoSigImages)
-		case !v.Perms.Has("post.images", forumID):
-			return Body{}, inputError("body", msgNoImages)
+	if images := imageSources(tree); len(images) > 0 {
+		var may bool
+		if signature {
+			// No forum applies to a signature. A member who may post images in some
+			// forum may have them in the signature.
+			var err error
+			if may, err = mayPostImagesAnywhere(ctx, q, v); err != nil {
+				return Body{}, err
+			}
+		} else {
+			may = v.Perms.Has("post.images", forumID)
+		}
+		if !may {
+			kept := map[string]bool{}
+			for _, src := range imageSources(stored) {
+				kept[src] = true
+			}
+			for _, src := range images {
+				if !kept[src] {
+					if signature {
+						return Body{}, inputError("body", msgNoSigImages)
+					}
+					return Body{}, inputError("body", msgNoImages)
+				}
+			}
 		}
 	}
 	data, text, err := postbody.Columns(tree)
@@ -164,18 +193,43 @@ func checkSource(src string, signature bool) error {
 	return nil
 }
 
-// hasElement reports whether the tree holds an element called name.
-func hasElement(n *markup.Node, name string) bool {
+// imageSources returns the src of every img element of the tree, in no
+// particular order. A nil tree has none.
+func imageSources(n *markup.Node) []string {
+	if n == nil {
+		return nil
+	}
+	var out []string
 	stack := []*markup.Node{n}
 	for len(stack) > 0 {
 		c := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if c.Kind == markup.Element && c.Name == name {
-			return true
+		if c.Kind == markup.Element && c.Name == "img" {
+			out = append(out, c.Attrs["src"])
 		}
 		stack = append(stack, c.Children...)
 	}
-	return false
+	return out
+}
+
+// mayPostImagesAnywhere reports whether v holds post.images in at least one
+// forum.
+func mayPostImagesAnywhere(ctx context.Context, q db.Querier, v Viewer) (bool, error) {
+	rows, err := q.Query(ctx, `select id from forums`)
+	if err != nil {
+		return false, fmt.Errorf("board: list forum ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return false, fmt.Errorf("board: list forum ids: %w", err)
+		}
+		if v.Perms.Has("post.images", id) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // hasControl reports whether s holds a control character.
@@ -252,6 +306,9 @@ type topicRef struct {
 	id, forumID, authorID int64 // authorID is 0 for a guest
 	visibility            string
 	locked, moved         bool
+	// before is the state the topic had before it was deleted: "approved",
+	// "unapproved", or "" when it is not deleted or no state was kept.
+	before string
 }
 
 // lockTopic reads topic id as v sees it, and locks its row until the end of the
@@ -263,11 +320,12 @@ func lockTopic(ctx context.Context, tx pgx.Tx, sc scope, id int64) (topicRef, er
 	t := topicRef{id: id}
 	var moved *int64
 	err := tx.QueryRow(ctx, `
-select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_topic_id
+select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_topic_id,
+       coalesce(t.visibility_before_delete, '')
   from topics t
  where t.id = $5 and `+visible("t", 1)+`
-   for update of t`, append(sc.args(), id)...).
-		Scan(&t.forumID, &t.authorID, &t.visibility, &t.locked, &moved)
+   for no key update of t`, append(sc.args(), id)...).
+		Scan(&t.forumID, &t.authorID, &t.visibility, &t.locked, &moved, &t.before)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return topicRef{}, ErrNotFound
 	}
@@ -283,7 +341,7 @@ select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_
 // takes it last. A write never waits for a topic or a post while it holds a
 // forum, so two writes never wait for each other in a circle.
 func lockForum(ctx context.Context, tx pgx.Tx, id int64) (kind string, locked bool, err error) {
-	err = tx.QueryRow(ctx, `select kind, locked from forums where id = $1 for update`, id).Scan(&kind, &locked)
+	err = tx.QueryRow(ctx, `select kind, locked from forums where id = $1 for no key update`, id).Scan(&kind, &locked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, ErrNotFound
 	}
@@ -327,9 +385,14 @@ select exists (select 1 from bans where kind = 'ip' and (ends_at is null or ends
 		return author{}, ErrForbidden
 	}
 	au.name = strings.TrimSpace(d.GuestName)
-	switch n := utf8.RuneCountInString(au.name); {
-	case !utf8.ValidString(au.name) || hasControl(au.name) || n < 1 || n > maxGuestNameRunes:
+	if n := utf8.RuneCountInString(au.name); !utf8.ValidString(au.name) || hasControl(au.name) || n < 1 || n > maxGuestNameRunes {
 		return author{}, inputError("guest_name", msgGuestName)
+	}
+	// The page shows the name as written, and the comparison below reads its clean
+	// form. A name that the clean form changes by more than case would show as
+	// another name than the one compared: "\u202eecila" shows as "alice".
+	if !account.PlainName(au.name) {
+		return author{}, inputError("guest_name", msgGuestNameChars)
 	}
 	clean := account.CleanUsername(au.name)
 	if clean == "" {
@@ -468,8 +531,8 @@ func visibilityFor(v Viewer, forumID int64) string {
 //
 // now is the time of every row that the write makes.
 func NewTopic(ctx context.Context, pool *pgxpool.Pool, v Viewer, forumID int64, d Draft, now time.Time) (int64, error) {
-	if v.UserID == 0 && !d.IP.IsValid() {
-		return 0, errors.New("board: a guest write needs the address of the writer")
+	if !d.IP.IsValid() {
+		return 0, errors.New("board: a write needs the address of the writer")
 	}
 	var postID int64
 	err := inTx(ctx, pool, func(tx pgx.Tx) error {
@@ -596,8 +659,8 @@ select id from posts
 //
 // now is the time of every row that the write makes.
 func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d Draft, now time.Time) (int64, error) {
-	if v.UserID == 0 && !d.IP.IsValid() {
-		return 0, errors.New("board: a guest write needs the address of the writer")
+	if !d.IP.IsValid() {
+		return 0, errors.New("board: a write needs the address of the writer")
 	}
 	var postID int64
 	err := inTx(ctx, pool, func(tx pgx.Tx) error {
@@ -658,6 +721,7 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 type postRef struct {
 	id, topicID, forumID, authorID int64 // authorID is 0 for a guest
 	visibility                     string
+	before                         string // as in topicRef
 	flags                          markup.Options
 	first                          bool // the first post of its topic
 }
@@ -685,12 +749,13 @@ func lockPost(ctx context.Context, tx pgx.Tx, v Viewer, id int64) (postRef, topi
 	}
 	p := postRef{id: id, topicID: topicID}
 	err = tx.QueryRow(ctx, `
-select p.forum_id, coalesce(p.author_id, 0), p.visibility, p.enable_markdown, p.enable_smilies, p.enable_autolink,
+select p.forum_id, coalesce(p.author_id, 0), p.visibility, coalesce(p.visibility_before_delete, ''),
+       p.enable_markdown, p.enable_smilies, p.enable_autolink,
        p.id = (select f.id from posts f where f.topic_id = p.topic_id order by f.created_at, f.id limit 1)
   from posts p
  where p.id = $5 and p.topic_id = $6 and `+visible("p", 1)+`
-   for update of p`, append(sc.args(), id, topicID)...).
-		Scan(&p.forumID, &p.authorID, &p.visibility, &p.flags.Markdown, &p.flags.Smilies, &p.flags.Autolink, &p.first)
+   for no key update of p`, append(sc.args(), id, topicID)...).
+		Scan(&p.forumID, &p.authorID, &p.visibility, &p.before, &p.flags.Markdown, &p.flags.Smilies, &p.flags.Autolink, &p.first)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return postRef{}, topicRef{}, ErrNotFound
 	}
@@ -748,7 +813,15 @@ func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d
 				return err
 			}
 		}
-		body, err := ParseBody(ctx, tx, v, p.forumID, d.Source, &p.flags)
+		var storedJSON []byte
+		if err := tx.QueryRow(ctx, `select body_tree from posts where id = $1`, postID).Scan(&storedJSON); err != nil {
+			return fmt.Errorf("board: read post %d: %w", postID, err)
+		}
+		stored, err := markup.Decode(storedJSON)
+		if err != nil {
+			return fmt.Errorf("board: read post %d: %w", postID, err)
+		}
+		body, err := ParseBodyKeeping(ctx, tx, v, p.forumID, d.Source, &p.flags, stored)
 		if err != nil {
 			return err
 		}
@@ -785,7 +858,9 @@ update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
 // followed by a blank line, so that the writer types below it.
 //
 // Only an approved post in an approved topic can be quoted, and v must read its
-// forum and hold topic.reply there. A post that v cannot see, an unapproved post,
+// forum and hold the reply rights there: topic.reply, and an unlocked topic and
+// forum or mod.lock. The caller still checks the reply rights of the topic that
+// the quote goes into, which can be another topic. A post that v cannot see, an unapproved post,
 // a deleted post, and a post in a deleted or held topic give [ErrNotFound], even
 // to a moderator who sees them on the page: the text of a hidden post never
 // reaches a form. A viewer who reads the post but may not reply gets
@@ -796,23 +871,30 @@ func QuoteSource(ctx context.Context, q db.Querier, v Viewer, postID int64) (str
 		return "", err
 	}
 	var (
-		forumID    int64
-		name, text string
+		forumID       int64
+		name, text    string
+		topicLocked   bool
+		forumIsLocked bool
 	)
 	err = q.QueryRow(ctx, `
-select p.forum_id, coalesce(u.username, p.author_name), p.body_source
+select p.forum_id, coalesce(u.username, p.author_name), p.body_source, t.locked, f.locked
   from posts p
   join topics t on t.id = p.topic_id
+  join forums f on f.id = p.forum_id
   left join users u on u.id = p.author_id
  where p.id = $5 and p.visibility = 'approved' and t.visibility = 'approved'
-   and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).Scan(&forumID, &name, &text)
+   and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).Scan(&forumID, &name, &text, &topicLocked, &forumIsLocked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("board: read post %d: %w", postID, err)
 	}
-	if !v.Perms.Has("topic.reply", forumID) {
+	// The reply rights of the table, applied to the topic of the quoted post: the
+	// topic is approved (the query), v holds topic.reply, and the topic and its
+	// forum are unlocked or v holds mod.lock. A quote can go into another topic, so
+	// the caller still checks the target topic with the same rights.
+	if !v.Perms.Has("topic.reply", forumID) || ((topicLocked || forumIsLocked) && !v.Perms.Has("mod.lock", forumID)) {
 		return "", ErrForbidden
 	}
 	var sb strings.Builder

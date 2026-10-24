@@ -10,6 +10,7 @@ import (
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/counters"
 )
 
 func TestWritesCheckOwnership(t *testing.T) {
@@ -184,12 +185,9 @@ func TestWriteRights(t *testing.T) {
 		m := moderator(t, pool, alice)
 		_, err = board.Reply(ctx, pool, m, topic, d, t0)
 		wantIs(t, err, board.ErrForbidden, "moderator, held topic")
-		// A member who cannot see it gets "not there".
+		// bob has board-wide mod.approve, so he sees the held topic and is refused.
 		_, err = board.Reply(ctx, pool, viewerFor(t, pool, bob), topic, d, t0)
-		if err == nil {
-			// bob has board-wide mod.approve and so sees held topics; he is refused as well.
-			t.Error("bob replied to a held topic")
-		}
+		wantIs(t, err, board.ErrForbidden, "bob, held topic")
 		// After approval it works.
 		if err := board.ApprovePost(ctx, pool, m, pid, t0); err != nil {
 			t.Fatal(err)
@@ -891,4 +889,322 @@ func TestConcurrentWritesKeepCountersExact(t *testing.T) {
 		}
 		wantCountersExact(t, pool, "a round of concurrent writes")
 	}
+}
+
+// TestRestoreReturnsToTheStateBeforeTheDelete: a delete keeps the state of the
+// row, and a restore puts it back. A row with no kept state (deleted before the
+// migration, or imported) comes back approved only for a restorer with
+// mod.approve.
+func TestRestoreReturnsToTheStateBeforeTheDelete(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a held post comes back held", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		grantOpts(t, pool, carol, 2, "post.delete_own", "post.counts")
+		// alice can restore, and has no mod.approve.
+		grantOpts(t, pool, alice, 2, "mod.delete")
+		base := userPostCount(t, pool, carol)
+		// Post 3 is carol's held reply.
+		if err := board.DeletePost(ctx, pool, viewerFor(t, pool, carol), 3, t0); err != nil {
+			t.Fatal(err)
+		}
+		if err := board.RestorePost(ctx, pool, viewerFor(t, pool, alice), 3, t0.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if got := readPost(t, pool, 3).Vis; got != "unapproved" {
+			t.Errorf("post 3 = %q after delete and restore, want unapproved", got)
+		}
+		if got := userPostCount(t, pool, carol); got != base {
+			t.Errorf("carol post_count = %d, want %d: a held post does not count", got, base)
+		}
+		if got := readForum(t, pool, 2).Posts; got != 3 {
+			t.Errorf("forum posts = %d, want 3", got)
+		}
+		wantCountersExact(t, pool, "restore of a held post")
+		// Another delete and restore, now by a moderator who holds both rights.
+		m := moderator(t, pool, bob)
+		if err := board.DeletePost(ctx, pool, m, 3, t0.Add(2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if err := board.RestorePost(ctx, pool, m, 3, t0.Add(3*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if got := readPost(t, pool, 3).Vis; got != "unapproved" {
+			t.Errorf("post 3 = %q after the second round, want unapproved", got)
+		}
+	})
+
+	t.Run("an approved post comes back approved", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		grantOpts(t, pool, alice, 2, "mod.delete") // no mod.approve
+		a := viewerFor(t, pool, alice)
+		if err := board.DeletePost(ctx, pool, a, 2, t0); err != nil {
+			t.Fatal(err)
+		}
+		if err := board.RestorePost(ctx, pool, a, 2, t0.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if got := readPost(t, pool, 2).Vis; got != "approved" {
+			t.Errorf("post 2 = %q, want approved", got)
+		}
+		wantCountersExact(t, pool, "restore of an approved post")
+	})
+
+	t.Run("a held topic comes back held", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		grantOpts(t, pool, carol, 2, "post.delete_own")
+		grantOpts(t, pool, alice, 2, "mod.delete")
+		c := viewerFor(t, pool, carol)
+		forum0 := readForum(t, pool, 2)
+		pid, err := board.NewTopic(ctx, pool, c, 2, board.Draft{Title: "held", Source: "held text", IP: ip1}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		topic := readPost(t, pool, pid).TopicID
+		if err := board.DeletePost(ctx, pool, c, pid, t0.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if got := readTopic(t, pool, topic).Vis; got != "deleted" {
+			t.Fatalf("topic = %q after the delete", got)
+		}
+		if err := board.RestorePost(ctx, pool, viewerFor(t, pool, alice), pid, t0.Add(2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if got := readTopic(t, pool, topic).Vis; got != "unapproved" {
+			t.Errorf("topic = %q, want unapproved", got)
+		}
+		if got := readPost(t, pool, pid).Vis; got != "unapproved" {
+			t.Errorf("post = %q, want unapproved", got)
+		}
+		if got := readForum(t, pool, 2); got != forum0 {
+			t.Errorf("forum = %+v, want %+v: a held topic does not count", got, forum0)
+		}
+		wantCountersExact(t, pool, "restore of a held topic")
+	})
+
+	t.Run("a deleted row with no kept state", func(t *testing.T) {
+		for _, withApprove := range []bool{false, true} {
+			pool, _ := boardtest.Load(t, bundletest.Small())
+			// Posts 1 and 2 and topic 1 are deleted as an import would leave them.
+			if _, err := pool.Exec(ctx, `update posts set visibility = 'deleted' where id in (1, 2); update topics set visibility = 'deleted' where id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			grantOpts(t, pool, alice, 2, "mod.delete")
+			want := "unapproved"
+			if withApprove {
+				grantOpts(t, pool, alice, 2, "mod.approve")
+				want = "approved"
+			}
+			a := viewerFor(t, pool, alice)
+			if err := board.RestorePost(ctx, pool, a, 2, t0); err != nil {
+				t.Fatal(err)
+			}
+			if got := readPost(t, pool, 2).Vis; got != want {
+				t.Errorf("approve=%v: reply = %q, want %q", withApprove, got, want)
+			}
+			if err := board.RestorePost(ctx, pool, a, 1, t0); err != nil {
+				t.Fatal(err)
+			}
+			if got := readPost(t, pool, 1).Vis; got != want {
+				t.Errorf("approve=%v: first post = %q, want %q", withApprove, got, want)
+			}
+			if got := readTopic(t, pool, 1).Vis; got != want {
+				t.Errorf("approve=%v: topic = %q, want %q", withApprove, got, want)
+			}
+			wantCountersExact(t, pool, "restore of imported deleted rows")
+		}
+	})
+}
+
+// TestApproveHeldTopicWithApprovedFirstPost: imported data can hold a held
+// topic whose first post is approved. Approving that post approves the topic.
+func TestApproveHeldTopicWithApprovedFirstPost(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	m := moderator(t, pool, carol)
+	if _, err := pool.Exec(ctx, `update topics set visibility = 'unapproved' where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := counters.Forum(ctx, pool, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := readForum(t, pool, 2); got.Topics != 0 || got.Posts != 0 {
+		t.Fatalf("forum = %+v with a held topic", got)
+	}
+	// A reply of the held topic changes nothing.
+	if err := board.ApprovePost(ctx, pool, m, 2, t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := readTopic(t, pool, 1).Vis; got != "unapproved" {
+		t.Errorf("topic = %q after approving a reply that was approved", got)
+	}
+	if n := len(readLog(t, pool)); n != 0 {
+		t.Errorf("%d log rows after a no-op", n)
+	}
+	if err := board.ApprovePost(ctx, pool, m, 1, t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := readTopic(t, pool, 1).Vis; got != "approved" {
+		t.Errorf("topic = %q, want approved", got)
+	}
+	if got := readForum(t, pool, 2); got.Topics != 1 || got.Posts != 3 {
+		t.Errorf("forum = %+v, want 1 topic and 3 posts", got)
+	}
+	if l := readLog(t, pool); len(l) != 1 || l[0].Action != "post.approve" || l[0].Target != 1 {
+		t.Errorf("log = %+v, want one post.approve of post 1", l)
+	}
+	wantCountersExact(t, pool, "approving a held topic")
+	// A second approval changes nothing.
+	if err := board.ApprovePost(ctx, pool, m, 1, t0); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(readLog(t, pool)); n != 1 {
+		t.Errorf("%d log rows after the second approval, want 1", n)
+	}
+}
+
+// TestOwnPostLog: a row records every action on another member's post, and an
+// action on one's own post that only a moderator right allows. An action that the
+// own right alone allows writes none, even when the author holds the moderator
+// right too.
+func TestOwnPostLog(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("edit", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		grantOpts(t, pool, alice, 2, "mod.edit")
+		a := viewerFor(t, pool, alice)
+		// Own post, unlocked topic: post.edit_own allows it alone.
+		if err := board.EditPost(ctx, pool, a, 1, board.Draft{Title: "t", Source: "own 1", IP: ip1}, "r", t0); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(readLog(t, pool)); n != 0 {
+			t.Fatalf("%d rows after an own edit by an author with mod.edit, want 0", n)
+		}
+		// Own post, locked topic: only mod.edit allows it.
+		if _, err := pool.Exec(ctx, `update topics set locked = true where id = 1`); err != nil {
+			t.Fatal(err)
+		}
+		if err := board.EditPost(ctx, pool, a, 1, board.Draft{Title: "t", Source: "own 2", IP: ip1}, "through the lock", t0.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		l := readLog(t, pool)
+		if len(l) != 1 || l[0].Action != "post.edit" || l[0].Target != 1 || l[0].Actor != alice {
+			t.Fatalf("log = %+v, want one post.edit of post 1", l)
+		}
+		if got := readPost(t, pool, 1).EditReason; got != "typo" {
+			t.Errorf("edit_reason = %q: the reason belongs to another member's post only", got)
+		}
+		// Another member's post: always a row.
+		if err := board.EditPost(ctx, pool, a, 2, board.Draft{Source: "bob's", IP: ip1}, "r", t0.Add(2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(readLog(t, pool)); n != 2 {
+			t.Errorf("%d rows, want 2", n)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		grantOpts(t, pool, alice, 2, "post.delete_own", "mod.delete")
+		a := viewerFor(t, pool, alice)
+		rid, err := board.Reply(ctx, pool, a, 1, board.Draft{Source: "my reply", IP: ip1}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Own reply: post.delete_own allows it alone.
+		if err := board.DeletePost(ctx, pool, a, rid, t0.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(readLog(t, pool)); n != 0 {
+			t.Fatalf("%d rows after an own delete by an author with mod.delete, want 0", n)
+		}
+		// Own first post with replies: only mod.delete allows it.
+		if err := board.DeletePost(ctx, pool, a, 1, t0.Add(2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		l := readLog(t, pool)
+		if len(l) != 1 || l[0].Action != "post.delete" || l[0].Target != 1 {
+			t.Fatalf("log = %+v, want one post.delete of post 1", l)
+		}
+	})
+
+	t.Run("delete without post.delete_own", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		grantOpts(t, pool, alice, 2, "mod.delete")
+		a := viewerFor(t, pool, alice)
+		rid, err := board.Reply(ctx, pool, a, 1, board.Draft{Source: "my reply", IP: ip1}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := board.DeletePost(ctx, pool, a, rid, t0.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if l := readLog(t, pool); len(l) != 1 || l[0].Action != "post.delete" {
+			t.Errorf("log = %+v, want one post.delete: only mod.delete allowed it", l)
+		}
+	})
+}
+
+// TestLockOwnUnlock: an author with only topic.lock_own may unlock the topic
+// only when the latest topic.lock row of the topic names the author as actor.
+func TestLockOwnUnlock(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	// Topic 1 is alice's.
+	grantOpts(t, pool, alice, 2, "topic.lock_own")
+	grantOpts(t, pool, carol, 2, "mod.lock")
+	a := viewerFor(t, pool, alice)
+	m := viewerFor(t, pool, carol)
+	at := func(n int) time.Time { return t0.Add(time.Duration(n) * time.Minute) }
+
+	// The author locks and unlocks.
+	if err := board.SetTopicLock(ctx, pool, a, 1, true, at(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.SetTopicLock(ctx, pool, a, 1, false, at(2)); err != nil {
+		t.Errorf("the author unlocks the topic that the author locked: %v", err)
+	}
+	if readTopic(t, pool, 1).Locked {
+		t.Error("topic 1 is still locked")
+	}
+
+	// A moderator locks: the author may not unlock.
+	if err := board.SetTopicLock(ctx, pool, m, 1, true, at(3)); err != nil {
+		t.Fatal(err)
+	}
+	wantIs(t, board.SetTopicLock(ctx, pool, a, 1, false, at(4)), board.ErrForbidden, "unlock of a moderator's lock")
+	if !readTopic(t, pool, 1).Locked {
+		t.Error("the author unlocked a moderator's lock")
+	}
+	// The moderator unlocks, the author locks again, and unlocks again.
+	if err := board.SetTopicLock(ctx, pool, m, 1, false, at(5)); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.SetTopicLock(ctx, pool, a, 1, true, at(6)); err != nil {
+		t.Fatal(err)
+	}
+	// The moderator unlocks and locks again: the latest lock row is the moderator's.
+	if err := board.SetTopicLock(ctx, pool, m, 1, false, at(7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.SetTopicLock(ctx, pool, m, 1, true, at(8)); err != nil {
+		t.Fatal(err)
+	}
+	wantIs(t, board.SetTopicLock(ctx, pool, a, 1, false, at(9)), board.ErrForbidden, "unlock after the moderator locked again")
+	if err := board.SetTopicLock(ctx, pool, m, 1, false, at(10)); err != nil {
+		t.Errorf("a moderator unlocks: %v", err)
+	}
+
+	// A topic that was imported locked, with no log row.
+	if _, err := pool.Exec(ctx, `delete from mod_log; update topics set locked = true where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	wantIs(t, board.SetTopicLock(ctx, pool, a, 1, false, at(11)), board.ErrForbidden, "unlock of an imported lock")
+	if !readTopic(t, pool, 1).Locked {
+		t.Error("the author unlocked an imported lock")
+	}
+	// Another author's lock_own does not help on this topic either.
+	grantOpts(t, pool, bob, 2, "topic.lock_own")
+	wantIs(t, board.SetTopicLock(ctx, pool, viewerFor(t, pool, bob), 1, false, at(12)), board.ErrForbidden, "other member")
 }

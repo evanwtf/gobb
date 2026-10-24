@@ -184,3 +184,30 @@ func TestCleanEmail(t *testing.T) {
 		})
 	}
 }
+
+func TestPlainName(t *testing.T) {
+	plain := []string{"Bob", "BOB", "bob", " Bob ", "Jo Smith", "Mary-Ann O'Neil", "user_42", "Zoë", "Straße", "Ünal (guest)", "名前"}
+	for _, s := range plain {
+		if !PlainName(s) {
+			t.Errorf("PlainName(%q) = false, want true", s)
+		}
+	}
+	changed := []string{
+		"\u202eecila",    // right-to-left override
+		"b\u200bob",      // zero-width space
+		"bo\u200db",      // zero-width joiner
+		"bo\u00adb",      // soft hyphen
+		"\ufeffbob",      // byte order mark
+		"bo\u034fb",      // combining grapheme joiner
+		"bo\ufe0fb",      // variation selector
+		"Ｂｏｂ",            // full-width letters
+		"café",          // decomposed accent
+		"\u200b",         // only invisible
+		"x\u2066y\u2069", // isolates
+	}
+	for _, s := range changed {
+		if PlainName(s) {
+			t.Errorf("PlainName(%q) = true, want false", s)
+		}
+	}
+}

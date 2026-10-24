@@ -162,11 +162,15 @@ func TestParseBodyRules(t *testing.T) {
 		if _, err := board.ParseBody(ctx, pool, plain, 0, "x", nil); err == nil {
 			t.Error("a signature with no flags was accepted")
 		}
-		// No forum right applies, and an image is not allowed in a signature.
-		_, err = board.ParseBody(ctx, pool, withImages, 0, "![x](https://example.com/a.png)", flags)
+		// A signature may hold an image when the member holds post.images in some forum.
+		_, err = board.ParseBody(ctx, pool, plain, 0, "![x](https://example.com/a.png)", flags)
 		wantInput(t, err, "body", "")
+		b, err := board.ParseBody(ctx, pool, withImages, 0, "![x](https://example.com/a.png)", flags)
+		if err != nil || !hasElement(b.Tree, "img") {
+			t.Errorf("signature with post.images in forum 2: %v", err)
+		}
 		// The forum rights do not decide the flags of a signature: the member's flags do.
-		b, err := board.ParseBody(ctx, pool, plain, 0, "**x**", &markup.Options{Autolink: true})
+		b, err = board.ParseBody(ctx, pool, plain, 0, "**x**", &markup.Options{Autolink: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -376,7 +380,7 @@ func TestGuestPost(t *testing.T) {
 
 	t.Run("name rules", func(t *testing.T) {
 		const msg = "That name belongs to a member. Sign in, or choose another name."
-		for _, name := range []string{"ALICE", "alice", " Alice ", "ａｌｉｃｅ", "al\u200bice", "Bob", "dave"} {
+		for _, name := range []string{"ALICE", "alice", " Alice ", "Bob", "dave"} {
 			_, err := board.Reply(ctx, pool, g, 1, board.Draft{Source: "x " + name, GuestName: name, IP: ip1}, t0)
 			wantInput(t, err, "guest_name", msg)
 		}
@@ -774,4 +778,131 @@ func TestQuoteSource(t *testing.T) {
 	denyOpts(t, pool, carol, 2, "topic.reply")
 	_, err = board.QuoteSource(ctx, pool, viewerFor(t, pool, carol), 2)
 	wantIs(t, err, board.ErrForbidden, "quote without topic.reply")
+}
+
+// TestGuestNameShowsWhatTheCheckSaw: a guest name that CleanUsername changes
+// for any reason but case is refused, so the page never shows a name other than
+// the one that the member-name check compared.
+func TestGuestNameShowsWhatTheCheckSaw(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	allowGuests(t, pool, 2, "topic.reply")
+	g := asGuest(t, pool)
+	const msg = "Use letters, digits, spaces and common punctuation only."
+	names := []string{
+		"\u202eecila",        // right-to-left override: shows as "alice"
+		"\u202enimda",        // the same for "admin"
+		"ali\u200dce",        // zero-width joiner
+		"adm\u200din",        // zero-width joiner
+		"ali\u00adce",        // soft hyphen
+		"adm\u00adin",        // soft hyphen
+		"ali\ufe0fce",        // variation selector
+		"al\u200bice",        // zero-width space
+		"ａｌｉｃｅ",              // full-width letters: NFKC changes them
+		"Admin\u2066x\u2069", // isolate marks
+	}
+	for _, name := range names {
+		_, err := board.Reply(ctx, pool, g, 1, board.Draft{Source: "x", GuestName: name, IP: ip1}, t0)
+		wantInput(t, err, "guest_name", msg)
+	}
+	// Case alone is fine, and so are letters, digits, spaces and common punctuation.
+	for _, name := range []string{"Visitor", "VISITOR", "Jo Smith", "Mary-Ann O'Neil", "user_42", "Zoë", "Ünal (guest)"} {
+		if _, err := board.Reply(ctx, pool, g, 1, board.Draft{Source: "ok " + name, GuestName: name, IP: ip1}, t0); err != nil {
+			t.Errorf("name %q: %v", name, err)
+		}
+	}
+	if n := countPosts(t, pool); n != 6+7 {
+		t.Errorf("%d posts, want 13: only the plain names saved", n)
+	}
+}
+
+func TestWriteNeedsAnAddress(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	a := viewerFor(t, pool, alice)
+	n := countPosts(t, pool)
+	if _, err := board.Reply(ctx, pool, a, 1, board.Draft{Source: "no address"}, t0); err == nil {
+		t.Error("a member's reply without an address was saved")
+	}
+	if _, err := board.NewTopic(ctx, pool, a, 2, board.Draft{Title: "t", Source: "no address"}, t0); err == nil {
+		t.Error("a member's topic without an address was saved")
+	}
+	if got := countPosts(t, pool); got != n {
+		t.Errorf("%d posts, want %d", got, n)
+	}
+}
+
+func TestQuoteSourceNeedsTheReplyRights(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	c := viewerFor(t, pool, carol)
+	if _, err := board.QuoteSource(ctx, pool, c, 2); err != nil {
+		t.Fatalf("unlocked: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `update topics set locked = true where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := board.QuoteSource(ctx, pool, c, 2)
+	wantIs(t, err, board.ErrForbidden, "locked topic")
+	grantOpts(t, pool, carol, 2, "mod.lock")
+	if _, err := board.QuoteSource(ctx, pool, viewerFor(t, pool, carol), 2); err != nil {
+		t.Errorf("locked topic, mod.lock: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `update topics set locked = false where id = 1; update forums set locked = true where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = board.QuoteSource(ctx, pool, viewerFor(t, pool, alice), 2)
+	wantIs(t, err, board.ErrForbidden, "locked forum")
+	if _, err := board.QuoteSource(ctx, pool, viewerFor(t, pool, carol), 2); err != nil {
+		t.Errorf("locked forum, mod.lock: %v", err)
+	}
+}
+
+// TestEditKeepsStoredImages: a writer without post.images may keep the image
+// URLs that the stored post holds, and may add none.
+func TestEditKeepsStoredImages(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	// Post 2 is bob's reply and holds the image /a/1.
+	grantOpts(t, pool, carol, 2, "mod.edit")
+	m := viewerFor(t, pool, carol)
+	edit := func(v board.Viewer, src string, at int) error {
+		return board.EditPost(ctx, pool, v, 2, board.Draft{Source: src}, "r", t0.Add(time.Duration(at)*time.Minute))
+	}
+	if err := edit(m, "Reworded.\n\n![diagram](/a/1)", 1); err != nil {
+		t.Errorf("keep the stored image: %v", err)
+	}
+	if err := edit(m, "Only text now.", 2); err != nil {
+		t.Errorf("drop the image: %v", err)
+	}
+	// The stored post no longer holds an image, so none may come back.
+	wantInput(t, edit(m, "Again.\n\n![diagram](/a/1)", 3), "body", msgImages)
+
+	// Put the image back through the database, then try to add a second one.
+	if _, err := pool.Exec(ctx, `
+update posts set body_source = 'Thanks!' || E'\n\n' || '![diagram](/a/1)',
+       body_tree = '{"k":0,"c":[{"k":2,"n":"p","c":[{"k":1,"t":"Thanks!"}]},{"k":2,"n":"p","c":[{"k":2,"n":"img","a":{"src":"/a/1","alt":"diagram"}}]}]}'
+ where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	wantInput(t, edit(m, "Thanks!\n\n![diagram](/a/1)\n\n![other](/a/2)", 4), "body", msgImages)
+	wantInput(t, edit(m, "![other](https://example.com/b.png)", 5), "body", msgImages)
+	if err := edit(m, "Thanks, edited!\n\n![diagram](/a/1)", 6); err != nil {
+		t.Errorf("keep the image again: %v", err)
+	}
+	// With post.images, a new image is fine.
+	grantOpts(t, pool, carol, 2, "post.images")
+	if err := edit(viewerFor(t, pool, carol), "![other](/a/2)", 7); err != nil {
+		t.Errorf("with post.images: %v", err)
+	}
+
+	// The same through ParseBodyKeeping, for a preview of an edit.
+	stored := markup.Parse("![x](https://example.com/a.png)", markup.Options{Markdown: true, Autolink: true})
+	plain := viewerFor(t, pool, alice)
+	flags := &markup.Options{Markdown: true, Autolink: true}
+	if _, err := board.ParseBodyKeeping(ctx, pool, plain, 2, "![x](https://example.com/a.png) more", flags, stored); err != nil {
+		t.Errorf("ParseBodyKeeping, same image: %v", err)
+	}
+	_, err := board.ParseBodyKeeping(ctx, pool, plain, 2, "![x](https://example.com/c.png)", flags, stored)
+	wantInput(t, err, "body", msgImages)
 }
