@@ -86,7 +86,7 @@
 
 **Duplicates.** A post whose author, topic and body source equal those of a post that the same author made in the last 60 seconds is not saved again. The write returns the earlier post, and the handler redirects to it. For a guest, "the same author" means the same address.
 
-**Guest posts. (owner, 2026-10-24)** On the first board, one forum lets guests post: it is where a member who is locked out asks for help. Password reset by email waits until after cutover, so this forum is that member's only way in. gobb follows the grants, as for a member:
+**Guest posts. (owner, 2026-10-24)** On the first board, the guests group holds posting grants in one forum, where a member who is locked out asks for help. That forum is also locked, so today only moderators can post in it, and gobb keeps the lock. gobb follows the grants and the lock, as for a member:
 - A guest may start a topic or reply where the guests group holds `topic.start` or `topic.reply`. The post is held unless the guests group holds `post.no_approval` there.
 - A guest gives a name of 1–40 characters. A name whose `account.CleanUsername` equals a member's `username_clean` is refused, with "That name belongs to a member. Sign in, or choose another name." So nobody can post as the admin.
 - The post stores `author_id` null, the name in `author_name`, and the address in `author_ip`.
