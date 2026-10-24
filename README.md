@@ -48,14 +48,20 @@ volume. The bundle is a directory or a `.tar.gz` file. Put the flag before the p
 The format is in [docs/bundle.md](docs/bundle.md), and
 [docs/example-bundle/](docs/example-bundle/) is a small example.
 
-A converter packs a bundle directory like this:
+A bundle, a database dump and a permission export hold real member data. Keep them in
+a folder outside this clone, so that git and the image build never see them. A converter
+packs a bundle directory like this:
 
 ```sh
 export DIR=/path/to/bundle-directory
-tar -C "$DIR" -czf bundle.tar.gz .
+export WORK="$HOME/gobb-import"
+export BUNDLE="$WORK/bundle.tar.gz"
+mkdir -p "$WORK"
+tar -C "$DIR" -czf "$BUNDLE" .
+chmod 0644 "$BUNDLE"
 ```
 
-On macOS, write `COPYFILE_DISABLE=1 tar -C "$DIR" -czf bundle.tar.gz .`. Without it,
+On macOS, write `COPYFILE_DISABLE=1 tar -C "$DIR" -czf "$BUNDLE" .`. Without it,
 macOS `tar` adds `._` files, and the importer refuses them.
 
 Stop the server first. The import lock keeps two imports apart, but it does not stop
@@ -66,7 +72,6 @@ exists. A relative name makes Compose create a named volume, and a path that doe
 exist makes Compose create an empty directory. Both give a confusing error.
 
 ```sh
-export BUNDLE="$PWD/bundle.tar.gz"
 docker compose stop gobb
 docker compose run --rm -v "$BUNDLE:/import/bundle.tar.gz:ro" gobb import /import/bundle.tar.gz
 docker compose up -d --wait
@@ -89,10 +94,10 @@ of files it staged.
 
 The import refuses a database that holds data. `--replace` empties every table, and that
 includes sessions and logs. Take a dump first. The dump is a plain SQL file, and you
-keep it:
+keep it. If the dump fails, do not go on:
 
 ```sh
-docker compose exec -T postgres pg_dump -U gobb -d gobb > gobb-before-replace.sql
+docker compose exec -T postgres pg_dump -U gobb -d gobb > "$WORK/gobb-before-replace.sql" || echo "pg_dump failed; do not run --replace"
 ```
 
 Then add `--replace`. It moves the old files to `.replaced-<time>/` in the data volume.
@@ -104,10 +109,11 @@ docker compose run --rm -v "$BUNDLE:/import/bundle.tar.gz:ro" gobb import --repl
 
 If the import is killed after the commit, the rows are in the database and the files
 are not in place. A re-run then says that the database has rows. Run it again with
-`--replace`. The error that the import prints names the staging folder.
+`--replace`.
 
-The `.replaced-*` folders stay in the data volume until you delete them. A failed move
-of the files also leaves a `.import-*` folder. Check the new board first. The gobb image
+The `.replaced-*` folders stay in the data volume until you delete them. An import that
+fails to move its files, or that is killed, also leaves a `.import-*` folder. Check the
+new board first. The gobb image
 has no shell, so delete the folders with a container that has one:
 
 ```sh
@@ -124,7 +130,7 @@ If the command fails, it writes its error into the file and exits with a code ot
 0. Check the exit code before you use the file.
 
 ```sh
-docker compose run --rm -T gobb perms export > perms.jsonl || echo "perms export failed; do not use perms.jsonl"
+docker compose run --rm -T gobb perms export > "$WORK/perms.jsonl" || echo "perms export failed; do not use perms.jsonl"
 ```
 
 ## Status

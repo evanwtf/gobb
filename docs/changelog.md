@@ -139,5 +139,6 @@ that the pages stand on.
 - The README "Import a bundle" section was run against a real Compose stack and corrected:
   an absolute `$BUNDLE` path, `up -d --wait` to restart, a `pg_dump` before `--replace`,
   the `.import-*` and `.replaced-*` folders to delete, and a check of the exit code of
-  `perms export`. A COPY batch also flushes at 8 MiB of row text, and the "import done"
+  `perms export` and of the dump. The bundle, the dump and the export live in a folder
+  outside the clone, and `.gitignore` and `.dockerignore` refuse their default names. A COPY batch also flushes at 8 MiB of row text, and the "import done"
   log line names the bundle's source and creation time.

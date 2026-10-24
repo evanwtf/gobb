@@ -11,3 +11,6 @@ docs
 *.test
 test.json
 test.err
+/bundle.tar.gz
+/gobb-before-replace.sql
+/perms.jsonl

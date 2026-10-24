@@ -38,3 +38,8 @@ go.work.sum
 # Build output
 /gobb
 /dist/
+
+# Forum data from an import (README "Import a bundle"); never commit
+/bundle.tar.gz
+/gobb-before-replace.sql
+/perms.jsonl
