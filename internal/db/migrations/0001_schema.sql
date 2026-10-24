@@ -39,6 +39,9 @@ create table users (
 	avatar_path      text   null,
 	signature_source text   not null default '',
 	signature_tree   jsonb  null,
+	signature_markdown bool not null default true,
+	signature_smilies  bool not null default true,
+	signature_autolink bool not null default true,
 	timezone         text   not null default 'America/New_York',
 	color_scheme     text   not null default 'slate'
 		check (color_scheme in ('slate', 'slate-deep', 'slate-light')),
@@ -176,9 +179,9 @@ create table posts (
 	body_tree       jsonb  not null,
 	-- Plain text for search.
 	body_text       text   not null,
-	enable_markdown bool   not null default false,
-	enable_smilies  bool   not null default false,
-	enable_autolink bool   not null default false,
+	enable_markdown bool   not null default true,
+	enable_smilies  bool   not null default true,
+	enable_autolink bool   not null default true,
 	enable_sig      bool   not null default false,
 	visibility      text   not null
 		check (visibility in ('approved', 'unapproved', 'deleted')),
@@ -261,9 +264,9 @@ create table pms (
 	body_source      text   not null default '',
 	body_tree        jsonb  not null,
 	body_text        text   not null default '',
-	enable_markdown  bool   not null default false,
-	enable_smilies   bool   not null default false,
-	enable_autolink  bool   not null default false,
+	enable_markdown  bool   not null default true,
+	enable_smilies   bool   not null default true,
+	enable_autolink  bool   not null default true,
 	enable_sig       bool   not null default false,
 	author_deleted   bool   not null default false
 );

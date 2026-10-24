@@ -2,6 +2,8 @@ package db_test
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,20 +27,35 @@ var schemaTables = []string{
 	"email_queue", "email_tokens", "static_pages",
 }
 
+// TestSchemaTables compares the base tables in the schema with schemaTables.
+// The migration runner's own table is not part of the release-1 schema.
 func TestSchemaTables(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t)
-	for _, table := range schemaTables {
-		var n int
-		err := pool.QueryRow(ctx,
-			`select count(*) from information_schema.tables
-			 where table_schema = current_schema() and table_name = $1`, table).Scan(&n)
-		if err != nil {
+	rows, err := pool.Query(ctx,
+		`select table_name from information_schema.tables
+		 where table_schema = current_schema() and table_type = 'BASE TABLE'
+		   and table_name <> 'schema_migrations'
+		 order by table_name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			t.Fatal(err)
 		}
-		if n != 1 {
-			t.Errorf("table %s: found %d, want 1", table, n)
-		}
+		got = append(got, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := slices.Clone(schemaTables)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("base tables differ\n got: %v\nwant: %v", got, want)
 	}
 }
 
@@ -292,26 +309,63 @@ func TestPostSearchVector(t *testing.T) {
 	}
 }
 
-// Each post and private message stores three markup flags.
+// columnsLike returns each column of table that matches the LIKE pattern, as
+// "type nullability default".
+func columnsLike(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, pattern string) map[string]string {
+	t.Helper()
+	rows, err := pool.Query(ctx,
+		`select column_name, data_type, is_nullable, coalesce(column_default, '')
+		 from information_schema.columns
+		 where table_schema = current_schema() and table_name = $1
+		   and column_name like $2`, table, pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var name, typ, nullable, def string
+		if err := rows.Scan(&name, &typ, &nullable, &def); err != nil {
+			t.Fatal(err)
+		}
+		got[name] = typ + " " + nullable + " " + def
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// Each post and private message stores markup flags, and each member stores the
+// same three for the signature. The three markup flags default to true: a new
+// post wants every feature on. The match is exact, so a new column fails here.
 func TestMarkupFlagColumns(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t)
 
-	for _, table := range []string{"posts", "pms"} {
-		for _, column := range []string{"enable_markdown", "enable_smilies", "enable_autolink"} {
-			var n int
-			err := pool.QueryRow(ctx,
-				`select count(*) from information_schema.columns
-				 where table_schema = current_schema() and table_name = $1 and column_name = $2`,
-				table, column).Scan(&n)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if n != 1 {
-				t.Errorf("column %s.%s: found %d, want 1", table, column, n)
-			}
+	on := "boolean NO true"
+	check := func(table, pattern string, want map[string]string) {
+		t.Helper()
+		got := columnsLike(ctx, t, pool, table, pattern)
+		if !maps.Equal(got, want) {
+			t.Errorf("%s %s\n got: %v\nwant: %v", table, pattern, got, want)
 		}
 	}
+	for _, table := range []string{"posts", "pms"} {
+		check(table, `enable\_%`, map[string]string{
+			"enable_markdown": on,
+			"enable_smilies":  on,
+			"enable_autolink": on,
+			"enable_sig":      "boolean NO false",
+		})
+	}
+	check("users", `signature\_%`, map[string]string{
+		"signature_markdown": on,
+		"signature_smilies":  on,
+		"signature_autolink": on,
+		"signature_source":   "text NO ''::text",
+		"signature_tree":     "jsonb YES ",
+	})
 }
 
 // The importer loads a bundle in one transaction with every constraint
