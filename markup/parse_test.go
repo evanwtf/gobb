@@ -2,6 +2,7 @@ package markup
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -635,16 +636,24 @@ func TestParseContainerCap(t *testing.T) {
 	}
 }
 
+// shortSource quotes src for a failure message and cuts it at 300 bytes.
+func shortSource(src string) string {
+	if len(src) > 300 {
+		return fmt.Sprintf("%q... (%d bytes)", src[:300], len(src))
+	}
+	return fmt.Sprintf("%q", src)
+}
+
 // mustNotPanic parses src and requires a valid tree.
 func mustNotPanic(t *testing.T, name, src string, opt Options) {
 	t.Helper()
 	defer func() {
 		if r := recover(); r != nil {
-			t.Errorf("%s: Parse panicked: %v", name, r)
+			t.Errorf("%s: Parse panicked: %v\nsource: %s", name, r, shortSource(src))
 		}
 	}()
 	if err := Validate(Parse(src, opt)); err != nil {
-		t.Errorf("%s: invalid tree: %v", name, err)
+		t.Errorf("%s: invalid tree: %v\nsource: %s", name, err, shortSource(src))
 	}
 }
 
@@ -693,8 +702,12 @@ func TestParseContainerCapKeepsListsWhole(t *testing.T) {
 	for _, marks := range markSets {
 		for n := 20; n <= 44; n++ {
 			for i, second := range seconds {
-				mustNotPanic(t, "mixed", deepMixed(marks, n, second), allOn)
-				_ = i
+				// The name holds the markers, the count and the second line's
+				// form, so a failure says which input it was.
+				name := fmt.Sprintf("%q x%d second%d", strings.Join(marks, ""), n, i)
+				t.Run(name, func(t *testing.T) {
+					mustNotPanic(t, name, deepMixed(marks, n, second), allOn)
+				})
 			}
 		}
 	}
