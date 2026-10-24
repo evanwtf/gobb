@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -128,10 +129,13 @@ func (l *limitReader) Read(p []byte) (int, error) {
 // exist, or it must be empty. Extract makes dest, with its parents.
 //
 // Extract writes regular files and directories only, with mode 0644 and 0755
-// whatever the archive says. It refuses an absolute path, a path that
+// whatever the archive says. It skips a global pax header, which "git archive"
+// writes. It refuses an absolute path, a path that
 // fs.ValidPath rejects, a path with a backslash, a symlink, a hard link, a
 // device, a FIFO, a repeated file, and any other kind of entry. It stops when
-// the uncompressed stream passes 8 GiB.
+// the uncompressed stream passes 8 GiB, and when the archive holds more than
+// 1,000,000 entries. It reads the gzip stream to its end, so it refuses a bad
+// checksum, a cut trailer and any data after the stream.
 //
 // Extract strips one leading "./" from an entry name and skips the bare "./"
 // entry, so an archive made with "tar -C dir -czf bundle.tar.gz ." works. It
@@ -150,11 +154,15 @@ func Extract(archive, dest string) (err error) {
 		return err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(f)
+	// A bufio.Reader is an io.ByteReader, so gzip reads no byte past the end of
+	// its stream, and the check for trailing data below is exact.
+	br := bufio.NewReader(f)
+	gz, err := gzip.NewReader(br)
 	if err != nil {
 		return fmt.Errorf("bundle: %s is not a gzip file: %w", filepath.Base(archive), err)
 	}
 	defer gz.Close()
+	gz.Multistream(false)
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
@@ -164,15 +172,19 @@ func Extract(archive, dest string) (err error) {
 		}
 	}()
 
-	tr := tar.NewReader(&limitReader{r: gz, n: maxExtractBytes})
+	lr := &limitReader{r: gz, n: maxExtractBytes}
+	tr := tar.NewReader(lr)
 	var total int64
-	for {
+	for entries := 1; ; entries++ {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return finishGzip(lr, br)
 		}
 		if err != nil {
 			return extractErr("", err)
+		}
+		if entries > maxExtractEntries {
+			return extractErr("", fmt.Errorf("holds more than %d entries", maxExtractEntries))
 		}
 		name, skip, err := entryName(h)
 		if err != nil {
@@ -199,12 +211,28 @@ func Extract(archive, dest string) (err error) {
 	}
 }
 
+// finishGzip reads the gzip stream to its end. The tar reader stops at its own
+// end blocks, before the gzip CRC and the trailer, so a changed byte or a cut
+// trailer would pass without this read. It then refuses any byte after the
+// stream.
+func finishGzip(lr io.Reader, br *bufio.Reader) error {
+	if _, err := io.Copy(io.Discard, lr); err != nil {
+		return extractErr("", err)
+	}
+	if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
+		return extractErr("", errors.New("data follows the end of the gzip stream"))
+	}
+	return nil
+}
+
 // entryName checks the header of one entry and returns its clean name, without
 // a trailing slash. skip is true for the bare "./" entry.
 func entryName(h *tar.Header) (name string, skip bool, err error) {
 	name = h.Name
 	switch h.Typeflag {
 	case tar.TypeReg, tar.TypeDir:
+	case tar.TypeXGlobalHeader:
+		return "", true, nil // git archive writes one; it holds no file
 	default:
 		return "", false, extractErr(h.Name, fmt.Errorf("is of type %q; only regular files and directories are allowed", string(h.Typeflag)))
 	}
@@ -262,3 +290,7 @@ func cleanDest(dest string, remove bool) {
 		_ = os.RemoveAll(filepath.Join(dest, e.Name()))
 	}
 }
+
+// maxExtractEntries is the most entries that Extract accepts. It is a variable
+// so that a test can lower it.
+var maxExtractEntries = 1_000_000

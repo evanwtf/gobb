@@ -41,7 +41,7 @@ type dataFile struct {
 // Create starts a bundle in dir. The directory must not exist, or it must be
 // empty. Create makes it, with its parents, and opens all 23 data files. source
 // is the manifest's "source" label. Create refuses settings or a source that
-// fail their checks.
+// fail their checks. When Create fails, it removes what it made.
 func Create(dir, source string, s Settings) (*Writer, error) {
 	m := Manifest{Format: Format, Version: Version, Source: source, Counts: map[string]int{}}
 	for _, f := range Files {
@@ -62,13 +62,17 @@ func Create(dir, source string, s Settings) (*Writer, error) {
 		dir: dir, source: source, settings: s,
 		data: map[string]*dataFile{}, paths: map[string]bool{},
 	}
+	_, statErr := os.Stat(dir)
+	madeDir := errors.Is(statErr, fs.ErrNotExist)
 	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o755); err != nil {
+		cleanDest(dir, madeDir)
 		return nil, err
 	}
 	for _, name := range Files {
-		f, err := os.OpenFile(filepath.Join(dir, name+".jsonl"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := createDataFile(filepath.Join(dir, name+".jsonl"))
 		if err != nil {
 			w.abort()
+			cleanDest(dir, madeDir)
 			return nil, err
 		}
 		w.data[name] = &dataFile{f: f, w: bufio.NewWriterSize(f, 64<<10)}
@@ -106,7 +110,10 @@ func Add[T Row](w *Writer, row T) error {
 	if w.closed {
 		return errors.New("bundle: Add after Close")
 	}
-	name := row.DataFile()
+	name, err := rowFile[T]()
+	if err != nil {
+		return err
+	}
 	d, ok := w.data[name]
 	if !ok {
 		return fmt.Errorf("bundle: %T is not a bundle row", row)
@@ -165,30 +172,35 @@ func normalize(row any) any {
 // reference to put in a row. path is slash-separated. It must pass fs.ValidPath,
 // hold no backslash, be at most 255 bytes, and start with one of attachments/,
 // avatars/, smilies/, ranks/ or header/. AddFile refuses a path it has already
-// written, and a src that is not a regular file.
+// written, and a src that is not a regular file (a symlink counts as not).
 func (w *Writer) AddFile(src, path string) (FileRef, error) {
 	if w.closed {
 		return FileRef{}, errors.New("bundle: AddFile after Close")
 	}
 	first, _, _ := strings.Cut(path, "/")
-	switch {
-	case len(path) > maxName, strings.Contains(path, `\`), path == ".", !fs.ValidPath(path):
-		return FileRef{}, fmt.Errorf("bundle: %q is not a clean slash-separated path of at most %d bytes", clip(path), maxName)
-	case !slices.Contains(fileDirs, first) || len(path) == len(first):
+	if !slices.Contains(fileDirs, first) {
 		return FileRef{}, fmt.Errorf("bundle: %q must name a file under one of %s", clip(path), strings.Join(fileDirs, ", "))
-	case w.paths[path]:
+	}
+	var v vet // the rule for the path of a file reference
+	v.filePath("path", path, first)
+	if len(v.errs) > 0 {
+		return FileRef{}, fmt.Errorf("bundle: path %q %s", clip(path), v.errs[0].Msg)
+	}
+	if w.paths[path] {
 		return FileRef{}, fmt.Errorf("bundle: %q was added already", path)
+	}
+	// Lstat first: opening a FIFO with no writer blocks, and a symlink could
+	// point anywhere.
+	if st, err := os.Lstat(src); err != nil {
+		return FileRef{}, err
+	} else if !st.Mode().IsRegular() {
+		return FileRef{}, fmt.Errorf("bundle: %s is not a regular file", filepath.Base(src))
 	}
 	in, err := os.Open(src)
 	if err != nil {
 		return FileRef{}, err
 	}
 	defer in.Close()
-	if st, err := in.Stat(); err != nil {
-		return FileRef{}, err
-	} else if !st.Mode().IsRegular() {
-		return FileRef{}, fmt.Errorf("bundle: %s is not a regular file", filepath.Base(src))
-	}
 	dst := filepath.Join(w.dir, "files", filepath.FromSlash(path))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return FileRef{}, err
@@ -252,4 +264,10 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+// createDataFile creates a new data file. It is a variable so that a test can
+// make it fail.
+var createDataFile = func(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 }

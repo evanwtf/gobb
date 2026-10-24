@@ -115,6 +115,83 @@ func TestAddRefusesBadRow(t *testing.T) {
 	}
 }
 
+func TestAddRefusesPointerRows(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "b")
+	w, err := Create(dir, "example", validSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := validRole()
+	err = Add(w, &role)
+	if err == nil || !strings.Contains(err.Error(), "must be a struct") {
+		t.Errorf("Add(&role) = %v", err)
+	}
+	err = Add(w, (*User)(nil))
+	if err == nil || !strings.Contains(err.Error(), "must be a struct") {
+		t.Errorf("Add((*User)(nil)) = %v", err)
+	}
+	if err := Add[Row](w, validUser()); err == nil {
+		t.Error("Add with the Row interface as T succeeded")
+	}
+	if err := Add(w, validUser()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "roles.jsonl"))
+	if len(data) != 0 {
+		t.Errorf("roles.jsonl = %q; a refused row wrote to it", data)
+	}
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Manifest().Counts["roles"] != 0 || r.Manifest().Counts["users"] != 1 {
+		t.Errorf("counts = %v", r.Manifest().Counts)
+	}
+}
+
+func TestCreateCleansUpAfterAFailure(t *testing.T) {
+	fail := func(t *testing.T) {
+		old := createDataFile
+		n := 0
+		createDataFile = func(path string) (*os.File, error) {
+			n++
+			if n == 5 {
+				return nil, errors.New("disk full")
+			}
+			return old(path)
+		}
+		t.Cleanup(func() { createDataFile = old })
+	}
+	t.Run("a directory that Create made", func(t *testing.T) {
+		fail(t)
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "b")
+		if _, err := Create(dir, "example", validSettings()); err == nil || !strings.Contains(err.Error(), "disk full") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, err := os.Stat(dir); err == nil {
+			t.Error("Create left the directory")
+		}
+	})
+	t.Run("an empty directory that existed", func(t *testing.T) {
+		fail(t)
+		dir := t.TempDir()
+		if _, err := Create(dir, "example", validSettings()); err == nil {
+			t.Fatal("Create succeeded")
+		}
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("Create removed the directory: %v", err)
+		}
+		if len(ents) != 0 {
+			t.Errorf("Create left %d entries", len(ents))
+		}
+	})
+}
+
 func TestAddRefusesOversizeRow(t *testing.T) {
 	w, err := Create(filepath.Join(t.TempDir(), "b"), "example", validSettings())
 	if err != nil {
@@ -217,21 +294,24 @@ func TestWriterAddFile(t *testing.T) {
 		}
 	}
 
-	bad := []struct{ name, path string }{
-		{"parent element", "attachments/../x"},
-		{"absolute", "/attachments/x"},
-		{"unknown directory", "other/x.png"},
-		{"directory only", "attachments"},
-		{"empty element", "attachments//x"},
-		{"backslash", `attachments\x`},
-		{"dot", "."},
-		{"too long", "attachments/" + strings.Repeat("a", 250)},
-		{"already added", "attachments/12/a.png"},
+	bad := []struct{ name, path, want string }{
+		{"parent element", "attachments/../x", "not a clean slash-separated path"},
+		{"absolute", "/attachments/x", "must name a file under one of"},
+		{"unknown directory", "other/x.png", "must name a file under one of"},
+		{"directory only", "attachments", "must name a file under attachments/"},
+		{"trailing slash", "attachments/", "not a clean slash-separated path"},
+		{"empty element", "attachments//x", "not a clean slash-separated path"},
+		{"backslash", `attachments/a\x`, "holds a backslash"},
+		{"dot", ".", "must name a file under one of"},
+		{"too long", "attachments/" + strings.Repeat("a", 250), "the limit is 255"},
+		{"NUL", "attachments/a\x00b", "holds U+0000"},
+		{"already added", "attachments/12/a.png", "was added already"},
 	}
 	for _, tt := range bad {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := w.AddFile(src, tt.path); err == nil {
-				t.Error("AddFile succeeded")
+			_, err := w.AddFile(src, tt.path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want it to contain %q", err, tt.want)
 			}
 		})
 	}

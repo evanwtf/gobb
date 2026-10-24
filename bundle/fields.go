@@ -231,21 +231,28 @@ func (v *vet) prefix(field, s string) {
 	}
 }
 
+// filePath checks the path of a file reference. dir is the directory it must
+// start with. The path is at most 255 bytes, clean, slash-separated, and holds
+// no backslash.
+func (v *vet) filePath(field, p, dir string) {
+	if !v.text(field, p) {
+		return
+	}
+	switch {
+	case len(p) > maxName:
+		v.add(field, "is %d bytes; the limit is %d", len(p), maxName)
+	case strings.Contains(p, `\`):
+		v.add(field, "holds a backslash")
+	case !fs.ValidPath(p) || p == ".":
+		v.add(field, "is not a clean slash-separated path")
+	case !strings.HasPrefix(p, dir+"/") || len(p) == len(dir)+1:
+		v.add(field, "must name a file under %s/", dir)
+	}
+}
+
 // file checks a file reference. dir is the directory its path must start with.
 func (v *vet) file(field string, f FileRef, dir string) {
-	path := field + ".path"
-	if v.text(path, f.Path) {
-		switch {
-		case len(f.Path) > maxName:
-			v.add(path, "is %d bytes; the limit is %d", len(f.Path), maxName)
-		case strings.Contains(f.Path, `\`):
-			v.add(path, "holds a backslash")
-		case !fs.ValidPath(f.Path) || f.Path == ".":
-			v.add(path, "is not a clean slash-separated path")
-		case !strings.HasPrefix(f.Path, dir+"/") || len(f.Path) == len(dir)+1:
-			v.add(path, "must name a file under %s/", dir)
-		}
-	}
+	v.filePath(field+".path", f.Path, dir)
 	if f.Size < 0 {
 		v.add(field+".size", "is %d; it must be 0 or more", f.Size)
 	}
@@ -310,14 +317,20 @@ func (v *vet) smileyCode(field, code string) {
 	}
 }
 
+// formatVersion checks the two fields that tell a reader whether it can read
+// the rest of manifest.json.
+func (v *vet) formatVersion(format string, version int) {
+	if format != Format {
+		v.add("format", "is %q; it must be %q", clip(format), Format)
+	}
+	if version != Version {
+		v.add("version", "is %d; this reader knows version %d", version, Version)
+	}
+}
+
 func (m Manifest) check() []*Error {
 	var v vet
-	if m.Format != Format {
-		v.add("format", "is %q; it must be %q", clip(m.Format), Format)
-	}
-	if m.Version != Version {
-		v.add("version", "is %d; this reader knows version %d", m.Version, Version)
-	}
+	v.formatVersion(m.Format, m.Version)
 	v.label("source", m.Source)
 	for _, f := range Files {
 		n, ok := m.Counts[f]

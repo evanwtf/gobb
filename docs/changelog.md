@@ -76,5 +76,7 @@ that the pages stand on.
   `null` on a field that is not nullable, a failed field check and a count that
   differs from the manifest. `bundle.Create`, `Add` and `AddFile` write a bundle and
   check each row first. `bundle.Pack` and `bundle.Extract` handle `.tar.gz` files and
-  refuse paths that escape, links and devices. Integer fields now stop at 2,147,483,647,
+  refuse paths that escape, links and devices, and `Extract` reads the gzip stream to
+  its end, so a bad checksum, a cut trailer and trailing data fail. `Each` refuses a CR
+  line ending and a lone surrogate escape. Integer fields now stop at 2,147,483,647,
   and an email ban needs an address.

@@ -3,6 +3,7 @@ package bundle
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ type Reader struct {
 
 // Open opens the bundle in dir. It reads and checks manifest.json and
 // settings.json. Open refuses a top-level entry that is not in the layout, a
-// missing manifest, settings file, data file or files directory, an unknown or
+// missing manifest, settings file or data file, an unknown or
 // missing key in the two JSON files, and a wrong format or version. It refuses
 // a counts object that lacks a data file or names an extra one.
 //
@@ -50,7 +51,8 @@ func Open(dir string) (*Reader, error) {
 		}
 		seen[e.Name()] = true
 	}
-	order := append([]string{"manifest.json", "settings.json"}, "files")
+	// files/ may be absent: it holds nothing.
+	order := []string{"manifest.json", "settings.json"}
 	for _, f := range Files {
 		order = append(order, f+".jsonl")
 	}
@@ -61,6 +63,9 @@ func Open(dir string) (*Reader, error) {
 	}
 
 	r := &Reader{dir: dir}
+	if err := checkFormatVersion(dir); err != nil {
+		return nil, err
+	}
 	if r.manifest, err = readJSON[Manifest](dir, "manifest.json"); err != nil {
 		return nil, err
 	}
@@ -78,21 +83,61 @@ func Open(dir string) (*Reader, error) {
 	return r, nil
 }
 
-// readJSON reads the small JSON file name in dir and decodes it with the strict
-// rules of the format.
-func readJSON[T any](dir, name string) (T, error) {
-	var zero T
+// checkFormatVersion reads "format" and "version" of manifest.json before
+// anything else, and with no strict rules. A manifest from another version may
+// have other keys, and the reader must say "wrong version" and not "unknown
+// field". When either key is absent or has the wrong type, the strict read that
+// follows reports it.
+func checkFormatVersion(dir string) error {
+	data, err := readSmall(dir, "manifest.json")
+	if err != nil {
+		return err
+	}
+	var probe struct {
+		Format  *string `json:"format"`
+		Version *int    `json:"version"`
+	}
+	_ = json.Unmarshal(data, &probe) // a value of the wrong type stays nil or partial
+	var v vet
+	switch {
+	case probe.Format != nil && probe.Version != nil:
+		v.formatVersion(*probe.Format, *probe.Version)
+	case probe.Format != nil:
+		v.formatVersion(*probe.Format, Version)
+	case probe.Version != nil:
+		v.formatVersion(Format, *probe.Version)
+	}
+	if len(v.errs) > 0 {
+		v.errs[0].File = "manifest.json"
+		return v.errs[0]
+	}
+	return nil
+}
+
+// readSmall reads the small JSON file name in dir.
+func readSmall(dir, name string) ([]byte, error) {
 	f, err := os.Open(filepath.Join(dir, name))
 	if err != nil {
-		return zero, err
+		return nil, err
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, MaxLineBytes+1))
 	if err != nil {
-		return zero, err
+		return nil, err
 	}
 	if len(data) > MaxLineBytes {
-		return zero, &Error{File: name, Msg: "is longer than " + strconv.Itoa(MaxLineBytes) + " bytes"}
+		return nil, &Error{File: name, Msg: "is longer than " + strconv.Itoa(MaxLineBytes) + " bytes"}
+	}
+	return data, nil
+}
+
+// readJSON reads the small JSON file name in dir and decodes it with the strict
+// rules of the format.
+func readJSON[T any](dir, name string) (T, error) {
+	var zero T
+	data, err := readSmall(dir, name)
+	if err != nil {
+		return zero, err
 	}
 	v, e := decodeStrict[T](data)
 	if e != nil {
@@ -129,21 +174,21 @@ func (r *Reader) Settings() Settings {
 // Each reads one line at a time and keeps no row after fn returns, so memory
 // does not grow with the file. For each line it refuses:
 //
-//   - a line over [MaxLineBytes], invalid UTF-8, or an empty line;
+//   - a line over [MaxLineBytes], a CRLF line ending, invalid UTF-8, or an empty
+//     line;
 //   - data after the JSON value, a key that is unknown, repeated or missing, a
 //     null where the field is not a pointer, and a value of the wrong type;
-//   - U+0000 in any string;
+//   - U+0000 in any string, and an escape for half of a surrogate pair;
 //   - a row that fails its field checks.
 //
 // Each fills File, Line and Field in the *[Error] it returns. When the file
 // ends, Each compares the line count with the manifest. When fn returns an
 // error, Each stops and returns that error unchanged.
 func Each[T Row](r *Reader, fn func(line int, row T) error) error {
-	rt := reflect.TypeFor[T]()
-	if rt.Kind() != reflect.Struct {
-		return fmt.Errorf("bundle: Each needs a row struct type, not %s", rt)
+	name, err := rowFile[T]()
+	if err != nil {
+		return err
 	}
-	name := reflect.Zero(rt).Interface().(Row).DataFile()
 	file := name + ".jsonl"
 	f, err := os.Open(filepath.Join(r.dir, file))
 	if err != nil {
@@ -167,6 +212,9 @@ func Each[T Row](r *Reader, fn func(line int, row T) error) error {
 		if tooLong {
 			return &Error{File: file, Line: n, Msg: "line is longer than " + strconv.Itoa(MaxLineBytes) + " bytes"}
 		}
+		if len(buf) > 0 && buf[len(buf)-1] == '\r' {
+			return &Error{File: file, Line: n, Msg: "CRLF line ending; use LF"}
+		}
 		if len(bytes.TrimSpace(buf)) == 0 {
 			return &Error{File: file, Line: n, Msg: "empty line"}
 		}
@@ -186,6 +234,16 @@ func Each[T Row](r *Reader, fn func(line int, row T) error) error {
 		return &Error{File: file, Msg: strconv.Itoa(n) + " rows, manifest says " + strconv.Itoa(want)}
 	}
 	return nil
+}
+
+// rowFile returns the data file name of row type T. T must be a struct type:
+// a pointer type has no usable zero value.
+func rowFile[T Row]() (string, error) {
+	rt := reflect.TypeFor[T]()
+	if rt.Kind() != reflect.Struct {
+		return "", fmt.Errorf("bundle: the row type must be a struct, not %s", rt)
+	}
+	return reflect.Zero(rt).Interface().(Row).DataFile(), nil
 }
 
 // firstError runs the field checks of row and returns the first fault.

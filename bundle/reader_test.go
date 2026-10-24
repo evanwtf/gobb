@@ -233,11 +233,6 @@ func TestOpenRefuses(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "manifest.json: is missing"},
-		{"missing files directory", func(t *testing.T, dir string) {
-			if err := os.Remove(filepath.Join(dir, "files")); err != nil {
-				t.Fatal(err)
-			}
-		}, "files: is missing"},
 		{"files is a file", func(t *testing.T, dir string) {
 			if err := os.Remove(filepath.Join(dir, "files")); err != nil {
 				t.Fatal(err)
@@ -348,6 +343,45 @@ func TestOpenRefuses(t *testing.T) {
 	})
 }
 
+func TestOpenAcceptsMissingFilesDir(t *testing.T) {
+	dir := newBundle(t)
+	if err := os.Remove(filepath.Join(dir, "files")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err != nil {
+		t.Errorf("Open without files/: %v", err)
+	}
+}
+
+// TestOpenReadsVersionFirst pins that a manifest from a newer format reports
+// its version, not the first new key.
+func TestOpenReadsVersionFirst(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(m map[string]any)
+		want string
+	}{
+		{"new key", func(m map[string]any) { m["version"] = 2; m["new_key"] = 1 },
+			"manifest.json: version: is 2; this reader knows version 1"},
+		{"missing key", func(m map[string]any) { m["version"] = 2; delete(m, "source") },
+			"manifest.json: version: is 2; this reader knows version 1"},
+		{"changed counts", func(m map[string]any) { m["version"] = 2; m["counts"] = []any{} },
+			"manifest.json: version: is 2; this reader knows version 1"},
+		{"wrong format", func(m map[string]any) { m["format"] = "other"; m["new_key"] = 1 },
+			`manifest.json: format: is "other"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := newBundle(t)
+			editJSON(t, dir, "manifest.json", tt.edit)
+			_, err := Open(dir)
+			if err == nil || !strings.HasPrefix(err.Error(), tt.want) {
+				t.Errorf("err = %v, want prefix %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -429,6 +463,44 @@ func TestEachRefusesBadLines(t *testing.T) {
 		{"line over 1 MiB, no newline", "users", good + "\n" + good + strings.Repeat(" ", MaxLineBytes), 2,
 			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
 			"users.jsonl:2: line is longer than 1048576 bytes"},
+		{"CRLF line ending", "users", good + "\r\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
+			"users.jsonl:1: CRLF line ending; use LF"},
+		{"CRLF on line 2", "users", good + "\n" + good + "\r\n", 2,
+			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
+			"users.jsonl:2: CRLF line ending; use LF"},
+		{"CR alone", "users", good + "\n\r\n", 2,
+			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
+			"users.jsonl:2: CRLF line ending; use LF"},
+		{"lone high surrogate", "users", strings.Replace(good, `"alice"`, `"a\ud800b"`, 1) + "\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
+			`users.jsonl:1: username: holds the lone surrogate escape \ud800`},
+		{"lone low surrogate", "users", strings.Replace(good, `"alice"`, `"a\uDC00b"`, 1) + "\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
+			`users.jsonl:1: username: holds the lone surrogate escape \uDC00`},
+		{"high surrogate at the end of a string", "users", strings.Replace(good, `"alice"`, `"a\ud83d"`, 1) + "\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
+			`users.jsonl:1: username: holds the lone surrogate escape \ud83d`},
+		{"high surrogate then a non-low escape", "users", strings.Replace(good, `"alice"`, `"a\ud83d\u0041"`, 1) + "\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
+			`users.jsonl:1: username: holds the lone surrogate escape \ud83d`},
+		{"surrogate in a nested string", "posts", strings.Replace(goodPost, `"Hello"`, `"\udfff"`, 1) + "\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[Post](t, r) },
+			`posts.jsonl:1: body.source: holds the lone surrogate escape \udfff`},
+		{"surrogate in a map key", "legacy_routes", strings.Replace(line(t, func() LegacyRoute {
+			r := validRoute()
+			r.Match = map[string]string{"mode": "x"}
+			return r
+		}(), nil), `"mode"`, `"mo\ud800"`, 1) + "\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[LegacyRoute](t, r) },
+			`legacy_routes.jsonl:1: holds the lone surrogate escape \ud800`},
+		{"NUL in a map key", "legacy_routes", strings.Replace(line(t, func() LegacyRoute {
+			r := validRoute()
+			r.Match = map[string]string{"mode": "x"}
+			return r
+		}(), nil), `"mode"`, `"mo\u0000de"`, 1) + "\n", 1,
+			func(t *testing.T, r *Reader) string { return eachErr[LegacyRoute](t, r) },
+			`legacy_routes.jsonl:1: match: key "mo\x00de" holds U+0000`},
 		{"empty line", "users", good + "\n\n" + good + "\n", 3,
 			func(t *testing.T, r *Reader) string { return eachErr[User](t, r) },
 			"users.jsonl:2: empty line"},
@@ -588,6 +660,22 @@ func TestEachAcceptsEdges(t *testing.T) {
 		})
 		r := dataBundle(t, "users", l+"\n", 1)
 		expect(t, r, validUser())
+	})
+	t.Run("a valid surrogate pair", func(t *testing.T) {
+		u := validUser()
+		u.Username = "a\U0001F600b"
+		l := strings.Replace(line(t, u, nil), "\U0001F600", `\ud83d\ude00`, 1)
+		if !strings.Contains(l, `\ud83d\ude00`) {
+			t.Fatal("the test line has no escape")
+		}
+		r := dataBundle(t, "users", l+"\n", 1)
+		expect(t, r, u)
+	})
+	t.Run("an escaped backslash before u", func(t *testing.T) {
+		u := validUser()
+		u.Username = `a\ud800b` // a backslash, not an escape
+		r := dataBundle(t, "users", line(t, u, nil)+"\n", 1)
+		expect(t, r, u)
 	})
 	t.Run("no newline at the end", func(t *testing.T) {
 		r := dataBundle(t, "users", good, 1)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"slices"
@@ -78,6 +79,11 @@ func decodeStrict[T any](data []byte) (T, *Error) {
 	}
 	if e := walk(raw, reflect.TypeFor[T](), ""); e != nil {
 		return out, e
+	}
+	// A lone surrogate in a field name or a map key escapes the walk of the
+	// values.
+	if esc, ok := loneSurrogate(raw); ok {
+		return out, &Error{Msg: "holds the lone surrogate escape " + esc}
 	}
 	// The walk proved the shape, so this decode only fills the value. The
 	// strict mode stays on as a second guard.
@@ -163,7 +169,61 @@ func walk(raw json.RawMessage, t reflect.Type, path string) *Error {
 	if err := json.Unmarshal(raw, reflect.New(t).Interface()); err != nil {
 		return &Error{Field: path, Msg: leafMessage(t)}
 	}
+	if t.Kind() == reflect.String {
+		if esc, ok := loneSurrogate(raw); ok {
+			return &Error{Field: path, Msg: "holds the lone surrogate escape " + esc}
+		}
+	}
 	return nil
+}
+
+// loneSurrogate scans the JSON text raw for a \u escape that is half of a
+// surrogate pair: a high surrogate (D800 to DBFF) not followed at once by a low
+// surrogate escape (DC00 to DFFF), or a low surrogate with no high one before
+// it. encoding/json turns such an escape into U+FFFD without an error. It
+// returns the escape as written.
+func loneSurrogate(raw []byte) (string, bool) {
+	hex := func(i int) (rune, bool) { // the escape that starts at raw[i] = '\\'
+		if i+6 > len(raw) || raw[i] != '\\' || raw[i+1] != 'u' {
+			return 0, false
+		}
+		var r rune
+		for _, c := range raw[i+2 : i+6] {
+			switch {
+			case c >= '0' && c <= '9':
+				r = r<<4 | rune(c-'0')
+			case c >= 'a' && c <= 'f':
+				r = r<<4 | rune(c-'a'+10)
+			case c >= 'A' && c <= 'F':
+				r = r<<4 | rune(c-'A'+10)
+			default:
+				return 0, false
+			}
+		}
+		return r, true
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		r, ok := hex(i)
+		if !ok {
+			i++ // skip the escaped character, so \\u is not an escape
+			continue
+		}
+		switch {
+		case r >= 0xD800 && r <= 0xDBFF:
+			if lo, ok := hex(i + 6); ok && lo >= 0xDC00 && lo <= 0xDFFF {
+				i += 11
+				continue
+			}
+			return string(raw[i : i+6]), true
+		case r >= 0xDC00 && r <= 0xDFFF:
+			return string(raw[i : i+6]), true
+		}
+		i += 5
+	}
+	return "", false
 }
 
 // clipKey shortens a key that came from the bundle, for a message.
@@ -262,7 +322,7 @@ func findNUL(v reflect.Value, path string) *Error {
 	case reflect.Map:
 		for _, k := range sortedMapKeys(v) {
 			if strings.IndexByte(k, 0) >= 0 {
-				return &Error{Field: joinPath(path, clipKey(k)), Msg: "key holds U+0000"}
+				return &Error{Field: path, Msg: fmt.Sprintf("key %q holds U+0000", clipKey(k))}
 			}
 			if e := findNUL(v.MapIndex(reflect.ValueOf(k).Convert(v.Type().Key())), joinPath(path, k)); e != nil {
 				return e

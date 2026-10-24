@@ -22,15 +22,35 @@ type tarEntry struct {
 // buildArchive writes a .tar.gz of entries and returns its path.
 func buildArchive(t *testing.T, entries ...tarEntry) string {
 	t.Helper()
+	return writeArchive(t, archiveBytes(t, entries...))
+}
+
+// writeArchive writes data to a new file and returns its path.
+func writeArchive(t *testing.T, data []byte) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "a.tar.gz")
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// archiveBytes returns a .tar.gz of entries. The gzip layer stores the data
+// without compression, so a test can find a byte of a file and change it.
+func archiveBytes(t *testing.T, entries ...tarEntry) []byte {
+	t.Helper()
 	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
+	gz, err := gzip.NewWriterLevel(&buf, gzip.NoCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tw := tar.NewWriter(gz)
 	for _, e := range entries {
 		h := e.hdr
 		if h.Typeflag == tar.TypeReg {
 			h.Size = int64(len(e.body))
 		}
-		if h.Mode == 0 {
+		if h.Mode == 0 && h.Typeflag != tar.TypeXGlobalHeader {
 			h.Mode = 0o644
 		}
 		if err := tw.WriteHeader(&h); err != nil {
@@ -48,11 +68,7 @@ func buildArchive(t *testing.T, entries ...tarEntry) string {
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.Join(t.TempDir(), "a.tar.gz")
-	if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return p
+	return buf.Bytes()
 }
 
 func reg(name, body string) tarEntry {
@@ -238,33 +254,38 @@ func TestExtractRefusesUnsafeEntries(t *testing.T) {
 	tests := []struct {
 		name    string
 		entries []tarEntry
+		want    string // part of the error
 	}{
-		{"parent path", []tarEntry{reg("../evil", "x")}},
-		{"nested parent path", []tarEntry{reg("a/../../evil", "x")}},
-		{"dot-slash then parent path", []tarEntry{reg("./../evil", "x")}},
-		{"absolute path", []tarEntry{reg("/abs", "x")}},
-		{"absolute path after dot-slash", []tarEntry{reg(".//abs", "x")}},
-		{"double dot-slash", []tarEntry{reg("././x", "x")}},
-		{"empty element", []tarEntry{reg("a//b", "x")}},
-		{"backslash", []tarEntry{reg(`a\b`, "x")}},
-		{"dot entry", []tarEntry{reg(".", "x")}},
-		{"parent directory", []tarEntry{dirEntry("../d/")}},
-		{"symlink", []tarEntry{{hdr: tar.Header{Name: "l", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"}}}},
-		{"symlink out", []tarEntry{{hdr: tar.Header{Name: "l", Typeflag: tar.TypeSymlink, Linkname: ".."}}, reg("l/evil", "x")}},
-		{"hard link", []tarEntry{reg("a", "x"), {hdr: tar.Header{Name: "h", Typeflag: tar.TypeLink, Linkname: "a"}}}},
-		{"character device", []tarEntry{{hdr: tar.Header{Name: "c", Typeflag: tar.TypeChar, Devmajor: 1, Devminor: 3}}}},
-		{"block device", []tarEntry{{hdr: tar.Header{Name: "b", Typeflag: tar.TypeBlock}}}},
-		{"fifo", []tarEntry{{hdr: tar.Header{Name: "f", Typeflag: tar.TypeFifo}}}},
-		{"duplicate file", []tarEntry{reg("a", "1"), reg("a", "2")}},
-		{"file under a file", []tarEntry{reg("a", "1"), reg("a/b", "2")}},
+		{"parent path", []tarEntry{reg("../evil", "x")}, "is not a clean relative path"},
+		{"nested parent path", []tarEntry{reg("a/../../evil", "x")}, "is not a clean relative path"},
+		{"dot-slash then parent path", []tarEntry{reg("./../evil", "x")}, "is not a clean relative path"},
+		{"absolute path", []tarEntry{reg("/abs", "x")}, "is an absolute path"},
+		{"absolute path after dot-slash", []tarEntry{reg(".//abs", "x")}, "is an absolute path"},
+		{"double dot-slash", []tarEntry{reg("././x", "x")}, "is not a clean relative path"},
+		{"empty element", []tarEntry{reg("a//b", "x")}, "is not a clean relative path"},
+		{"backslash", []tarEntry{reg(`a\b`, "x")}, "holds a backslash"},
+		{"dot entry", []tarEntry{reg(".", "x")}, "is not a clean relative path"},
+		{"parent directory", []tarEntry{dirEntry("../d/")}, "is not a clean relative path"},
+		{"symlink", []tarEntry{{hdr: tar.Header{Name: "l", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"}}}, `is of type "2"`},
+		{"symlink out", []tarEntry{{hdr: tar.Header{Name: "l", Typeflag: tar.TypeSymlink, Linkname: ".."}}, reg("l/evil", "x")}, `is of type "2"`},
+		{"hard link", []tarEntry{reg("a", "x"), {hdr: tar.Header{Name: "h", Typeflag: tar.TypeLink, Linkname: "a"}}}, `is of type "1"`},
+		{"character device", []tarEntry{{hdr: tar.Header{Name: "c", Typeflag: tar.TypeChar, Devmajor: 1, Devminor: 3}}}, `is of type "3"`},
+		{"block device", []tarEntry{{hdr: tar.Header{Name: "b", Typeflag: tar.TypeBlock}}}, `is of type "4"`},
+		{"fifo", []tarEntry{{hdr: tar.Header{Name: "f", Typeflag: tar.TypeFifo}}}, `is of type "6"`},
+		{"duplicate file", []tarEntry{reg("a", "1"), reg("a", "2")}, "file exists"},
+		{"file under a file", []tarEntry{reg("a", "1"), reg("a/b", "2")}, "not a directory"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			archive := buildArchive(t, tt.entries...)
 			parent := t.TempDir()
 			dest := filepath.Join(parent, "dest")
-			if err := Extract(archive, dest); err == nil {
+			err := Extract(archive, dest)
+			if err == nil {
 				t.Fatal("Extract succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.want)
 			}
 			// Nothing appears outside dest, and a failed Extract leaves no dest.
 			ents, err := os.ReadDir(parent)
@@ -355,12 +376,19 @@ func TestExtractThenOpenRefusesAppleDouble(t *testing.T) {
 
 func TestExtractDest(t *testing.T) {
 	archive := buildArchive(t, reg("a", "1"))
+	mustFail := func(t *testing.T, err error, want string) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("Extract succeeded")
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
 	t.Run("refuses a non-empty directory", func(t *testing.T) {
 		dest := t.TempDir()
 		writeFile(t, filepath.Join(dest, "x"), "keep")
-		if err := Extract(archive, dest); err == nil {
-			t.Error("Extract into a non-empty directory succeeded")
-		}
+		mustFail(t, Extract(archive, dest), "is not empty")
 		if b, _ := os.ReadFile(filepath.Join(dest, "x")); string(b) != "keep" {
 			t.Error("Extract changed an existing file")
 		}
@@ -368,9 +396,7 @@ func TestExtractDest(t *testing.T) {
 	t.Run("refuses a file", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "f")
 		writeFile(t, dest, "x")
-		if err := Extract(archive, dest); err == nil {
-			t.Error("Extract over a file succeeded")
-		}
+		mustFail(t, Extract(archive, dest), "not a directory")
 	})
 	t.Run("takes an empty directory", func(t *testing.T) {
 		dest := t.TempDir()
@@ -388,16 +414,12 @@ func TestExtractDest(t *testing.T) {
 		}
 	})
 	t.Run("missing archive", func(t *testing.T) {
-		if err := Extract(filepath.Join(t.TempDir(), "none"), filepath.Join(t.TempDir(), "d")); err == nil {
-			t.Error("Extract of a missing archive succeeded")
-		}
+		mustFail(t, Extract(filepath.Join(t.TempDir(), "none"), filepath.Join(t.TempDir(), "d")), "no such file")
 	})
 	t.Run("not gzip", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "a")
 		writeFile(t, p, "plain text, not gzip")
-		if err := Extract(p, filepath.Join(t.TempDir(), "d")); err == nil {
-			t.Error("Extract of a non-gzip file succeeded")
-		}
+		mustFail(t, Extract(p, filepath.Join(t.TempDir(), "d")), "is not a gzip file")
 	})
 	t.Run("gzip but not tar", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -408,20 +430,89 @@ func TestExtractDest(t *testing.T) {
 		if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := Extract(p, filepath.Join(t.TempDir(), "d")); err == nil {
-			t.Error("Extract of a gzip file with no tar succeeded")
-		}
+		mustFail(t, Extract(p, filepath.Join(t.TempDir(), "d")), "reading the archive")
 	})
 	t.Run("truncated archive", func(t *testing.T) {
-		data, _ := os.ReadFile(buildArchive(t, reg("a", strings.Repeat("x", 100000))))
-		p := filepath.Join(t.TempDir(), "a")
-		if err := os.WriteFile(p, data[:len(data)/2], 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := Extract(p, filepath.Join(t.TempDir(), "d")); err == nil {
-			t.Error("Extract of a truncated archive succeeded")
-		}
+		data := archiveBytes(t, reg("a", strings.Repeat("x", 100000)))
+		p := writeArchive(t, data[:len(data)/2])
+		mustFail(t, Extract(p, filepath.Join(t.TempDir(), "d")), "unexpected EOF")
 	})
+}
+
+// TestExtractVerifiesGzip pins that Extract reads the gzip stream to its end:
+// tar stops at its own end blocks, so the CRC and the trailer need a separate
+// read.
+func TestExtractVerifiesGzip(t *testing.T) {
+	const marker = "FLIP-THIS-BYTE-0123456789"
+	good := archiveBytes(t, reg("a", marker), reg("b", "second"))
+	if err := Extract(writeArchive(t, good), filepath.Join(t.TempDir(), "d")); err != nil {
+		t.Fatalf("the good archive: %v", err)
+	}
+	flipped := bytes.Clone(good)
+	flipped[bytes.Index(flipped, []byte(marker))+3] ^= 0x01
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"flipped byte in a file", flipped, "checksum"},
+		{"missing trailer", good[:len(good)-8], "unexpected EOF"},
+		{"short trailer", good[:len(good)-3], "unexpected EOF"},
+		{"junk after the stream", append(bytes.Clone(good), "junk"...), "follows the end of the gzip stream"},
+		{"a second gzip member", append(bytes.Clone(good), good...), "follows the end of the gzip stream"},
+		{"trailing zero bytes", append(bytes.Clone(good), 0, 0, 0, 0), "follows the end of the gzip stream"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := t.TempDir()
+			dest := filepath.Join(parent, "d")
+			err := Extract(writeArchive(t, tt.data), dest)
+			if err == nil {
+				t.Fatal("Extract succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.want)
+			}
+			if _, err := os.Stat(dest); err == nil {
+				t.Error("a failed Extract left dest")
+			}
+		})
+	}
+}
+
+func TestExtractSkipsGlobalPaxHeader(t *testing.T) {
+	archive := buildArchive(t,
+		tarEntry{hdr: tar.Header{
+			Typeflag:   tar.TypeXGlobalHeader,
+			PAXRecords: map[string]string{"comment": "0123456789abcdef"},
+		}},
+		reg("a", "1"),
+	)
+	dest := filepath.Join(t.TempDir(), "d")
+	if err := Extract(archive, dest); err != nil {
+		t.Fatal(err)
+	}
+	got := snapshot(t, dest)
+	if len(got) != 2 || got["a"] != "1" {
+		t.Errorf("extracted %v; want only a", got)
+	}
+}
+
+func TestExtractStopsAtTheEntryLimit(t *testing.T) {
+	old := maxExtractEntries
+	maxExtractEntries = 5
+	t.Cleanup(func() { maxExtractEntries = old })
+	var es []tarEntry
+	for i := range 6 {
+		es = append(es, reg("f"+string(rune('a'+i)), ""))
+	}
+	err := Extract(buildArchive(t, es...), filepath.Join(t.TempDir(), "d"))
+	if err == nil || !strings.Contains(err.Error(), "more than 5 entries") {
+		t.Errorf("err = %v", err)
+	}
+	if err := Extract(buildArchive(t, es[:5]...), filepath.Join(t.TempDir(), "d")); err != nil {
+		t.Errorf("5 entries: %v", err)
+	}
 }
 
 func TestExtractStopsAtTheSizeLimit(t *testing.T) {
@@ -470,8 +561,11 @@ func TestExtractStopsAtTheSizeLimit(t *testing.T) {
 	})
 }
 
-func TestMaxExtractBytes(t *testing.T) {
+func TestExtractLimits(t *testing.T) {
 	if maxExtractBytes != 8<<30 {
 		t.Errorf("maxExtractBytes = %d, want 8 GiB", maxExtractBytes)
+	}
+	if maxExtractEntries != 1_000_000 {
+		t.Errorf("maxExtractEntries = %d, want 1,000,000", maxExtractEntries)
 	}
 }

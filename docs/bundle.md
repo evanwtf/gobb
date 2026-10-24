@@ -13,18 +13,21 @@ references and a count that disagrees with the manifest all stop the import.
 A bundle is a directory, or a gzip-compressed tar archive of that directory. An
 archive holds the entries of the directory at its top level. gobb strips one leading
 `./` from an entry name and ignores the bare `./` entry, so `tar -C dir -czf
-bundle.tar.gz .` works. An archive holds regular files and directories only: gobb
-refuses an absolute path, a `..` element, a symlink, a hard link and a device, and it
-stops at 8 GiB. A bundle holds these entries, and nothing else may appear at the top
+bundle.tar.gz .` works. It also skips a global pax header, which `git archive` writes.
+An archive holds regular files and directories only: gobb refuses an absolute path, a
+`..` element, a symlink, a hard link and a device. It stops at 8 GiB of data or at
+1,000,000 entries. It reads the gzip stream to its end and refuses a bad checksum, a
+cut trailer and any data after the stream. A bundle holds these entries, and nothing else may appear at the top
 level (an AppleDouble `._` file is an extra entry):
 
 - `manifest.json`
 - `settings.json`
 - 23 data files, each named `<name>.jsonl`. Each file is present even when it is empty.
-- `files/`, the directory that holds the files the rows name.
+- `files/`, the directory that holds the files the rows name. It may be absent when no
+  row names a file.
 
-A data file holds one JSON object per line. A line is at most 1 MiB (1,048,576 bytes).
-The line must be valid UTF-8. Every error that a bundle causes names the file, the line
+A data file holds one JSON object per line. A line is at most 1 MiB (1,048,576 bytes),
+ends with LF (a CR before the LF is an error), and is valid UTF-8. Every error that a bundle causes names the file, the line
 and the field, for example `posts.jsonl:12: body.source: is 100001 bytes; the limit is 100000`.
 
 The data files, in load order:
@@ -64,17 +67,14 @@ only on a field with a `?`. A list or an object that the tables name (`settings`
 `options`, `recipients`, `match`) is never `null`; write `[]` or `{}`.
 
 - **id**: a positive integer (1 to 9,223,372,036,854,775,807).
-- **count**: an integer from 0 to 2,147,483,647.
-- **int**: an integer from -2,147,483,648 to 2,147,483,647. A `position` is an int. It
-  sets the order of rows.
-
-Every integer that is not an ID fits a 32-bit database column, so the limit is
-2,147,483,647: `post_count`, `view_count`, `edit_count`, `download_count`, `votes`,
-`min_posts`, `max_options`, `position`, `width`, `height` and an option `id`.
+- **count**: an integer of 0 or more.
+- **int**: any integer. A `position` is an int. It sets the order of rows.
 - **time**: an RFC 3339 string with an offset, for example `2020-03-04T05:06:07Z` or
   `2020-03-04T00:06:07-05:00`. `Z` counts as an offset.
 - **string**: valid UTF-8, with no U+0000, and at most 100,000 bytes unless the table
-  says less.
+  says less. A JSON escape for half of a surrogate pair (`\ud800` to `\udfff`) is an
+  error unless the two halves of a pair follow each other, because a decoder turns a
+  lone half into U+FFFD.
 - **name**: 1 to 255 bytes after gobb trims Unicode white space from both ends. A
   control character is refused anywhere in the value, at the ends too. A trailing
   newline or tab is an error.
@@ -89,6 +89,13 @@ Every integer that is not an ID fits a 32-bit database column, so the limit is
   `forum.read` or `topic.reply`. An option is one of three kinds. A *forum* option
   applies per forum. A *board* option applies to the whole board. A *moderator* option
   applies at both levels.
+
+These integer fields land in 32-bit database columns, so each is at most
+2,147,483,647: `users.post_count`, `topics.view_count`, `posts.edit_count`,
+`attachments.download_count`, `attachments.width`, `attachments.height`, the `votes`
+of a poll option, `ranks.min_posts`, `polls.max_options`, every `position`, and the
+`id` of a poll option (with `option_id` in `poll_votes.jsonl`). A `position` also
+stops at -2,147,483,648. The `size` of a file is a count with no such limit.
 
 ### Shared shapes
 
