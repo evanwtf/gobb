@@ -19,8 +19,9 @@ var invisible = []*unicode.RangeTable{
 // CleanUsername returns the comparison form of a username. It applies NFKC, Unicode
 // case folding, lowercasing and NFKC again. Then it removes the invisible runes. These
 // are the runes in the category Cf, the runes with the Variation_Selector property, and
-// the runes with the Other_Default_Ignorable_Code_Point property. Last, it trims the
-// Unicode spaces at both ends. Two names match when their forms are equal.
+// the runes with the Other_Default_Ignorable_Code_Point property. Removing a rune can
+// join a base letter to a combining mark, so it applies NFKC once more. Last, it trims
+// the Unicode spaces at both ends. Two names match when their forms are equal.
 //
 // The caller must refuse invalid UTF-8 before it calls CleanUsername. The caller must
 // also refuse an empty result. The result is empty when the input holds only spaces
@@ -31,6 +32,7 @@ func CleanUsername(s string) string {
 	s = strings.ToLower(s)
 	s = norm.NFKC.String(s)
 	s = strings.Map(dropInvisible, s)
+	s = norm.NFKC.String(s)
 	return strings.TrimSpace(s)
 }
 
