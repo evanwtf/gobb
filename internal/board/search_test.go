@@ -94,9 +94,21 @@ func TestSearchScope(t *testing.T) {
 	if got := hitIDs(search(t, pool2, guestFor(t, pool2), board.SearchQuery{Text: "color"})); len(got) != 0 {
 		t.Errorf("guest with forum.search and no forum.read, color = %v, want none", got)
 	}
-	// forum.read without forum.search gives nothing either.
-	if got := hitIDs(search(t, pool, memberFor(t, pool, 2), board.SearchQuery{Text: "welcome", ForumID: 3})); len(got) != 0 {
-		t.Errorf("bob, forum 3 = %v, want none", got)
+	// forum.read without forum.search gives nothing either. Bob reads forum 3,
+	// where posts 5 and 6 hold "color", but may not search it.
+	bob = memberFor(t, pool, 2)
+	if !bob.Perms.Has("forum.read", 3) || bob.Perms.Has("forum.search", 3) {
+		t.Fatal("the case needs bob to read forum 3 and not search it")
+	}
+	for _, sq := range []board.SearchQuery{
+		{Text: "color"}, {Text: "color", ForumID: 3}, {Text: "favorite", Sort: "best"},
+		{Author: "bob"}, {Author: "alice"}, {Text: "color", Author: "bob"},
+	} {
+		for _, id := range hitIDs(search(t, pool, bob, sq)) {
+			if id == 5 || id == 6 {
+				t.Errorf("bob, %+v: finds post %d of forum 3, which he may read but not search", sq, id)
+			}
+		}
 	}
 
 	// Alice holds both on forum 3.
@@ -548,6 +560,16 @@ func TestSearchTooManyTerms(t *testing.T) {
 	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: "the and of " + strings.Join(words[:8], " ")}); err != nil {
 		t.Errorf("8 terms and stop words = %v, want no error", err)
 	}
+	// Each word of a quoted phrase is a term: a phrase of two words after seven
+	// words is one term over the cap, and a phrase of eight words is not.
+	phrase := strings.Join(words[:7], " ") + ` "` + strings.Join(words[7:9], " ") + `"`
+	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: phrase}); !errors.Is(err, board.ErrSearchTooManyTerms) {
+		t.Errorf("%q = %v, want ErrSearchTooManyTerms", phrase, err)
+	}
+	phrase = `"` + strings.Join(words[:8], " ") + `"`
+	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: phrase}); err != nil {
+		t.Errorf("%q = %v, want no error", phrase, err)
+	}
 }
 
 // A query with no positive term would list every post without the word.
@@ -620,6 +642,32 @@ func TestSearchForumOutOfStep(t *testing.T) {
 	}
 	if got := hitIDs(search(t, pool, g, board.SearchQuery{Text: "diagram"})); len(got) != 0 {
 		t.Errorf("diagram = %v, want none (the post is in a hidden forum)", got)
+	}
+	// By author alone, post 2 (bob) stays hidden too: the arm without a text
+	// checks p.forum_id.
+	if got := hitIDs(search(t, pool, g, board.SearchQuery{Author: "bob"})); slices.Contains(got, 2) {
+		t.Errorf("author bob = %v, finds post 2 in a hidden forum", got)
+	}
+	// The first post of a readable topic sits in the hidden forum. A word that
+	// only the title holds finds the topic through its first post; the title
+	// arm checks fp.forum_id, alone and with the author.
+	if _, err := pool.Exec(ctx, `update posts set forum_id = 3 where id = 1; update topics set title = 'Wombat welcome' where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	for _, sq := range []board.SearchQuery{{Text: "wombat"}, {Text: "wombat", Author: "alice"}, {Author: "alice"}, {Text: "wombat", Sort: "best"}} {
+		if got := hitIDs(search(t, pool, g, sq)); slices.Contains(got, 1) {
+			t.Errorf("%+v = %v, finds post 1 in a hidden forum", sq, got)
+		}
+	}
+	// With post 1 back in its topic's forum, the same searches find it: the
+	// cases above test the forum, not a word that matches nothing.
+	if _, err := pool.Exec(ctx, `update posts set forum_id = 2 where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	for _, sq := range []board.SearchQuery{{Text: "wombat"}, {Text: "wombat", Author: "alice"}, {Author: "alice"}} {
+		if got := hitIDs(search(t, pool, g, sq)); !slices.Equal(got, []int64{1}) {
+			t.Errorf("%+v = %v, want [1]", sq, got)
+		}
 	}
 }
 

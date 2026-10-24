@@ -174,8 +174,9 @@ func searchForumIDs(ctx context.Context, q db.Querier, v Viewer, forumID int64) 
 // hits and a post without an author ID is never found by author.
 //
 // A search runs one statement that parses the text, one for the forums, one for
-// the author when there is one, one for the total and one for the page of hits. The total counts at most
-// 1,000 rows, and ts_headline runs on the hits of the page only.
+// the author when there is one, one for the total and one for the page of
+// hits. The total counts at most 1,000 rows, and ts_headline runs on the hits
+// of the page only.
 func Search(ctx context.Context, q db.Querier, v Viewer, sq SearchQuery) (SearchPage, error) {
 	if !v.Perms.Has("account.search", 0) {
 		return SearchPage{}, ErrForbidden

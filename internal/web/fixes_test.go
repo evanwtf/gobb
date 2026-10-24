@@ -74,6 +74,10 @@ func TestLinkTarget(t *testing.T) {
 		"mailtox:a@e.com":   "",
 		"ftp://e.com":       "",
 		"javascript:alert1": "",
+		"JavaScript:alert1": "",
+		"data:text/html,x":  "",
+		"DATA:text/html,x":  "",
+		"data:,x":           "",
 		"pages/rules":       "",
 		"":                  "",
 	} {

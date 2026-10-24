@@ -125,9 +125,10 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 
 // linkTarget turns the link_url of a link forum into a URL that is safe to send
 // a visitor to. A site path gets the base path in front. An https or mailto URL
-// goes as it is. An http URL becomes the https URL. A scheme may be in any case. Any other value, such as a
-// relative path or a scheme-relative "//host", gives false, because the board
-// links nowhere else. The upgrade is the one the renderer applies to an image.
+// goes as it is. An http URL becomes the https URL. A scheme may be in any
+// case. Any other value, such as a relative path, a scheme-relative "//host",
+// or a javascript: or data: URL, gives false, because the board links nowhere
+// else. The upgrade is the one the renderer applies to an image.
 func (s *site) linkTarget(raw string) (string, bool) {
 	switch {
 	case strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") && !strings.Contains(raw, `\`):

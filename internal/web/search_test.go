@@ -165,6 +165,22 @@ func TestSearchPageHidden(t *testing.T) {
 	if !strings.Contains(body, `href="/p/5"`) || !strings.Contains(body, `href="/p/6"`) {
 		t.Error("alice does not find the posts of forum 3")
 	}
+	// Bob reads forum 3 but may not search it: the topic opens, the search finds
+	// nothing there, and the forum select does not offer it.
+	bob := signIn(t, h, "bob", "example-password")
+	if rec := getAs(t, h, "/t/2", bob); rec.Code != http.StatusOK {
+		t.Fatalf("bob, /t/2: status %d, want 200 (the case needs him to read forum 3)", rec.Code)
+	}
+	for _, target := range []string{"/search?q=color", "/search?q=color&forum=3", "/search?author=bob", "/search?q=favorite&sort=best"} {
+		rec := getAs(t, h, target, bob)
+		body := bodyOf(t, rec)
+		if rec.Code != http.StatusOK || strings.Contains(body, `href="/p/5"`) || strings.Contains(body, `href="/p/6"`) {
+			t.Errorf("bob, GET %s: status %d, finds a post of forum 3, which he may not search", target, rec.Code)
+		}
+	}
+	if strings.Contains(bodyOf(t, getAs(t, h, "/search", bob)), `<option value="3"`) {
+		t.Error("bob's forum select offers forum 3")
+	}
 }
 
 func TestSearchAuthorLinks(t *testing.T) {
@@ -271,6 +287,8 @@ func TestSearchRefusals(t *testing.T) {
 		{"/search?author=" + strings.Repeat("a", 257), "256 bytes"},
 		{"/search?q=" + strings.Repeat("%C3%A9", 129), "256 bytes"},
 		{"/search?q=" + words, "at most 8 words"},
+		// A quoted phrase of two words after seven words is one word over.
+		{"/search?q=" + url.QueryEscape(strings.Join(strings.Fields("apple banana cherry damson elder fig grape"), " ")+` "hazel iris"`), "at most 8 words"},
 	} {
 		rec := get(t, h, c.target)
 		body := bodyOf(t, rec)

@@ -11,24 +11,30 @@ var (
 	cssComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
 	// cssRule matches the selector list of a rule that has declarations.
 	cssRule = regexp.MustCompile(`([^{}]+)\{[^{}]*\}`)
-	// cssLastCompound is the part after the last combinator of a selector.
-	cssLastCompound = regexp.MustCompile(`[^\s>+~]+$`)
+	// cssAttr is an attribute selector. Its value may hold a + or a ~ (and ~=
+	// is an operator), which is no combinator.
+	cssAttr = regexp.MustCompile(`\[[^\]]*\]`)
+	// cssNthArg is the An+B argument of an :nth-*() pseudo-class, up to an "of"
+	// selector list. Its + is no combinator.
+	cssNthArg = regexp.MustCompile(`(:nth-(?:last-)?(?:child|of-type)\()[\s0-9n+-]*(?:odd|even)?\s*`)
 )
 
-// siblingTargets returns, for each selector of css that has a sibling combinator,
-// the compound selector at its end that can match a blockquote: the element is
-// blockquote itself, or any element (a class, an id, an attribute or a
-// pseudo-class with no element name, or *).
+// siblingTargets returns each selector of css that has a sibling combinator,
+// at the top level or inside a pseudo-class such as :is(), :not() or
+// :nth-child(... of S), when the compound selector at its end can match a
+// blockquote: the element is blockquote itself, or any element (a class, an
+// id, an attribute or a pseudo-class with no element name, or *).
 func siblingTargets(css string) []string {
 	css = cssComment.ReplaceAllString(css, "")
 	var out []string
 	for _, m := range cssRule.FindAllStringSubmatch(css, -1) {
-		for sel := range strings.SplitSeq(m[1], ",") {
+		for _, sel := range splitTopLevel(m[1]) {
 			sel = strings.TrimSpace(sel)
-			if !strings.ContainsAny(sel, "+~") {
+			bare := cssNthArg.ReplaceAllString(cssAttr.ReplaceAllString(sel, "[]"), "$1")
+			if !strings.ContainsAny(bare, "+~") {
 				continue
 			}
-			last := cssLastCompound.FindString(sel)
+			last := subjectCompound(bare)
 			// Drop a pseudo-element: it styles a part of the element.
 			if i := strings.Index(last, "::"); i >= 0 {
 				last = last[:i]
@@ -46,6 +52,45 @@ func siblingTargets(css string) []string {
 		}
 	}
 	return out
+}
+
+// splitTopLevel splits a selector list at the commas that are outside any
+// parentheses, so ":is(a, b + c)" stays one selector.
+func splitTopLevel(list string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i := 0; i < len(list); i++ {
+		switch list[i] {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, list[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(out, list[start:])
+}
+
+// subjectCompound returns the compound selector after the last combinator of
+// sel that is outside any parentheses or brackets: the element that the rule
+// styles.
+func subjectCompound(sel string) string {
+	depth := 0
+	for i := len(sel) - 1; i >= 0; i-- {
+		switch c := sel[i]; {
+		case c == ')' || c == ']':
+			depth++
+		case c == '(' || c == '[':
+			depth--
+		case depth == 0 && strings.IndexByte(" \t\n>+~", c) >= 0:
+			return sel[i+1:]
+		}
+	}
+	return sel
 }
 
 // A provider script mounts its card and may leave or remove its fallback
@@ -76,6 +121,22 @@ func TestSiblingTargets(t *testing.T) {
 		{`.a > blockquote { x: y }`, 0},
 		{`/* iframe + blockquote { x: y } */ p { x: y }`, 0},
 		{`h2 ~ [data-x] { x: y }`, 1},
+		// A combinator inside a pseudo-class counts, and the subject is the
+		// compound that holds the pseudo-class.
+		{`.post-body :is(iframe + blockquote) { display: none }`, 1},
+		{`.post-body :is(p, iframe + blockquote) { display: none }`, 1},
+		{`.post-body p:is(.a + p) { x: y }`, 0},
+		{`.post-body blockquote:not(.x ~ *) { display: none }`, 1},
+		{`.post-body :not(iframe ~ blockquote) { x: y }`, 1},
+		{`.post-body p:not(.x ~ *) { x: y }`, 0},
+		{`.post-body blockquote:nth-child(1 of iframe + *) { display: none }`, 1},
+		{`.post-body :nth-last-child(2n+1 of .x ~ *) { x: y }`, 1},
+		{`.post-body li:nth-child(1 of .x + li) { x: y }`, 0},
+		// The + of An+B and the ~ of an attribute are no combinators.
+		{`.post-body :nth-child(2n+1) { x: y }`, 0},
+		{`.post-body tr:nth-of-type(-n+3) { x: y }`, 0},
+		{`.post-body [class~=x] { x: y }`, 0},
+		{`.post-body [data-x="a+b"] { x: y }`, 0},
 	} {
 		if got := siblingTargets(tc.css); len(got) != tc.want {
 			t.Errorf("%q: %v, want %d", tc.css, got, tc.want)
