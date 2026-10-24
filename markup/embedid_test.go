@@ -216,3 +216,47 @@ func TestEmbedIDLongInput(t *testing.T) {
 		}
 	}
 }
+
+// A SoundCloud page that is not a track or a set has no player. EmbedID refuses
+// a reserved first segment, a reserved second segment, and "sets" with no set.
+func TestEmbedIDSoundCloudRefusesNonMediaPaths(t *testing.T) {
+	refused := []string{
+		"https://soundcloud.com/search/sounds",
+		"https://soundcloud.com/search",
+		"https://soundcloud.com/some-user/likes",
+		"https://soundcloud.com/some-user/sets",
+		"https://soundcloud.com/some-user/sets/",
+		"search/sounds",
+		"some-user/likes",
+		"some-user/sets",
+		"discover/sets/a_set",
+		"you/sets/a_set",
+	}
+	for _, first := range []string{"search", "discover", "charts", "stations", "you", "upload", "pages",
+		"settings", "messages", "notifications", "people", "tags"} {
+		refused = append(refused, "https://soundcloud.com/"+first+"/a_track", first+"/a_track",
+			first+"/sets/a_set", "https://soundcloud.com/"+first+"/sets/a_set")
+	}
+	for _, second := range []string{"likes", "tracks", "albums", "reposts", "followers", "following",
+		"comments", "popular-tracks", "spotlight", "sets"} {
+		refused = append(refused, "https://soundcloud.com/some-user/"+second, "some-user/"+second)
+	}
+	for _, v := range refused {
+		if id, ok := EmbedID("soundcloud", v); ok {
+			t.Errorf("EmbedID(soundcloud, %q) = %q, true; want false", v, id)
+		}
+	}
+
+	accepted := map[string]string{
+		"https://soundcloud.com/some-user/a_track":         "some-user/a_track",
+		"https://soundcloud.com/some-user/sets/a_set":      "some-user/sets/a_set",
+		"some-user/a_track":                                "some-user/a_track",
+		"some-user/sets/a_set":                             "some-user/sets/a_set",
+		"https://soundcloud.com/searcher/likes-and-tracks": "searcher/likes-and-tracks",
+	}
+	for v, want := range accepted {
+		if id, ok := EmbedID("soundcloud", v); !ok || id != want {
+			t.Errorf("EmbedID(soundcloud, %q) = %q, %t; want %q, true", v, id, ok, want)
+		}
+	}
+}

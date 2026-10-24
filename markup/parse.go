@@ -19,12 +19,13 @@ import (
 )
 
 // Smiley is one smiley that the admin defines. The parser matches Code in the
-// text and writes a smiley element that holds only the code. The renderer looks
-// up Image and Alt by that code.
+// text and writes a smiley element that holds only the code. The parser ignores
+// Image and Alt. The renderer finds the Smiley again by that code, through
+// [RenderContext].Smiley, and uses Image and Alt.
 type Smiley struct {
 	Code  string // the text that stands for the smiley, for example ":)"
-	Image string // the image file
-	Alt   string // the text for the image's alt attribute
+	Image string // the URL of the image: a site path or an http or https URL
+	Alt   string // the alt text of the image; the code stands in when empty
 }
 
 // Options are the three flags of a post, signature or private message, and the

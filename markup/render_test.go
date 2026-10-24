@@ -15,11 +15,11 @@ import (
 
 // renderSmileys is the smiley table that the render tests use.
 func renderSmileys() RenderContext {
-	return RenderContext{SmileyURL: func(code string) (string, bool) {
+	return RenderContext{Smiley: func(code string) (Smiley, bool) {
 		if code == ":)" {
-			return "/static/smilies/smile.gif", true
+			return Smiley{Code: code, Image: "/static/smilies/smile.gif", Alt: "smile"}, true
 		}
-		return "", false
+		return Smiley{}, false
 	}}
 }
 
@@ -85,7 +85,7 @@ func TestRenderTable(t *testing.T) {
 			`<p><img src="/f/a.png" alt="" loading="lazy" class="post-img"></p>`},
 		{"spoiler", tree(para(el("spoiler", nil, txt("s")))), `<p><span class="spoiler" tabindex="0">s</span></p>`},
 		{"smiley", tree(para(el("smiley", at("code", ":)")))),
-			`<p><img class="smiley" src="/static/smilies/smile.gif" alt=":)"></p>`},
+			`<p><img class="smiley" src="/static/smilies/smile.gif" alt="smile"></p>`},
 		{"smiley unknown", tree(para(el("smiley", at("code", ":x:")))), `<p>:x:</p>`},
 		{"unknown element", tree(para(el("marquee", at("onclick", "x()"), txt("hi"), el("b", nil, txt("!"))))),
 			`<p>hi<strong>!</strong></p>`},
@@ -230,14 +230,17 @@ func TestRenderRejectsDangerousSchemes(t *testing.T) {
 	if strings.Contains(out, "src") {
 		t.Errorf("img with mailto source: %s", out)
 	}
-	// A smiley table that returns a bad URL gives the code as text.
-	rc := RenderContext{SmileyURL: func(string) (string, bool) { return "javascript:x", true }}
-	if out := string(Render(tree(para(el("smiley", at("code", ":)")))), rc).HTML); strings.Contains(out, "src") {
-		t.Errorf("smiley with bad URL: %s", out)
+	// A smiley table that returns a bad image gives the code as text.
+	for _, image := range []string{"javascript:x", "mailto:a@b.example", "", "//evil.example/x.gif", "/a b.gif"} {
+		rc := RenderContext{Smiley: func(code string) (Smiley, bool) { return Smiley{Code: code, Image: image, Alt: "x"}, true }}
+		out := string(Render(tree(para(el("smiley", at("code", ":)")))), rc).HTML)
+		if out != "<p>:)</p>" {
+			t.Errorf("smiley with image %q: %s, want the code as text", image, out)
+		}
 	}
-	// A nil SmileyURL is allowed.
+	// A nil Smiley func is allowed.
 	if out := string(Render(tree(para(el("smiley", at("code", ":)")))), RenderContext{}).HTML); out != "<p>:)</p>" {
-		t.Errorf("nil SmileyURL: %s", out)
+		t.Errorf("nil Smiley: %s", out)
 	}
 }
 
@@ -425,7 +428,7 @@ func TestRenderText(t *testing.T) {
 		{"nested list", tree(el("list", nil, el("li", nil, para(txt("a")), el("list", nil, renderLi("b"))), renderLi("c"))), "a\nb\nc"},
 		{"pre", tree(para(txt("a")), el("pre", nil, txt("x\ny")), para(txt("b"))), "a\nx\ny\nb"},
 		{"hr does not add text", tree(para(txt("a")), el("hr", nil), para(txt("b"))), "a\nb"},
-		{"url display", tree(para(el("url", at("href", "/a", "display", "shown"), txt("hidden")))), "shown"},
+		{"url display", tree(para(el("url", at("href", "/a", "display", "shown"), txt("hidden")))), "shown /a"},
 		{"rejected link keeps text", tree(para(el("url", at("href", "javascript:x"), txt("kept")))), "kept"},
 		{"spoiler", tree(para(el("spoiler", nil, txt("secret")))), "secret"},
 		{"unknown element", tree(para(el("zzz", nil, txt("in")))), "in"},
@@ -581,13 +584,47 @@ func TestRenderEmailDoesNotDecodeEntities(t *testing.T) {
 }
 
 func TestRenderSmileyHTTPUpgraded(t *testing.T) {
-	rc := RenderContext{SmileyURL: func(code string) (string, bool) {
-		return "http://img.example/s.gif", code == ":)"
+	rc := RenderContext{Smiley: func(code string) (Smiley, bool) {
+		return Smiley{Code: code, Image: "http://img.example/s.gif", Alt: "smile"}, code == ":)"
 	}}
 	out := string(Render(tree(para(el("smiley", at("code", ":)")))), rc).HTML)
-	want := `<p><img class="smiley" src="https://img.example/s.gif" alt=":)"></p>`
+	want := `<p><img class="smiley" src="https://img.example/s.gif" alt="smile"></p>`
 	if out != want {
 		t.Errorf("got %s, want %s", out, want)
+	}
+}
+
+// Image and Alt are live: the renderer uses both, and Alt falls back to the code
+// when it is empty. The renderer escapes both.
+func TestRenderSmileyUsesImageAndAlt(t *testing.T) {
+	render := func(sm Smiley, ok bool) string {
+		rc := RenderContext{Smiley: func(string) (Smiley, bool) { return sm, ok }}
+		return string(Render(tree(para(el("smiley", at("code", ":)")))), rc).HTML)
+	}
+	tests := []struct {
+		name string
+		sm   Smiley
+		ok   bool
+		want string
+	}{
+		{"alt", Smiley{Image: "/s/a.gif", Alt: "happy face"}, true,
+			`<p><img class="smiley" src="/s/a.gif" alt="happy face"></p>`},
+		{"alt empty falls back to the code", Smiley{Image: "/s/a.gif"}, true,
+			`<p><img class="smiley" src="/s/a.gif" alt=":)"></p>`},
+		{"alt escaped", Smiley{Image: "/s/a.gif", Alt: `"><b>`}, true,
+			`<p><img class="smiley" src="/s/a.gif" alt="&#34;&gt;&lt;b&gt;"></p>`},
+		{"image escaped", Smiley{Image: "/s/a.gif?x=1&y=2"}, true,
+			`<p><img class="smiley" src="/s/a.gif?x=1&amp;y=2" alt=":)"></p>`},
+		{"lookup fails", Smiley{Image: "/s/a.gif", Alt: "x"}, false, `<p>:)</p>`},
+		{"image fails the check", Smiley{Image: "javascript:x", Alt: "x"}, true, `<p>:)</p>`},
+		{"image empty", Smiley{Alt: "x"}, true, `<p>:)</p>`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := render(tc.sm, tc.ok); got != tc.want {
+				t.Errorf("got  %s\nwant %s", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -721,4 +758,34 @@ func FuzzRender(f *testing.F) {
 		}
 		checkRendered(t, Render(Parse(string(data), opt), renderSmileys()))
 	})
+}
+
+// A link with a display text shows a shortened form of its address. The search
+// text keeps the full address, so a search finds the middle of a long URL.
+func TestRenderTextKeepsFullHrefBehindDisplay(t *testing.T) {
+	long := "https://example.com/" + strings.Repeat("a", 30) + "middlepart" + strings.Repeat("b", 30) + "/end"
+	n := Parse(long, Options{Autolink: true})
+	r := Render(n, RenderContext{})
+	if !strings.Contains(string(r.HTML), " ... ") {
+		t.Fatalf("precondition: the link has no display text: %s", r.HTML)
+	}
+	if strings.Contains(string(r.HTML), "middlepart") && !strings.Contains(string(r.HTML), `href="`+long+`"`) {
+		t.Fatalf("precondition: unexpected HTML %s", r.HTML)
+	}
+	if !strings.Contains(r.Text, long) {
+		t.Errorf("Text = %q, want it to contain the full address", r.Text)
+	}
+	if !strings.Contains(r.Text, " ... ") {
+		t.Errorf("Text = %q, want it to keep the display text", r.Text)
+	}
+	// A short link has no display text and its address appears once.
+	short := Render(Parse("https://example.com/x", Options{Autolink: true}), RenderContext{}).Text
+	if short != "https://example.com/x" {
+		t.Errorf("short link Text = %q", short)
+	}
+	// A quoted link adds nothing.
+	q := Render(tree(el("quote", nil, para(el("url", at("href", "/a", "display", "d"))))), RenderContext{}).Text
+	if q != "" {
+		t.Errorf("quoted link Text = %q, want empty", q)
+	}
 }

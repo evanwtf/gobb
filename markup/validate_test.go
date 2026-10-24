@@ -657,3 +657,59 @@ func TestSchemaNamesMatchRules(t *testing.T) {
 		}
 	}
 }
+
+// PostgreSQL cannot store U+0000 in text or jsonb, so Validate refuses it in
+// every text node and every attribute value. Each attribute rule also refuses
+// control characters, so the attribute cases pass by either check. Parse maps
+// NUL to U+FFFD, so a parsed tree never trips this.
+func TestValidateRejectsNUL(t *testing.T) {
+	tests := map[string]*Node{
+		"text":          tree(para(txt("a\x00b"))),
+		"text only":     tree(para(txt("\x00"))),
+		"pre text":      tree(el("pre", nil, txt("x\x00"))),
+		"code text":     tree(para(el("code", nil, txt("\x00x")))),
+		"href":          tree(para(el("url", at("href", "https://a.example/\x00")))),
+		"display":       tree(para(el("url", at("href", "https://a.example", "display", "a\x00b")))),
+		"address":       tree(para(el("email", at("address", "a\x00@b.example")))),
+		"src":           tree(para(el("img", at("src", "/a\x00.png")))),
+		"alt":           tree(para(el("img", at("src", "/a.png", "alt", "a\x00")))),
+		"smiley code":   tree(para(el("smiley", at("code", ":\x00)")))),
+		"lang":          tree(el("pre", at("lang", "go\x00"), txt("x"))),
+		"embed id":      tree(el("youtube", at("id", "dQw4w9WgXc\x00"))),
+		"list start":    tree(el("list", at("ordered", "true", "start", "1\x00"), el("li", nil, para()))),
+		"heading level": tree(el("h", at("level", "1\x00"))),
+	}
+	for name, root := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := Validate(root)
+			if err == nil {
+				t.Fatal("Validate accepted U+0000")
+			}
+			var ve *Error
+			if !errors.As(err, &ve) {
+				t.Fatalf("error %T, want *Error", err)
+			}
+			if strings.HasSuffix(name, "text") || name == "text only" {
+				if !strings.Contains(ve.Msg, "NUL") {
+					t.Errorf("message %q does not name NUL", ve.Msg)
+				}
+			}
+		})
+	}
+	// The same trees without NUL are valid, so the cases test NUL alone.
+	if err := Validate(tree(para(txt("ab")), el("pre", at("lang", "go"), txt("x")))); err != nil {
+		t.Errorf("control: %v", err)
+	}
+}
+
+// The NUL guard stands apart from the attribute rules: a rule that accepts
+// anything still cannot let U+0000 through.
+func TestCheckAttrsRefusesNULWithLooseRule(t *testing.T) {
+	rule := &elemRule{attrs: []attrRule{{name: "x", ok: func(string) bool { return true }}}}
+	if msg := checkAttrs(rule, map[string]string{"x": "a\x00b"}); !strings.Contains(msg, "NUL") {
+		t.Errorf("message = %q, want it to name NUL", msg)
+	}
+	if msg := checkAttrs(rule, map[string]string{"x": "ab"}); msg != "" {
+		t.Errorf("message = %q, want none", msg)
+	}
+}

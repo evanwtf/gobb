@@ -882,3 +882,31 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// cappedBlockParsers finds the quote parser and the list parser by value
+// equality with goldmark's constructors. If a goldmark upgrade changes those
+// values, the switch matches nothing and the nesting caps vanish without an
+// error. This test fails unless exactly two parsers are wrapped: the quote
+// parser (extra 1) and the list parser (extra 2). It names goldmark's types, so
+// an upgrade that renames them also fails here, and a person looks.
+func TestCappedBlockParsersWrapsQuoteAndList(t *testing.T) {
+	var quote, list int
+	for _, pv := range cappedBlockParsers() {
+		c, ok := pv.Value.(cappedParser)
+		if !ok {
+			continue
+		}
+		typ := fmt.Sprintf("%T", c.BlockParser)
+		switch {
+		case c.extra == 1 && typ == "*parser.blockquoteParser":
+			quote++
+		case c.extra == 2 && typ == "*parser.listParser":
+			list++
+		default:
+			t.Errorf("unexpected wrapped parser: extra %d, type %s", c.extra, typ)
+		}
+	}
+	if quote != 1 || list != 1 {
+		t.Errorf("wrapped %d quote and %d list parsers, want 1 and 1", quote, list)
+	}
+}

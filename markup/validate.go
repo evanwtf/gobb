@@ -136,7 +136,7 @@ type frame struct {
 // rules out cycles, and it stops a small input from expanding into a huge walk.
 //
 // Beyond the schema table, Validate requires every text and attribute value to
-// be valid UTF-8.
+// be valid UTF-8 and to hold no U+0000, which PostgreSQL cannot store.
 func Validate(root *Node) error {
 	if root == nil {
 		return &Error{Path: "/", Element: "#root", Msg: "root is nil"}
@@ -196,6 +196,9 @@ func checkNode(p *frame, c *Node, depth int) string {
 		}
 		if !utf8.ValidString(c.Text) {
 			return "text is not valid UTF-8"
+		}
+		if strings.IndexByte(c.Text, 0) >= 0 {
+			return "text contains NUL (U+0000)"
 		}
 		switch p.kids {
 		case kidsText, kidsInline:
@@ -288,6 +291,10 @@ func checkAttrs(rule *elemRule, attrs map[string]string) string {
 			return ar.name + " is not valid UTF-8"
 		case !ar.ok(v):
 			return ar.msg
+		case strings.IndexByte(v, 0) >= 0:
+			// Every rule above already refuses control characters. This case keeps
+			// NUL out if a later rule is looser.
+			return ar.name + " contains NUL (U+0000)"
 		}
 	}
 	if rule.relation != nil {

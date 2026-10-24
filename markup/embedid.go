@@ -86,16 +86,33 @@ func userChars(s string, maxLen int) bool {
 	return true
 }
 
-// isSoundcloudID accepts "user/track" or "user/sets/set".
+// soundcloudReservedUsers are first path segments that are SoundCloud pages,
+// not accounts.
+var soundcloudReservedUsers = map[string]bool{
+	"search": true, "discover": true, "charts": true, "stations": true, "you": true,
+	"upload": true, "pages": true, "settings": true, "messages": true,
+	"notifications": true, "people": true, "tags": true,
+}
+
+// soundcloudReservedPages are second path segments that are pages of an
+// account, not tracks. "sets" is not here: "user/sets/set" is a set, and
+// isSoundcloudID refuses "user/sets" itself.
+var soundcloudReservedPages = map[string]bool{
+	"likes": true, "tracks": true, "albums": true, "reposts": true, "followers": true,
+	"following": true, "comments": true, "popular-tracks": true, "spotlight": true,
+}
+
+// isSoundcloudID accepts "user/track" or "user/sets/set". It refuses a user name
+// and a track name that are pages of the site: "search/sounds", "user/likes".
 func isSoundcloudID(s string) bool {
 	segs := strings.Split(s, "/")
-	switch len(segs) {
-	case 2:
-		return slugChars(segs[0], 100) && slugChars(segs[1], 100) && segs[1] != "sets"
-	case 3:
-		return slugChars(segs[0], 100) && segs[1] == "sets" && slugChars(segs[2], 100)
+	if len(segs) < 2 || len(segs) > 3 || !slugChars(segs[0], 100) || soundcloudReservedUsers[segs[0]] {
+		return false
 	}
-	return false
+	if len(segs) == 2 {
+		return slugChars(segs[1], 100) && segs[1] != "sets" && !soundcloudReservedPages[segs[1]]
+	}
+	return segs[1] == "sets" && slugChars(segs[2], 100)
 }
 
 // spotifyTypes are the content types that have a Spotify player.
@@ -257,7 +274,9 @@ func IsEmbed(name string) bool {
 //
 // Short links need a server lookup, so EmbedID returns false for them. That
 // covers redd.it, vm.tiktok.com, spotify.link and on.soundcloud.com. The
-// youtu.be form is a plain ID in the path, so it works. EmbedID returns false
+// youtu.be form is a plain ID in the path, so it works. A SoundCloud value must
+// name a track ("user/track") or a set ("user/sets/set"); pages such as
+// "search/sounds" and "user/likes" give false. EmbedID returns false
 // when the tag is unknown or the value is not a bare ID or a URL of the medium.
 func EmbedID(tag, value string) (string, bool) {
 	rule, ok := embedRules[tag]

@@ -10,10 +10,12 @@ import (
 
 // RenderContext holds what the renderer needs from the site.
 type RenderContext struct {
-	// SmileyURL maps a smiley code to the URL of its image. It returns false
-	// for an unknown code. A nil SmileyURL knows no code. The renderer checks the
-	// URL with [CheckImageURL], so a bad URL renders the code as text.
-	SmileyURL func(code string) (string, bool)
+	// Smiley looks up a smiley by its code. It returns false for an unknown
+	// code. A nil Smiley knows no code. The renderer uses Image as the image
+	// URL: it checks the URL with [CheckImageURL] and upgrades http to https. It
+	// uses Alt as the alt text, and the code when Alt is empty. When the lookup
+	// fails, or Image fails the check, the renderer writes the code as text.
+	Smiley func(code string) (Smiley, bool)
 }
 
 // Rendered is the result of [Render].
@@ -22,7 +24,8 @@ type Rendered struct {
 	// and attribute value, so it is safe to put in a page as it is.
 	HTML template.HTML
 	// Text is the plain text of the post: everything except the contents of quote
-	// elements and the embeds. Block elements and br elements end a line. It
+	// elements and the embeds. Block elements and br elements end a line. A link
+	// that has a display text adds its full target after the display text. It
 	// feeds the search text of a post.
 	Text string
 	// FrameSrc lists the origins that the embeds of this tree load in frames.
@@ -294,6 +297,8 @@ func (r *renderer) link(it renderItem) {
 		r.children(it)
 		return
 	}
+	// textHref is the target as written, for the search text.
+	textHref := href
 	// A mailto: target takes the same path as an email element, so the address
 	// is percent-encoded: a raw "," would add a recipient.
 	if len(href) >= len("mailto:") && strings.EqualFold(href[:len("mailto:")], "mailto:") {
@@ -302,7 +307,10 @@ func (r *renderer) link(it renderItem) {
 	open := `<a href="` + html.EscapeString(href) + `" rel="nofollow ugc noopener">`
 	if display := n.Attrs["display"]; display != "" {
 		r.html.WriteString(open + html.EscapeString(display) + "</a>")
+		// The display text is a shortened form of the link. The search text also
+		// carries the full target, so a search finds the middle of a long URL.
 		r.addText(display, it.quote)
+		r.addText(" "+textHref, it.quote)
 		return
 	}
 	r.wrap(it, open, "</a>", false, false, false, it.quote)
@@ -352,11 +360,15 @@ func (r *renderer) image(it renderItem) {
 func (r *renderer) smiley(it renderItem) {
 	code := it.n.Attrs["code"]
 	r.addText(code, it.quote)
-	if r.rc.SmileyURL != nil {
-		if raw, ok := r.rc.SmileyURL(code); ok {
-			if src, ok := cleanImageTarget(raw); ok {
+	if r.rc.Smiley != nil {
+		if sm, ok := r.rc.Smiley(code); ok {
+			if src, ok := cleanImageTarget(sm.Image); ok {
+				alt := sm.Alt
+				if alt == "" {
+					alt = code
+				}
 				r.html.WriteString(`<img class="smiley" src="` + html.EscapeString(src) +
-					`" alt="` + html.EscapeString(code) + `">`)
+					`" alt="` + html.EscapeString(alt) + `">`)
 				return
 			}
 		}
