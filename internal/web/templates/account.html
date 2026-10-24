@@ -76,9 +76,6 @@
   <h2 id="account-signature-title">Your signature</h2>
   <form class="post-form" method="post" action="{{path "account" "signature"}}">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
-    {{- if .Data.Sig.Notice}}
-    <div class="form-error" role="alert"><p class="form-error-text">{{.Data.Sig.Notice}}</p></div>
-    {{- end}}
     <div class="field">
       <label for="sig-text">Signature</label>
       <textarea id="sig-text" name="signature" rows="6" aria-describedby="sig-hint{{if .Data.Sig.Text}} sig-error{{end}}"

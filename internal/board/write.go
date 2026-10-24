@@ -479,6 +479,15 @@ type newPost struct {
 	subject, source  string
 	body             Body
 	visibility       string
+	// sig is the post's enable_sig: the post shows the author's signature.
+	sig bool
+}
+
+// carriesSignature reports whether a new post of v in the forum shows the
+// signature of the author: the author is a member who holds post.signatures
+// there. A guest has no signature. An edit keeps the flag the post has.
+func carriesSignature(v Viewer, forumID int64) bool {
+	return v.UserID != 0 && v.Perms.Has("post.signatures", forumID)
 }
 
 func insertPost(ctx context.Context, tx pgx.Tx, p newPost) (int64, error) {
@@ -491,11 +500,11 @@ func insertPost(ctx context.Context, tx pgx.Tx, p newPost) (int64, error) {
 insert into posts (topic_id, forum_id, author_id, author_name, author_ip, created_at, subject,
                    body_source, body_tree, body_text, enable_markdown, enable_smilies, enable_autolink,
                    enable_sig, visibility)
-values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, false, $14)
+values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $15, $14)
 returning id`,
 		p.topicID, p.forumID, authorID, p.au.name, inetArg(p.au.ip), p.now, p.subject,
 		p.source, string(p.body.JSON), p.body.Text, p.body.Flags.Markdown, p.body.Flags.Smilies, p.body.Flags.Autolink,
-		p.visibility).Scan(&id)
+		p.visibility, p.sig).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("board: insert post: %w", err)
 	}
@@ -618,7 +627,8 @@ values ($1, $2, $3, $4, $5, $5, 'normal', false, $6) returning id`,
 		if err != nil {
 			return fmt.Errorf("board: insert topic: %w", err)
 		}
-		p := newPost{topicID: topicID, forumID: forumID, au: au, now: now, subject: title, source: d.Source, body: body, visibility: vis}
+		p := newPost{topicID: topicID, forumID: forumID, au: au, now: now, subject: title, source: d.Source, body: body, visibility: vis,
+			sig: carriesSignature(v, forumID)}
 		if postID, err = insertPost(ctx, tx, p); err != nil {
 			return err
 		}
@@ -748,6 +758,7 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 		p := newPost{
 			topicID: topicID, forumID: t.forumID, au: au, now: now, subject: "Re: " + title,
 			source: d.Source, body: body, visibility: visibilityFor(v, t.forumID),
+			sig: carriesSignature(v, t.forumID),
 		}
 		if postID, err = insertPost(ctx, tx, p); err != nil {
 			return err

@@ -25,6 +25,7 @@ import (
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/legacy"
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/ratelimit"
 	"github.com/evanwtf/gobb/internal/session"
 	"github.com/evanwtf/gobb/markup"
 )
@@ -88,6 +89,12 @@ type site struct {
 	// that reads the settings replaces it when they change. It is nil for a
 	// database with no board.
 	frame atomic.Pointer[frame]
+	// tries counts the tries at the account changes that need the current
+	// password, per member and form.
+	tries *ratelimit.Limiter
+	// patterns lists every pattern registered on the muxes of the site, for a test
+	// that checks the routes against its tables.
+	patterns []string
 	// staticErrors holds the themed 500 and 503 pages, built once in New. They
 	// answer when even the error template fails.
 	staticErrors map[int][]byte
@@ -119,7 +126,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if opt.LoginGate != nil {
 		lo.Gate = opt.LoginGate
 	}
-	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection()}
+	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries()}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
@@ -165,7 +172,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		}
 	}
 
-	inner := http.NewServeMux()
+	inner := newRoutes()
 	inner.HandleFunc("GET /{$}", s.index)
 	inner.HandleFunc("GET /f/{id}", s.forum)
 	inner.HandleFunc("GET /t/{id}", s.topic)
@@ -205,9 +212,9 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /files/{dir}", s.notFound)
 	// The legacy table runs last: a request that no route above matched.
 	inner.HandleFunc("/", s.fallback)
-	s.warnHidden(inner)
+	s.warnHidden(inner.ServeMux)
 
-	root := http.NewServeMux()
+	root := newRoutes()
 	root.Handle("/healthz", Health(pool))
 	root.HandleFunc("GET /favicon.ico", s.favicon)
 	if s.base == "/" {
@@ -218,10 +225,30 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		// text of the mux.
 		root.HandleFunc("/", s.notFound)
 	}
+	s.patterns = append(inner.patterns, root.patterns...)
 	if onNew != nil {
 		onNew(s)
 	}
 	return secure(s.guard(root)), nil
+}
+
+// routes is a ServeMux that remembers the patterns registered on it, so a test
+// can ask the running mux which routes exist instead of reading the source.
+type routes struct {
+	*http.ServeMux
+	patterns []string
+}
+
+func newRoutes() *routes { return &routes{ServeMux: http.NewServeMux()} }
+
+func (r *routes) Handle(pattern string, h http.Handler) {
+	r.patterns = append(r.patterns, pattern)
+	r.ServeMux.Handle(pattern, h)
+}
+
+func (r *routes) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	r.patterns = append(r.patterns, pattern)
+	r.ServeMux.HandleFunc(pattern, h)
 }
 
 // stripBase removes the base path from the path of a request, as

@@ -26,6 +26,10 @@ import (
 var (
 	// ErrWrong means the name or the password is wrong. It does not say which.
 	ErrWrong = errors.New("login: the name or password is wrong")
+	// ErrStale is what the finish step of [Service.CheckWith] returns when the
+	// account changed after the password was verified: a new password, a ban, or
+	// the end of the account. CheckWith turns it into [ErrWrong].
+	ErrStale = errors.New("login: the account changed during the sign-in")
 	// ErrAmbiguous means the name is an email address that more than one account
 	// uses, and the password matches at least one of them.
 	ErrAmbiguous = errors.New("login: the email address belongs to more than one account")
@@ -277,13 +281,41 @@ type candidate struct {
 // ran. The wait comes after the gate is released. A [*LimitedError] and a good
 // password return at once.
 func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
+	return s.CheckWith(ctx, name, pw, ip, now, nil)
+}
+
+// CheckWith is [Service.Check] with one more step for a sign-in that starts a
+// session. After the password is verified, ban and rehash included, it calls
+// finish with the ID of the user and the hash that is stored for the user now
+// (the new hash, when the check replaced a legacy one). Nothing is refunded
+// before finish returns, so the step runs inside the limits and the floor.
+//
+//   - finish returns [ErrStale]: the account changed after the check (a new
+//     password, a ban). CheckWith answers [ErrWrong], keeps the two limit events
+//     and takes the floor, as for a wrong password. The sign-in cannot tell a
+//     stranger that the password was once right.
+//   - finish returns another error: CheckWith returns it and gives the events
+//     back, as for a database error.
+//   - finish returns nil: the sign-in succeeded, and a good password clears the
+//     name.
+//
+// A nil finish is Check.
+func (s *Service) CheckWith(ctx context.Context, name, pw string, ip netip.Addr, now time.Time, finish func(ctx context.Context, userID int64, hash string) error) (int64, error) {
 	c := &clock{from: time.Now()}
 	k := s.keys(name, ip)
 	held, err := s.reserve(ctx, name, k, now)
 	if err != nil {
 		return 0, err
 	}
-	id, err := s.check(ctx, c, name, pw, ip, now)
+	id, hash, err := s.check(ctx, c, name, pw, ip, now)
+	if err == nil && finish != nil {
+		if err = finish(ctx, id, hash); errors.Is(err, ErrStale) {
+			err = ErrWrong
+		}
+		if err != nil {
+			id = 0
+		}
+	}
 	if err == nil {
 		s.refund(held, k, now, false)
 		if s.opt.NameLimit != nil && k.nameOK {
@@ -684,22 +716,22 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	}, nil
 }
 
-func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
+func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time) (int64, string, error) {
 	if !utf8.ValidString(name) || len(name) > maxName {
 		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {
-			return 0, err
+			return 0, "", err
 		}
-		return 0, ErrWrong
+		return 0, "", ErrWrong
 	}
 	users, err := s.find(ctx, name)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if len(users) == 0 {
 		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {
-			return 0, err
+			return 0, "", err
 		}
-		return 0, ErrWrong
+		return 0, "", ErrWrong
 	}
 
 	// One job per account, in one hold of the gate. An account with no hash
@@ -712,7 +744,7 @@ func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip
 		}
 	}
 	if err := s.runJobs(ctx, c, pw, jobs); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	matches := 0
 	for i := range users {
@@ -723,26 +755,27 @@ func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip
 	}
 	switch {
 	case matches == 0:
-		return 0, ErrWrong
+		return 0, "", ErrWrong
 	case len(users) > 1:
-		return 0, ErrAmbiguous
+		return 0, "", ErrAmbiguous
 	}
 
 	u := users[0]
 	if u.state != "active" {
-		return 0, ErrInactive
+		return 0, "", ErrInactive
 	}
 	reason, banned, err := s.banned(ctx, u, ip, now)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if banned {
-		return 0, &BannedError{Reason: reason}
+		return 0, "", &BannedError{Reason: reason}
 	}
+	hash := u.hash
 	if u.needsRehash {
-		s.rehash(ctx, u, pw)
+		hash = s.rehash(ctx, u, pw)
 	}
-	return u.id, nil
+	return u.id, hash, nil
 }
 
 // find returns the users that name can mean: the one with that username, or if
@@ -831,27 +864,35 @@ func inetArg(ip netip.Addr) any {
 // rehash replaces the stored hash of u with a gobb hash of pw. The hash runs
 // inside the gate. The update names the old hash, so that two sign-ins at once, or a password change in between,
 // do not overwrite a newer hash. A failure is logged and does not fail the
-// sign-in: the member has proved the password.
-func (s *Service) rehash(ctx context.Context, u candidate, pw string) {
+// sign-in: the member has proved the password. It returns the hash that is
+// stored afterward: the new one, or the old one when nothing was replaced.
+func (s *Service) rehash(ctx context.Context, u candidate, pw string) string {
 	// The hash needs memory like any check, so it holds the gate. When the gate
 	// stays full, skip: the password is right, and the next sign-in tries again.
 	release, err := s.acquire(ctx, s.chargeKiB("gobb", ""))
 	if err != nil {
 		slog.Warn("login: skipped a rehash", "user", u.id, "err", err)
-		return
+		return u.hash
 	}
 	fresh, err := s.hash(pw)
 	release()
 	if err != nil {
 		slog.Warn("login: cannot rehash a password", "user", u.id, "err", err)
-		return
+		return u.hash
 	}
-	_, err = s.q.Exec(ctx, `
+	tag, err := s.q.Exec(ctx, `
 update users set password_hash = $2, password_scheme = 'gobb'
  where id = $1 and password_hash = $3`, u.id, fresh, u.hash)
 	if err != nil {
 		slog.Warn("login: cannot store a rehashed password", "user", u.id, "err", err)
+		return u.hash
 	}
+	if tag.RowsAffected() != 1 {
+		// A password change came in between. The stored hash is not the one that was
+		// verified, so the caller's conditional insert refuses.
+		return u.hash
+	}
+	return fresh
 }
 
 // Hold takes the share of the gate that one new gobb hash needs, for the code

@@ -295,7 +295,10 @@ func TestChangeEmailRace(t *testing.T) {
 	}
 }
 
-// The lock is what stops the race, so the test holds it. A second member takes
+// The lock is what stops the race, so the test holds it. The wait is looked up by
+// this test's own database and its own key, so a waiter of another test on the
+// same server cannot end the loop early.
+// A second member takes
 // the address while alice's change waits on the lock; when the lock is released,
 // alice must see the committed row and be refused. Without the lock, her check
 // runs at once, finds nothing, and the address is taken twice.
@@ -318,7 +321,10 @@ func TestChangeEmailWaitsForTheAddressLock(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var waiting bool
-		if err := pool.QueryRow(ctx, `select exists (select 1 from pg_locks where locktype = 'advisory' and not granted)`).Scan(&waiting); err != nil {
+		if err := pool.QueryRow(ctx, `select exists (select 1 from pg_locks
+ where locktype = 'advisory' and not granted
+   and database = (select oid from pg_database where datname = current_database())
+   and ((classid::bigint << 32) | objid::bigint) = hashtextextended('gobb:email:held@example.org', 0))`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {

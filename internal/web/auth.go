@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -283,7 +284,26 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := s.clientIP(r)
 	now := s.opt.Now()
-	userID, err := s.login.Check(r.Context(), d.Name, form.Get("password"), ip, now)
+	// The session starts inside the check, as its last step, and only while the
+	// account still holds the hash that was verified and no user ban holds. A
+	// password change or a ban that lands between the check and the insert makes
+	// the sign-in a wrong password, counted and under the floor.
+	var (
+		token string
+		sess  session.Session
+	)
+	userID, err := s.login.CheckWith(r.Context(), d.Name, form.Get("password"), ip, now,
+		func(ctx context.Context, id int64, hash string) error {
+			if beforeSession != nil {
+				beforeSession()
+			}
+			var err error
+			token, sess, err = session.CreateChecked(ctx, s.pool, id, hash, d.Remember, ip, r.UserAgent(), now)
+			if errors.Is(err, session.ErrStale) {
+				return login.ErrStale
+			}
+			return err
+		})
 	var banned *login.BannedError
 	var limited *login.LimitedError
 	switch {
@@ -321,11 +341,6 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, sess, err := session.Create(r.Context(), s.pool, userID, d.Remember, ip, r.UserAgent(), now)
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
 	if err := board.StartVisit(r.Context(), s.pool, userID, now); err != nil {
 		slog.Warn("cannot start a visit", "err", err)
 	}
@@ -343,6 +358,10 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	s.setCookie(w, s.cookie(sessionCookie, token, maxAge))
 	http.Redirect(w, r, d.Next, http.StatusSeeOther)
 }
+
+// beforeSession, when set, runs in a sign-in after the password is verified and
+// before the session is inserted. A test uses it to hold a sign-in at that point.
+var beforeSession func()
 
 // busyRetrySeconds is the Retry-After of a sign-in that found the gate full.
 const busyRetrySeconds = 5

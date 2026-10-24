@@ -348,3 +348,136 @@ func TestDeleteUser(t *testing.T) {
 		t.Errorf("DeleteUser of an unknown member = %d, %v, want 0, nil", n, err)
 	}
 }
+
+// CreateChecked inserts the session only while the user row holds the hash that
+// the sign-in verified, the user is active, and no user ban holds. A refusal is
+// ErrStale and writes nothing.
+func TestCreateChecked(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	ip := netip.MustParseAddr("10.1.2.3")
+	var hash string
+	if err := pool.QueryRow(ctx, `select password_hash from users where id = 1`).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		var n int
+		if err := pool.QueryRow(ctx, `select count(*) from sessions`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	token, s, err := session.CreateChecked(ctx, pool, 1, hash, true, ip, "ua", t0)
+	if err != nil || !s.Remember || s.UserID != 1 {
+		t.Fatalf("CreateChecked = %+v, %v", s, err)
+	}
+	if _, err := session.Lookup(ctx, pool, token, t0); err != nil {
+		t.Errorf("the new session does not look up: %v", err)
+	}
+	var seen int
+	if err := pool.QueryRow(ctx, `select count(*) from user_ips where user_id = 1 and host(ip) = '10.1.2.3'`).Scan(&seen); err != nil || seen != 1 {
+		t.Errorf("user_ips rows = %d, %v, want 1", seen, err)
+	}
+	if count() != 1 {
+		t.Fatalf("%d sessions", count())
+	}
+
+	refuse := func(what string, userID int64, want string) {
+		t.Helper()
+		before := count()
+		if _, _, err := session.CreateChecked(ctx, pool, userID, want, false, ip, "ua", t0); !errors.Is(err, session.ErrStale) {
+			t.Errorf("%s: err = %v, want ErrStale", what, err)
+		}
+		if count() != before {
+			t.Errorf("%s: a session was written", what)
+		}
+	}
+	refuse("another hash", 1, "$argon2id$not-the-stored-one")
+	refuse("an empty hash", 1, "")
+	refuse("an unknown user", 9999, hash)
+
+	// A user ban that has not ended refuses; an ended one, an email ban and an ip
+	// ban do not (the sign-in check owns those two).
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`insert into bans (kind, user_id, created_at, ends_at) values ('user', 1, $1, $2)`, t0.Add(-time.Hour), t0.Add(-time.Minute))
+	exec(`insert into bans (kind, email, created_at) values ('email', 'alice@example.com', $1)`, t0)
+	exec(`insert into bans (kind, ip, created_at) values ('ip', '10.0.0.0/8', $1)`, t0)
+	if _, _, err := session.CreateChecked(ctx, pool, 1, hash, false, ip, "ua", t0); err != nil {
+		t.Errorf("with only ended, email and ip bans: %v", err)
+	}
+	exec(`insert into bans (kind, user_id, created_at) values ('user', 1, $1)`, t0)
+	refuse("a user ban with no end", 1, hash)
+	exec(`delete from bans where kind = 'user'`)
+	exec(`insert into bans (kind, user_id, created_at, ends_at) values ('user', 1, $1, $2)`, t0, t0.Add(time.Hour))
+	refuse("a user ban that ends later", 1, hash)
+	exec(`delete from bans where kind = 'user'`)
+	exec(`update users set state = 'inactive' where id = 1`)
+	refuse("an inactive user", 1, hash)
+}
+
+// The check and the insert are ordered against a write that holds the row for
+// update (a password change, a ban, a reset): the insert waits for it, then sees
+// what it committed.
+func TestCreateCheckedWaitsForTheRowLock(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	ip := netip.MustParseAddr("10.1.2.3")
+	var hash string
+	if err := pool.QueryRow(ctx, `select password_hash from users where id = 1`).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `select 1 from users where id = 1 for update`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := session.CreateChecked(ctx, pool, 1, hash, false, ip, "ua", t0)
+		done <- err
+	}()
+	// Wait until the insert is blocked on a lock in this test's own database.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		if err := pool.QueryRow(ctx, `
+select exists (select 1 from pg_stat_activity
+ where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock')`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("CreateChecked finished without waiting for the row lock: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("CreateChecked never waited")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := tx.Exec(ctx, `update users set password_hash = 'changed' where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, session.ErrStale) {
+		t.Errorf("after the change committed: %v, want ErrStale", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `select count(*) from sessions`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d sessions, %v", n, err)
+	}
+}

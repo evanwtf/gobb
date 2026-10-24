@@ -699,21 +699,37 @@ func tokenSite(t *testing.T, row tokenRow) (http.Handler, *pgxpool.Pool) {
 	return h, pool
 }
 
-// routePatterns returns the patterns of the POST routes in site.go.
-func routePatterns(t *testing.T) []string {
+// routePatterns asks a running site for the patterns on its muxes (the recorder
+// in site.go, not the source text) and returns the POST routes, with the method
+// stripped, and the patterns that name no method. Such a pattern accepts POST
+// too, so the caller has to account for each one. A pattern with a method other
+// than GET and POST fails the test: it needs a row of its own.
+func routePatterns(t *testing.T) (post, methodless []string) {
 	t.Helper()
-	src, err := os.ReadFile("site.go")
-	if err != nil {
-		t.Fatal(err)
+	var s *site
+	onNew = func(got *site) { s = got }
+	t.Cleanup(func() { onNew = nil })
+	smallSite(t)
+	onNew = nil
+	if s == nil || len(s.patterns) == 0 {
+		t.Fatal("the site recorded no pattern")
 	}
-	var out []string
-	for _, m := range regexp.MustCompile(`Handle(?:Func)?\("POST ([^"]+)"`).FindAllStringSubmatch(string(src), -1) {
-		out = append(out, m[1])
+	for _, p := range s.patterns {
+		method, rest, found := strings.Cut(p, " ")
+		switch {
+		case found && method == "POST":
+			post = append(post, rest)
+		case found && (method == "GET" || method == "HEAD"):
+		case found:
+			t.Errorf("pattern %q has a method that no table covers", p)
+		default:
+			methodless = append(methodless, p)
+		}
 	}
-	if len(out) == 0 {
-		t.Fatal("found no POST route in site.go")
+	if len(post) == 0 {
+		t.Fatal("found no POST route on the mux")
 	}
-	return out
+	return post, methodless
 }
 
 // patternRegexp turns a route pattern such as /p/{id}/edit into an expression
@@ -726,7 +742,7 @@ func patternRegexp(pattern string) *regexp.Regexp {
 // tokenRows, and every row names a route that exists, the way TestPostRoutesHaveCaps
 // forces a row in bodyCaps. A new route then cannot skip the token test.
 func TestPostRoutesHaveTokenRows(t *testing.T) {
-	patterns := routePatterns(t)
+	patterns, methodless := routePatterns(t)
 	for _, p := range patterns {
 		re := patternRegexp(p)
 		found := false
@@ -744,6 +760,19 @@ func TestPostRoutesHaveTokenRows(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("tokenRows has %s, which no POST route matches", row.target)
+		}
+	}
+	// A pattern with no method accepts POST. Each one on the mux is named here,
+	// and must refuse a POST by itself, so it needs no token row.
+	h, _ := smallSite(t)
+	for _, p := range methodless {
+		want, known := map[string]int{"/": http.StatusNotFound, "/healthz": http.StatusMethodNotAllowed}[p]
+		if !known {
+			t.Errorf("the mux has the method-less pattern %q: name it here with the answer to a POST, or give it a method", p)
+			continue
+		}
+		if rec := request(t, h, http.MethodPost, p, nil, url.Values{}); rec.Code != want {
+			t.Errorf("POST %s = %d, want %d", p, rec.Code, want)
 		}
 	}
 	if !patternRegexp("/p/{id}/edit").MatchString("/p/1/edit") || patternRegexp("/p/{id}/edit").MatchString("/p/1/delete") {

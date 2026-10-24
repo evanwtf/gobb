@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/db"
 )
@@ -81,10 +82,68 @@ func cutUserAgent(ua string) string {
 	return ua[:cut]
 }
 
+// ErrStale means that [CreateChecked] did not start a session: the user row no
+// longer holds the hash that the sign-in verified, the user is not active, or a
+// user ban holds. The sign-in answers it like a wrong password.
+var ErrStale = errors.New("session: the account changed during the sign-in")
+
 // Create starts a session for userID and returns the token for the cookie. It
 // stores the address and the user agent (cut to 512 bytes), and records the
 // address in user_ips. The remember flag picks the lifetime.
+//
+// Create checks nothing about the user. A sign-in uses [CreateChecked].
 func Create(ctx context.Context, q db.Querier, userID int64, remember bool, ip netip.Addr, userAgent string, now time.Time) (string, Session, error) {
+	return create(ctx, q, userID, remember, ip, userAgent, now)
+}
+
+// CreateChecked is [Create] for a sign-in. It starts the session only while the
+// user row still holds wantHash (the hash that the sign-in verified), the user is
+// active, and no user ban that has not ended holds the user; otherwise it returns
+// [ErrStale] and writes nothing. The check and the insert run in one transaction,
+// and the check reads the user row with FOR SHARE.
+//
+// That lock orders the sign-in against every write that ends the sessions of a
+// member: such a write takes the row FOR UPDATE first (a password change, and
+// the ban and the reset of an administrator). If the sign-in holds the row, the
+// write waits, and then deletes the new session with the others. If the write
+// holds it, the sign-in waits, then sees the new hash or the ban, and is refused.
+// A sign-in that proved a password cannot outlive a change of it.
+func CreateChecked(ctx context.Context, pool *pgxpool.Pool, userID int64, wantHash string, remember bool, ip netip.Addr, userAgent string, now time.Time) (string, Session, error) {
+	var (
+		token string
+		sess  Session
+	)
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var hash string
+		err := tx.QueryRow(ctx, `select password_hash from users where id = $1 and state = 'active' for share`, userID).Scan(&hash)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrStale
+		}
+		if err != nil {
+			return fmt.Errorf("session: check user %d: %w", userID, err)
+		}
+		if wantHash == "" || subtle.ConstantTimeCompare([]byte(hash), []byte(wantHash)) != 1 {
+			return ErrStale
+		}
+		var banned bool
+		err = tx.QueryRow(ctx, `select exists (select 1 from bans where kind = 'user' and user_id = $1 and (ends_at is null or ends_at > $2))`,
+			userID, now).Scan(&banned)
+		if err != nil {
+			return fmt.Errorf("session: check bans of user %d: %w", userID, err)
+		}
+		if banned {
+			return ErrStale
+		}
+		token, sess, err = create(ctx, tx, userID, remember, ip, userAgent, now)
+		return err
+	})
+	if err != nil {
+		return "", Session{}, err
+	}
+	return token, sess, nil
+}
+
+func create(ctx context.Context, q db.Querier, userID int64, remember bool, ip netip.Addr, userAgent string, now time.Time) (string, Session, error) {
 	if !ip.IsValid() {
 		return "", Session{}, errors.New("session: create: no client address")
 	}

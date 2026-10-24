@@ -875,3 +875,70 @@ func TestCheckFloorHoldsOnEveryFailure(t *testing.T) {
 		t.Errorf("a good password took %v, want no wait", took)
 	}
 }
+
+// CheckWith hands the finish step the ID and the hash that the check verified.
+// For a legacy account the check replaces the hash first, so the step sees the
+// hash that is now stored: the one a conditional insert must compare.
+func TestCheckWithPassesTheVerifiedHash(t *testing.T) {
+	svc, pool := newService(t)
+	svc.Floor = 0
+	for _, name := range []string{"alice", "bob"} { // bob's hash is a legacy one
+		var gotID int64
+		var gotHash string
+		id, err := svc.CheckWith(t.Context(), name, pw, ip, now, func(_ context.Context, id int64, hash string) error {
+			gotID, gotHash = id, hash
+			return nil
+		})
+		if err != nil || id != gotID || id == 0 {
+			t.Fatalf("%s: CheckWith = %d, %v (finish saw %d)", name, id, err, gotID)
+		}
+		var stored string
+		if err := pool.QueryRow(t.Context(), `select password_hash from users where id = $1`, id).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		if gotHash == "" || gotHash != stored {
+			t.Errorf("%s: finish saw hash %.20q, the row holds %.20q", name, gotHash, stored)
+		}
+	}
+	// A plain Check still works.
+	if id, err := svc.Check(t.Context(), "carol", pw, ip, now); err != nil || id != 3 {
+		t.Errorf("Check = %d, %v", id, err)
+	}
+}
+
+// A finish step that says the account changed makes the sign-in a wrong
+// password: ErrWrong, the two limit events stay, and the floor applies. Any
+// other error from the step is passed on and gives the events back.
+func TestCheckWithStaleIsWrong(t *testing.T) {
+	svc, _, _ := limitedService(t, 3, 100, nil)
+	svc.Floor = 80 * time.Millisecond
+	stale := func(context.Context, int64, string) error { return login.ErrStale }
+	start := time.Now()
+	_, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, stale)
+	if !errors.Is(err, login.ErrWrong) || errors.Is(err, login.ErrStale) {
+		t.Fatalf("stale = %v, want ErrWrong", err)
+	}
+	if took := time.Since(start); took < 80*time.Millisecond {
+		t.Errorf("a stale sign-in took %v, under the floor", took)
+	}
+	// It counts: two more stale tries fill the address limit of 3.
+	for range 2 {
+		if _, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, stale); !errors.Is(err, login.ErrWrong) {
+			t.Fatal(err)
+		}
+	}
+	var limited *login.LimitedError
+	if _, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, nil); !errors.As(err, &limited) {
+		t.Errorf("after three stale tries = %v, want *LimitedError", err)
+	}
+
+	// A database error in the step is not a wrong password, and takes no event.
+	svc2, _, _ := limitedService(t, 1, 100, nil)
+	boom := errors.New("boom")
+	if _, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, func(context.Context, int64, string) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("step error = %v", err)
+	}
+	if id, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, nil); err != nil || id != 1 {
+		t.Errorf("after a step error the event should be back: %d, %v", id, err)
+	}
+}

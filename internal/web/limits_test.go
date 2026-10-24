@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -327,13 +326,10 @@ func TestPostBodyCaps(t *testing.T) {
 // The caps cover every POST route that exists: the test fails when a route is
 // added with no row in bodyCaps, and when a row names a route that is gone.
 func TestPostRoutesHaveCaps(t *testing.T) {
-	src, err := os.ReadFile("site.go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	post, _ := routePatterns(t)
 	found := map[string]bool{}
-	for _, m := range regexp.MustCompile(`Handle(?:Func)?\("POST ([^"]+)"`).FindAllStringSubmatch(string(src), -1) {
-		found[m[1]] = true
+	for _, p := range post {
+		found[p] = true
 	}
 	listed := map[string]bool{}
 	for _, c := range bodyCaps {

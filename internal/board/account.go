@@ -123,31 +123,73 @@ func CheckNewPassword(ctx context.Context, q db.Querier, v Viewer, next string) 
 // sessions end at the moment the new password starts. The caller then creates
 // one new session for the browser that made the change. now is part of the
 // signature of the board writes; a password change records no time.
-func ChangePassword(ctx context.Context, pool *pgxpool.Pool, v Viewer, next string, _ time.Time) error {
+func ChangePassword(ctx context.Context, pool *pgxpool.Pool, v Viewer, next string, now time.Time) error {
+	_, err := ChangePasswordWith(ctx, pool, v, next, nil, now)
+	return err
+}
+
+// ChangePasswordWith is [ChangePassword] for a server. It returns the new hash,
+// for the caller that starts a session with [session.CreateChecked], and it takes
+// hold, when not nil, around the hash and nowhere else: the argon2 run needs
+// memory, and the caller's gate bounds it. An error from hold is returned as it
+// is, before anything is written. The release runs before the transaction opens,
+// so the gate share is not held across the database work.
+//
+// The transaction reads the user row FOR UPDATE before it writes or deletes. A
+// sign-in that verified the old password and is about to insert a session holds
+// or wants the row FOR SHARE (session.CreateChecked), so each such pair runs in
+// one order: the sign-in's session is in the table before the delete, or the
+// sign-in sees the new hash and is refused. Any write that ends the sessions of
+// a member (a ban, a reset by an administrator) takes the same lock first.
+func ChangePasswordWith(ctx context.Context, pool *pgxpool.Pool, v Viewer, next string, hold func(context.Context) (release func(), err error), _ time.Time) (string, error) {
 	if err := mayAccount(v, "account.password"); err != nil {
-		return err
+		return "", err
 	}
 	if err := CheckNewPassword(ctx, pool, v, next); err != nil {
-		return err
+		return "", err
 	}
-	hash, err := password.Hash(next)
+	hash, err := hashHeld(ctx, next, hold)
 	if err != nil {
-		// CheckNewPassword has refused every input that Hash refuses.
-		return fmt.Errorf("board: hash a new password: %w", err)
+		return "", err
 	}
-	return inTx(ctx, pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `update users set password_hash = $2, password_scheme = 'gobb' where id = $1 and state = 'active'`, v.UserID, hash)
-		if err != nil {
-			return fmt.Errorf("board: store a password for %d: %w", v.UserID, err)
-		}
-		if tag.RowsAffected() != 1 {
+	err = inTx(ctx, pool, func(tx pgx.Tx) error {
+		var id int64
+		err := tx.QueryRow(ctx, `select id from users where id = $1 and state = 'active' for update`, v.UserID).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("board: lock user %d: %w", v.UserID, err)
+		}
+		if _, err := tx.Exec(ctx, `update users set password_hash = $2, password_scheme = 'gobb' where id = $1`, v.UserID, hash); err != nil {
+			return fmt.Errorf("board: store a password for %d: %w", v.UserID, err)
 		}
 		if _, err := session.DeleteUser(ctx, tx, v.UserID); err != nil {
 			return err
 		}
 		return nil
 	})
+	if err != nil {
+		return "", err
+	}
+	return hash, nil
+}
+
+// hashHeld hashes next with the gate share of hold, when there is one.
+func hashHeld(ctx context.Context, next string, hold func(context.Context) (func(), error)) (string, error) {
+	if hold != nil {
+		release, err := hold(ctx)
+		if err != nil {
+			return "", err
+		}
+		defer release()
+	}
+	hash, err := password.Hash(next)
+	if err != nil {
+		// CheckNewPassword has refused every input that Hash refuses.
+		return "", fmt.Errorf("board: hash a new password: %w", err)
+	}
+	return hash, nil
 }
 
 // CleanEmailInput returns the address as stored (trimmed) and its comparison
