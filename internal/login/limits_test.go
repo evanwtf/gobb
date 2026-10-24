@@ -729,36 +729,58 @@ func TestKnownAddressQueryOnlyWhenNameLimited(t *testing.T) {
 	}
 }
 
-// gateHeld returns a service with a gate that has room for 1,024 KiB and not for
-// the uniform charge of a check: the budget is 30,000 KiB and a holder has
-// 20,000. The service has a floor of 300 ms and a gate wait of 60 ms.
+// gateHeld returns a service on the small board where carol holds an imported
+// argon2id hash at m=65,536, with the charge set as the start-up step sets it.
+// The gate is in the state of the round-3 re-review: the default budget of
+// 131,072 KiB with four holders of 19,456 KiB, so 53,248 KiB is free. A check
+// that charged 19 MiB would fit; a check that charges 64 MiB does not. The
+// service has a floor of 300 ms and a gate wait of 60 ms.
 func gateHeld(t *testing.T) (*login.Service, *fakeVerify) {
 	t.Helper()
 	_, pool := newService(t)
-	gate := login.NewGate(30000)
-	hold, err := gate.Acquire(t.Context(), 20000, time.Second)
-	if err != nil {
-		t.Fatal(err)
+	exec(t, pool, `update users set password_hash = $1, password_scheme = 'legacy' where id = 3`, argonHash(65536))
+	gate := login.NewGate(login.DefaultBudgetKiB)
+	for range 4 {
+		hold, err := gate.Acquire(t.Context(), password.HashMemoryKiB, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(hold)
 	}
-	t.Cleanup(hold)
+	// The state: 19 MiB fits, 64 MiB does not.
+	probe, err := gate.Acquire(t.Context(), password.HashMemoryKiB, time.Millisecond)
+	if err != nil {
+		t.Fatalf("19 MiB does not fit in the held gate: %v", err)
+	}
+	probe()
+	if _, err := gate.Acquire(t.Context(), 65536, time.Millisecond); !errors.Is(err, login.ErrBusy) {
+		t.Fatalf("64 MiB in the held gate: err = %v, want ErrBusy", err)
+	}
 	f := &fakeVerify{}
 	svc := login.NewWith(pool, login.Options{Gate: gate, Verify: f.verify})
+	if err := svc.LoadCharge(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	svc.Floor = 300 * time.Millisecond
 	svc.GateWait = 60 * time.Millisecond
 	return svc, f
 }
 
-// The three kinds of name that a stranger can try: a legacy hash (1,024 KiB by
-// its own cost), a gobb hash, and no account at all.
+// The four kinds of name that a stranger can try: a legacy bcrypt hash (1,024
+// KiB by its own cost), a gobb hash (19,456 KiB), an imported argon2id hash
+// (65,536 KiB), and no account at all.
 var hashKinds = []struct{ kind, name string }{
 	{"legacy hash", "bob"},
 	{"gobb hash", "alice"},
+	{"legacy argon2id at 64 MiB", "carol"},
 	{"unknown name", "nobody"},
 }
 
-// With the gate full for a hash of 19 MiB and not for 1 MiB, a legacy account,
-// a gobb account and an unknown name all wait for the gate: they charge the same.
-// The wait ends in ErrBusy for each, no sooner than the floor.
+// With the gate full for a hash of 64 MiB and not for 19 MiB, every account and
+// an unknown name wait for the gate: they all charge the start-up charge of
+// 64 MiB. The wait ends in ErrBusy (503) for each, no sooner than the floor. A
+// name whose check fitted would get ErrWrong (200) instead, and the status would
+// tell a stranger that the account exists.
 func TestCheckFloorHoldsOnBusy(t *testing.T) {
 	for _, k := range hashKinds {
 		t.Run(k.kind, func(t *testing.T) {
@@ -780,7 +802,7 @@ func TestCheckFloorHoldsOnBusy(t *testing.T) {
 }
 
 // A context that ends during the gate wait (the client half-closed) gives the
-// same error for all three, and no answer before the floor.
+// same error for all four, and no answer before the floor.
 func TestCheckFloorHoldsOnGateCancel(t *testing.T) {
 	for _, k := range hashKinds {
 		t.Run(k.kind, func(t *testing.T) {

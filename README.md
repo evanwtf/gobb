@@ -242,9 +242,16 @@ the operator:
 - A failed sign-in takes at least 400 ms, even when the client closes its end of the
   connection early. This holds for every failure after the limits pass: a wrong
   password, a busy server, an inactive account and a ban.
-- Password checks share 128 MiB of memory. Every check holds the same share (about
-  19 MiB), whatever the kind of hash, so the wait does not tell a stranger which
-  accounts have old hashes. A check that finds no room for 5 seconds answers 503.
+- Password checks share 128 MiB of memory. Every check holds the same share,
+  whatever the kind of hash, so neither the wait nor the answer tells a stranger
+  which names have accounts or which accounts have old hashes. The share follows the
+  most costly stored hash, which the server reads at start. With no hash above the
+  cost of a new gobb hash (19 MiB), six checks run at once. On a board with imported
+  64 MiB argon2id hashes, two checks run at once. The start-up log line
+  `login: password check charge` gives the share in KiB and the number of checks at
+  once. A sign-in replaces an old hash with a gobb hash, so the share falls at a
+  later start, when no costly hash is left. A check that finds no room for 5
+  seconds answers 503.
 
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 20 seconds. A second signal exits at once.

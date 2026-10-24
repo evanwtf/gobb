@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -12,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/password"
 )
 
 // proxied sends form to target as a client at addr behind a trusted proxy: the
@@ -195,6 +198,38 @@ func TestLoginBusy(t *testing.T) {
 	}
 	if body := bodyOf(t, rec); !strings.Contains(body, `name="password"`) {
 		t.Error("the form is gone from the 503 page")
+	}
+}
+
+// The site sets the charge of every password check from the stored hashes when
+// it starts. On a board with an imported argon2id hash at 64 MiB, and a gate
+// with room for 19 MiB and not for 64 MiB, every name answers 503: the unknown
+// name, the gobb account, the bcrypt account and the 64 MiB account alike. A
+// name whose check fitted would answer 200, and the status would tell a stranger
+// that the 64 MiB account exists.
+func TestLoginChargeFollowsStoredHashes(t *testing.T) {
+	b := bundletest.Small()
+	enc := base64.RawStdEncoding
+	heavy := "$argon2id$v=19$m=65536,t=4,p=2$" + enc.EncodeToString([]byte("0123456789abcdef")) + "$" + enc.EncodeToString(make([]byte, 32))
+	for i := range b.Users {
+		if b.Users[i].Username == "carol" {
+			b.Users[i].Password = bundle.Password{Scheme: "legacy", Hash: heavy}
+		}
+	}
+	gate := login.NewGate(login.DefaultBudgetKiB)
+	for range 4 {
+		hold, err := gate.Acquire(t.Context(), password.HashMemoryKiB, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer hold()
+	}
+	h, _ := siteAndPool(t, b, Options{LoginGate: gate, LoginGateWait: 20 * time.Millisecond})
+	for _, name := range []string{"nobody", "alice", "bob", "carol"} {
+		rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {name}, "password": {"wrong"}})
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("POST /login as %s = %d, want 503", name, rec.Code)
+		}
 	}
 }
 

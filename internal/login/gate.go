@@ -13,7 +13,7 @@ import (
 var ErrBusy = errors.New("login: too many password checks at once")
 
 // Gate limits the memory that password checks use at one time. A check asks for
-// the memory its hash needs, and waits until that much is free. Waiters run in
+// its charge in KiB, and waits until that much is free. Waiters run in
 // the order they came, so a run of small checks does not starve a large one. A
 // Gate is safe for concurrent use.
 type Gate struct {
@@ -75,6 +75,17 @@ func (g *Gate) Acquire(ctx context.Context, kib uint64, wait time.Duration) (rel
 	// The waiter may have been the one that held the line for those behind it.
 	g.wake()
 	return nil, cause
+}
+
+// fits returns how many holders of kib the gate runs at once. A cost above the
+// budget counts as the whole budget, as in Acquire, so the answer is at least 1.
+// A gate with no budget gives 0.
+func (g *Gate) fits(kib uint64) uint64 {
+	cost := min(kib, g.budget)
+	if cost == 0 {
+		return 0
+	}
+	return g.budget / cost
 }
 
 // releaser returns the function that gives cost back, once.

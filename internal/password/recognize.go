@@ -53,7 +53,7 @@ const baseMemoryKiB = 1024
 // and runs no hash.
 //
 // A caller that limits the memory of parallel checks asks MemoryKiB first and
-// holds that much while Verify runs.
+// holds at least that much while Verify runs.
 func MemoryKiB(scheme, hash string) uint64 {
 	cost := uint64(baseMemoryKiB)
 	var argon string

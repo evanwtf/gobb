@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -119,6 +120,11 @@ type Service struct {
 	// GateWait is how long a check waits for room in the gate. New sets it to
 	// [DefaultGateWait].
 	GateWait time.Duration
+	// stored is the cost of the most costly stored hash, in KiB, that
+	// LoadCharge found. Zero until LoadCharge runs.
+	stored atomic.Uint64
+	// hash makes the gobb hash of a rehash. A test may replace it.
+	hash func(string) (string, error)
 }
 
 // DefaultOptions returns new limiters and a new gate with the default numbers,
@@ -144,7 +150,7 @@ func NewWith(q db.Querier, opt Options) *Service {
 	if opt.Verify == nil {
 		opt.Verify = password.Verify
 	}
-	return &Service{q: q, opt: opt, Floor: DefaultFloor, GateWait: DefaultGateWait}
+	return &Service{q: q, opt: opt, Floor: DefaultFloor, GateWait: DefaultGateWait, hash: password.Hash}
 }
 
 // candidate is a user row that a name can match.
@@ -192,8 +198,8 @@ type candidate struct {
 //  8. A hash that needs a rehash is replaced with a gobb hash.
 //
 // Each hash check, and each dummy check for a name with no account, holds the
-// memory it needs in the gate while it runs. When the gate stays full, Check
-// returns [ErrBusy].
+// same share of the gate while it runs ([Service.ChargeKiB]). When the gate
+// stays full, Check returns [ErrBusy].
 //
 // A wrong password or an ambiguous address keeps the two reserved events. Any
 // other end gives them back: a good password, [ErrBusy], [ErrInactive], a ban, a
@@ -362,26 +368,76 @@ func (s *Service) wait(start time.Time) {
 	time.Sleep(left)
 }
 
-// chargeKiB is what one password check holds of the gate. It is the same for
-// every check: the larger of the memory of a hash with the current gobb
-// parameters and the memory of the stored hash. The first term is what the dummy
-// check for an unknown name costs, so a legacy account (bcrypt, phpass or md5,
-// 1,024 KiB by its own cost), a gobb account and an unknown name all wait for the
-// gate alike, and the time to wait does not tell a stranger the kind of hash.
-// The rehash holds the same charge. Every gate charge in this package comes from
-// here.
+// LoadCharge sets the share of the gate that every password check holds (see
+// [Service.ChargeKiB]) from the stored hashes. One streaming query reads the
+// users whose hash can carry an argon2id part, and [password.MemoryKiB], the
+// parser that sizes a check, gives the cost of each. LoadCharge then logs the
+// charge and how many checks fit in the gate at once, with no name and no hash.
 //
-// The one residual: a stored hash above the current parameters (argon2id with
-// more memory) charges its own cost. That happens only when an operator lowers
-// the parameters, or for an imported argon2id hash with a larger m.
-func chargeKiB(scheme, stored string) uint64 {
-	return max(password.HashMemoryKiB, password.MemoryKiB(scheme, stored))
+// Call it once, before the service serves. The value does not change at run
+// time: a rehash stores a gobb hash, which never costs more.
+func (s *Service) LoadCharge(ctx context.Context) error {
+	rows, err := s.q.Query(ctx, `select password_scheme, password_hash from users
+ where strpos(password_hash, '$argon2id$') > 0`)
+	if err != nil {
+		return fmt.Errorf("login: read the stored hashes: %w", err)
+	}
+	defer rows.Close()
+	var most uint64
+	for rows.Next() {
+		var scheme, hash string
+		if err := rows.Scan(&scheme, &hash); err != nil {
+			return fmt.Errorf("login: read the stored hashes: %w", err)
+		}
+		most = max(most, password.MemoryKiB(scheme, hash))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("login: read the stored hashes: %w", err)
+	}
+	s.stored.Store(most)
+	charge := s.ChargeKiB()
+	if s.opt.Gate == nil {
+		slog.Info("login: password check charge", "kib", charge)
+		return nil
+	}
+	slog.Info("login: password check charge", "kib", charge, "checks_at_once", s.opt.Gate.fits(charge))
+	return nil
 }
 
-// verify checks pw against a stored hash. It holds the memory that the hash
-// needs in the gate while the hash runs, and lets go before it returns.
+// ChargeKiB returns the share of the gate, in KiB, that every password check
+// holds: the larger of the memory of a new gobb hash ([password.HashMemoryKiB])
+// and the memory of the most costly stored hash that [Service.LoadCharge] found.
+// Before LoadCharge runs, it is the memory of a new gobb hash.
+//
+// The charge follows the most costly stored hash. Imported argon2id hashes
+// commonly use m=65,536, so on a board that holds one the charge is 65,536 KiB,
+// and two checks run at once in the default 128 MiB gate.
+func (s *Service) ChargeKiB() uint64 {
+	return max(password.HashMemoryKiB, s.stored.Load())
+}
+
+// chargeKiB is what one password check holds of the gate: [Service.ChargeKiB],
+// or the cost of the stored hash when that is higher. Every gate charge in this
+// package comes from here: the hash check, the dummy check for an unknown name
+// and the rehash.
+//
+// The charge is the same for every hash on the board, so a legacy account
+// (bcrypt or a chain at 1,024 KiB, argon2id at its m), a gobb account and an
+// unknown name all hold the same share. Under a full gate they wait alike and
+// end alike, so neither the time nor the status of the answer tells a stranger
+// whether an account exists or what kind of hash it holds.
+//
+// The one residual: a hash stored after LoadCharge ran, with a cost above the
+// charge, holds its own cost. Only an import into the database of a running
+// server stores such a hash; the next start counts it.
+func (s *Service) chargeKiB(scheme, stored string) uint64 {
+	return max(s.ChargeKiB(), password.MemoryKiB(scheme, stored))
+}
+
+// verify checks pw against a stored hash. It holds the charge of the check
+// (chargeKiB) in the gate while the hash runs, and lets go before it returns.
 func (s *Service) verify(ctx context.Context, pw, stored, scheme string) (ok, needsRehash bool, err error) {
-	release, err := s.acquire(ctx, chargeKiB(scheme, stored))
+	release, err := s.acquire(ctx, s.chargeKiB(scheme, stored))
 	if err != nil {
 		return false, false, err
 	}
@@ -547,12 +603,12 @@ func inetArg(ip netip.Addr) any {
 func (s *Service) rehash(ctx context.Context, u candidate, pw string) {
 	// The hash needs memory like any check, so it holds the gate. When the gate
 	// stays full, skip: the password is right, and the next sign-in tries again.
-	release, err := s.acquire(ctx, chargeKiB("gobb", ""))
+	release, err := s.acquire(ctx, s.chargeKiB("gobb", ""))
 	if err != nil {
 		slog.Warn("login: skipped a rehash", "user", u.id, "err", err)
 		return
 	}
-	fresh, err := password.Hash(pw)
+	fresh, err := s.hash(pw)
 	release()
 	if err != nil {
 		slog.Warn("login: cannot rehash a password", "user", u.id, "err", err)

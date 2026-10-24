@@ -88,7 +88,8 @@ var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
 // templates once, so a broken template fails here and not on a request. It reads
-// the legacy routes once too.
+// the legacy routes once too, and sets the gate charge of the password checks
+// from the stored hashes ([login.Service.LoadCharge]).
 func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
 	lo := login.DefaultOptions()
 	if opt.LoginGate != nil {
@@ -115,6 +116,11 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		return nil, err
 	}
 	s.legacy = tab
+	// The charge of every password check follows the most costly stored hash.
+	// Like the legacy table, it is read once: the server stops for an import.
+	if err := s.login.LoadCharge(ctx); err != nil {
+		return nil, err
+	}
 
 	inner := http.NewServeMux()
 	inner.HandleFunc("GET /{$}", s.index)
