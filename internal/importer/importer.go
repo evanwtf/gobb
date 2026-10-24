@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/bundle"
+	"github.com/evanwtf/gobb/internal/counters"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/markup"
 )
@@ -252,8 +253,8 @@ func load(ctx context.Context, conn *pgxpool.Conn, tables []string, r *source, r
 		counts[l.file] = n
 		slog.Info("loaded", "file", l.file, "rows", n)
 	}
-	if err := computeCounters(ctx, tx); err != nil {
-		return nil, err
+	if err := counters.All(ctx, tx); err != nil {
+		return nil, fmt.Errorf("importer: %w", err)
 	}
 	if err := db.ResetSequences(ctx, tx); err != nil {
 		return nil, err

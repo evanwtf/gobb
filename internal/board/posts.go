@@ -498,21 +498,13 @@ select p.forum_id from posts p join topics t on t.id = p.topic_id
 // its image path, without the base path: the renderer adds that. Alt is the
 // description of the smiley.
 func SmileyLookup(ctx context.Context, q db.Querier) (func(code string) (markup.Smiley, bool), error) {
-	rows, err := q.Query(ctx, `select code, image_path, description from smilies`)
+	list, err := smileyList(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("board: read smilies: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-	byCode := map[string]markup.Smiley{}
-	for rows.Next() {
-		var code, image, desc string
-		if err := rows.Scan(&code, &image, &desc); err != nil {
-			return nil, fmt.Errorf("board: read smilies: %w", err)
-		}
-		byCode[code] = markup.Smiley{Code: code, Image: "/files/" + strings.TrimLeft(image, "/"), Alt: desc}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("board: read smilies: %w", err)
+	byCode := make(map[string]markup.Smiley, len(list))
+	for _, s := range list {
+		byCode[s.Code] = s
 	}
 	return func(code string) (markup.Smiley, bool) {
 		s, ok := byCode[code]

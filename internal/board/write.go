@@ -1,0 +1,858 @@
+package board
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/netip"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/evanwtf/gobb/internal/account"
+	"github.com/evanwtf/gobb/internal/acl"
+	"github.com/evanwtf/gobb/internal/acldb"
+	"github.com/evanwtf/gobb/internal/counters"
+	"github.com/evanwtf/gobb/internal/db"
+	"github.com/evanwtf/gobb/internal/postbody"
+	"github.com/evanwtf/gobb/markup"
+)
+
+// The limits of the posting forms.
+const (
+	maxTitleRunes     = 120
+	maxBodyBytes      = 60_000
+	maxSignatureBytes = 2_000
+	maxReasonRunes    = 255
+	maxGuestNameRunes = 40
+)
+
+// duplicateWindow is how long after a post an identical post from the same
+// author counts as the same post, sent twice.
+const duplicateWindow = 60 * time.Second
+
+// The messages that a page shows to the writer. Each one names the problem.
+const (
+	msgNoImages       = "You may not post images in this forum."
+	msgNoSigImages    = "A signature may not hold images."
+	msgGuestNameTaken = "That name belongs to a member. Sign in, or choose another name."
+	msgGuestName      = "Enter a name of 1 to 40 characters, with no line breaks."
+)
+
+// InputError says that a field of what the writer sent is not acceptable. The
+// message is for the writer, and it never holds text from the database. A page
+// shows it with the form, and keeps the text that the writer sent.
+type InputError struct {
+	// Field is the name of the form field: "title", "body", "guest_name" or
+	// "reason".
+	Field   string
+	Message string
+}
+
+func (e *InputError) Error() string { return "board: " + e.Field + ": " + e.Message }
+
+func inputError(field, message string) error { return &InputError{Field: field, Message: message} }
+
+// Body is a parsed post body: the tree that a page renders, the JSON and the
+// plain text that the database stores, and the flags that made the tree.
+type Body struct {
+	Tree *markup.Node
+	JSON []byte
+	Text string
+	// Flags are the flags that made the tree. SmileyList is empty.
+	Flags markup.Options
+}
+
+// Draft is what a writer sends.
+type Draft struct {
+	// Title is the topic title. A reply ignores it, and so does an edit of a post
+	// that is not the first post of its topic.
+	Title string
+	// Source is the Markdown text of the post.
+	Source string
+	// GuestName is the name of a guest. A member's write ignores it.
+	GuestName string
+	// IP is the address of the writer. It is stored with every new post. A guest
+	// write needs it: it keeps duplicates apart and enforces address bans.
+	IP netip.Addr
+}
+
+// ParseBody is the one path from member text to a stored tree. A post, an edit,
+// a signature and a preview all call it. It parses src and checks the tree with
+// [markup.Validate], and it returns the tree, its JSON and its plain text. It
+// stores nothing and writes no HTML.
+//
+//   - flags nil means a new post: the flags come from the rights of v in forum
+//     forumID (post.markdown and post.smilies), with URL linking on.
+//   - flags non-nil are the stored flags of an edit. They win over the rights of
+//     v, so an imported post keeps the shape it was written in.
+//   - forumID 0 means a signature. flags must be the stored signature flags of
+//     the member. No forum right applies, the limit is 2,000 bytes instead of
+//     60,000, an empty text is allowed, and an image is not.
+//
+// A text over the limit, a text that the database cannot hold, an image without
+// the right to post it, or a tree that fails [markup.Validate] gives an
+// [*InputError] on the field "body".
+func ParseBody(ctx context.Context, q db.Querier, v Viewer, forumID int64, src string, flags *markup.Options) (Body, error) {
+	signature := forumID == 0
+	if signature && flags == nil {
+		return Body{}, errors.New("board: a signature needs its stored flags")
+	}
+	if err := checkSource(src, signature); err != nil {
+		return Body{}, err
+	}
+	var opt markup.Options
+	if flags != nil {
+		opt = *flags
+	} else {
+		opt = markup.Options{
+			Markdown: v.Perms.Has("post.markdown", forumID),
+			Smilies:  v.Perms.Has("post.smilies", forumID),
+			Autolink: true,
+		}
+	}
+	opt.SmileyList = nil
+	if opt.Smilies {
+		list, err := smileyList(ctx, q)
+		if err != nil {
+			return Body{}, err
+		}
+		opt.SmileyList = list
+	}
+	tree := markup.Parse(src, opt)
+	if err := markup.Validate(tree); err != nil {
+		return Body{}, inputError("body", "The text is too complex to save. Make it simpler and try again.")
+	}
+	if hasElement(tree, "img") {
+		switch {
+		case signature:
+			return Body{}, inputError("body", msgNoSigImages)
+		case !v.Perms.Has("post.images", forumID):
+			return Body{}, inputError("body", msgNoImages)
+		}
+	}
+	data, text, err := postbody.Columns(tree)
+	if err != nil {
+		return Body{}, err
+	}
+	opt.SmileyList = nil
+	return Body{Tree: tree, JSON: data, Text: text, Flags: opt}, nil
+}
+
+// checkSource applies the limits to the text of a post or a signature.
+func checkSource(src string, signature bool) error {
+	limit, limitText := maxBodyBytes, "60,000"
+	if signature {
+		limit, limitText = maxSignatureBytes, "2,000"
+	}
+	switch {
+	case !utf8.ValidString(src):
+		return inputError("body", "The text is not valid UTF-8.")
+	case strings.IndexByte(src, 0) >= 0:
+		return inputError("body", "The text holds a null character.")
+	case !signature && strings.TrimSpace(src) == "":
+		return inputError("body", "Write some text first.")
+	case len(src) > limit:
+		return inputError("body", "The text is too long. The limit is "+limitText+" bytes.")
+	}
+	return nil
+}
+
+// hasElement reports whether the tree holds an element called name.
+func hasElement(n *markup.Node, name string) bool {
+	stack := []*markup.Node{n}
+	for len(stack) > 0 {
+		c := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if c.Kind == markup.Element && c.Name == name {
+			return true
+		}
+		stack = append(stack, c.Children...)
+	}
+	return false
+}
+
+// hasControl reports whether s holds a control character.
+func hasControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
+// cleanTitle trims a title and applies the rules: 1 to 120 characters, valid
+// UTF-8, and no control character.
+func cleanTitle(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	n := utf8.RuneCountInString(s)
+	switch {
+	case !utf8.ValidString(s) || hasControl(s):
+		return "", inputError("title", "The title may not hold control characters or line breaks.")
+	case n == 0:
+		return "", inputError("title", "Enter a title.")
+	case n > maxTitleRunes:
+		return "", inputError("title", "The title is too long. The limit is 120 characters.")
+	}
+	return s, nil
+}
+
+// cleanReason trims an edit reason and applies the rules: at most 255
+// characters, valid UTF-8, and no control character.
+func cleanReason(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	switch {
+	case !utf8.ValidString(s) || hasControl(s):
+		return "", inputError("reason", "The reason may not hold control characters or line breaks.")
+	case utf8.RuneCountInString(s) > maxReasonRunes:
+		return "", inputError("reason", "The reason is too long. The limit is 255 characters.")
+	}
+	return s, nil
+}
+
+// smileyList reads the smilies of the board in the order of the smiley list.
+func smileyList(ctx context.Context, q db.Querier) ([]markup.Smiley, error) {
+	rows, err := q.Query(ctx, `select code, image_path, description from smilies order by position, id`)
+	if err != nil {
+		return nil, fmt.Errorf("board: read smilies: %w", err)
+	}
+	defer rows.Close()
+	var out []markup.Smiley
+	for rows.Next() {
+		var code, image, desc string
+		if err := rows.Scan(&code, &image, &desc); err != nil {
+			return nil, fmt.Errorf("board: read smilies: %w", err)
+		}
+		out = append(out, markup.Smiley{Code: code, Image: "/files/" + strings.TrimLeft(image, "/"), Alt: desc})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("board: read smilies: %w", err)
+	}
+	return out, nil
+}
+
+// inTx runs fn in one transaction. It rolls back when fn fails.
+func inTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
+	return pgx.BeginFunc(ctx, pool, fn)
+}
+
+// inetArg returns the address as a query argument: without a zone or a 4-in-6
+// form, or nil for the zero address.
+func inetArg(ip netip.Addr) any {
+	if !ip.IsValid() {
+		return nil
+	}
+	return ip.Unmap().WithZone("")
+}
+
+// topicRef is the part of a topic row that the writes decide on.
+type topicRef struct {
+	id, forumID, authorID int64 // authorID is 0 for a guest
+	visibility            string
+	locked, moved         bool
+}
+
+// lockTopic reads topic id as v sees it, and locks its row until the end of the
+// transaction. A topic that v may not see, or that is missing, gives
+// [ErrNotFound]. The lock makes two writes to one topic run one after the other,
+// so their counter updates cannot interleave. The statement that follows the
+// lock reads what the earlier holder committed.
+func lockTopic(ctx context.Context, tx pgx.Tx, sc scope, id int64) (topicRef, error) {
+	t := topicRef{id: id}
+	var moved *int64
+	err := tx.QueryRow(ctx, `
+select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_topic_id
+  from topics t
+ where t.id = $5 and `+visible("t", 1)+`
+   for update of t`, append(sc.args(), id)...).
+		Scan(&t.forumID, &t.authorID, &t.visibility, &t.locked, &moved)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return topicRef{}, ErrNotFound
+	}
+	if err != nil {
+		return topicRef{}, fmt.Errorf("board: lock topic %d: %w", id, err)
+	}
+	t.moved = moved != nil
+	return t, nil
+}
+
+// lockForum locks forum id and reports its kind and whether it is locked. A
+// write takes it after the lock on a topic, and a write that holds a post lock
+// takes it last. A write never waits for a topic or a post while it holds a
+// forum, so two writes never wait for each other in a circle.
+func lockForum(ctx context.Context, tx pgx.Tx, id int64) (kind string, locked bool, err error) {
+	err = tx.QueryRow(ctx, `select kind, locked from forums where id = $1 for update`, id).Scan(&kind, &locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, ErrNotFound
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("board: lock forum %d: %w", id, err)
+	}
+	return kind, locked, nil
+}
+
+// author is who a new post belongs to.
+type author struct {
+	id   int64 // 0 for a guest
+	name string
+	ip   netip.Addr
+}
+
+// resolveAuthor names the author of a new post. A member must be an active user
+// of the board. A guest needs a valid name and an address that no ban holds.
+// The address check is a refusal; the name check is an input error.
+func resolveAuthor(ctx context.Context, tx pgx.Tx, v Viewer, d Draft, now time.Time) (author, error) {
+	au := author{ip: d.IP}
+	if v.UserID != 0 {
+		err := tx.QueryRow(ctx, `select username from users where id = $1 and state = 'active'`, v.UserID).Scan(&au.name)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return author{}, ErrForbidden
+		}
+		if err != nil {
+			return author{}, fmt.Errorf("board: read member %d: %w", v.UserID, err)
+		}
+		au.id = v.UserID
+		return au, nil
+	}
+	var banned bool
+	err := tx.QueryRow(ctx, `
+select exists (select 1 from bans where kind = 'ip' and (ends_at is null or ends_at > $1) and ip >>= $2::inet)`,
+		now, inetArg(d.IP)).Scan(&banned)
+	if err != nil {
+		return author{}, fmt.Errorf("board: read bans: %w", err)
+	}
+	if banned {
+		return author{}, ErrForbidden
+	}
+	au.name = strings.TrimSpace(d.GuestName)
+	switch n := utf8.RuneCountInString(au.name); {
+	case !utf8.ValidString(au.name) || hasControl(au.name) || n < 1 || n > maxGuestNameRunes:
+		return author{}, inputError("guest_name", msgGuestName)
+	}
+	clean := account.CleanUsername(au.name)
+	if clean == "" {
+		return author{}, inputError("guest_name", msgGuestName)
+	}
+	var taken bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from users where username_clean = $1)`, clean).Scan(&taken); err != nil {
+		return author{}, fmt.Errorf("board: read usernames: %w", err)
+	}
+	if taken {
+		return author{}, inputError("guest_name", msgGuestNameTaken)
+	}
+	return au, nil
+}
+
+// lockAuthor takes a lock on the writer, for the length of the transaction. Two
+// posts from one writer then run one after the other, so the second finds the
+// first when it looks for a duplicate. The key is the member, or for a guest the
+// address.
+func lockAuthor(ctx context.Context, tx pgx.Tx, v Viewer, ip netip.Addr) error {
+	key := "gobb:post:ip:" + ip.Unmap().WithZone("").String()
+	if v.UserID != 0 {
+		key = "gobb:post:user:" + strconv.FormatInt(v.UserID, 10)
+	}
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+		return fmt.Errorf("board: lock writer: %w", err)
+	}
+	return nil
+}
+
+// newPost holds the columns of a post to insert.
+type newPost struct {
+	topicID, forumID int64
+	au               author
+	now              time.Time
+	subject, source  string
+	body             Body
+	visibility       string
+}
+
+func insertPost(ctx context.Context, tx pgx.Tx, p newPost) (int64, error) {
+	var authorID any
+	if p.au.id != 0 {
+		authorID = p.au.id
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `
+insert into posts (topic_id, forum_id, author_id, author_name, author_ip, created_at, subject,
+                   body_source, body_tree, body_text, enable_markdown, enable_smilies, enable_autolink,
+                   enable_sig, visibility)
+values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, false, $14)
+returning id`,
+		p.topicID, p.forumID, authorID, p.au.name, inetArg(p.au.ip), p.now, p.subject,
+		p.source, string(p.body.JSON), p.body.Text, p.body.Flags.Markdown, p.body.Flags.Smilies, p.body.Flags.Autolink,
+		p.visibility).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("board: insert post: %w", err)
+	}
+	return id, nil
+}
+
+// afterNewPost updates the rows that depend on a new post: the counters of its
+// topic and forum, the post count of a member who counts, and the topic mark of
+// a member. Both rows were locked by the caller.
+func afterNewPost(ctx context.Context, tx pgx.Tx, v Viewer, p newPost) error {
+	if err := counters.Topic(ctx, tx, p.topicID); err != nil {
+		return err
+	}
+	if err := counters.Forum(ctx, tx, p.forumID); err != nil {
+		return err
+	}
+	if p.au.id == 0 {
+		return nil
+	}
+	if p.visibility == "approved" && v.Perms.Has("post.counts", p.forumID) {
+		if err := addPostCount(ctx, tx, p.au.id, 1); err != nil {
+			return err
+		}
+	}
+	// The writer's own post is not new to the writer.
+	if _, err := tx.Exec(ctx, `
+insert into topic_marks (user_id, topic_id, marked_at) values ($1, $2, $3)
+on conflict (user_id, topic_id) do update set marked_at = greatest(topic_marks.marked_at, excluded.marked_at)`,
+		p.au.id, p.topicID, p.now); err != nil {
+		return fmt.Errorf("board: move topic mark: %w", err)
+	}
+	return nil
+}
+
+// addPostCount moves the post count of a member by delta, and never below 0.
+func addPostCount(ctx context.Context, tx pgx.Tx, userID int64, delta int) error {
+	if _, err := tx.Exec(ctx, `update users set post_count = greatest(post_count + $2, 0) where id = $1`, userID, delta); err != nil {
+		return fmt.Errorf("board: update post count of %d: %w", userID, err)
+	}
+	return nil
+}
+
+// authorCounts reports whether the author of a post holds post.counts in the
+// forum. It is the right of the author, not of the viewer who acts: the count
+// moved when the author posted, and it moves back by the same rule.
+func authorCounts(ctx context.Context, tx pgx.Tx, v Viewer, authorID, forumID int64) (bool, error) {
+	if authorID == 0 {
+		return false, nil
+	}
+	if authorID == v.UserID {
+		return v.Perms.Has("post.counts", forumID), nil
+	}
+	subject, err := acldb.Load(ctx, tx, authorID)
+	if errors.Is(err, acldb.ErrUnknownUser) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("board: load rights of %d: %w", authorID, err)
+	}
+	return acl.Resolve(subject).Has("post.counts", forumID), nil
+}
+
+// visibilityFor is the visibility of a new post: approved when the writer holds
+// post.no_approval in the forum, held otherwise.
+func visibilityFor(v Viewer, forumID int64) string {
+	if v.Perms.Has("post.no_approval", forumID) {
+		return "approved"
+	}
+	return "unapproved"
+}
+
+// NewTopic starts a topic in forum forumID with the first post d, and returns
+// the ID of that post.
+//
+//   - The forum must exist and v must read it, or the result is [ErrNotFound].
+//   - It must be a forum, not a category or a link; v needs topic.start in it;
+//     and the forum must be unlocked, or v needs mod.lock. Else [ErrForbidden].
+//   - A held topic (v lacks post.no_approval) is held as a whole.
+//   - A topic with the same author, forum, title and text from the last 60
+//     seconds is the same topic sent twice: the write returns its first post.
+//
+// now is the time of every row that the write makes.
+func NewTopic(ctx context.Context, pool *pgxpool.Pool, v Viewer, forumID int64, d Draft, now time.Time) (int64, error) {
+	if v.UserID == 0 && !d.IP.IsValid() {
+		return 0, errors.New("board: a guest write needs the address of the writer")
+	}
+	var postID int64
+	err := inTx(ctx, pool, func(tx pgx.Tx) error {
+		if err := lockAuthor(ctx, tx, v, d.IP); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from forums where id = $1)`, forumID).Scan(&exists); err != nil {
+			return fmt.Errorf("board: read forum %d: %w", forumID, err)
+		}
+		if !exists || !v.Perms.Has("forum.read", forumID) {
+			return ErrNotFound
+		}
+		kind, locked, err := lockForum(ctx, tx, forumID)
+		if err != nil {
+			return err
+		}
+		if kind != "forum" || !v.Perms.Has("topic.start", forumID) {
+			return ErrForbidden
+		}
+		if locked && !v.Perms.Has("mod.lock", forumID) {
+			return ErrForbidden
+		}
+		au, err := resolveAuthor(ctx, tx, v, d, now)
+		if err != nil {
+			return err
+		}
+		title, err := cleanTitle(d.Title)
+		if err != nil {
+			return err
+		}
+		body, err := ParseBody(ctx, tx, v, forumID, d.Source, nil)
+		if err != nil {
+			return err
+		}
+		if postID, err = findDuplicateTopic(ctx, tx, au, forumID, title, d.Source, now); err != nil || postID != 0 {
+			return err
+		}
+		vis := visibilityFor(v, forumID)
+		var topicID int64
+		err = tx.QueryRow(ctx, `
+insert into topics (forum_id, title, author_id, author_name, created_at, last_post_at, kind, locked, visibility)
+values ($1, $2, $3, $4, $5, $5, 'normal', false, $6) returning id`,
+			forumID, title, nullID(au.id), au.name, now, vis).Scan(&topicID)
+		if err != nil {
+			return fmt.Errorf("board: insert topic: %w", err)
+		}
+		p := newPost{topicID: topicID, forumID: forumID, au: au, now: now, subject: title, source: d.Source, body: body, visibility: vis}
+		if postID, err = insertPost(ctx, tx, p); err != nil {
+			return err
+		}
+		return afterNewPost(ctx, tx, v, p)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return postID, nil
+}
+
+// nullID turns the ID 0 into a null argument.
+func nullID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
+
+// findDuplicateTopic returns the first post of a topic that the same author
+// started in the last 60 seconds with the same title and text, or 0.
+func findDuplicateTopic(ctx context.Context, tx pgx.Tx, au author, forumID int64, title, source string, now time.Time) (int64, error) {
+	who := `t.author_id = $5`
+	arg := any(au.id)
+	if au.id == 0 {
+		who, arg = `t.author_id is null and p.author_ip = $5::inet`, inetArg(au.ip)
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `
+select p.id from topics t join posts p on p.topic_id = t.id
+ where t.forum_id = $1 and t.title = $2 and p.body_source = $3
+   and t.created_at > $4 and t.visibility <> 'deleted' and p.visibility <> 'deleted'
+   and `+who+`
+   and p.id = (select f.id from posts f where f.topic_id = t.id order by f.created_at, f.id limit 1)
+ order by t.id limit 1`, forumID, title, source, now.Add(-duplicateWindow), arg).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("board: look for a duplicate topic: %w", err)
+	}
+	return id, nil
+}
+
+// findDuplicateReply returns a post that the same author made in topic topicID
+// in the last 60 seconds with the same text, or 0.
+func findDuplicateReply(ctx context.Context, tx pgx.Tx, au author, topicID int64, source string, now time.Time) (int64, error) {
+	who := `author_id = $4`
+	arg := any(au.id)
+	if au.id == 0 {
+		who, arg = `author_id is null and author_ip = $4::inet`, inetArg(au.ip)
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `
+select id from posts
+ where topic_id = $1 and body_source = $2 and created_at > $3 and visibility <> 'deleted' and `+who+`
+ order by id limit 1`, topicID, source, now.Add(-duplicateWindow), arg).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("board: look for a duplicate post: %w", err)
+	}
+	return id, nil
+}
+
+// Reply adds the post d to topic topicID and returns its ID.
+//
+//   - A topic that v cannot see is [ErrNotFound], as a missing one is.
+//   - v needs topic.reply in the forum. The topic must be approved, and not a
+//     moved-topic marker. The topic and its forum must be unlocked, or v needs
+//     mod.lock. Else [ErrForbidden].
+//   - A post with the same author, topic and text from the last 60 seconds is
+//     the same post sent twice: the write returns the earlier post. For a
+//     guest, the same author is the same address.
+//
+// now is the time of every row that the write makes.
+func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d Draft, now time.Time) (int64, error) {
+	if v.UserID == 0 && !d.IP.IsValid() {
+		return 0, errors.New("board: a guest write needs the address of the writer")
+	}
+	var postID int64
+	err := inTx(ctx, pool, func(tx pgx.Tx) error {
+		if err := lockAuthor(ctx, tx, v, d.IP); err != nil {
+			return err
+		}
+		sc, err := newScope(ctx, tx, v)
+		if err != nil {
+			return err
+		}
+		t, err := lockTopic(ctx, tx, sc, topicID)
+		if err != nil {
+			return err
+		}
+		if !v.Perms.Has("topic.reply", t.forumID) || t.visibility != "approved" || t.moved {
+			return ErrForbidden
+		}
+		// The forum lock comes after the checks that need no forum row, so a writer
+		// who is refused does not hold up the writers of the forum.
+		_, forumLocked, err := lockForum(ctx, tx, t.forumID)
+		if err != nil {
+			return err
+		}
+		if (t.locked || forumLocked) && !v.Perms.Has("mod.lock", t.forumID) {
+			return ErrForbidden
+		}
+		au, err := resolveAuthor(ctx, tx, v, d, now)
+		if err != nil {
+			return err
+		}
+		body, err := ParseBody(ctx, tx, v, t.forumID, d.Source, nil)
+		if err != nil {
+			return err
+		}
+		if postID, err = findDuplicateReply(ctx, tx, au, topicID, d.Source, now); err != nil || postID != 0 {
+			return err
+		}
+		var title string
+		if err := tx.QueryRow(ctx, `select title from topics where id = $1`, topicID).Scan(&title); err != nil {
+			return fmt.Errorf("board: read topic %d: %w", topicID, err)
+		}
+		p := newPost{
+			topicID: topicID, forumID: t.forumID, au: au, now: now, subject: "Re: " + title,
+			source: d.Source, body: body, visibility: visibilityFor(v, t.forumID),
+		}
+		if postID, err = insertPost(ctx, tx, p); err != nil {
+			return err
+		}
+		return afterNewPost(ctx, tx, v, p)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return postID, nil
+}
+
+// postRef is the part of a post row that the writes decide on.
+type postRef struct {
+	id, topicID, forumID, authorID int64 // authorID is 0 for a guest
+	visibility                     string
+	flags                          markup.Options
+	first                          bool // the first post of its topic
+}
+
+// lockPost reads post id as v sees it, with its topic, and locks the topic and
+// then the post. A post or a topic that v may not see, or that is missing, gives
+// [ErrNotFound]. A write that changes a counter of the forum then takes
+// [lockForum], after it has checked the rights of v.
+func lockPost(ctx context.Context, tx pgx.Tx, v Viewer, id int64) (postRef, topicRef, error) {
+	sc, err := newScope(ctx, tx, v)
+	if err != nil {
+		return postRef{}, topicRef{}, err
+	}
+	var topicID int64
+	err = tx.QueryRow(ctx, `select p.topic_id from posts p where p.id = $5 and `+visible("p", 1), append(sc.args(), id)...).Scan(&topicID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return postRef{}, topicRef{}, ErrNotFound
+	}
+	if err != nil {
+		return postRef{}, topicRef{}, fmt.Errorf("board: read post %d: %w", id, err)
+	}
+	t, err := lockTopic(ctx, tx, sc, topicID)
+	if err != nil {
+		return postRef{}, topicRef{}, err
+	}
+	p := postRef{id: id, topicID: topicID}
+	err = tx.QueryRow(ctx, `
+select p.forum_id, coalesce(p.author_id, 0), p.visibility, p.enable_markdown, p.enable_smilies, p.enable_autolink,
+       p.id = (select f.id from posts f where f.topic_id = p.topic_id order by f.created_at, f.id limit 1)
+  from posts p
+ where p.id = $5 and p.topic_id = $6 and `+visible("p", 1)+`
+   for update of p`, append(sc.args(), id, topicID)...).
+		Scan(&p.forumID, &p.authorID, &p.visibility, &p.flags.Markdown, &p.flags.Smilies, &p.flags.Autolink, &p.first)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return postRef{}, topicRef{}, ErrNotFound
+	}
+	if err != nil {
+		return postRef{}, topicRef{}, fmt.Errorf("board: lock post %d: %w", id, err)
+	}
+	return p, t, nil
+}
+
+// logMod writes one row of the moderation log for the member v.
+func logMod(ctx context.Context, tx pgx.Tx, v Viewer, action, targetType string, target int64, details string, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
+insert into mod_log (actor_id, action, target_type, target_id, details, created_at)
+values ($1, $2, $3, $4, $5::jsonb, $6)`, nullID(v.UserID), action, targetType, target, details, now); err != nil {
+		return fmt.Errorf("board: write the moderation log: %w", err)
+	}
+	return nil
+}
+
+// EditPost replaces the text of post postID with d.Source, and for the first
+// post of a topic also the title of the topic with d.Title.
+//
+//   - A post that v cannot see is [ErrNotFound]. A guest, or a member who is
+//     neither the author with post.edit_own in an unlocked topic nor a holder of
+//     mod.edit in the forum, gets [ErrForbidden].
+//   - The stored flags of the post stay. The text is parsed with them.
+//   - edit_count grows by one; edited_at and edited_by are set.
+//   - A moderator's edit writes a mod_log row with the reason, and when the post
+//     belongs to another member the reason is stored with the post. An author's
+//     own edit writes no row and keeps edit_reason as it is.
+//
+// now is the time of the edit.
+func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d Draft, reason string, now time.Time) error {
+	return inTx(ctx, pool, func(tx pgx.Tx) error {
+		p, t, err := lockPost(ctx, tx, v, postID)
+		if err != nil {
+			return err
+		}
+		if v.UserID == 0 {
+			return ErrForbidden
+		}
+		own := p.authorID == v.UserID && v.Perms.Has("post.edit_own", p.forumID) && !t.locked
+		if !own && !v.Perms.Has("mod.edit", p.forumID) {
+			return ErrForbidden
+		}
+		moderated := !own
+		if moderated {
+			if reason, err = cleanReason(reason); err != nil {
+				return err
+			}
+		}
+		var title string
+		if p.first {
+			if title, err = cleanTitle(d.Title); err != nil {
+				return err
+			}
+		}
+		body, err := ParseBody(ctx, tx, v, p.forumID, d.Source, &p.flags)
+		if err != nil {
+			return err
+		}
+		storeReason := moderated && p.authorID != v.UserID
+		_, err = tx.Exec(ctx, `
+update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
+       edit_count = edit_count + 1, edited_at = $5, edited_by = $6,
+       edit_reason = case when $7 then $8 else edit_reason end
+ where id = $1`, postID, d.Source, string(body.JSON), body.Text, now, v.UserID, storeReason, reason)
+		if err != nil {
+			return fmt.Errorf("board: edit post %d: %w", postID, err)
+		}
+		if p.first {
+			if _, err := tx.Exec(ctx, `update posts set subject = $2 where id = $1`, postID, title); err != nil {
+				return fmt.Errorf("board: edit post %d: %w", postID, err)
+			}
+			if _, err := tx.Exec(ctx, `update topics set title = $2 where id = $1`, t.id, title); err != nil {
+				return fmt.Errorf("board: edit topic %d: %w", t.id, err)
+			}
+		}
+		if moderated {
+			return logMod(ctx, tx, v, "post.edit", "post", postID, jsonObject("reason", reason), now)
+		}
+		return nil
+	})
+}
+
+// QuoteSource returns the Markdown of a quote of post postID, in the form
+//
+//	> **Name** [wrote](/p/ID):
+//	>
+//	> the lines of the post
+//
+// followed by a blank line, so that the writer types below it.
+//
+// Only an approved post in an approved topic can be quoted, and v must read its
+// forum and hold topic.reply there. A post that v cannot see, an unapproved post,
+// a deleted post, and a post in a deleted or held topic give [ErrNotFound], even
+// to a moderator who sees them on the page: the text of a hidden post never
+// reaches a form. A viewer who reads the post but may not reply gets
+// [ErrForbidden].
+func QuoteSource(ctx context.Context, q db.Querier, v Viewer, postID int64) (string, error) {
+	sc, err := newScope(ctx, q, v)
+	if err != nil {
+		return "", err
+	}
+	var (
+		forumID    int64
+		name, text string
+	)
+	err = q.QueryRow(ctx, `
+select p.forum_id, coalesce(u.username, p.author_name), p.body_source
+  from posts p
+  join topics t on t.id = p.topic_id
+  left join users u on u.id = p.author_id
+ where p.id = $5 and p.visibility = 'approved' and t.visibility = 'approved'
+   and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).Scan(&forumID, &name, &text)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("board: read post %d: %w", postID, err)
+	}
+	if !v.Perms.Has("topic.reply", forumID) {
+		return "", ErrForbidden
+	}
+	var sb strings.Builder
+	sb.WriteString("> **" + escapeMarkdown(name) + "** [wrote](/p/" + strconv.FormatInt(postID, 10) + "):\n>\n")
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if line == "" {
+			sb.WriteString(">\n")
+			continue
+		}
+		sb.WriteString("> " + line + "\n")
+	}
+	sb.WriteString("\n")
+	return sb.String(), nil
+}
+
+// escapeMarkdown writes s so that Markdown reads it as plain text: a backslash
+// before each ASCII punctuation character, and a space for a control character.
+func escapeMarkdown(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		switch {
+		case unicode.IsControl(r):
+			sb.WriteByte(' ')
+		case r < utf8.RuneSelf && unicode.IsPunct(r) || r < utf8.RuneSelf && unicode.IsSymbol(r):
+			sb.WriteByte('\\')
+			sb.WriteRune(r)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+// jsonObject returns a JSON object with one string value.
+func jsonObject(key, value string) string {
+	data, err := json.Marshal(map[string]string{key: value})
+	if err != nil {
+		// A map of two strings always encodes.
+		panic("board: encode log details: " + err.Error())
+	}
+	return string(data)
+}

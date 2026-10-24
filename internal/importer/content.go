@@ -2,13 +2,13 @@ package importer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/netip"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/evanwtf/gobb/bundle"
+	"github.com/evanwtf/gobb/internal/postbody"
 	"github.com/evanwtf/gobb/markup"
 )
 
@@ -104,11 +104,11 @@ func bodyColumns(b bundle.Body, smilies []markup.Smiley) (tree, text string, err
 	if err != nil {
 		return "", "", err
 	}
-	data, err := json.Marshal(n)
+	data, text, err := postbody.Columns(n)
 	if err != nil {
 		return "", "", err
 	}
-	return string(data), markup.Render(n, markup.RenderContext{}).Text, nil
+	return string(data), text, nil
 }
 
 func loadTopics(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
