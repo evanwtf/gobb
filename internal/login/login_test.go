@@ -1,16 +1,19 @@
 package login_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/password"
 )
@@ -168,5 +171,109 @@ func TestCheckInactiveAfterMatch(t *testing.T) {
 	exec(t, pool, `insert into bans (kind, email, created_at) values ('email', '  ', $1)`, now.Add(-time.Hour))
 	if id, err := svc.Check(ctx, "dave", "dave-password", ip, now); err != nil || id != 4 {
 		t.Errorf("dave with a blank email ban: %d, %v", id, err)
+	}
+}
+
+// A failed check returns no sooner than the floor, so that the time to answer
+// does not tell a stranger whether the name has an account (and which kind of
+// hash it has). A good sign-in does not wait.
+func TestCheckFloor(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := t.Context()
+	svc.Floor = 300 * time.Millisecond
+	for name, c := range map[string]struct{ name, pw string }{
+		"unknown name":   {"nobody", pw},
+		"wrong password": {"alice", "wrong"},
+		"invalid name":   {"\xff", pw},
+	} {
+		start := time.Now()
+		if _, err := svc.Check(ctx, c.name, c.pw, ip, now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if took := time.Since(start); took < svc.Floor {
+			t.Errorf("%s: failed after %v, before the floor %v", name, took, svc.Floor)
+		}
+	}
+	// A shared address is a failure that must wait too.
+	svc2, pool := newService(t)
+	svc2.Floor = 300 * time.Millisecond
+	exec(t, pool, `update users set email = 'bob@example.com', email_clean = 'bob@example.com' where id = 3`)
+	start := time.Now()
+	if _, err := svc2.Check(ctx, "bob@example.com", pw, ip, now); !errors.Is(err, login.ErrAmbiguous) {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took < svc2.Floor {
+		t.Errorf("ambiguous: failed after %v, before the floor", took)
+	}
+
+	// A success returns as soon as the hash is checked.
+	svc.Floor = time.Minute
+	start = time.Now()
+	if id, err := svc.Check(ctx, "alice", pw, ip, now); err != nil || id != 1 {
+		t.Fatalf("alice: %d, %v", id, err)
+	}
+	if took := time.Since(start); took > 30*time.Second {
+		t.Errorf("a good sign-in waited %v", took)
+	}
+}
+
+// The default floor is 400 ms.
+func TestCheckDefaultFloor(t *testing.T) {
+	svc, _ := newService(t)
+	if svc.Floor != 400*time.Millisecond {
+		t.Errorf("default Floor = %v, want 400ms", svc.Floor)
+	}
+}
+
+// A request that ends stops waiting for the floor. The answer stays the same.
+func TestCheckFloorStopsWithContext(t *testing.T) {
+	svc, _ := newService(t)
+	svc.Floor = time.Minute
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := svc.Check(ctx, "nobody", pw, ip, now)
+	if !errors.Is(err, login.ErrWrong) {
+		t.Errorf("err = %v, want ErrWrong", err)
+	}
+	if took := time.Since(start); took > 30*time.Second {
+		t.Errorf("Check waited %v after its context ended", took)
+	}
+}
+
+// interfering runs a statement on the pool just before the rehash update, as a
+// password change that lands between the read and the write would.
+type interfering struct {
+	db.Querier
+	before func()
+}
+
+func (i interfering) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "update users set password_hash") && i.before != nil {
+		i.before()
+	}
+	return i.Querier.Exec(ctx, sql, args...)
+}
+
+// When a newer hash is stored between the read and the write, the rehash writes
+// nothing, and the sign-in still succeeds.
+func TestRehashLosesToNewerHash(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	const newer = "$argon2id$newer-hash-from-a-password-change"
+	svc := login.New(interfering{Querier: pool, before: func() {
+		exec(t, pool, `update users set password_hash = $1, password_scheme = 'gobb' where id = 2`, newer)
+	}})
+	svc.Floor = 0
+	id, err := svc.Check(ctx, "bob", pw, ip, now)
+	if err != nil || id != 2 {
+		t.Fatalf("Check = %d, %v; want 2, nil", id, err)
+	}
+	var hash string
+	if err := pool.QueryRow(ctx, `select password_hash from users where id = 2`).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	if hash != newer {
+		t.Errorf("the rehash overwrote the newer hash: %q", hash)
 	}
 }

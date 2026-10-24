@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -39,11 +40,14 @@ func (s *site) protect(h http.HandlerFunc) http.Handler {
 			s.fail(w, r, http.StatusBadRequest, "Bad request", "The form could not be read.")
 			return
 		}
-		id, err := s.identify(r)
+		// The identity is read once. The handler's own call of begin finds it in
+		// the context of the request it gets.
+		id, err := s.identify(w, r)
 		if err != nil {
 			s.serverError(w, r, err)
 			return
 		}
+		r = r.WithContext(context.WithValue(r.Context(), identityKey{}, id))
 		// Read the token from the body only. A token in the address would show up
 		// in logs and in the Referer header.
 		if !session.CheckCSRF(id.secret(), r.PostForm.Get("csrf")) {

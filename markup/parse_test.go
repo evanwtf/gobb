@@ -458,7 +458,10 @@ func TestParseAutolink(t *testing.T) {
 }
 
 func TestParseNestingCaps(t *testing.T) {
-	limit := 200 * time.Millisecond * raceSlowdown
+	// The absolute limit is a backstop for a parser that hangs. A shared runner
+	// can be 10 times slower than a laptop, so it is generous; what grows too fast
+	// is TestParseNestingScales' job.
+	limit := 10 * time.Second * raceSlowdown
 	type capCase struct {
 		name string
 		src  string
@@ -552,6 +555,53 @@ func TestParseNestingCaps(t *testing.T) {
 			}
 			if c.ok != nil {
 				c.ok(t, got)
+			}
+		})
+	}
+}
+
+// TestParseNestingScales guards what the time limits above cannot guard on a slow
+// or busy machine: that the parse time grows in step with the input. For each
+// shape it parses n and 4n units and compares the best of three runs of each. A
+// linear parser takes about 4 times as long for 4n, a quadratic one 16 times, a
+// cubic one 64 times. Several shapes are quadratic today, and the caps on size
+// and depth bound them, so the test allows 40 times plus a fixed allowance. It
+// fails for growth beyond quadratic, and it does not depend on the speed of the
+// machine.
+func TestParseNestingScales(t *testing.T) {
+	shapes := map[string]func(n int) string{
+		"nested quotes":       func(n int) string { return strings.Repeat(">", n) + " deep" },
+		"nested list marks":   func(n int) string { return strings.Repeat("- ", n) + "deep" },
+		"quote and list":      func(n int) string { return strings.Repeat("> - ", n) + "deep" },
+		"open bold":           func(n int) string { return strings.Repeat("**", n) },
+		"open italic":         func(n int) string { return strings.Repeat("*", n) + "a" },
+		"open spoiler":        func(n int) string { return strings.Repeat("||", n) },
+		"open brackets":       func(n int) string { return strings.Repeat("[", n) },
+		"open images":         func(n int) string { return strings.Repeat("![", n) },
+		"nested emphasis":     func(n int) string { return strings.Repeat("*a ", n) + strings.Repeat("a* ", n) },
+		"nested spoilers":     func(n int) string { return strings.Repeat("||*a ", n) + strings.Repeat("a*|| ", n) },
+		"backtick runs":       func(n int) string { return strings.Repeat("` ``", n) },
+		"open links":          func(n int) string { return strings.Repeat("[a ", n) },
+		"brackets and parens": func(n int) string { return strings.Repeat("[a](", n) },
+	}
+	best := func(src string) time.Duration {
+		fastest := time.Duration(1 << 62)
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			Parse(src, allOn)
+			if d := time.Since(start); d < fastest {
+				fastest = d
+			}
+		}
+		return fastest
+	}
+	const n = 2500
+	for name, gen := range shapes {
+		t.Run(name, func(t *testing.T) {
+			small, large := best(gen(n)), best(gen(4*n))
+			t.Logf("n=%d: %v, 4n: %v", n, small, large)
+			if allowed := 40*small + 100*time.Millisecond*raceSlowdown; large > allowed {
+				t.Errorf("4n took %v and n took %v: more than 40 times plus the allowance (%v)", large, small, allowed)
 			}
 		})
 	}

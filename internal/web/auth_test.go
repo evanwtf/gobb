@@ -27,6 +27,9 @@ func siteAndPool(t *testing.T, b *bundletest.Board, opt Options) (http.Handler, 
 	t.Helper()
 	pool, dataDir := boardtest.Load(t, b)
 	opt.DataDir = dataDir
+	if opt.LoginFloor == 0 {
+		opt.LoginFloor = time.Millisecond
+	}
 	h, err := New(t.Context(), pool, opt)
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
@@ -365,6 +368,18 @@ func TestSignInNext(t *testing.T) {
 		{"/forum/", "/t/1", "/forum/"},
 		{"/forum/", "/forumx/t/1", "/forum/"},
 		{"/forum/", "/forum/login", "/forum/"},
+		// Dot segments cannot take the visitor out of the base path.
+		{"/forum/", "/forum/../x", "/forum/"},
+		{"/forum/", "/forum/..//evil.example", "/forum/"},
+		{"/forum/", "/forum/%2e%2e/x", "/forum/"},
+		{"/forum/", "/forum/%2E%2E/%2e%2e/x", "/forum/"},
+		{"/forum/", "/forum/t/../../x", "/forum/"},
+		{"/forum/", "/forum/%5Cevil.example", "/forum/"},
+		{"/forum/", "/forum/./t/1", "/forum/t/1"},
+		{"/forum/", "/forum/t/../t/1?x=1#a", "/forum/t/1?x=1#a"},
+		{"/forum/", "/forum/./", "/forum/"},
+		{"/", "/a/../t/1", "/t/1"},
+		{"/", "/../../t/1", "/t/1"},
 	} {
 		h, _ := siteAndPool(t, bundletest.Small(), Options{BasePath: c.base})
 		login := strings.TrimSuffix(c.base, "/") + "/login"
@@ -476,9 +491,14 @@ func TestSessionEnds(t *testing.T) {
 	if signedIn(cookies) {
 		t.Error("an inactive user is still signed in")
 	}
+	// The page deleted the dead session, so a later change of state does not bring it back.
 	if _, err := pool.Exec(t.Context(), `update users set state = 'active' where id = 1`); err != nil {
 		t.Fatal(err)
 	}
+	if signedIn(cookies) {
+		t.Error("a session that was dead came back to life")
+	}
+	cookies = signIn(t, h, "alice", testPassword)
 	if !signedIn(cookies) {
 		t.Fatal("not signed in again")
 	}
@@ -560,4 +580,128 @@ func hashFor(t *testing.T, pw string) string {
 		t.Fatal(err)
 	}
 	return hash
+}
+
+// A member whose account turns inactive after sign-in is a guest at once, on
+// every path: the page, and each POST with the guest's own token. The dead
+// cookie is cleared and its row is deleted. Before the fix, the page showed a
+// guest but the POSTs still used the session token as the secret, so every one
+// of them answered 403 for as long as the cookie lived.
+func TestInactiveMemberIsAGuestEverywhere(t *testing.T) {
+	h, pool := siteAndPool(t, bundletest.Small(), Options{})
+	ctx := t.Context()
+
+	// deadBob signs bob in, then makes his account inactive. The page has not
+	// seen the change: the row is still there, and so are the old cookies.
+	deadBob := func(t *testing.T) (cookies []*http.Cookie, guestToken string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `update users set state = 'active' where id = 2`); err != nil {
+			t.Fatal(err)
+		}
+		cookies = signIn(t, h, "bob", testPassword)
+		if n := countRows(t, pool, `select count(*) from sessions where user_id = 2`); n != 1 {
+			t.Fatalf("%d sessions for bob, want 1", n)
+		}
+		if _, err := pool.Exec(ctx, `update users set state = 'inactive' where id = 2`); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range cookies {
+			if c.Name == "gobb_csrf" {
+				guestToken = session.CSRFToken(c.Value)
+			}
+		}
+		if guestToken == "" {
+			t.Fatal("no guest csrf cookie")
+		}
+		return cookies, guestToken
+	}
+	// sessionCookies returns the gobb_session lines that rec sets, in order.
+	sessionCookies := func(rec *httptest.ResponseRecorder) (out []*http.Cookie) {
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == "gobb_session" {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+
+	t.Run("page", func(t *testing.T) {
+		cookies, _ := deadBob(t)
+		rec := getAs(t, h, "/", cookies)
+		if strings.Contains(bodyOf(t, rec), "Signed in as") {
+			t.Error("an inactive member still sees the member page")
+		}
+		if cs := sessionCookies(rec); len(cs) != 1 || cs[0].MaxAge >= 0 {
+			t.Errorf("the dead cookie was not cleared: %+v", cs)
+		}
+		if n := countRows(t, pool, `select count(*) from sessions where user_id = 2`); n != 0 {
+			t.Errorf("%d sessions for bob after the page, want 0", n)
+		}
+	})
+
+	t.Run("sign in as another user", func(t *testing.T) {
+		cookies, token := deadBob(t)
+		form := url.Values{"name": {"alice"}, "password": {testPassword}, "csrf": {token}}
+		rec := request(t, h, http.MethodPost, "/login", cookies, form)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("POST /login = %d, want 303", rec.Code)
+		}
+		cs := sessionCookies(rec)
+		if len(cs) != 1 || cs[0].Value == "" || cs[0].MaxAge < 0 {
+			t.Errorf("want one new session cookie and no clear: %+v", cs)
+		}
+		if n := countRows(t, pool, `select count(*) from sessions where user_id = 2`); n != 0 {
+			t.Errorf("%d sessions for bob after the sign-in, want 0", n)
+		}
+		if n := countRows(t, pool, `select count(*) from sessions where user_id = 1`); n != 1 {
+			t.Errorf("%d sessions for alice, want 1", n)
+		}
+	})
+
+	t.Run("sign out", func(t *testing.T) {
+		cookies, token := deadBob(t)
+		rec := request(t, h, http.MethodPost, "/logout", cookies, url.Values{"csrf": {token}})
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("POST /logout = %d, want 303", rec.Code)
+		}
+		if cs := sessionCookies(rec); len(cs) != 1 || cs[0].MaxAge >= 0 {
+			t.Errorf("the dead cookie was not cleared: %+v", cs)
+		}
+		if n := countRows(t, pool, `select count(*) from sessions where user_id = 2`); n != 0 {
+			t.Errorf("%d sessions for bob after sign-out, want 0", n)
+		}
+	})
+
+	t.Run("scheme", func(t *testing.T) {
+		cookies, token := deadBob(t)
+		rec := request(t, h, http.MethodPost, "/scheme", cookies, url.Values{"csrf": {token}, "scheme": {"slate-light"}})
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("POST /scheme = %d, want 303", rec.Code)
+		}
+		if cs := sessionCookies(rec); len(cs) != 1 || cs[0].MaxAge >= 0 {
+			t.Errorf("the dead cookie was not cleared: %+v", cs)
+		}
+		// He is a guest now: the choice is a cookie, and his row is not touched.
+		if c := cookieNamed(rec, "gobb_scheme"); c == nil || c.Value != "slate-light" {
+			t.Errorf("gobb_scheme = %+v", c)
+		}
+		var scheme string
+		if err := pool.QueryRow(ctx, `select color_scheme from users where id = 2`).Scan(&scheme); err != nil || scheme != "slate-deep" {
+			t.Errorf("bob's scheme = %q (%v), want slate-deep", scheme, err)
+		}
+	})
+
+	t.Run("the session token is not the secret", func(t *testing.T) {
+		cookies, _ := deadBob(t)
+		var token string
+		for _, c := range cookies {
+			if c.Name == "gobb_session" {
+				token = session.CSRFToken(c.Value)
+			}
+		}
+		rec := request(t, h, http.MethodPost, "/logout", cookies, url.Values{"csrf": {token}})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("a token made from the dead session = %d, want 403", rec.Code)
+		}
+	})
 }

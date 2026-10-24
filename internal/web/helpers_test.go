@@ -22,6 +22,9 @@ func newTestSite(t *testing.T, b *bundletest.Board, opt Options) (http.Handler, 
 	t.Helper()
 	pool, dataDir := boardtest.Load(t, b)
 	opt.DataDir = dataDir
+	if opt.LoginFloor == 0 {
+		opt.LoginFloor = time.Millisecond
+	}
 	h, err := New(t.Context(), pool, opt)
 	if err != nil {
 		t.Fatalf("web.New: %v", err)

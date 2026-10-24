@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -40,15 +41,17 @@ func (s *site) cookie(name, value string, maxAge int) *http.Cookie {
 // identity is what the cookies of a request say about the visitor.
 type identity struct {
 	// token is the session token when it names a live session, and empty
-	// otherwise.
+	// otherwise. A live session is one that has not expired and whose user is
+	// active (session.Lookup).
 	token string
 	sess  session.Session
-	// dead is true when the request held a session cookie that names no live
-	// session. The page then removes the cookie.
-	dead bool
 	// guestSecret is the value of the gobb_csrf cookie, or empty.
 	guestSecret string
 }
+
+// identityKey is the context key under which protect keeps the identity of a
+// POST, so that the handler does not look the session up again.
+type identityKey struct{}
 
 // secret returns the secret that the csrf token of the visitor is made from: the
 // session token of a member, and the gobb_csrf cookie of a guest.
@@ -59,8 +62,18 @@ func (id identity) secret() string {
 	return id.guestSecret
 }
 
-// identify reads the cookies of r and looks the session up.
-func (s *site) identify(r *http.Request) (identity, error) {
+// identify reads the cookies of r and looks the session up. It is the one place
+// that decides whether a visitor is a member, for every route. A session cookie
+// that names no live session (unknown, expired, deleted, or of a user who is not
+// active) is dead: identify deletes its row if any, sends a cookie that removes
+// it, and returns the identity of a guest, with the guest's csrf secret.
+//
+// A request that already went through identify (a POST in protect) gets the
+// same identity back without a second lookup.
+func (s *site) identify(w http.ResponseWriter, r *http.Request) (identity, error) {
+	if id, ok := r.Context().Value(identityKey{}).(identity); ok {
+		return id, nil
+	}
 	var id identity
 	if c, err := r.Cookie(csrfCookie); err == nil && len(c.Value) <= 128 {
 		id.guestSecret = c.Value
@@ -72,13 +85,47 @@ func (s *site) identify(r *http.Request) (identity, error) {
 	sess, err := session.Lookup(r.Context(), s.pool, c.Value, s.opt.Now())
 	switch {
 	case errors.Is(err, session.ErrNone):
-		id.dead = true
+		s.dropSession(w, r, c.Value)
 	case err != nil:
 		return id, err
 	default:
 		id.token, id.sess = c.Value, sess
 	}
 	return id, nil
+}
+
+// endSession ends the live session of id and returns the identity of a guest.
+func (s *site) endSession(w http.ResponseWriter, r *http.Request, id identity) identity {
+	s.dropSession(w, r, id.token)
+	id.token, id.sess = "", session.Session{}
+	return id
+}
+
+// dropSession deletes the row of the session that has token and removes the
+// cookie. A failure to delete is logged: the row is dead anyway.
+func (s *site) dropSession(w http.ResponseWriter, r *http.Request, token string) {
+	if err := session.Delete(r.Context(), s.pool, token); err != nil {
+		slog.Warn("cannot delete a dead session", "err", err)
+	}
+	s.setCookie(w, s.cookie(sessionCookie, "", -1))
+}
+
+// setCookie sets c and drops any earlier Set-Cookie line for the same name, so
+// that a response never holds two lines for one cookie. A dead session's clear
+// and the new session's cookie, for example, must not both go out.
+func (s *site) setCookie(w http.ResponseWriter, c *http.Cookie) {
+	h := w.Header()
+	var kept []string
+	for _, line := range h.Values("Set-Cookie") {
+		if !strings.HasPrefix(line, c.Name+"=") {
+			kept = append(kept, line)
+		}
+	}
+	h.Del("Set-Cookie")
+	for _, line := range kept {
+		h.Add("Set-Cookie", line)
+	}
+	http.SetCookie(w, c)
 }
 
 // clientIP returns the address of the client of r. When it cannot be read, it
@@ -90,25 +137,42 @@ func (s *site) clientIP(r *http.Request) netip.Addr {
 	return netip.IPv4Unspecified()
 }
 
-// sitePath returns raw when it is a site path under the base path, and empty
-// otherwise. A site path starts with the base path, is not scheme-relative
-// ("//host"), has no backslash or control character (a browser can read "/\" as
-// "//"), and has no scheme or host.
+// sitePath returns raw, cleaned, when it is a site path under the base path, and
+// empty otherwise. A site path starts with "/", is not scheme-relative
+// ("//host"), has no backslash or control character even after percent-decoding
+// (a browser can read "/\" as "//"), and has no scheme or host. Dot segments are
+// removed first, written plain or as %2e, and the base path is checked on the
+// result, so "/forum/../x" cannot leave "/forum/". A path with nothing to clean
+// comes back unchanged.
 func (s *site) sitePath(raw string) string {
-	if raw == "" || !utf8.ValidString(raw) || !strings.HasPrefix(raw, s.base) {
+	if raw == "" || !utf8.ValidString(raw) || raw[0] != '/' || strings.HasPrefix(raw, "//") {
 		return ""
 	}
-	for _, r := range raw {
-		if r < 0x20 || r == 0x7f || r == '\\' {
-			return ""
+	bad := func(text string) bool {
+		for _, r := range text {
+			if r < 0x20 || r == 0x7f || r == '\\' {
+				return true
+			}
 		}
+		return false
 	}
-	if strings.HasPrefix(raw, "//") {
+	if bad(raw) {
 		return ""
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" {
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || bad(u.Path) {
 		return ""
+	}
+	clean := path.Clean(u.Path)
+	if strings.HasSuffix(u.Path, "/") && clean != "/" {
+		clean += "/"
+	}
+	if !strings.HasPrefix(clean, s.base) {
+		return ""
+	}
+	if clean != u.Path {
+		u.Path, u.RawPath = clean, ""
+		return u.String()
 	}
 	return raw
 }
@@ -260,7 +324,7 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if sess.Remember {
 		maxAge = rememberSeconds
 	}
-	http.SetCookie(w, s.cookie(sessionCookie, token, maxAge))
+	s.setCookie(w, s.cookie(sessionCookie, token, maxAge))
 	http.Redirect(w, r, d.Next, http.StatusSeeOther)
 }
 
@@ -272,7 +336,7 @@ func (s *site) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.SetCookie(w, s.cookie(sessionCookie, "", -1))
+	s.setCookie(w, s.cookie(sessionCookie, "", -1))
 	http.Redirect(w, r, s.path(), http.StatusSeeOther)
 }
 
@@ -284,7 +348,7 @@ func (s *site) setScheme(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusBadRequest, "Bad request", "That color scheme does not exist.")
 		return
 	}
-	id, err := s.identify(r)
+	id, err := s.identify(w, r)
 	if err != nil {
 		s.serverError(w, r, err)
 		return
@@ -299,7 +363,7 @@ func (s *site) setScheme(w http.ResponseWriter, r *http.Request) {
 		saved = tag.RowsAffected() == 1
 	}
 	if !saved {
-		http.SetCookie(w, s.cookie(schemeCookie, scheme, rememberSeconds))
+		s.setCookie(w, s.cookie(schemeCookie, scheme, rememberSeconds))
 	}
 	next := s.sitePath(r.PostForm.Get("next"))
 	if next == "" {

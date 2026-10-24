@@ -44,6 +44,9 @@ type Options struct {
 	CookieSecure bool
 	// Now returns the current time. The default is time.Now.
 	Now func() time.Time
+	// LoginFloor is the least time that a failed sign-in takes. Zero means the
+	// default of 400 ms. Tests set it small.
+	LoginFloor time.Duration
 }
 
 // site holds what the handlers share: the pool, the options and the parsed
@@ -76,6 +79,9 @@ var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "
 func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
 	s := &site{pool: pool, opt: opt, login: login.New(pool), crossOrigin: http.NewCrossOriginProtection()}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
+	if opt.LoginFloor != 0 {
+		s.login.Floor = opt.LoginFloor
+	}
 	if s.opt.Now == nil {
 		s.opt.Now = time.Now
 	}
@@ -234,7 +240,7 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 		return nil, err
 	}
 	s.noDataLogged.Store(false)
-	id, err := s.identify(r)
+	id, err := s.identify(w, r)
 	if err != nil {
 		return nil, err
 	}
@@ -250,8 +256,10 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 		v, err = board.Member(ctx, s.pool, id.sess.UserID, settings)
 		switch {
 		case errors.Is(err, board.ErrNotFound):
-			// The user is gone or no longer active: the session is worth nothing.
-			id.token = ""
+			// Lookup already refuses the session of a user who is not active, so
+			// this is the user's removal between the two queries. The session is
+			// worth nothing: end it like any dead one.
+			id = s.endSession(w, r, id)
 		case err != nil:
 			return nil, err
 		default:
@@ -265,9 +273,6 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 		if c, err := r.Cookie(schemeCookie); err == nil && board.ValidScheme(c.Value) {
 			v.Scheme = c.Value
 		}
-	}
-	if id.dead {
-		http.SetCookie(w, s.cookie(sessionCookie, "", -1))
 	}
 	scheme := v.Scheme
 	if q := r.URL.Query().Get("scheme"); board.ValidScheme(q) {

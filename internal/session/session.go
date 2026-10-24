@@ -113,15 +113,18 @@ on conflict (user_id, ip) do update set last_seen_at = excluded.last_seen_at`,
 }
 
 // Lookup returns the live session that has token. A session is live while now
-// is before its expiry. An unknown, deleted or expired token gives [ErrNone].
+// is before its expiry and its user is active. An unknown, deleted or expired
+// token, and the token of a user who is not active, give [ErrNone]. The rule is
+// here, in one query, so that no caller has to remember it.
 func Lookup(ctx context.Context, q db.Querier, token string, now time.Time) (Session, error) {
 	if token == "" || len(token) > 128 {
 		return Session{}, ErrNone
 	}
 	var s Session
 	err := q.QueryRow(ctx, `
-select id, user_id, created_at, last_seen_at, expires_at, remember
-  from sessions where id = $1 and expires_at > $2`, hashToken(token), now).
+select s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.remember
+  from sessions s join users u on u.id = s.user_id
+ where s.id = $1 and s.expires_at > $2 and u.state = 'active'`, hashToken(token), now).
 		Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt, &s.Remember)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNone

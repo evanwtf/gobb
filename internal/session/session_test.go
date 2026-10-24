@@ -181,3 +181,29 @@ func TestCSRF(t *testing.T) {
 		t.Error("an empty secret validated")
 	}
 }
+
+// A session of a user who is not active is no session: the rule lives in Lookup,
+// so no caller can forget it.
+func TestLookupRequiresActiveUser(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	token, _, err := session.Create(ctx, pool, 2, false, netip.MustParseAddr("10.1.2.3"), "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Lookup(ctx, pool, token, t0); err != nil {
+		t.Fatalf("Lookup of an active user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `update users set state = 'inactive' where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Lookup(ctx, pool, token, t0); !errors.Is(err, session.ErrNone) {
+		t.Errorf("Lookup of an inactive user = %v, want ErrNone", err)
+	}
+	if _, err := pool.Exec(ctx, `update users set state = 'active' where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Lookup(ctx, pool, token, t0); err != nil {
+		t.Errorf("Lookup after the user is active again: %v", err)
+	}
+}

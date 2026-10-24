@@ -49,14 +49,24 @@ func (e *BannedError) Error() string {
 // email address is longer. The limit keeps the cleaning cheap.
 const maxName = 512
 
+// DefaultFloor is the least time that a failed check takes.
+const DefaultFloor = 400 * time.Millisecond
+
 // Service checks sign-ins.
 type Service struct {
 	q db.Querier
+	// Floor is the least time that a failed [Service.Check] (ErrWrong or
+	// ErrAmbiguous) takes, counted from its start. The hashes of the imported
+	// board differ a lot in cost, and an unknown name costs one fast check, so
+	// without a floor the time to answer would tell a stranger whether a name or
+	// an address has an account. New sets it to [DefaultFloor]; a test may set it
+	// small. Zero means no floor.
+	Floor time.Duration
 }
 
 // New returns a Service that reads and writes through q.
 func New(q db.Querier) *Service {
-	return &Service{q: q}
+	return &Service{q: q, Floor: DefaultFloor}
 }
 
 // candidate is a user row that a name can match.
@@ -85,7 +95,34 @@ type candidate struct {
 //  6. Only after a match: an inactive account is [ErrInactive].
 //  7. A ban that has not ended is a [*BannedError].
 //  8. A hash that needs a rehash is replaced with a gobb hash.
+//
+// A failure that a stranger can cause with a guess (ErrWrong or ErrAmbiguous)
+// returns no sooner than Floor after the call began. The wait ends early when
+// ctx ends; the answer does not change.
 func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
+	start := time.Now()
+	id, err := s.check(ctx, name, pw, ip, now)
+	if errors.Is(err, ErrWrong) || errors.Is(err, ErrAmbiguous) {
+		s.wait(ctx, start)
+	}
+	return id, err
+}
+
+// wait sleeps until Floor has passed since start, or until ctx ends.
+func (s *Service) wait(ctx context.Context, start time.Time) {
+	left := s.Floor - time.Since(start)
+	if left <= 0 {
+		return
+	}
+	timer := time.NewTimer(left)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+func (s *Service) check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
 	if !utf8.ValidString(name) || len(name) > maxName {
 		burn(pw)
 		return 0, ErrWrong
