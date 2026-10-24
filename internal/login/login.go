@@ -141,11 +141,13 @@ type Service struct {
 	q   db.Querier
 	opt Options
 	// Floor is the least time that a failed [Service.Check] takes, counted from
-	// the later of its start and the moment the gate lets it in. A gate wait
-	// then adds the same delay to every name, and the floor still hides the
-	// hash work after it. A failure is any return except a good password and a
-	// [*LimitedError]: a wrong password, an ambiguous address, a busy gate, an
-	// inactive account, a ban and an error. The hashes of the imported
+	// its start, moved forward by the time that it waits for the gate. A gate
+	// wait then adds the same delay to every name, and the floor still hides the
+	// lookup and the hash work. The lookup is not part of the wait: a missing
+	// name costs one query more than an existing one. A failure is any return
+	// except a good password and a [*LimitedError]: a wrong password, an
+	// ambiguous address, a busy gate, an inactive account, a ban and an error.
+	// The hashes of the imported
 	// board differ a lot in cost, and an unknown name costs one fast check, so
 	// without a floor the time to answer would tell a stranger whether a name or
 	// an address has an account. The wait comes after the gate is free again.
@@ -175,13 +177,14 @@ type Service struct {
 }
 
 // clock is the time that the floor of one sign-in counts from: the start of
-// the sign-in, moved to the moment the gate lets the sign-in in.
+// the sign-in, moved forward by the time that the sign-in waits for the gate.
 type clock struct{ from time.Time }
 
-// granted moves the clock to now when now is later.
-func (c *clock) granted() {
-	if now := time.Now(); now.After(c.from) {
-		c.from = now
+// waited moves the clock forward by d, the time that the sign-in waited for the
+// gate. The lookup before the wait does not move it.
+func (c *clock) waited(d time.Duration) {
+	if d > 0 {
+		c.from = c.from.Add(d)
 	}
 }
 
@@ -267,8 +270,8 @@ type candidate struct {
 // context or a database error. A good password also clears the name.
 //
 // Every return after the reservation, except a good password, comes no sooner
-// than Floor after the call began, or after the gate let it in when that is
-// later, whatever happens to ctx: a wrong password, an ambiguous address,
+// than Floor after the call began, plus the time that it waited for the gate,
+// whatever happens to ctx: a wrong password, an ambiguous address,
 // [ErrBusy], a gate wait that ctx ended, [ErrInactive], a ban, and a lookup or
 // database error. Otherwise the time to answer would tell a stranger which check
 // ran. The wait comes after the gate is released. A [*LimitedError] and a good
@@ -613,25 +616,34 @@ func dummyJob() hashJob {
 
 // runJobs checks pw against every job in one hold of the gate. The hold is the
 // largest charge among the jobs (chargeKiB), taken once before the first hash
-// and given back after the last. When the gate lets the sign-in in, the floor
-// clock c moves to that moment. A dummy job with no dummy hash (password.Hash
-// failed at its first use) does no work.
+// and given back after the last. The floor clock c moves forward by the time
+// that the sign-in waited for the gate, and by nothing else: the lookup before
+// the wait stays under the floor. Before each check after the first, runJobs
+// collects garbage, so the memory of a finished check is free before the next
+// one starts, as the gate budget assumes. A dummy job with no dummy hash
+// (password.Hash failed at its first use) does no work.
 func (s *Service) runJobs(ctx context.Context, c *clock, pw string, jobs []hashJob) error {
 	var kib uint64
 	for _, j := range jobs {
 		kib = max(kib, s.chargeKiB(j.scheme, j.stored))
 	}
+	asked := time.Now()
 	release, err := s.acquire(ctx, kib)
 	if err != nil {
 		return err
 	}
 	defer release()
-	c.granted()
+	c.waited(time.Since(asked))
+	ran := false
 	for i := range jobs {
 		j := &jobs[i]
 		if j.stored == "" {
 			continue
 		}
+		if ran {
+			runtime.GC()
+		}
+		ran = true
 		ok, rehash := s.opt.Verify(pw, j.stored, j.scheme)
 		if !j.dummy {
 			j.ok, j.rehash = ok, rehash

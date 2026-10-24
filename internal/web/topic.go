@@ -263,7 +263,7 @@ func (s *site) attachment(w http.ResponseWriter, r *http.Request) {
 	// but must ask again, and ServeContent answers 304 to the question.
 	h.Set("Cache-Control", "private, no-cache")
 	h.Set("Content-Disposition", disposition+"; filename*=UTF-8''"+encodeFilename(meta.Name))
-	http.ServeContent(w, r, "", info.ModTime(), f)
+	s.serveContent(w, r, info.ModTime(), f)
 }
 
 // encodeFilename percent-encodes name for the filename* parameter (RFC 8187):

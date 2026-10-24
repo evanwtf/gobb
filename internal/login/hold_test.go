@@ -5,15 +5,18 @@ import (
 	"errors"
 	"net/netip"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/password"
 )
 
@@ -171,12 +174,13 @@ func TestSharedEmailCancelLooksUnique(t *testing.T) {
 	}
 }
 
-// The floor counts from the later of the start of the sign-in and the moment
-// the gate lets it in. Another check holds the whole gate for longer than the
-// floor. Then a wrong sign-in for an unknown name, a gobb account and a legacy
-// account each answers no sooner than the grant plus the floor, and the three
-// agree. If the floor counted from the start, each would answer when its own
-// hash ends, and the hash time (here 0, 40 and 120 ms) would show.
+// The floor counts from the start of the sign-in, moved forward by the time
+// that it waits for the gate. Another check holds the whole gate for longer
+// than the floor. Then a wrong sign-in for an unknown name, a gobb account and a
+// legacy account each answers no sooner than the grant plus the floor (less the
+// lookup, which ran before the wait), and the three agree. If the floor counted
+// from the start alone, each would answer when its own hash ends, and the hash
+// time (here 0, 40 and 120 ms) would show.
 func TestFloorCountsFromTheGrant(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	setHashes(t, pool, [4][2]string{{"gobb", argonAt(19456)}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", ""}})
@@ -184,6 +188,8 @@ func TestFloorCountsFromTheGrant(t *testing.T) {
 		floor = 300 * time.Millisecond
 		hold  = 500 * time.Millisecond
 		slack = 60 * time.Millisecond
+		// lookup is the most that the lookup before the wait may take.
+		lookup = 20 * time.Millisecond
 	)
 	gate := NewGate(password.HashMemoryKiB)
 	s := NewWith(pool, Options{Gate: gate, Verify: func(_, stored, scheme string) (bool, bool) {
@@ -232,7 +238,7 @@ func TestFloorCountsFromTheGrant(t *testing.T) {
 	}
 	lo, hi := after["nobody"], after["nobody"]
 	for name, d := range after {
-		if d < floor {
+		if d < floor-lookup {
 			t.Errorf("%s: answered %v after the grant, before the floor of %v", name, d, floor)
 		}
 		lo, hi = min(lo, d), max(hi, d)
@@ -255,30 +261,135 @@ func forcedGCs() uint32 {
 // next holder's memory comes on top of that garbage, and the heap holds one
 // check more than the gate allows: under a 256 MiB cap, three 64 MiB blocks and
 // sometimes four. So a check that waits for the gate must see a forced
-// collection that ran after the check before it.
+// collection that ran after the check before it, at the moment the gate lets it
+// in. A waiter records the count at that moment. A collection that runs after
+// the release is too late: the waiter has already run by then. The loop gives
+// that race many chances to show.
 func TestHoldEndsWithACollection(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	gate := NewGate(password.HashMemoryKiB)
-	var during atomic.Uint32
+	var (
+		during  atomic.Uint32 // forced collections when Verify ran
+		atEntry atomic.Uint32 // forced collections when the waiter got in
+		wg      sync.WaitGroup
+	)
 	s := NewWith(pool, Options{Gate: gate, Verify: func(string, string, string) (bool, bool) {
 		during.Store(forcedGCs())
-		return false, false
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			release, err := gate.Acquire(context.Background(), gate.budget, 5*time.Second)
+			if err != nil {
+				t.Error("the waiter got no room:", err)
+				return
+			}
+			atEntry.Store(forcedGCs())
+			release()
+		}()
+		// Wait until the waiter is in the queue.
+		for {
+			gate.mu.Lock()
+			n := gate.waiters.Len()
+			gate.mu.Unlock()
+			if n > 0 {
+				return false, false
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}})
 	s.Floor = 0
-	for _, c := range []struct{ name, pw string }{{"alice", "wrong"}, {"nobody", "wrong"}} {
-		during.Store(0)
-		if _, err := s.Check(t.Context(), c.name, c.pw, netip.MustParseAddr("10.1.2.3"), time.Now()); !errors.Is(err, ErrWrong) {
-			t.Fatalf("%s: err = %v, want ErrWrong", c.name, err)
+	for _, name := range []string{"alice", "nobody"} {
+		for range 20 {
+			if _, err := s.Check(t.Context(), name, "wrong", netip.MustParseAddr("10.1.2.3"), time.Now()); !errors.Is(err, ErrWrong) {
+				t.Fatalf("%s: err = %v, want ErrWrong", name, err)
+			}
+			wg.Wait()
+			if atEntry.Load() <= during.Load() {
+				t.Fatalf("%s: forced collections %d while the check ran, %d when the next holder got in; want a collection before the release",
+					name, during.Load(), atEntry.Load())
+			}
 		}
-		release, err := gate.Acquire(t.Context(), gate.budget, time.Second)
-		if err != nil {
-			t.Fatal(err)
+	}
+}
+
+// A sign-in that holds the gate for several checks (a shared email address)
+// collects between them. The checks run one after the other inside one hold;
+// without a collection between two of them, the memory of the first is still
+// garbage when the second allocates its own, and the heap holds both. Verify
+// records the count of forced collections at each call: each call after the
+// first must see a collection that ran after the call before it.
+func TestHoldCollectsBetweenChecks(t *testing.T) {
+	pool := sharedBoard(t)
+	var seen []uint32
+	s := NewWith(pool, Options{Gate: NewGate(DefaultBudgetKiB), Verify: func(string, string, string) (bool, bool) {
+		seen = append(seen, forcedGCs())
+		return false, false
+	}})
+	if err := s.LoadCharge(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	s.Floor = 0
+	if _, err := s.Check(t.Context(), sharedEmail, "wrong", netip.MustParseAddr("10.1.2.3"), time.Now()); !errors.Is(err, ErrWrong) {
+		t.Fatalf("err = %v, want ErrWrong", err)
+	}
+	// bob, carol and the dummy check for dave: three checks, two gaps.
+	if len(seen) != 3 {
+		t.Fatalf("Verify ran %d times, want 3", len(seen))
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] <= seen[i-1] {
+			t.Errorf("check %d saw %d forced collections, check %d saw %d; want a collection between them (%v)",
+				i, seen[i-1], i+1, seen[i], seen)
 		}
-		after := forcedGCs()
-		release()
-		if after <= during.Load() {
-			t.Errorf("%s: forced collections %d while the check ran, %d when the gate was free again; want a collection before the release",
-				c.name, during.Load(), after)
+	}
+}
+
+// A querier that makes the lookup of a missing name slower, as a big table or
+// a cold cache would.
+type slowLookup struct {
+	db.Querier
+	extra time.Duration
+	known string
+}
+
+func (q slowLookup) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if strings.Contains(sql, "username_clean = $1") && len(args) == 1 && args[0] != q.known {
+		time.Sleep(q.extra)
+	}
+	return q.Querier.Query(ctx, sql, args...)
+}
+
+// The floor covers the lookup. A name with an account and a name without one
+// answer at the same time even when the lookup of the missing name takes 5 ms
+// longer: the floor counts from the start of the sign-in, moved only by the
+// time spent waiting for the gate.
+func TestFloorCoversTheLookup(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	s := NewWith(slowLookup{pool, 5 * time.Millisecond, "alice"}, Options{
+		Gate:   NewGate(DefaultBudgetKiB),
+		Verify: func(string, string, string) (bool, bool) { return false, false },
+	})
+	s.Floor = 60 * time.Millisecond
+	// The least of several answers drops the noise of the scheduler.
+	least := map[string]time.Duration{}
+	for range 8 {
+		for _, name := range []string{"alice", "nobody"} {
+			start := time.Now()
+			if _, err := s.Check(t.Context(), name, "wrong", netip.MustParseAddr("10.1.2.3"), time.Now()); !errors.Is(err, ErrWrong) {
+				t.Fatalf("%s: err = %v, want ErrWrong", name, err)
+			}
+			took := time.Since(start)
+			if old, ok := least[name]; !ok || took < old {
+				least[name] = took
+			}
 		}
+	}
+	for name, d := range least {
+		if d < s.Floor {
+			t.Errorf("%s: answered after %v, before the floor of %v", name, d, s.Floor)
+		}
+	}
+	if diff := (least["nobody"] - least["alice"]).Abs(); diff > time.Millisecond {
+		t.Errorf("answer times differ by %v (alice %v, nobody %v), want within 1 ms", diff, least["alice"], least["nobody"])
 	}
 }

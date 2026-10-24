@@ -146,7 +146,9 @@ Every error page, 5xx included, is a page of the board in its default scheme. Th
 keeps the board name, the header image and the default scheme in memory, so the error
 page needs no database: when the database is down or slow, a page answers 500 as a
 guest's page, with no session and no counts. When a template fails, the answer is a 500
-or 503 page that the server built at start. Only `/healthz` answers in plain text.
+or 503 page that the server built at start. A `Range` header that no byte of a file fits
+answers 416 in the same layout, and so does a path under the base path that spells a
+letter of the base path as a percent escape (404). Only `/healthz` answers in plain text.
 
 The server reads these variables. Docker Compose reads the last one:
 
@@ -250,9 +252,9 @@ the operator:
 - A failed sign-in takes at least the floor, even when the client closes its end of
   the connection early. This holds for every failure after the limits pass: a wrong
   password, a busy server, an inactive account and a ban. The floor counts from the
-  start of the sign-in, or from the moment the memory gate lets it in when that is
-  later. So a wait for the gate adds the same delay to every name, and the floor
-  still hides the hash after it. The server sets the floor at start: 2 × K × T, but
+  start of the sign-in, moved forward by the time that it waits for the memory gate.
+  So a wait for the gate adds the same delay to every name, and the floor still
+  hides the lookup and the hash after it. The server sets the floor at start: 2 × K × T, but
   at least 400 ms, rounded up to a whole 50 ms. T is the slowest single password
   check, which the server times once for each kind and cost of stored hash, with a
   wrong password of 4,096 bytes (the longest that a check reads; a chain check takes
@@ -288,8 +290,9 @@ sign-in limits.
 The password checks share a memory gate of min(128 MiB, the limit − 48 MiB). The
 start-up log line `memory limit` gives the limit in bytes, its source (`GOMEMLIMIT`,
 `cgroup` or `none`) and the gate budget in KiB. A check gives its share of the gate
-back only after a garbage collection, so the memory of a finished check is free
-before the next check starts. At start, gobb also times one check of each kind of
+back only after a garbage collection. A sign-in that holds the gate for several
+checks (a shared email address) also collects before each check after the first. So
+the memory of a finished check is free before the next check starts. At start, gobb also times one check of each kind of
 stored hash, inside the gate, and then frees the memory of those checks.
 
 Compose runs gobb under a cap of 256 MiB with no swap. `GOBB_MEM_LIMIT` in `.env`

@@ -96,7 +96,7 @@ func (s *site) files(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", ctype)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(w, r, "", info.ModTime(), f)
+	s.serveContent(w, r, info.ModTime(), f)
 }
 
 // detectImage returns the content type of head when it is a type that /files/
@@ -131,7 +131,7 @@ func (s *site) favicon(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", staticTypes["icon.svg"])
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+	s.serveContent(w, r, time.Time{}, bytes.NewReader(data))
 }
 
 // static serves GET /static/{name}: the stylesheet and the script.
@@ -157,5 +157,62 @@ func (s *site) static(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.Set("Cache-Control", "public, max-age=86400")
 	}
-	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+	s.serveContent(w, r, time.Time{}, bytes.NewReader(data))
 }
+
+// serveContent is http.ServeContent with the error page of the site for the one
+// plain-text answer that ServeContent writes: 416, for a Range header that no
+// byte of the content fits. The 416 keeps its Content-Range header, but not the
+// headers of the file (its disposition, its cache lifetime and its validators),
+// because an error is not the file.
+func (s *site) serveContent(w http.ResponseWriter, r *http.Request, modtime time.Time, content io.ReadSeeker) {
+	g := &rangeGuard{ResponseWriter: w}
+	http.ServeContent(g, r, "", modtime, content)
+	if !g.refused {
+		return
+	}
+	h := w.Header()
+	for _, k := range []string{"Content-Disposition", "Cache-Control", "Last-Modified", "Etag", "Content-Security-Policy", "Content-Length", "Accept-Ranges"} {
+		h.Del(k)
+	}
+	h.Set("Cache-Control", "no-store")
+	s.fail(w, r, http.StatusRequestedRangeNotSatisfiable, "Range not satisfiable",
+		"The part of the file that your browser asked for is outside the file.")
+}
+
+// rangeGuard holds back the 416 that http.ServeContent writes, so that the
+// caller can answer it in the layout.
+type rangeGuard struct {
+	http.ResponseWriter
+	refused bool
+}
+
+func (g *rangeGuard) WriteHeader(code int) {
+	if code == http.StatusRequestedRangeNotSatisfiable {
+		g.refused = true
+		return
+	}
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *rangeGuard) Write(b []byte) (int, error) {
+	if g.refused {
+		return len(b), nil
+	}
+	return g.ResponseWriter.Write(b)
+}
+
+// ReadFrom keeps the fast path of the underlying writer for a file that is
+// sent whole.
+func (g *rangeGuard) ReadFrom(src io.Reader) (int64, error) {
+	if g.refused {
+		return io.Copy(io.Discard, src)
+	}
+	if rf, ok := g.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(struct{ io.Writer }{g.ResponseWriter}, src)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (g *rangeGuard) Unwrap() http.ResponseWriter { return g.ResponseWriter }

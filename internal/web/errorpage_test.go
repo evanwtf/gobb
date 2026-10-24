@@ -172,13 +172,94 @@ func TestErrorPageOutsideTheBasePath(t *testing.T) {
 }
 
 // No handler of the site writes a plain-text error: only /healthz, which
-// machines read, does (spec 13).
+// machines read, does (spec 13). The source holds no call of http.Error or
+// http.NotFound, and the two answers of the standard library that a handler
+// does not write itself are themed too: the 416 of http.ServeContent for a
+// Range that no byte fits, and the 404 of http.StripPrefix for a path under the
+// base path whose prefix is percent-encoded.
 func TestNoPlainTextErrors(t *testing.T) {
+	t.Run("range", testRangeErrorsAreThemed)
+	t.Run("base path prefix", testBasePathPrefixErrorIsThemed)
+	t.Run("source", testNoPlainTextCalls)
+}
+
+// A Range beyond the end of a file gets the themed 416 from every handler that
+// calls http.ServeContent: /static/, /favicon.ico, /files/ and /a/. The answer
+// is not cached, and carries neither the file's type nor its disposition.
+func testRangeErrorsAreThemed(t *testing.T) {
+	for _, base := range []string{"/", "/forum/"} {
+		h, pool := siteWithPool(t, bundletest.Small(), Options{BasePath: base})
+		if _, err := pool.Exec(t.Context(), `insert into acl_group_grants (group_id, forum_id, option, setting)
+			values (1, 0, 'account.download', 3), (1, 2, 'attach.download', 3)`); err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range []string{"static/gobb.css", "favicon.ico", "files/avatars/1.png", "a/1"} {
+			if target == "favicon.ico" {
+				// The icon lives at the host root, outside the base path.
+				target = "/favicon.ico"
+			} else {
+				target = base + target
+			}
+			// The file answers 200 to a Range that fits, so the 416 below is the
+			// Range's doing and not a missing file.
+			ok := getWith(t, h, target, nil, map[string]string{"Range": "bytes=0-0"})
+			if ok.Code != http.StatusPartialContent {
+				t.Fatalf("base %s GET %s with Range bytes=0-0: status %d, want 206", base, target, ok.Code)
+			}
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				r := httptest.NewRequest(method, target, nil)
+				r.Header.Set("Range", "bytes=99999999-")
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, r)
+				what := "base " + base + " " + method + " " + target + " with a Range past the end"
+				if method == http.MethodHead {
+					if rec.Code != http.StatusRequestedRangeNotSatisfiable || rec.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+						t.Errorf("%s: %d %q, want a 416 text/html", what, rec.Code, rec.Header().Get("Content-Type"))
+					}
+					continue
+				}
+				themed(t, what, rec, base, http.StatusRequestedRangeNotSatisfiable, "Range not satisfiable")
+				for _, k := range []string{"Content-Disposition", "Last-Modified", "Etag"} {
+					if v := rec.Header().Get(k); v != "" {
+						t.Errorf("%s: header %s = %q, want none", what, k, v)
+					}
+				}
+				if cc := rec.Header().Get("Cache-Control"); strings.Contains(cc, "public") || strings.Contains(cc, "max-age") {
+					t.Errorf("%s: Cache-Control %q lets a cache keep the error", what, cc)
+				}
+				if cr := rec.Header().Get("Content-Range"); !strings.HasPrefix(cr, "bytes */") {
+					t.Errorf("%s: Content-Range %q, want bytes */size (RFC 9110)", what, cr)
+				}
+			}
+		}
+	}
+}
+
+// Under a base path, a request whose raw path spells a letter of the base path
+// as a percent escape gets the themed 404, not the plain text of
+// http.StripPrefix.
+func testBasePathPrefixErrorIsThemed(t *testing.T) {
+	h, _ := newTestSite(t, bundletest.Small(), Options{BasePath: "/forum/"})
+	for _, target := range []string{"/fo%72um/t/1", "/%66orum/", "/%66orum/static/gobb.css"} {
+		themed(t, "GET "+target, get(t, h, target), "/forum/", http.StatusNotFound, "Page not found")
+	}
+	// The same page by its plain spelling still answers.
+	if rec := get(t, h, "/forum/t/1"); rec.Code != http.StatusOK {
+		t.Errorf("GET /forum/t/1: %d, want 200", rec.Code)
+	}
+	// A percent escape after the prefix is fine.
+	if rec := get(t, h, "/forum/t/%31"); rec.Code != http.StatusOK {
+		t.Errorf("GET /forum/t/%%31: %d, want 200", rec.Code)
+	}
+}
+
+func testNoPlainTextCalls(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain := regexp.MustCompile(`http\.(Error|NotFound)\(`)
+	plain := regexp.MustCompile(`http\.(Error|NotFound|StripPrefix|ServeFile|FileServer)\(`)
+	serve := regexp.MustCompile(`http\.ServeContent\(`)
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") || f == "health.go" {
 			continue
@@ -190,6 +271,10 @@ func TestNoPlainTextErrors(t *testing.T) {
 		for i, line := range strings.Split(string(b), "\n") {
 			if plain.MatchString(line) && !strings.HasPrefix(strings.TrimSpace(line), "//") {
 				t.Errorf("%s:%d writes a plain-text error: %s", f, i+1, strings.TrimSpace(line))
+			}
+			// site.serveContent, in files.go, is the one caller of ServeContent.
+			if serve.MatchString(line) && f != "files.go" && !strings.HasPrefix(strings.TrimSpace(line), "//") {
+				t.Errorf("%s:%d calls http.ServeContent: use site.serveContent, which themes the 416: %s", f, i+1, strings.TrimSpace(line))
 			}
 		}
 	}

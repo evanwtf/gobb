@@ -3,7 +3,6 @@ package login
 import (
 	"bytes"
 	"log/slog"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -161,9 +160,11 @@ func TestLoadFloorProbeIsLong(t *testing.T) {
 }
 
 // Each timing check at start holds the gate, with the charge of a check of
-// that hash (chargeKiB), and gives it back before the next one. After the last
-// check, the step runs a garbage collection, so the memory of the checks does
-// not sit under the first sign-ins.
+// that hash (chargeKiB), and gives it back before the next one. Each release
+// collects. After the last release, the step runs one more garbage collection,
+// so the memory of the checks (and of the dummy hash) does not sit under the
+// first sign-ins. The test counts the forced collections of the step: one per
+// release, and one after the last.
 func TestLoadFloorHoldsTheGate(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	gobb := strings.Replace(argonAt(19456), "t=4,p=2", "t=2,p=1", 1)
@@ -182,13 +183,11 @@ func TestLoadFloorHoldsTheGate(t *testing.T) {
 		gate.mu.Unlock()
 		return time.Millisecond
 	}
-	var before runtime.MemStats
-	runtime.ReadMemStats(&before)
+	before := forcedGCs()
 	if err := s.LoadFloor(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	var after runtime.MemStats
-	runtime.ReadMemStats(&after)
+	after := forcedGCs()
 	// Three shapes: the dummy check (alice's hash shares it), bcrypt and argon2id.
 	want := []uint64{65536, 65536, 65536}
 	if !slices.Equal(holds, want) {
@@ -203,8 +202,8 @@ func TestLoadFloorHoldsTheGate(t *testing.T) {
 	if used != 0 {
 		t.Errorf("the gate holds %d KiB after the step", used)
 	}
-	if after.NumForcedGC <= before.NumForcedGC {
-		t.Errorf("forced collections: %d before, %d after; want a runtime.GC after the checks", before.NumForcedGC, after.NumForcedGC)
+	if got, wantGCs := after-before, uint32(len(want))+1; got < wantGCs {
+		t.Errorf("forced collections in the step: %d, want %d (one per release and one after the last check)", got, wantGCs)
 	}
 }
 

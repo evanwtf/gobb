@@ -196,7 +196,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if s.base == "/" {
 		root.Handle("/", inner)
 	} else {
-		root.Handle(s.base, http.StripPrefix(strings.TrimSuffix(s.base, "/"), inner))
+		root.Handle(s.base, s.stripBase(inner))
 		// A path outside the base path gets the themed 404 too, not the plain
 		// text of the mux.
 		root.HandleFunc("/", s.notFound)
@@ -205,6 +205,28 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		onNew(s)
 	}
 	return secure(s.guard(root)), nil
+}
+
+// stripBase removes the base path from the path of a request, as
+// http.StripPrefix does, and answers a request whose raw path does not start
+// with the base path (a percent-encoded letter of it, such as /fo%72um/) with
+// the themed 404 instead of the plain text of the standard library.
+func (s *site) stripBase(next http.Handler) http.Handler {
+	prefix := strings.TrimSuffix(s.base, "/")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(r.URL.Path, prefix)
+		rp := strings.TrimPrefix(r.URL.RawPath, prefix)
+		if len(p) == len(r.URL.Path) || (r.URL.RawPath != "" && len(rp) == len(r.URL.RawPath)) {
+			s.notFound(w, r)
+			return
+		}
+		r2 := new(http.Request)
+		*r2 = *r
+		r2.URL = new(url.URL)
+		*r2.URL = *r.URL
+		r2.URL.Path, r2.URL.RawPath = p, rp
+		next.ServeHTTP(w, r2)
+	})
 }
 
 // normalizeBase returns p with one leading and one trailing "/".
