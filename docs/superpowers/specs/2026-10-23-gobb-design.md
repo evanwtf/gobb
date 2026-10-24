@@ -546,6 +546,10 @@ designer's call):
   insertion, preview and collapsible blocks. It works on phones.
 - Color schemes are built in and members pick one in their profile. **(owner)** The
   admin sets the default. No uploads, no editor. **(owner)**
+- Every error page, 4xx and 5xx, uses the board's layout and default scheme. This
+  holds when the database is down or slow, and when a page template fails. Plain text
+  never reaches a visitor. **(owner)** Only `/healthz`, which machines read, answers in
+  plain text.
 - **Slate** is the default. It comes from the first board's original header image:
 
 | Role | Color |
