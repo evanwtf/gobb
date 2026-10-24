@@ -2,6 +2,8 @@ package web
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,6 +32,26 @@ func leakBoard() *bundletest.Board {
 
 // hiddenText holds the two strings that only forum 3 holds.
 var hiddenText = []string{"Favorite color", "Green, for me"}
+
+// headerShape lists the headers of rec, one per line, in a stable order. A
+// cookie keeps its name and attributes but not its value, because a guest with
+// no cookie gets a new random csrf secret on every page.
+func headerShape(rec *httptest.ResponseRecorder) string {
+	var lines []string
+	for name, vals := range rec.Header() {
+		if http.CanonicalHeaderKey(name) == "Set-Cookie" {
+			continue
+		}
+		lines = append(lines, name+": "+strings.Join(vals, ", "))
+	}
+	for _, c := range rec.Result().Cookies() {
+		c.Value = "V"
+		c.Raw = ""
+		lines = append(lines, "Set-Cookie: "+c.String())
+	}
+	slices.Sort(lines)
+	return strings.Join(lines, "\n")
+}
 
 func noHiddenText(t *testing.T, where, body string) {
 	t.Helper()
@@ -71,6 +93,9 @@ func TestHiddenForumNeverLeaks(t *testing.T) {
 				if got.Code != http.StatusNotFound || location(got) != "" {
 					t.Errorf("%s: %d %q, want 404", target, got.Code, location(got))
 				}
+				if headerShape(got) != headerShape(want) {
+					t.Errorf("%s: the headers differ from the headers of a missing target:\n%s\n--\n%s", target, headerShape(got), headerShape(want))
+				}
 				if shape(bodyOf(t, got), target) != shape(bodyOf(t, want), control) {
 					t.Errorf("%s: the body differs from the body of a missing target", target)
 				}
@@ -82,8 +107,18 @@ func TestHiddenForumNeverLeaks(t *testing.T) {
 				if got.Code != http.StatusNotFound || location(got) != "" {
 					t.Errorf("%s: %d %q, want 404", target, got.Code, location(got))
 				}
+				if headerShape(got) != headerShape(want) {
+					t.Errorf("%s: the headers differ from the headers of a missing target:\n%s\n--\n%s", target, headerShape(got), headerShape(want))
+				}
 				if shape(bodyOf(t, got), target) != shape(bodyOf(t, want), control) {
 					t.Errorf("%s: the body differs from the body of a missing target", target)
+				}
+			}
+			// The pages themselves answer like a missing page, headers included.
+			for hiddenPath, missingPath := range map[string]string{"/t/2": "/t/99", "/p/5": "/p/99", "/a/1": "/a/99", "/f/3": "/f/99", "/t/3": "/t/99"} {
+				got, want := getAs(t, h, hiddenPath, who.cookies), getAs(t, h, missingPath, who.cookies)
+				if headerShape(got) != headerShape(want) || shape(bodyOf(t, got), hiddenPath) != shape(bodyOf(t, want), missingPath) {
+					t.Errorf("%s differs from %s in headers or body", hiddenPath, missingPath)
 				}
 			}
 		})

@@ -593,7 +593,7 @@ A row maps an old URL of the source system to a gobb page.
 
 | Field | Type | Rule |
 |---|---|---|
-| `path` | string | 1 to 255 bytes. No leading `/`, no `?` and no `#`. |
+| `path` | string | 1 to 255 bytes. No leading `/`, no `?` and no `#`. gobb stores it decoded, with no percent escapes, and matches it against the request path decoded once. |
 | `match` | object | Up to 10 pairs. Each key is a param, and each value is a label. |
 | `id_param`? | param | The query parameter that holds the ID. |
 | `target_kind` | string | `home`, `forum`, `topic`, `post`, `user`, `members`, `team`, `attachment`, `avatar`, `search`, `account` or `page`. |

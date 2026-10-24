@@ -30,7 +30,7 @@ const (
 	MaxSearchBytes = 256
 	// MaxSearchTerms is the most terms that a search text may hold after the
 	// parser drops the stop words. The cost of a search grows with the terms.
-	MaxSearchTerms = 16
+	MaxSearchTerms = 8
 )
 
 // The two runes that mark a matched word in the output of ts_headline. They are

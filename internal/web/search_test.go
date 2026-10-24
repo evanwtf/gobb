@@ -270,7 +270,7 @@ func TestSearchRefusals(t *testing.T) {
 		{"/search?q=" + strings.Repeat("a", 257), "256 bytes"},
 		{"/search?author=" + strings.Repeat("a", 257), "256 bytes"},
 		{"/search?q=" + strings.Repeat("%C3%A9", 129), "256 bytes"},
-		{"/search?q=" + words, "at most 16"},
+		{"/search?q=" + words, "at most 8 words"},
 	} {
 		rec := get(t, h, c.target)
 		body := bodyOf(t, rec)

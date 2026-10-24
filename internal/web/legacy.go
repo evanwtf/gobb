@@ -164,9 +164,16 @@ func (s *site) legacyTarget(w http.ResponseWriter, r *http.Request, rt legacy.Ro
 		_, err := board.ForumView(ctx, s.pool, p.Viewer, id, 1)
 		var link board.LinkError
 		switch {
-		case err == nil, errors.As(err, &link):
-			// A link forum has no pages: /f/{id} sends the visitor on.
+		case err == nil:
 			s.moved(w, r, pageHref(s.path("f", idText), page))
+		case errors.As(err, &link):
+			// A link forum has no pages: /f/{id} sends the visitor on, unless
+			// the site refuses its URL. Then the page is a 404 and so is this.
+			if _, ok := s.linkTarget(link.URL); !ok {
+				s.notFound(w, r)
+				return
+			}
+			s.moved(w, r, s.path("f", idText))
 		case errors.Is(err, board.ErrNotFound):
 			s.notFound(w, r)
 		default:
@@ -222,6 +229,11 @@ func (s *site) legacyTarget(w http.ResponseWriter, r *http.Request, rt legacy.Ro
 			return
 		}
 		dir, name, _ := strings.Cut(stored, "/")
+		if dir != "avatars" {
+			// /files/ would serve another directory, but it holds no avatar.
+			s.notFound(w, r)
+			return
+		}
 		f, _, _, err := s.openImage(dir, name)
 		switch {
 		case errors.Is(err, errNotServed):
@@ -237,16 +249,18 @@ func (s *site) legacyTarget(w http.ResponseWriter, r *http.Request, rt legacy.Ro
 }
 
 // warnHidden logs a warning for each route and each file prefix of the legacy
-// table that a route of the site answers, because mux sends such a request to the
-// site and never to the table. The check asks the mux itself, so it follows the
-// routes as they are.
+// table that can never apply: one that a route of the site answers first (the
+// mux sends such a request to the site), one whose path is not in its clean form
+// (the guard answers 404 before the mux), and, at the host root, the route
+// "healthz" (the root mux owns it). The first check asks the mux itself, so it
+// follows the routes as they are.
 func (s *site) warnHidden(mux *http.ServeMux) {
-	owner := func(path string) string {
+	owner := func(p string) string {
 		req, err := http.NewRequest(http.MethodGet, "http://site.invalid/", nil)
 		if err != nil {
 			return ""
 		}
-		req.URL.Path = "/" + path
+		req.URL.Path = "/" + p
 		_, pattern := mux.Handler(req)
 		if pattern == "/" {
 			return ""
@@ -257,11 +271,22 @@ func (s *site) warnHidden(mux *http.ServeMux) {
 		return pattern
 	}
 	for _, rt := range s.legacy.Routes() {
-		if pat := owner(rt.Path); pat != "" {
-			slog.Warn("legacy route is hidden by a route of the site and never applies", "path", rt.Path, "kind", rt.Kind, "site_route", pat)
+		switch {
+		case !isCleanPath("/" + rt.Path):
+			slog.Warn("legacy route has a path that is not clean and never applies", "path", rt.Path, "kind", rt.Kind)
+		case rt.Path == "healthz" && s.base == "/":
+			slog.Warn("legacy route is hidden by /healthz and never applies", "path", rt.Path, "kind", rt.Kind)
+		default:
+			if pat := owner(rt.Path); pat != "" {
+				slog.Warn("legacy route is hidden by a route of the site and never applies", "path", rt.Path, "kind", rt.Kind, "site_route", pat)
+			}
 		}
 	}
 	for _, prefix := range s.legacy.Prefixes() {
+		if !isCleanPath("/" + prefix + "x") {
+			slog.Warn("legacy file prefix has a path that is not clean and never applies", "prefix", prefix)
+			continue
+		}
 		if pat := owner(prefix + "x"); pat != "" {
 			slog.Warn("legacy file prefix is hidden in part by a route of the site", "prefix", prefix, "site_route", pat)
 		}

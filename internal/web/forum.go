@@ -122,17 +122,23 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 
 // linkTarget turns the link_url of a link forum into a URL that is safe to send
 // a visitor to. A site path gets the base path in front. An https or mailto URL
-// goes as it is. An http URL becomes the https URL. Any other value, such as a
+// goes as it is. An http URL becomes the https URL. A scheme may be in any case. Any other value, such as a
 // relative path or a scheme-relative "//host", gives false, because the board
 // links nowhere else. The upgrade is the one the renderer applies to an image.
 func (s *site) linkTarget(raw string) (string, bool) {
 	switch {
 	case strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") && !strings.Contains(raw, `\`):
 		return s.base + raw[1:], true
-	case strings.HasPrefix(raw, "https://"), strings.HasPrefix(raw, "mailto:"):
+	case hasPrefixFold(raw, "https://"), hasPrefixFold(raw, "mailto:"):
 		return raw, true
-	case len(raw) >= len("http://") && strings.EqualFold(raw[:len("http://")], "http://"):
+	case hasPrefixFold(raw, "http://"):
 		return "https://" + raw[len("http://"):], true
 	}
 	return "", false
+}
+
+// hasPrefixFold reports whether s starts with prefix, ignoring ASCII case. A
+// scheme has no case, and the importer accepts any.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }

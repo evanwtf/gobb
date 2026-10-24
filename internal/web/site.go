@@ -160,11 +160,7 @@ var requestTimeout = 10 * time.Second
 // path would have been.
 func (s *site) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if strings.HasSuffix(p, "/") && len(p) > 1 {
-			p = p[:len(p)-1]
-		}
-		if p != "" && p != path.Clean(p) {
+		if !isCleanPath(r.URL.Path) {
 			s.notFound(w, r)
 			return
 		}
@@ -172,6 +168,15 @@ func (s *site) guard(next http.Handler) http.Handler {
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// isCleanPath reports whether p is in its clean form, as the guard needs it:
+// no empty element and no "." or ".." element. One trailing slash is allowed.
+func isCleanPath(p string) bool {
+	if strings.HasSuffix(p, "/") && len(p) > 1 {
+		p = p[:len(p)-1]
+	}
+	return p == "" || p == path.Clean(p)
 }
 
 // path joins the base path and the parts into a site path. A part may hold

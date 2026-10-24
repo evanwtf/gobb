@@ -526,21 +526,21 @@ func TestSearchBadText(t *testing.T) {
 	}
 }
 
-// A query of more than 16 terms is refused: its cost grows with the terms.
+// A query of more than 8 terms is refused: its cost grows with the terms.
 func TestSearchTooManyTerms(t *testing.T) {
 	pool, _ := boardtest.Load(t, searchBoard())
 	g := guestFor(t, pool)
 	words := strings.Fields("apple banana cherry damson elder fig grape hazel iris jasmine kale lemon mango nectar olive peach quince")
-	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: strings.Join(words[:16], " or ")}); err != nil {
-		t.Errorf("16 terms = %v, want no error", err)
+	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: strings.Join(words[:8], " or ")}); err != nil {
+		t.Errorf("8 terms = %v, want no error", err)
 	}
-	_, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: strings.Join(words, " or ")})
+	_, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: strings.Join(words[:9], " or ")})
 	if !errors.Is(err, board.ErrSearchTooManyTerms) || !errors.Is(err, board.ErrBadSearch) {
-		t.Errorf("17 terms = %v, want ErrSearchTooManyTerms (an ErrBadSearch)", err)
+		t.Errorf("9 terms = %v, want ErrSearchTooManyTerms (an ErrBadSearch)", err)
 	}
 	// A stop word is no term.
-	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: "the and of " + strings.Join(words[:16], " ")}); err != nil {
-		t.Errorf("16 terms and stop words = %v, want no error", err)
+	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: "the and of " + strings.Join(words[:8], " ")}); err != nil {
+		t.Errorf("8 terms and stop words = %v, want no error", err)
 	}
 }
 

@@ -499,11 +499,17 @@ func TestLinkForumHTTPUpgrade(t *testing.T) {
 		bundleForum(4, 0, "link", "Plain", 5),
 		bundleForum(5, 0, "link", "Mixed", 6),
 		bundleForum(6, 0, "link", "Secure", 7),
+		bundleForum(7, 0, "link", "Upper", 8),
+		bundleForum(8, 0, "link", "Mail", 9),
+		bundleForum(9, 0, "link", "Odd", 10),
 	)
 	b.Forums[3].LinkURL = ptr("http://example.com/out?a=1")
 	b.Forums[4].LinkURL = ptr("HTTP://example.com/x")
 	b.Forums[5].LinkURL = ptr("https://example.com/y")
-	for _, id := range []int64{4, 5, 6} {
+	b.Forums[6].LinkURL = ptr("HTTPS://example.com/z")
+	b.Forums[7].LinkURL = ptr("Mailto:a@example.com")
+	b.Forums[8].LinkURL = ptr("HtTp://example.com/w")
+	for _, id := range []int64{4, 5, 6, 7, 8, 9} {
 		b.Grants = append(b.Grants, guestGrant(id, "forum.list"))
 	}
 	h, _ := newTestSite(t, b, Options{})
@@ -511,10 +517,123 @@ func TestLinkForumHTTPUpgrade(t *testing.T) {
 		"/f/4": "https://example.com/out?a=1",
 		"/f/5": "https://example.com/x",
 		"/f/6": "https://example.com/y",
+		"/f/7": "HTTPS://example.com/z",
+		"/f/8": "Mailto:a@example.com",
+		"/f/9": "https://example.com/w",
 	} {
 		rec := get(t, h, target)
 		if rec.Code != http.StatusFound || location(rec) != want {
 			t.Errorf("%s: %d %q, want 302 %q", target, rec.Code, location(rec), want)
 		}
+	}
+}
+
+// A route that the guard or the root mux answers first can never apply, and
+// the load says so. A trailing slash is fine: the guard allows it.
+func TestLegacyUnreachableWarns(t *testing.T) {
+	b := bundletest.Small()
+	b.LegacyRoutes = append(b.LegacyRoutes,
+		legacyRoute("old//x.cgi", "home", nil, nil, 0),
+		legacyRoute("old/./y.cgi", "home", nil, nil, 0),
+		legacyRoute("old/a/../y.cgi", "home", nil, nil, 0),
+		legacyRoute("healthz", "home", nil, nil, 0),
+		legacyRoute("old/z/", "home", nil, nil, 0),
+		legacyRoute("healthz/", "home", nil, nil, 0),
+	)
+	b.LegacyFiles = append(b.LegacyFiles,
+		bundle.LegacyFile{Prefix: "old//img/", Dir: "smilies"},
+		bundle.LegacyFile{Prefix: "old/ok/", Dir: "ranks"},
+	)
+	warned := func(base string) []string {
+		pool, dataDir := boardtest.Load(t, b)
+		logs := captureLogs(t)
+		if _, err := New(context.Background(), pool, Options{DataDir: dataDir, BasePath: base}); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, l := range logs.lines() {
+			if strings.Contains(l, "level=WARN") {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	// At the root, the root mux owns /healthz, and the guard refuses the three
+	// unclean paths and the unclean prefix.
+	got := warned("/")
+	for _, want := range []string{"path=old//x.cgi", "path=old/./y.cgi", "path=old/a/../y.cgi", "path=healthz ", "prefix=old//img/"} {
+		n := 0
+		for _, l := range got {
+			if strings.Contains(l+" ", want) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%d warnings for %q, want 1:\n%s", n, want, strings.Join(got, "\n"))
+		}
+	}
+	if len(got) != 5 {
+		t.Errorf("%d warnings at base /, want 5:\n%s", len(got), strings.Join(got, "\n"))
+	}
+	// Under a base path, /healthz is at the host root and does not hide a route.
+	got = warned("/forum/")
+	if len(got) != 4 {
+		t.Errorf("%d warnings at base /forum/, want 4:\n%s", len(got), strings.Join(got, "\n"))
+	}
+	for _, l := range got {
+		if strings.Contains(l+" ", "path=healthz ") {
+			t.Errorf("healthz warned under a base path: %s", l)
+		}
+	}
+	// A route with a trailing slash applies.
+	h, _ := newTestSite(t, b, Options{})
+	if rec := get(t, h, "/old/z/"); rec.Code != 301 || location(rec) != "/" {
+		t.Errorf("/old/z/: %d %q", rec.Code, location(rec))
+	}
+	if rec := get(t, h, "/old/z"); rec.Code != 404 {
+		t.Errorf("/old/z: %d, want 404", rec.Code)
+	}
+}
+
+// The old link to a link forum whose URL the site refuses answers 404, as the
+// page does, and not a redirect to a page that answers 404.
+func TestLegacyForumLinkRefused(t *testing.T) {
+	h, pool := siteWithPool(t, kindsBoard(), Options{})
+	if rec := get(t, h, "/old/k/forum?id=4"); rec.Code != 301 || location(rec) != "/f/4" {
+		t.Fatalf("link forum: %d %q", rec.Code, location(rec))
+	}
+	for _, bad := range []string{"ftp://example.com/x", "//evil.example/x", "pages/rules", "javascript:alert1"} {
+		if _, err := pool.Exec(context.Background(), `update forums set link_url = $1 where id = 4`, bad); err != nil {
+			t.Fatal(err)
+		}
+		if rec := get(t, h, "/f/4"); rec.Code != 404 {
+			t.Errorf("%q: /f/4 %d, want 404", bad, rec.Code)
+		}
+		if rec := get(t, h, "/old/k/forum?id=4"); rec.Code != 404 || location(rec) != "" {
+			t.Errorf("%q: old link %d %q, want 404", bad, rec.Code, location(rec))
+		}
+	}
+}
+
+// The avatar kind leads to the avatars directory only.
+func TestLegacyAvatarDirectory(t *testing.T) {
+	h, pool := siteWithPool(t, kindsBoard(), Options{})
+	for _, stored := range []string{"ranks/newcomer.png", "smilies/smile.gif", "header/banner.png"} {
+		if _, err := pool.Exec(context.Background(), `update users set avatar_path = $1 where id = 2`, stored); err != nil {
+			t.Fatal(err)
+		}
+		// The file serves under /files/, but it is not an avatar.
+		if rec := get(t, h, "/files/"+stored); rec.Code != 200 {
+			t.Fatalf("/files/%s: %d", stored, rec.Code)
+		}
+		if rec := get(t, h, "/old/k/avatar?id=2"); rec.Code != 404 || location(rec) != "" {
+			t.Errorf("avatar %q: %d %q, want 404", stored, rec.Code, location(rec))
+		}
+	}
+	if _, err := pool.Exec(context.Background(), `update users set avatar_path = 'avatars/1.png' where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(t, h, "/old/k/avatar?id=2"); rec.Code != 301 || location(rec) != "/files/avatars/1.png" {
+		t.Errorf("avatar in avatars/: %d %q", rec.Code, location(rec))
 	}
 }
