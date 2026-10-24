@@ -254,15 +254,15 @@ the operator:
   password, a busy server, an inactive account and a ban. The floor counts from the
   start of the sign-in, moved forward by the time that it waits for the memory gate.
   So a wait for the gate adds the same delay to every name, and the floor still
-  hides the lookup and the hash after it. The server sets the floor at start: 2 × K × T, but
-  at least 400 ms, rounded up to a whole 50 ms. T is the slowest single password
-  check, which the server times once for each kind and cost of stored hash, with a
-  wrong password of 4,096 bytes (the longest that a check reads; a chain check takes
-  longer for a longer password). K is the most accounts that share one email
-  address, because a sign-in by that address checks each of them. The start-up log
-  line `login: sign-in floor` gives the floor, T and K. The floor hides the time of
-  the hash while the host runs a check within twice its start-up time. Heavier CPU
-  load can still show the time.
+  hides the lookup and the hash after it. The server sets the floor at start:
+  2 × K × T, but at least 400 ms, rounded up to a whole 50 ms. T is the slowest
+  single password check, which the server times once for each kind and cost of
+  stored hash, with a wrong password of 4,096 bytes (the longest that a check reads;
+  a chain check takes longer for a longer password). K is the most accounts that
+  share one email address, because a sign-in by that address checks each of them.
+  The start-up log line `login: sign-in floor` gives the floor, T and K. The floor
+  hides the time of the hash while the host runs a check within twice its start-up
+  time. Heavier CPU load can still show the time.
 - A sign-in holds the memory gate once, for all of its checks. So a busy server
   answers alike for a shared email address, a unique one and an unknown name.
 - Password checks share a memory gate of 128 MiB, or less under a low memory limit
@@ -292,8 +292,9 @@ start-up log line `memory limit` gives the limit in bytes, its source (`GOMEMLIM
 `cgroup` or `none`) and the gate budget in KiB. A check gives its share of the gate
 back only after a garbage collection. A sign-in that holds the gate for several
 checks (a shared email address) also collects before each check after the first. So
-the memory of a finished check is free before the next check starts. At start, gobb also times one check of each kind of
-stored hash, inside the gate, and then frees the memory of those checks.
+the memory of a finished check is free before the next check starts. At start, gobb
+also times one check of each kind of stored hash, inside the gate, and then frees the
+memory of those checks.
 
 Compose runs gobb under a cap of 256 MiB with no swap. `GOBB_MEM_LIMIT` in `.env`
 changes it. Under that cap the Go limit is 179 MiB and the gate is 128 MiB, so two

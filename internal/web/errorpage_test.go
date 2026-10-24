@@ -258,8 +258,9 @@ func testNoPlainTextCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain := regexp.MustCompile(`http\.(Error|NotFound|StripPrefix|ServeFile|FileServer)\(`)
+	plain := regexp.MustCompile(`http\.(Error|NotFound|StripPrefix|ServeFile|ServeFileFS|FileServer|FileServerFS)\(`)
 	serve := regexp.MustCompile(`http\.ServeContent\(`)
+	allowed := 0
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") || f == "health.go" {
 			continue
@@ -268,14 +269,32 @@ func testNoPlainTextCalls(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// site.serveContent, in files.go, is the one caller of ServeContent. Its
+		// body runs from its func line to the next line that starts with "}".
+		inServe := false
 		for i, line := range strings.Split(string(b), "\n") {
-			if plain.MatchString(line) && !strings.HasPrefix(strings.TrimSpace(line), "//") {
+			if f == "files.go" && strings.HasPrefix(line, "func (s *site) serveContent(") {
+				inServe = true
+			}
+			if inServe && strings.HasPrefix(line, "}") {
+				inServe = false
+			}
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			if plain.MatchString(line) {
 				t.Errorf("%s:%d writes a plain-text error: %s", f, i+1, strings.TrimSpace(line))
 			}
-			// site.serveContent, in files.go, is the one caller of ServeContent.
-			if serve.MatchString(line) && f != "files.go" && !strings.HasPrefix(strings.TrimSpace(line), "//") {
-				t.Errorf("%s:%d calls http.ServeContent: use site.serveContent, which themes the 416: %s", f, i+1, strings.TrimSpace(line))
+			if serve.MatchString(line) {
+				if inServe {
+					allowed++
+				} else {
+					t.Errorf("%s:%d calls http.ServeContent: use site.serveContent, which themes the 416: %s", f, i+1, strings.TrimSpace(line))
+				}
 			}
 		}
+	}
+	if allowed != 1 {
+		t.Errorf("site.serveContent calls http.ServeContent %d times, want 1", allowed)
 	}
 }

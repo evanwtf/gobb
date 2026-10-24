@@ -147,10 +147,10 @@ type Service struct {
 	// name costs one query more than an existing one. A failure is any return
 	// except a good password and a [*LimitedError]: a wrong password, an
 	// ambiguous address, a busy gate, an inactive account, a ban and an error.
-	// The hashes of the imported
-	// board differ a lot in cost, and an unknown name costs one fast check, so
-	// without a floor the time to answer would tell a stranger whether a name or
-	// an address has an account. The wait comes after the gate is free again.
+	// The hashes of the imported board differ a lot in cost, and an unknown name
+	// costs one fast check, so without a floor the time to answer would tell a
+	// stranger whether a name or an address has an account. The wait comes after
+	// the gate is free again.
 	//
 	// New sets it to [DefaultFloor]. [Service.LoadFloor] sets it at start to
 	// max(DefaultFloor, 2 × K × T), rounded up to a whole 50 ms: T is the
@@ -617,8 +617,8 @@ func dummyJob() hashJob {
 // runJobs checks pw against every job in one hold of the gate. The hold is the
 // largest charge among the jobs (chargeKiB), taken once before the first hash
 // and given back after the last. The floor clock c moves forward by the time
-// that the sign-in waited for the gate, and by nothing else: the lookup before
-// the wait stays under the floor. Before each check after the first, runJobs
+// that the sign-in waited for the gate (granted, busy or ended by ctx), and by
+// nothing else: the lookup before the wait stays under the floor. Before each check after the first, runJobs
 // collects garbage, so the memory of a finished check is free before the next
 // one starts, as the gate budget assumes. A dummy job with no dummy hash
 // (password.Hash failed at its first use) does no work.
@@ -629,11 +629,13 @@ func (s *Service) runJobs(ctx context.Context, c *clock, pw string, jobs []hashJ
 	}
 	asked := time.Now()
 	release, err := s.acquire(ctx, kib)
+	// The wait counts whether or not the gate grants room: a busy answer and a
+	// wait that ctx ended come at the same point for every name.
+	c.waited(time.Since(asked))
 	if err != nil {
 		return err
 	}
 	defer release()
-	c.waited(time.Since(asked))
 	ran := false
 	for i := range jobs {
 		j := &jobs[i]

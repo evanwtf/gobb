@@ -178,7 +178,8 @@ func TestSharedEmailCancelLooksUnique(t *testing.T) {
 // that it waits for the gate. Another check holds the whole gate for longer
 // than the floor. Then a wrong sign-in for an unknown name, a gobb account and a
 // legacy account each answers no sooner than the grant plus the floor (less the
-// lookup, which ran before the wait), and the three agree. If the floor counted
+// time from the start to the call for the gate, which the test measures: the
+// reservation and the lookup), and the three agree. If the floor counted
 // from the start alone, each would answer when its own hash ends, and the hash
 // time (here 0, 40 and 120 ms) would show.
 func TestFloorCountsFromTheGrant(t *testing.T) {
@@ -188,8 +189,6 @@ func TestFloorCountsFromTheGrant(t *testing.T) {
 		floor = 300 * time.Millisecond
 		hold  = 500 * time.Millisecond
 		slack = 60 * time.Millisecond
-		// lookup is the most that the lookup before the wait may take.
-		lookup = 20 * time.Millisecond
 	)
 	gate := NewGate(password.HashMemoryKiB)
 	s := NewWith(pool, Options{Gate: gate, Verify: func(_, stored, scheme string) (bool, bool) {
@@ -207,13 +206,24 @@ func TestFloorCountsFromTheGrant(t *testing.T) {
 	}
 	s.Floor = floor
 	s.GateWait = 5 * time.Second
+	// The server makes the dummy hash once, before it listens. Make it here too:
+	// the first call costs about 150 ms, and it would run in the lookup phase of
+	// the first sign-in, outside the wait.
+	dummyHash()
+	// asked is when the sign-in calls for the gate. The time from the start to
+	// then (the reservation and the lookup) is outside the wait, so the floor
+	// may end that much before grant + floor.
+	var asked time.Time
+	s.onAcquire = func(uint64) { asked = time.Now() }
 	after := map[string]time.Duration{}
+	before := map[string]time.Duration{}
 	for _, name := range []string{"nobody", "alice", "bob"} {
 		release, err := gate.Acquire(t.Context(), gate.budget, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
 		done := make(chan error, 1)
+		start := time.Now()
 		go func() {
 			_, err := s.Check(t.Context(), name, "wrong", netip.MustParseAddr("10.1.2.3"), time.Now())
 			done <- err
@@ -235,11 +245,13 @@ func TestFloorCountsFromTheGrant(t *testing.T) {
 			t.Fatalf("%s: err = %v, want ErrWrong", name, err)
 		}
 		after[name] = time.Since(granted)
+		before[name] = asked.Sub(start)
 	}
 	lo, hi := after["nobody"], after["nobody"]
 	for name, d := range after {
-		if d < floor-lookup {
-			t.Errorf("%s: answered %v after the grant, before the floor of %v", name, d, floor)
+		if d < floor-before[name] {
+			t.Errorf("%s: answered %v after the grant, before the floor of %v (less %v before the call for the gate)",
+				name, d, floor, before[name])
 		}
 		lo, hi = min(lo, d), max(hi, d)
 	}
@@ -286,8 +298,10 @@ func TestHoldEndsWithACollection(t *testing.T) {
 			atEntry.Store(forcedGCs())
 			release()
 		}()
-		// Wait until the waiter is in the queue.
-		for {
+		// Wait until the waiter is in the queue. A waiter that never queues
+		// (it got room, or its Acquire failed) fails the test at the deadline.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
 			gate.mu.Lock()
 			n := gate.waiters.Len()
 			gate.mu.Unlock()
@@ -296,6 +310,8 @@ func TestHoldEndsWithACollection(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
+		t.Error("the waiter did not queue for the gate within 5 s")
+		return false, false
 	}})
 	s.Floor = 0
 	for _, name := range []string{"alice", "nobody"} {
@@ -391,5 +407,48 @@ func TestFloorCoversTheLookup(t *testing.T) {
 	}
 	if diff := (least["nobody"] - least["alice"]).Abs(); diff > time.Millisecond {
 		t.Errorf("answer times differ by %v (alice %v, nobody %v), want within 1 ms", diff, least["alice"], least["nobody"])
+	}
+}
+
+// The floor covers the lookup on the busy path too. The gate stays full until
+// the wait for it ends, so every sign-in answers [ErrBusy]. A name with an
+// account and a name without one (whose lookup takes 5 ms longer) answer at the
+// same time, and no sooner than the wait plus the floor: the floor counts from the
+// start, moved forward by the wait, whether or not the gate grants room.
+func TestFloorCoversTheLookupWhenBusy(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	gate := NewGate(password.HashMemoryKiB)
+	s := NewWith(slowLookup{pool, 5 * time.Millisecond, "alice"}, Options{
+		Gate:   gate,
+		Verify: func(string, string, string) (bool, bool) { return false, false },
+	})
+	const gateWait = 80 * time.Millisecond
+	s.Floor = 60 * time.Millisecond
+	s.GateWait = gateWait
+	release, err := gate.Acquire(t.Context(), gate.budget, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	least := map[string]time.Duration{}
+	for range 6 {
+		for _, name := range []string{"alice", "nobody"} {
+			start := time.Now()
+			if _, err := s.Check(t.Context(), name, "wrong", netip.MustParseAddr("10.1.2.3"), time.Now()); !errors.Is(err, ErrBusy) {
+				t.Fatalf("%s: err = %v, want ErrBusy", name, err)
+			}
+			took := time.Since(start)
+			if old, ok := least[name]; !ok || took < old {
+				least[name] = took
+			}
+		}
+	}
+	for name, d := range least {
+		if d < gateWait+s.Floor {
+			t.Errorf("%s: answered after %v, before the wait plus the floor of %v", name, d, gateWait+s.Floor)
+		}
+	}
+	if diff := (least["nobody"] - least["alice"]).Abs(); diff > time.Millisecond {
+		t.Errorf("busy answer times differ by %v (alice %v, nobody %v), want within 1 ms", diff, least["alice"], least["nobody"])
 	}
 }
