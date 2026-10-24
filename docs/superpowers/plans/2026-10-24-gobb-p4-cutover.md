@@ -94,7 +94,7 @@
 
 ### Task 0: Carried from Plan 3's last review
 
-Plan 3's final re-review approved the read side and left four Minors. Its report is `plan3-final-rereview.md` in this plan.s workspace.
+Plan 3's final re-review approved the read side and left four Minors. Its report is `plan3-final-rereview.md` in this plan's workspace.
 
 **Files:** `internal/login/` (the hold and the floor clock, and their tests), `internal/web/` (error answers, and their tests), `README.md`, `docs/changelog.md`.
 
