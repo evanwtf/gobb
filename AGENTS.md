@@ -49,6 +49,7 @@ go test ./...                                                            # tests
 uvx pre-commit install --hook-type pre-commit --hook-type commit-msg     # once per clone
 uvx pre-commit run --all-files                                           # all hooks
 sh scripts/check-public.sh                                               # the public-repo guard alone
+./gobb serve                                                             # run the server; needs GOBB_DSN, see the README
 ./gobb import [--replace] <bundle>                                       # load a bundle (directory or .tar.gz) into an empty database; --replace empties the database first
 ./gobb perms export > perms.jsonl                                        # write the effective permissions as JSON Lines
 ```

@@ -146,3 +146,35 @@ that the pages stand on.
 - A legacy route's key is (`path`, `match`, `id_param`), so one old path can send an ID
   in one parameter to a topic and an ID in another parameter to a post. A route applies
   when its `match` pairs equal and its `id_param` is present; the lowest `position` wins.
+
+Plan 3, the read side, one slice at a time.
+
+- The layout, the Slate schemes and the board index. `gobb serve` now shows the board
+  index to a guest: a header band with the header image (or the board name), a nav
+  bar, a bar for each category, and a row for each forum with its topic and post
+  counts and its last post. A link forum shows its link and no counts. Below 700 px
+  the four columns stack. The page is plain server-rendered HTML; `gobb.js` only
+  opens spoilers. `internal/web/static/gobb.css` holds three schemes with the same
+  eleven color tokens: Slate (the spec values), Slate Deep and Slate Light.
+  `?scheme=slate|slate-deep|slate-light` shows one page in that scheme and stores
+  nothing; otherwise the page uses the `default_color_scheme` setting. A test parses
+  the stylesheet and holds the text, muted text, link, bar and header pairs to WCAG AA
+  (4.5:1) in all three.
+- `internal/board` reads the board: `LoadSettings` (an error names a missing key),
+  `Viewer` and `Guest`, and `Index`, which returns the forums that a viewer may list.
+  A forum's counts and last post add up itself and the descendants that the viewer may
+  read, so a hidden subforum adds nothing to its parent. `internal/boardtest.Load`
+  gives a test a database with a `bundletest` board imported into it.
+- `web.New` builds the whole handler: `/healthz` at the host root and the site under
+  `GOBB_BASE_PATH`, with `site.path` as the one place that builds a site path. A path
+  that is not in clean form (a `..` or an empty element) gets 404, not a redirect.
+  Every page, error pages included, carries the layout. Migration `0002_read_indexes.sql`
+  adds an index on topics by forum and newest activity, and one on `posts (author_id)`.
+- `/files/{dir}/{name...}` serves `avatars`, `smilies`, `ranks` and `header` only. It
+  opens the file through an `os.Root`, refuses any name element that starts with `.`,
+  and serves a regular file only when its first 512 bytes sniff as PNG, JPEG, GIF or
+  WebP. It sends that type, `nosniff` and a one-day cache. Anything else is a plain 404.
+- `gobb serve` uses the server limits of the plan (header 10 s, read 30 s, write 120 s,
+  idle 120 s, 64 KiB headers). On the first SIGTERM or SIGINT it stops the server,
+  then closes the database pool, inside a 25 s window, and it fails with an error that
+  names the pool when the pool does not close in time. A second signal exits at once.

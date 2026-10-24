@@ -32,9 +32,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// shutdownTimeout is the window for a clean stop: it covers the end of the
+// open requests and the close of the database pool. It stays under the 30 s
+// stop grace period in compose.yaml. The tests shorten it.
+var shutdownTimeout = 25 * time.Second
+
 const (
-	// shutdownTimeout stays under the 30 s stop grace period in compose.yaml.
-	shutdownTimeout = 25 * time.Second
 	// healthcheckTimeout bounds the request that the healthcheck command sends.
 	healthcheckTimeout = 2 * time.Second
 	// defaultListen matches the default in package config.
@@ -162,6 +165,19 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// newHTTPServer returns the server for h, with the limits that protect a small
+// host from slow and oversized requests.
+func newHTTPServer(h http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
 // serve migrates the schema, then serves HTTP until SIGTERM or SIGINT.
 // If a migration fails, it returns before the server listens.
 func serve(ctx context.Context, _ []string) error {
@@ -169,47 +185,89 @@ func serve(ctx context.Context, _ []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-
 	pool, err := db.Open(ctx, cfg.DSN)
 	if err != nil {
 		return err
 	}
-	defer pool.Close()
 	if err := applyMigrations(ctx, pool); err != nil {
+		pool.Close()
 		return err
 	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/healthz", web.Health(pool))
-	srv := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	h, err := web.New(ctx, pool, web.Options{
+		BasePath:       cfg.BasePath,
+		DataDir:        cfg.DataDir,
+		TrustedProxies: cfg.TrustedProxies,
+	})
+	if err != nil {
+		pool.Close()
+		return err
 	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
+		pool.Close()
 		return err
 	}
-	slog.Info("listening", "addr", ln.Addr().String())
+	slog.Info("listening", "addr", ln.Addr().String(), "base_path", cfg.BasePath)
 
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigs)
+	return serveUntil(ctx, newHTTPServer(h), ln, pool.Close, sigs, os.Exit)
+}
+
+// serveUntil serves srv on ln until ctx ends, a signal arrives on sigs, or the
+// server fails. It then stops the server and calls closePool, all inside the
+// shutdownTimeout window. When closePool has not returned at the end of the
+// window, it returns an error that says so. A second signal during the stop
+// calls exit(1) at once.
+func serveUntil(ctx context.Context, srv *http.Server, ln net.Listener, closePool func(), sigs <-chan os.Signal, exit func(int)) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	select {
 	case err := <-errc:
+		// The server stopped by itself, so no request is open.
+		closePool()
 		return err
 	case <-ctx.Done():
+	case sig := <-sigs:
+		slog.Info("signal received", "signal", sig.String())
 	}
 	slog.Info("shutting down")
+
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-sigs:
+			slog.Warn("second signal: exiting now")
+			exit(1)
+		case <-stopped:
+		}
+	}()
+
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
-		return err
+	shutErr := srv.Shutdown(shutCtx)
+	if shutErr != nil {
+		// Drop the connections that stayed open, so the pool can close.
+		_ = srv.Close()
+		shutErr = fmt.Errorf("shutdown: %w", shutErr)
 	}
 	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	return nil
+
+	closed := make(chan struct{})
+	go func() {
+		closePool()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-shutCtx.Done():
+		return fmt.Errorf("closing the database pool did not finish within %s", shutdownTimeout)
+	}
+	return shutErr
 }
 
 // healthcheck requests /healthz on the local listen address. It exits 0 on

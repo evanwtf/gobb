@@ -30,8 +30,9 @@ curl -fsS http://127.0.0.1:8080/healthz
 `docker compose pull && docker compose up -d --wait`. The image comes from
 `ghcr.io/evanwtf/gobb`.
 
-`gobb serve` applies the pending migrations at startup, then serves `GET /healthz`.
-It stops cleanly on SIGTERM. Set `GOBB_PORT` in `.env` if port 8080 is busy.
+`gobb serve` applies the pending migrations at startup, then serves the forum and
+`GET /healthz`. It stops cleanly on SIGTERM. Set `GOBB_PORT` in `.env` if port 8080 is
+busy.
 
 The compose network uses the subnet `10.231.0.0/24`, so a reverse proxy on the host
 reaches gobb from `10.231.0.1`, the default in `GOBB_TRUSTED_PROXIES`. If the subnet
@@ -133,14 +134,50 @@ If the command fails, it writes its error into the file and exits with a code ot
 docker compose run --rm -T gobb perms export > "$WORK/perms.jsonl" || echo "perms export failed; do not use perms.jsonl"
 ```
 
+## Run the server
+
+`gobb serve` needs a PostgreSQL database and a data directory. It applies the pending
+migrations at start, so a new database needs no `gobb migrate` first. A new database
+holds no board: `gobb import` loads one (see "Import a bundle"). Until then every page
+answers 500, and `/healthz` answers 200.
+
+The server reads these variables:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `GOBB_DSN` | PostgreSQL connection string. Required. | none |
+| `GOBB_LISTEN` | Address to bind. | `127.0.0.1:8080` |
+| `GOBB_DATA_DIR` | Directory for avatars, smilies, ranks, the header image and attachments. | `/var/lib/gobb` |
+| `GOBB_BASE_PATH` | URL path prefix, such as `/forum/`. | `/` |
+| `GOBB_TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies to trust. | `127.0.0.1/32,::1/128` |
+
+Run it from a clone, against a local database. The import uses the same variables:
+
+```sh
+export GOBB_DSN='postgres://USER@127.0.0.1:5432/gobb?sslmode=disable'
+export GOBB_DATA_DIR="$HOME/gobb-data"
+export GOBB_LISTEN=127.0.0.1:8180
+go build -o gobb ./cmd/gobb
+./gobb import "$BUNDLE"      # once, into an empty database
+./gobb serve
+curl -fsS "http://$GOBB_LISTEN/healthz"
+```
+
+Open `http://127.0.0.1:8180/` in a browser. Add `?scheme=slate-deep` or
+`?scheme=slate-light` to the address to see one page in another color scheme. The
+board's `default_color_scheme` setting picks the scheme for everyone else.
+
+Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
+the database pool, inside 25 seconds. A second signal exits at once.
+
 ## Status
 
 Plan 1, the foundation, is built. It ships the repo guards and CI, the configuration,
 the database pool and migrations, the release-1 schema, legacy and gobb passwords, the
 permission registry, the public `markup` package (Markdown parser, renderer, embeds and
-tree comparison), and the container image with Compose and a health check. The server
-answers `GET /healthz` and nothing else yet: the forum pages come in later plans. The
-design is in
+tree comparison), and the container image with Compose and a health check. Plan 2 adds
+the bundle format and the importer. Plan 3 is under way: `gobb serve` shows the board
+index, and the other forum pages follow one slice at a time. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in
 [docs/superpowers/plans/2026-10-23-gobb-roadmap.md](docs/superpowers/plans/2026-10-23-gobb-roadmap.md).

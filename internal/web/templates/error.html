@@ -1,0 +1,8 @@
+{{define "content"}}
+<section class="notice" aria-labelledby="notice-title">
+  <p class="notice-status">{{.Data.Status}}</p>
+  <h1 id="notice-title">{{.Data.Heading}}</h1>
+  <p>{{.Data.Message}}</p>
+  <p><a href="{{.Home}}">Back to the board index</a></p>
+</section>
+{{end}}

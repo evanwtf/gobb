@@ -1,0 +1,153 @@
+package web
+
+import (
+	"bytes"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/evanwtf/gobb/internal/bundletest"
+)
+
+func TestFiles(t *testing.T) {
+	h, dataDir := smallSite(t)
+
+	// A file outside the data directory, a symlink to it, and some bad names.
+	outside := filepath.Join(t.TempDir(), "outside.png")
+	want, err := os.ReadFile(filepath.Join(dataDir, "avatars", "1.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string][]byte{
+		outside: want,
+		filepath.Join(dataDir, "avatars", ".hidden.png"):     want,
+		filepath.Join(dataDir, "avatars", "x.png"):           []byte("<script>alert(1)</script>"),
+		filepath.Join(dataDir, ".import-x", "a.png"):         want,
+		filepath.Join(dataDir, "avatars", ".d", "b.png"):     want,
+		filepath.Join(dataDir, "avatars", "nested", "n.png"): want,
+	} {
+		if path != outside {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(dataDir, "avatars", "link.png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dataDir, "attachments"), filepath.Join(dataDir, "avatars", "dirlink")); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := get(t, h, "/files/avatars/1.png")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/files/avatars/1.png = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=86400" {
+		t.Errorf("Cache-Control = %q", got)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), want) {
+		t.Error("the body differs from the file")
+	}
+
+	for _, ok := range []struct{ target, ctype string }{
+		{"/files/header/banner.png", "image/png"},
+		{"/files/smilies/smile.gif", "image/gif"},
+		{"/files/ranks/newcomer.png", "image/png"},
+		{"/files/avatars/nested/n.png", "image/png"},
+	} {
+		rec := get(t, h, ok.target)
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != ok.ctype {
+			t.Errorf("%s = %d %q, want 200 %q", ok.target, rec.Code, rec.Header().Get("Content-Type"), ok.ctype)
+		}
+	}
+	if rec := do(t, h, http.MethodHead, "/files/avatars/1.png"); rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+		t.Errorf("HEAD = %d with %d body bytes", rec.Code, rec.Body.Len())
+	}
+
+	for _, target := range []string{
+		"/files/attachments/1.png",
+		"/files/avatars/../avatars/1.png",
+		"/files/avatars/%2e%2e/avatars/1.png",
+		"/files/avatars/..%2favatars/1.png",
+		"/files/.import-x/a.png",
+		"/files/.replaced-2026/a.png",
+		"/files/avatars/.hidden.png",
+		"/files/avatars/.d/b.png",
+		"/files/avatars/link.png",
+		"/files/avatars/dirlink/1.png",
+		"/files/avatars/x.png",
+		"/files/avatars/nested",
+		"/files/avatars/nested/",
+		"/files/avatars/missing.png",
+		"/files/avatars",
+		"/files/avatars/",
+		"/files/",
+		"/files/other/1.png",
+		"/files/avatars//1.png",
+		"/files/avatars/1.png/",
+	} {
+		rec := get(t, h, target)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", target, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got == "image/png" {
+			t.Errorf("%s answered an image", target)
+		}
+	}
+}
+
+func TestFilesOnlyImages(t *testing.T) {
+	b := bundletest.Small()
+	h, dataDir := newTestSite(t, b, Options{})
+	// Real file names, but content that is not an image type gobb serves.
+	for name, content := range map[string][]byte{
+		"avatars/page.png":  []byte("<html><body>hi</body></html>"),
+		"avatars/svg.png":   []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
+		"avatars/text.png":  []byte("plain text"),
+		"avatars/empty.png": {},
+	} {
+		if err := os.WriteFile(filepath.Join(dataDir, name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if rec := get(t, h, "/files/"+name); rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", name, rec.Code)
+		}
+	}
+	// A GIF and a JPEG header are served with their sniffed type, whatever the name.
+	if err := os.WriteFile(filepath.Join(dataDir, "avatars", "g.txt"), []byte("GIF89a\x01\x00\x01\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(t, h, "/files/avatars/g.txt"); rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/gif" {
+		t.Errorf("sniffed gif = %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestStaticFiles(t *testing.T) {
+	h, _ := smallSite(t)
+	for target, ctype := range map[string]string{
+		"/static/gobb.css": "text/css; charset=utf-8",
+		"/static/gobb.js":  "text/javascript; charset=utf-8",
+	} {
+		rec := get(t, h, target)
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != ctype {
+			t.Errorf("%s = %d %q, want 200 %q", target, rec.Code, rec.Header().Get("Content-Type"), ctype)
+		}
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s lacks nosniff", target)
+		}
+		if rec.Body.Len() == 0 {
+			t.Errorf("%s is empty", target)
+		}
+	}
+}

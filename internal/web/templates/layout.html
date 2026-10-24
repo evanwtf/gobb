@@ -1,0 +1,42 @@
+{{define "author"}}{{if .ID}}<a href="{{path "u" (printf "%d" .ID)}}"><bdi>{{.Name}}</bdi></a>{{else}}<bdi>{{.Name}}</bdi>{{end}}{{end}}
+{{- define "layout"}}<!doctype html>
+<html data-scheme="{{.Scheme}}" lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Title}}{{.Title}} - {{end}}{{.Settings.BoardName}}</title>
+<link rel="stylesheet" href="{{.CSS}}">
+<script src="{{.JS}}" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to the content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="{{.Home}}">
+      {{- if .HeaderSrc}}
+      <img class="header-image" src="{{.HeaderSrc}}" alt="{{.Settings.BoardName}}">
+      {{- else}}
+      <span class="brand-name">{{.Settings.BoardName}}</span>
+      {{- if .Settings.BoardDescription}}<span class="brand-desc">{{.Settings.BoardDescription}}</span>{{end}}
+      {{- end}}
+    </a>
+  </div>
+  <nav class="site-nav" aria-label="Main">
+    <ul class="wrap">
+      {{- range .Nav}}
+      <li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a></li>
+      {{- end}}
+    </ul>
+  </nav>
+</header>
+<main id="main" class="wrap">
+{{template "content" .}}
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Times are shown in {{.Viewer.Loc}}.</p>
+  </div>
+</footer>
+</body>
+</html>
+{{end}}
