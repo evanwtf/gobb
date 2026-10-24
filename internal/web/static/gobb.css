@@ -738,10 +738,11 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 .post-body blockquote.twitter-tweet::before,
 .post-body blockquote.instagram-media::before,
 .post-body blockquote.text-post-media::before { content: "Embedded post"; }
-/* The Threads and Instagram scripts put their frame before the fallback and leave
-   the fallback in place. Hide it only once the frame is there. */
-.post-body iframe.text-post-media + blockquote,
-.post-body iframe.instagram-media + blockquote { display: none; }
+/* The Threads script puts its frame before the fallback, adds this class to the
+   fallback and leaves it in place. The Instagram script removes its own. Never
+   pick a fallback by the element before it: that can hit a quote that a member
+   wrote. */
+.post-body blockquote.text-post-media-registered { display: none; }
 
 .attachments { margin-top: 1rem; padding-top: 0.6rem; border-top: 1px solid var(--line-soft); font-size: 0.9rem; }
 .attachments h3 { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.3rem; }

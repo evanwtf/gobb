@@ -256,7 +256,7 @@ func TestAttachmentRights(t *testing.T) {
 	for k, v := range map[string]string{
 		"Content-Type":           "image/png",
 		"X-Content-Type-Options": "nosniff",
-		"Cache-Control":          "private, max-age=3600",
+		"Cache-Control":          "private, no-cache",
 		"Content-Disposition":    "inline; filename*=UTF-8''diagram.png",
 	} {
 		if got := hd.Get(k); got != v {

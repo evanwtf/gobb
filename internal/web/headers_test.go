@@ -344,35 +344,52 @@ func TestRedirectsCacheControl(t *testing.T) {
 	h, _ := smallSite(t)
 	cookies := signIn(t, h, "alice", testPassword)
 	for _, tc := range []struct {
-		path string
-		code int
+		path   string
+		member int
+		guest  int // 0 when a guest gets no redirect
 	}{
-		{"/t/3", http.StatusMovedPermanently},           // a moved-topic marker
-		{"/old/about.cgi", http.StatusMovedPermanently}, // a legacy route
-		{"/p/1", http.StatusFound},
-		{"/t/1/new", http.StatusFound},
-		{"/account", http.StatusFound},
+		{"/t/3", http.StatusMovedPermanently, 0}, // a moved-topic marker in a forum guests cannot read
+		{"/old/about.cgi", http.StatusMovedPermanently, http.StatusMovedPermanently},
+		{"/p/1", http.StatusFound, http.StatusFound},
+		{"/t/1/new", http.StatusFound, 0},
+		{"/account", http.StatusFound, http.StatusFound},
 	} {
-		// The guest may get a redirect or a 404; a redirect must carry the header.
 		guest := get(t, h, tc.path)
-		if guest.Code >= 300 && guest.Code < 400 {
+		if tc.guest != 0 {
+			if guest.Code != tc.guest {
+				t.Errorf("guest %s = %d, want %d", tc.path, guest.Code, tc.guest)
+			}
 			if got := guest.Header().Get("Cache-Control"); got != "private, no-cache" {
 				t.Errorf("guest %s (%d): Cache-Control = %q, want private, no-cache", tc.path, guest.Code, got)
 			}
 		}
 		member := getAs(t, h, tc.path, cookies)
-		if member.Code != tc.code {
-			t.Errorf("member %s = %d, want %d", tc.path, member.Code, tc.code)
+		if member.Code != tc.member {
+			t.Errorf("member %s = %d, want %d", tc.path, member.Code, tc.member)
 		}
 		if got := member.Header().Get("Cache-Control"); got != "private, no-store" {
 			t.Errorf("member %s (%d): Cache-Control = %q, want private, no-store", tc.path, member.Code, got)
 		}
 	}
-	// The legacy file prefix redirects too.
-	if rec := get(t, h, "/old/images/smilies/smile.gif"); rec.Code == http.StatusMovedPermanently {
-		if got := rec.Header().Get("Cache-Control"); got != "private, no-cache" {
-			t.Errorf("legacy file redirect: Cache-Control = %q", got)
-		}
+}
+
+// The 303 after a sign-in and the 303 after a sign-out carry the header of the
+// request that made them: a guest signs in, a member signs out.
+func TestLoginLogoutRedirectsCacheControl(t *testing.T) {
+	h, _ := smallSite(t)
+	rec, cookies := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {testPassword}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("sign-in = %d, want 303", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "private, no-cache" {
+		t.Errorf("sign-in 303: Cache-Control = %q, want private, no-cache", got)
+	}
+	rec, _ = postAs(t, h, "/logout", cookies, url.Values{})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("sign-out = %d, want 303", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Errorf("sign-out 303: Cache-Control = %q, want private, no-store", got)
 	}
 }
 
@@ -391,8 +408,24 @@ func TestAttachmentKeepsCacheControl(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/a/1 = %d", rec.Code)
 	}
-	if got := rec.Header().Get("Cache-Control"); got != "private, max-age=3600" {
-		t.Errorf("/a/1 Cache-Control = %q", got)
+	if got := rec.Header().Get("Cache-Control"); got != "private, no-cache" {
+		t.Errorf("/a/1 Cache-Control = %q, want private, no-cache", got)
+	}
+	// A download depends on the rights of the viewer, so the browser revalidates,
+	// and ServeContent answers 304 when the file is as old as the browser's copy.
+	lm := rec.Header().Get("Last-Modified")
+	if lm == "" {
+		t.Fatal("/a/1 has no Last-Modified")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/a/1", nil)
+	req.Header.Set("If-Modified-Since", lm)
+	again := httptest.NewRecorder()
+	h.ServeHTTP(again, req)
+	if again.Code != http.StatusNotModified {
+		t.Errorf("revalidation = %d, want 304", again.Code)
+	}
+	if got := again.Header().Get("Cache-Control"); got != "private, no-cache" {
+		t.Errorf("304 Cache-Control = %q", got)
 	}
 }
 
@@ -414,8 +447,11 @@ func TestOneScriptTagPerProvider(t *testing.T) {
 	if n := strings.Count(body, "<script async"); n != 1 {
 		t.Errorf("%d async scripts, want 1", n)
 	}
-	if n := strings.Count(body, `class="twitter-tweet"`); n < 2 {
-		t.Errorf("%d tweets on the page, want at least 2", n)
+	// Post 1 and post 2 hold one tweet each, and the signature of post 1 holds a
+	// third. (Post 3 is unapproved, post 2 shows no signature.) All three are on
+	// the page, and the script is still loaded once.
+	if n := strings.Count(body, `class="twitter-tweet"`); n != 3 {
+		t.Errorf("%d tweets on the page, want 3 (2 posts and 1 signature)", n)
 	}
 }
 

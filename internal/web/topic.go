@@ -259,9 +259,11 @@ func (s *site) attachment(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Security-Policy", baseCSP+"; sandbox")
 	}
 	h.Set("Content-Type", contentType)
-	h.Set("Cache-Control", "private, max-age=3600")
+	// A download depends on the rights of the viewer. A browser may keep the file
+	// but must ask again, and ServeContent answers 304 to the question.
+	h.Set("Cache-Control", "private, no-cache")
 	h.Set("Content-Disposition", disposition+"; filename*=UTF-8''"+encodeFilename(meta.Name))
-	http.ServeContent(w, r, "", time.Time{}, f)
+	http.ServeContent(w, r, "", info.ModTime(), f)
 }
 
 // encodeFilename percent-encodes name for the filename* parameter (RFC 8187):
