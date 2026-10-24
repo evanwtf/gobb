@@ -28,3 +28,29 @@ Work outside this repo, by the owner's side:
 
 The look comes from a static mockup the owner approved. It shows real member data, so
 it stays private. Plan 3 rebuilds it here from scratch with made-up data.
+
+## Carried from Plan 1
+
+Decisions and limits that Plan 1 found and later plans must honor:
+
+- **Plan 2 (import).**
+  - Load the bundle in one transaction with `set constraints all deferred`. Every foreign key is deferrable, because the last-post pointers between forums, topics and posts form a cycle.
+  - Cap the size of each post that the bundle reader accepts. `Validate` has no node-count or length cap.
+  - Refuse NUL in any source text. PostgreSQL cannot store it.
+  - Refuse a grant whose scope does not fit its option: a Forum option granted board-wide, or a Board option granted on a forum. `acl.Resolve` ignores such a grant silently.
+- **Plan 3 (read side).**
+  - Limit concurrent logins and the size of login requests. A stored argon2id hash may use up to 256 MiB.
+  - Keep every GET free of side effects. Post images may point at any path on the site.
+  - Set server read, write and idle timeouts, and a header-size limit.
+  - Bound `pool.Close` inside the 25 s shutdown window. Let a second signal force an exit.
+  - The CSP for an X embed also needs `connect-src` and `img-src` for X's syndication hosts.
+- **Plan 4 (write side).**
+  - Cap a post body at 60,000 bytes, and rate-limit posting and preview per member. goldmark's worst case is about 1 s at that size (a repeated `[a](`). Parse a post once, when it is saved, never when it is viewed.
+  - The quote button inserts `> **Name** [wrote](/p/N):` and then a `>` line, so the attribution is its own paragraph.
+  - Set `enable_sig` from the member's preference on every insert. Its default is false.
+  - YouTube start times can become an optional `start` attribute on `youtube`. This is additive, so stored trees stay valid.
+- **Plan 5 (moderation).** A hard delete of a topic or a user must first remove the rows that depend on it. Most foreign keys do not cascade.
+- **Plan 6 (release).**
+  - Add a test that pins the sha256 of each released migration.
+  - The release workflow pushes the image to GitHub Container Registry and defines the `GOBB_VERSION` tag format.
+  - CI compares `gobb version` against `internal/version`, not a hard-coded string.
