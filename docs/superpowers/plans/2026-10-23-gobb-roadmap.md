@@ -57,3 +57,25 @@ Decisions and limits that Plan 1 found and later plans must honor:
   - Add a test that pins the sha256 of each released migration.
   - The release workflow pushes the image to GitHub Container Registry and defines the `GOBB_VERSION` tag format.
   - CI compares `gobb version` against `internal/version`, not a hard-coded string.
+
+## Carried from Plan 2
+
+Decisions and limits that Plan 2 found and later plans must honor:
+
+- **Plan 3 (read side).**
+  - A topic, post, private message or attachment may have no author ID. Show its `author_name` with no profile link.
+  - Wrap every member name in `<bdi>`. Names may hold format characters, so that emoji sequences survive.
+  - A gone user's ID never goes to a new member. The import starts the `users` identity above every gone ID, and any later code that resets it must do the same.
+  - Members get the grants of the groups they belong to, and no others. They do not inherit the guests group's grants (spec 9.1, read literally), so a signed-in user outside `members` can see less than a guest.
+  - Do not serve the `.import-*` or `.replaced-*` folders in the data directory.
+  - Two members may share an email address. A login by email must not pick one of them silently.
+  - Email bans store the address as written. Compare both sides through `account.CleanEmail`.
+  - Login refuses invalid UTF-8 in the name before it calls `account.CleanUsername`.
+  - Static pages store their three body flags. Parse a page again with those flags.
+- **Plan 5 (moderation and admin).** The permissions grid enforces the scope fit that `bundle.Check` enforces: no Forum option or Forum role board-wide, and no Board option on a forum.
+- **Plan 6 (release and cutover).**
+  - Stop the server before an import. The import lock keeps imports apart, not the server.
+  - Take a `pg_dump` before any `--replace`.
+  - The rehearsal checks that the owner can log in, and times the import on the production host.
+  - Bundle length limits count bytes of UTF-8, so a converter truncates long labels in scripts with wide characters.
+- **Plan 7 (open sign-up).** Registration refuses invalid UTF-8, confusable names, doubled inner spaces, unassigned code points, and U+2028 or U+2029 at a name's end.
