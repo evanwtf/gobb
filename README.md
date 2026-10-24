@@ -235,8 +235,12 @@ the operator:
 - A name that is over its limit still works from an address that the account has used
   before. The address limit still applies there.
 - The counts live in memory. A restart sets them to zero.
-- Behind a proxy, set `GOBB_TRUSTED_PROXIES` to the proxy. Without it, every visitor
-  has the address of the proxy and shares one budget of 10 failures.
+- Behind a reverse proxy, `GOBB_TRUSTED_PROXIES` must name the proxy. Without it,
+  every visitor has the address of the proxy and shares one budget of 10 failures.
+  The same mistake turns off the name limit for everyone: every member's known
+  address is then the address of the proxy.
+- A failed sign-in takes at least 400 ms, even when the client closes its end of the
+  connection early.
 - Password checks share 128 MiB of memory. A check that finds no room for 5 seconds
   answers 503.
 

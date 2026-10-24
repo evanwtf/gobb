@@ -98,14 +98,18 @@ func Create(ctx context.Context, q db.Querier, userID int64, remember bool, ip n
 		ExpiresAt: now.Add(lifetime(remember)), Remember: remember,
 	}
 	// One statement, so that the session and the address stand or fall together.
+	// The unspecified address (0.0.0.0 or ::) stands for every client whose address
+	// could not be read, so it is never stored in user_ips.
+	ip = ip.Unmap().WithZone("")
 	_, err := q.Exec(ctx, `
 with s as (
 	insert into sessions (id, user_id, created_at, last_seen_at, expires_at, ip, user_agent, remember)
 	values ($1, $2, $3, $3, $4, $5, $6, $7)
 )
-insert into user_ips (user_id, ip, last_seen_at) values ($2, $5, $3)
+insert into user_ips (user_id, ip, last_seen_at)
+select $2::bigint, $5::inet, $3::timestamptz where $8::bool
 on conflict (user_id, ip) do update set last_seen_at = excluded.last_seen_at`,
-		s.ID, userID, now, s.ExpiresAt, ip.Unmap().WithZone(""), cutUserAgent(userAgent), remember)
+		s.ID, userID, now, s.ExpiresAt, ip, cutUserAgent(userAgent), remember, !ip.IsUnspecified())
 	if err != nil {
 		return "", Session{}, fmt.Errorf("session: create for user %d: %w", userID, err)
 	}

@@ -91,9 +91,9 @@ func (l *Limiter) Has(key string) bool {
 
 // Add records one event for key at now. When the Limiter holds maxKeys keys and
 // key is new, Add first drops the keys that have no event inside the window, and
-// then, if it is still full, the key with the fewest events (the one that is
-// closest to free), the oldest last event first among equals. A key at its limit
-// is the last to go, so a flood of new keys does not free a locked one.
+// then, if it is still full, a batch of about 1% of the keys: the ones with the
+// fewest events (closest to free), the oldest last event first among equals. A key
+// at its limit is the last to go, so a flood of new keys does not free a locked one.
 func (l *Limiter) Add(key string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -142,28 +142,57 @@ func (l *Limiter) live(key string, now time.Time) []time.Time {
 	return events
 }
 
-// makeRoom drops the keys with no event inside the window; if none went, it drops
-// the key with the fewest events, and among equals the one with the oldest last
-// event. The caller holds the lock.
+// makeRoom drops the keys with no event inside the window. If the Limiter is
+// still full, it drops a batch of about 1% of maxKeys (at least one key) in one
+// scan, so that a flood of new keys does not pay for a full scan each. The batch
+// is the keys with the fewest events, and among equals the keys with the oldest
+// last event. The caller holds the lock.
 func (l *Limiter) makeRoom(now time.Time) {
 	cut := now.Add(-l.window)
+	type entry struct {
+		key  string
+		n    int
+		last time.Time
+	}
+	live := make([]entry, 0, len(l.keys))
 	for k, events := range l.keys {
-		if !events[len(events)-1].After(cut) {
+		last := events[len(events)-1]
+		if !last.After(cut) {
 			delete(l.keys, k)
+			continue
 		}
+		live = append(live, entry{k, len(events), last})
 	}
 	if len(l.keys) < l.maxKeys {
 		return
 	}
-	var victim string
-	var victimN int
-	var victimAt time.Time
-	first := true
-	for k, events := range l.keys {
-		n, last := len(events), events[len(events)-1]
-		if first || n < victimN || (n == victimN && last.Before(victimAt)) {
-			victim, victimN, victimAt, first = k, n, last, false
+	batch := min(max(1, l.maxKeys/100), len(live))
+	// Pick the batch with a selection pass: the batch is small, so keep a short
+	// list of the worst candidates and insert into it.
+	less := func(a, b entry) bool {
+		if a.n != b.n {
+			return a.n < b.n
 		}
+		return a.last.Before(b.last)
 	}
-	delete(l.keys, victim)
+	picked := make([]entry, 0, batch)
+	for _, e := range live {
+		if len(picked) == batch && !less(e, picked[batch-1]) {
+			continue
+		}
+		pos := len(picked)
+		if pos == batch {
+			pos--
+		} else {
+			picked = append(picked, e)
+		}
+		for pos > 0 && less(e, picked[pos-1]) {
+			picked[pos] = picked[pos-1]
+			pos--
+		}
+		picked[pos] = e
+	}
+	for _, e := range picked {
+		delete(l.keys, e.key)
+	}
 }

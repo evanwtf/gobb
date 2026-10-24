@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/password"
 	"github.com/evanwtf/gobb/internal/ratelimit"
@@ -275,10 +278,8 @@ func TestFloorDoesNotHoldGate(t *testing.T) {
 // A limited try answers at once. It does not wait for the floor.
 func TestLimitedDoesNotWait(t *testing.T) {
 	svc, _, _ := limitedService(t, 1, 100, nil)
+	_, _ = svc.Check(t.Context(), "alice", "wrong", ip, now) // no floor yet
 	svc.Floor = time.Minute
-	ctx, cancelFirst := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancelFirst()
-	_, _ = svc.Check(ctx, "alice", "wrong", ip, now) // stops waiting when ctx ends
 	start := time.Now()
 	var limited *login.LimitedError
 	if _, err := svc.Check(t.Context(), "alice", "right", ip, now); !errors.As(err, &limited) {
@@ -593,5 +594,137 @@ func TestRehashUsesGate(t *testing.T) {
 	}
 	if err := pool.QueryRow(t.Context(), `select password_scheme from users where id = 2`).Scan(&scheme); err != nil || scheme != "gobb" {
 		t.Errorf("scheme = %q (%v) after the gate freed, want gobb", scheme, err)
+	}
+}
+
+// A try that the name limit refuses keeps its address event: one address cannot
+// send unlimited lookups at a locked name.
+func TestNameRefusalSpendsAddressBudget(t *testing.T) {
+	svc, f, _ := limitedService(t, 10, 3, nil)
+	ctx := t.Context()
+	for i := range 3 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
+	}
+	var limited *login.LimitedError
+	spender := netip.MustParseAddr("10.8.8.8")
+	for i := range 10 {
+		if _, err := svc.Check(ctx, "alice", "right", spender, now); !errors.As(err, &limited) {
+			t.Fatalf("try %d at the locked name: %v, want *LimitedError", i+1, err)
+		}
+	}
+	// The 11th try is over the limit of the address, for any name.
+	if _, err := svc.Check(ctx, "alice", "right", spender, now); !errors.As(err, &limited) {
+		t.Fatalf("11th try: %v", err)
+	}
+	calls := f.calls.Load()
+	if _, err := svc.Check(ctx, "bob", "right", spender, now); !errors.As(err, &limited) {
+		t.Errorf("another name from the same address: %v, want *LimitedError (the address is spent)", err)
+	}
+	if f.calls.Load() != calls {
+		t.Error("Verify ran for an address over its limit")
+	}
+	// Another address is not affected.
+	if id, err := svc.Check(ctx, "bob", "right", addr(100), now); err != nil || id != 2 {
+		t.Errorf("bob from another address = %d, %v", id, err)
+	}
+}
+
+// A try that the address limit refuses takes nothing from the name limit, not
+// even for a moment. A name event that was taken and given back would still have
+// pushed another key out of a full limiter.
+func TestAddressRefusalTouchesNoName(t *testing.T) {
+	_, pool := newService(t)
+	f := &fakeVerify{}
+	names := ratelimit.New(3, time.Hour, 3)
+	svc := login.NewWith(pool, login.Options{
+		IPLimit:   ratelimit.New(1, 15*time.Minute, 100),
+		NameLimit: names,
+		Verify:    f.verify,
+	})
+	svc.Floor = 0
+	ctx := t.Context()
+	for i := range 3 {
+		names.Add("alice", now.Add(time.Duration(i)*time.Second))
+	}
+	names.Add("bob", now)
+	spent := netip.MustParseAddr("10.8.8.8")
+	if _, err := svc.Check(ctx, "nobody", "wrong", spent, now); !errors.Is(err, login.ErrWrong) {
+		t.Fatal(err)
+	}
+	// "carol" is a new key in a full limiter. A refused try must not add it.
+	var limited *login.LimitedError
+	if _, err := svc.Check(ctx, "carol", "right", spent, now); !errors.As(err, &limited) {
+		t.Fatalf("err = %v, want *LimitedError", err)
+	}
+	// The limiter is full (alice, bob, nobody). A refused try that took an event
+	// for "carol" would have pushed one of them out.
+	if !names.Has("alice") || !names.Has("bob") || !names.Has("nobody") || names.Has("carol") {
+		t.Errorf("name keys after a refused try: alice=%t bob=%t nobody=%t carol=%t; want true, true, true, false",
+			names.Has("alice"), names.Has("bob"), names.Has("nobody"), names.Has("carol"))
+	}
+	// The wait of a full name still counts: alice is over, from the same address.
+	_, err := svc.Check(ctx, "alice", "right", spent, now.Add(time.Minute))
+	if !errors.As(err, &limited) || limited.RetryAfter < 30*time.Minute {
+		t.Errorf("both over: %v, want the name's wait of about an hour", err)
+	}
+}
+
+// An address that cannot be read is never a known address, and a sign-in from it
+// is not stored in user_ips.
+func TestUnspecifiedAddressIsNeverKnown(t *testing.T) {
+	svc, _, pool := limitedService(t, 100, 2, nil)
+	ctx := t.Context()
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, '0.0.0.0', $1), (1, '::', $1)`, now)
+	for i := range 2 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
+	}
+	var limited *login.LimitedError
+	for _, a := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified(), netip.MustParseAddr("::ffff:0.0.0.0")} {
+		if _, err := svc.Check(ctx, "alice", "right", a, now); !errors.As(err, &limited) {
+			t.Errorf("from %v: %v, want *LimitedError", a, err)
+		}
+	}
+}
+
+// querySpy counts the queries that mention user_ips.
+type querySpy struct {
+	db.Querier
+	userIPs atomic.Int64
+}
+
+func (q *querySpy) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "user_ips") {
+		q.userIPs.Add(1)
+	}
+	return q.Querier.QueryRow(ctx, sql, args...)
+}
+
+// The user_ips query runs only when the name limit is over.
+func TestKnownAddressQueryOnlyWhenNameLimited(t *testing.T) {
+	_, pool := newService(t)
+	spy := &querySpy{Querier: pool}
+	f := &fakeVerify{}
+	svc := login.NewWith(spy, login.Options{
+		IPLimit:   ratelimit.New(100, 15*time.Minute, 100),
+		NameLimit: ratelimit.New(2, time.Hour, 100),
+		Verify:    f.verify,
+	})
+	svc.Floor = 0
+	ctx := t.Context()
+	_, _ = svc.Check(ctx, "alice", "wrong", addr(1), now)
+	if id, err := svc.Check(ctx, "alice", "right", addr(1), now); err != nil || id != 1 {
+		t.Fatal(id, err)
+	}
+	_, _ = svc.Check(ctx, "nobody", "wrong", addr(1), now)
+	_, _ = svc.Check(ctx, "\xff", "wrong", addr(1), now)
+	if n := spy.userIPs.Load(); n != 0 {
+		t.Errorf("the user_ips query ran %d times with no name over its limit", n)
+	}
+	for i := range 2 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(10+i), now)
+	}
+	_, _ = svc.Check(ctx, "alice", "right", addr(20), now)
+	if n := spy.userIPs.Load(); n != 1 {
+		t.Errorf("the user_ips query ran %d times for one name-limited try, want 1", n)
 	}
 }

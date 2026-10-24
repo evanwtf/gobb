@@ -225,19 +225,32 @@ func TestCheckDefaultFloor(t *testing.T) {
 	}
 }
 
-// A request that ends stops waiting for the floor. The answer stays the same.
-func TestCheckFloorStopsWithContext(t *testing.T) {
-	svc, _ := newService(t)
-	svc.Floor = time.Minute
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	_, err := svc.Check(ctx, "nobody", pw, ip, now)
-	if !errors.Is(err, login.ErrWrong) {
-		t.Errorf("err = %v, want ErrWrong", err)
-	}
-	if took := time.Since(start); took > 30*time.Second {
-		t.Errorf("Check waited %v after its context ended", took)
+// A request whose context ends still gets its answer no sooner than the floor.
+// net/http cancels the context when the client half-closes the connection, and
+// the client can still read the answer; a floor that watched the context would
+// let it time the answer to the hash alone.
+func TestCheckFloorHoldsWhenContextEnds(t *testing.T) {
+	_, pool := newService(t)
+	for name, c := range map[string]struct{ name, pw string }{
+		"unknown name":   {"nobody", pw},
+		"wrong password": {"alice", "wrong"},
+	} {
+		ctx, cancel := context.WithCancel(t.Context())
+		// The context ends during the hash.
+		svc := login.NewWith(pool, login.Options{Verify: func(raw, stored, scheme string) (bool, bool) {
+			cancel()
+			return password.Verify(raw, stored, scheme)
+		}})
+		svc.Floor = 300 * time.Millisecond
+		start := time.Now()
+		_, err := svc.Check(ctx, c.name, c.pw, ip, now)
+		if !errors.Is(err, login.ErrWrong) {
+			t.Errorf("%s: err = %v, want ErrWrong", name, err)
+		}
+		if took := time.Since(start); took < svc.Floor {
+			t.Errorf("%s: answered after %v, before the floor %v", name, took, svc.Floor)
+		}
+		cancel()
 	}
 }
 

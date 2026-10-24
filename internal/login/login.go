@@ -47,7 +47,10 @@ func (e *BannedError) Error() string {
 }
 
 // LimitedError means a limit on failed sign-ins holds the address or the name.
-// Check returns it before any lookup or hash.
+// Check returns it before any password check. When only the limit of the name is
+// full, a lookup of the name and one query on user_ips run first, to see whether
+// the account has used the address; the same two run whether or not an account
+// has the name. No password hash runs.
 type LimitedError struct {
 	// RetryAfter is how long until the longer of the two limits has room again.
 	RetryAfter time.Duration
@@ -161,8 +164,11 @@ type candidate struct {
 // each in one step under the lock of its limiter, before any hash. Parallel
 // guesses therefore cannot pass a limit that the first of them has not reached.
 // If either limit is full, Check returns a [*LimitedError] with the longer wait;
-// it does no hash and does not wait for the floor. A name with no account is
-// limited like one with an account.
+// it runs no password check and does not wait for the floor. A name with no
+// account is limited like one with an account. A try that the address limit
+// refuses takes nothing from the name limit. A try that the name limit refuses
+// keeps its address event, so one address cannot send unlimited lookups at a
+// locked name.
 //
 // One exception: when only the limit of the name is full, and the address of the
 // client is one that an account with that name has used before (user_ips), the
@@ -191,19 +197,19 @@ type candidate struct {
 // other end gives them back: a good password, [ErrBusy], [ErrInactive], a ban, a
 // context or a database error. A good password also clears the name. A failure
 // that a stranger can cause with a guess (ErrWrong or ErrAmbiguous) returns no
-// sooner than Floor after the call began. The wait comes after the gate is
-// released, and ends early when ctx ends; the answer does not change.
+// sooner than Floor after the call began, whatever happens to ctx. The wait
+// comes after the gate is released.
 func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
 	start := time.Now()
 	k := s.keys(name, ip)
-	held, err := s.reserve(ctx, name, k, ip, now)
+	held, err := s.reserve(ctx, name, k, now)
 	if err != nil {
 		return 0, err
 	}
 	id, err := s.check(ctx, name, pw, ip, now)
 	switch {
 	case errors.Is(err, ErrWrong) || errors.Is(err, ErrAmbiguous):
-		s.wait(ctx, start)
+		s.wait(start)
 	case err == nil:
 		s.refund(held, k, now, false)
 		if s.opt.NameLimit != nil && k.nameOK {
@@ -254,33 +260,39 @@ func (s *Service) keys(name string, ip netip.Addr) limitKeys {
 }
 
 // reserve takes one event from each limit, or returns a [*LimitedError] with the
-// longer wait of the limits that are full. When the limit of the name is the only
-// one that is full and the client address is known to an account with that name,
-// the name limit is skipped. A database error gives the events back.
-func (s *Service) reserve(ctx context.Context, name string, k limitKeys, ip netip.Addr, now time.Time) (held, error) {
+// longer wait of the limits that are full. The address limit comes first: when it
+// is full, the try takes nothing from the name limit (the name's wait is only
+// read). When the name limit is the one that is full, and the client address is
+// known to an account with that name, the name limit is skipped. A try that the
+// name limit refuses keeps its address event, so that one address cannot send
+// unlimited lookups at a locked name. A database error gives the events back.
+func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now time.Time) (held, error) {
 	var h held
-	var ipWait, nameWait time.Duration
-	ipOver, nameOver := false, false
 	if s.opt.IPLimit != nil {
-		ok, w := s.opt.IPLimit.Take(k.ip, now)
-		h.ip, ipOver, ipWait = ok, !ok, w
+		ok, ipWait := s.opt.IPLimit.Take(k.ip, now)
+		if !ok {
+			wait := ipWait
+			if s.opt.NameLimit != nil && k.nameOK {
+				if over, w := s.opt.NameLimit.Over(k.name, now); over {
+					wait = max(wait, w)
+				}
+			}
+			return held{}, &LimitedError{RetryAfter: wait}
+		}
+		h.ip = true
 	}
 	if s.opt.NameLimit != nil && k.nameOK {
-		ok, w := s.opt.NameLimit.Take(k.name, now)
-		h.name, nameOver, nameWait = ok, !ok, w
-	}
-	if ipOver {
-		s.refund(h, k, now, true)
-		return held{}, &LimitedError{RetryAfter: max(ipWait, nameWait)}
-	}
-	if nameOver {
+		ok, nameWait := s.opt.NameLimit.Take(k.name, now)
+		if ok {
+			h.name = true
+			return h, nil
+		}
 		known, err := s.knownAddress(ctx, name, k)
 		if err != nil {
 			s.refund(h, k, now, true)
 			return held{}, err
 		}
 		if !known {
-			s.refund(h, k, now, true)
 			return held{}, &LimitedError{RetryAfter: nameWait}
 		}
 	}
@@ -301,11 +313,16 @@ func (s *Service) refund(h held, k limitKeys, now time.Time, withName bool) {
 // knownAddress reports whether an account that name finds has used the client
 // range (user_ips). It looks the name up even when no account has it, and runs
 // the query for the addresses with an empty list of accounts, so the work does
-// not tell a stranger whether the name exists.
+// not tell a stranger whether the name exists. The unspecified address (0.0.0.0
+// or ::) is never known: it stands for every client whose address could not be
+// read.
 func (s *Service) knownAddress(ctx context.Context, name string, k limitKeys) (bool, error) {
 	users, err := s.find(ctx, name)
 	if err != nil {
 		return false, err
+	}
+	if k.prefix.IsValid() && k.prefix.Addr().IsUnspecified() {
+		return false, nil
 	}
 	ids := make([]int64, 0, len(users))
 	for _, u := range users {
@@ -324,18 +341,17 @@ select 1 from user_ips where user_id = any($1) and ip <<= $2::inet)`, ids, prefi
 	return known, nil
 }
 
-// wait sleeps until Floor has passed since start, or until ctx ends.
-func (s *Service) wait(ctx context.Context, start time.Time) {
+// wait sleeps until Floor has passed since start. It does not watch the context
+// of the request: net/http cancels that context when the client half-closes its
+// connection, and the client can still read the answer, so a wait that ended with
+// the context would let a client time the answer to the hash alone. The hold is
+// at most Floor.
+func (s *Service) wait(start time.Time) {
 	left := s.Floor - time.Since(start)
 	if left <= 0 {
 		return
 	}
-	timer := time.NewTimer(left)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case <-ctx.Done():
-	}
+	time.Sleep(left)
 }
 
 // verify checks pw against a stored hash. It holds the memory that the hash

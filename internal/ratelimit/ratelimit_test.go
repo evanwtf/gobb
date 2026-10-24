@@ -230,3 +230,74 @@ func TestLimiterEvictionOrder(t *testing.T) {
 		t.Errorf("after y: new=%t two=%t x=%t y=%t", l.Has("new"), l.Has("two"), l.Has("x"), l.Has("y"))
 	}
 }
+
+// Expired keys go first, even when a live key has fewer events: here the expired
+// key has three events, and each live key has one. Only the expired-first rule
+// picks it.
+func TestLimiterEvictionExpiredFirst(t *testing.T) {
+	l := ratelimit.New(5, time.Hour, 3)
+	now := t0.Add(4 * time.Hour)
+	for i := range 3 {
+		l.Add("expired", t0.Add(time.Duration(i)*time.Minute))
+	}
+	l.Add("live1", now.Add(-30*time.Minute))
+	l.Add("live2", now.Add(-20*time.Minute))
+	if l.Len() != 3 {
+		t.Fatalf("precondition: Len = %d", l.Len())
+	}
+	l.Add("new", now)
+	if l.Has("expired") || !l.Has("live1") || !l.Has("live2") || !l.Has("new") {
+		t.Errorf("expired=%t live1=%t live2=%t new=%t; want false, true, true, true",
+			l.Has("expired"), l.Has("live1"), l.Has("live2"), l.Has("new"))
+	}
+}
+
+// A full limiter makes room for a batch of keys at once, so the scan does not
+// run for every new key. The order is the same, and Len stays within maxKeys.
+func TestLimiterEvictionBatch(t *testing.T) {
+	l := ratelimit.New(5, time.Hour, 1000)
+	for i := range 1000 {
+		// Keys 0 to 9 have two events; the rest have one. Older keys have lower numbers.
+		k := fmt.Sprintf("k%04d", i)
+		l.Add(k, t0.Add(time.Duration(i)*time.Second))
+		if i < 10 {
+			l.Add(k, t0.Add(time.Hour/2+time.Duration(i)*time.Second))
+		}
+	}
+	now := t0.Add(40 * time.Minute)
+	l.Add("fresh", now)
+	if l.Len() > 1000 {
+		t.Fatalf("Len = %d, want at most 1000", l.Len())
+	}
+	if l.Len() > 991 {
+		t.Errorf("Len = %d after the first eviction, want a batch of about 1%% gone", l.Len())
+	}
+	for i := range 10 {
+		if k := fmt.Sprintf("k%04d", i); !l.Has(k) {
+			t.Errorf("%s (two events) was evicted before keys with one", k)
+		}
+	}
+	if l.Has("k0010") {
+		t.Error("the oldest one-event key stayed")
+	}
+	if !l.Has("fresh") {
+		t.Error("the new key is gone")
+	}
+}
+
+// BenchmarkAddNewKeyFull measures Add of a new key into a limiter that holds
+// 10,000 live keys, the cost of a flood of new names.
+func BenchmarkAddNewKeyFull(b *testing.B) {
+	l := ratelimit.New(20, time.Hour, 10000)
+	for i := range 10000 {
+		key := fmt.Sprintf("seed-%d", i)
+		for j := range 1 + i%5 {
+			l.Add(key, t0.Add(time.Duration(i*10+j)*time.Millisecond))
+		}
+	}
+	now := t0.Add(time.Minute)
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		l.Add(fmt.Sprintf("flood-%d", i), now)
+	}
+}

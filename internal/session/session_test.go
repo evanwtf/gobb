@@ -285,3 +285,27 @@ func mustHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
+
+// An address that cannot be read is never stored in user_ips, so that no member
+// has "the address of everyone whose address is unknown" as a known address.
+func TestCreateSkipsUnspecifiedAddress(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	for _, a := range []string{"0.0.0.0", "::", "::ffff:0.0.0.0"} {
+		token, _, err := session.Create(ctx, pool, 1, false, netip.MustParseAddr(a), "", t0)
+		if err != nil {
+			t.Fatalf("Create from %s: %v", a, err)
+		}
+		if _, err := session.Lookup(ctx, pool, token, t0); err != nil {
+			t.Errorf("the session from %s is not live: %v", a, err)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `select count(*) from user_ips where ip in ('0.0.0.0', '::')`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("user_ips rows for an unspecified address = %d (%v), want 0", n, err)
+	}
+	var sessions int
+	if err := pool.QueryRow(ctx, `select count(*) from sessions where user_id = 1`).Scan(&sessions); err != nil || sessions != 3 {
+		t.Errorf("sessions = %d (%v), want 3", sessions, err)
+	}
+}
