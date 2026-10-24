@@ -99,6 +99,75 @@ func TestCheckPublicAllows10Net(t *testing.T) {
 	}
 }
 
+// The carrier-grade NAT range 100.64.0.0/10 holds tailnet addresses. Each case is
+// built from pieces, so this file does not hold a literal address.
+func TestCheckPublicFlagsCGNAT(t *testing.T) {
+	for name, addr := range map[string]string{
+		"low edge":   "100." + "64." + "0." + "1",
+		"middle":     "100." + "100." + "100." + "100",
+		"high edge":  "100." + "127." + "255." + "254",
+		"in a URL":   "http://" + "100." + "72." + "3." + "4:8080/x",
+		"after text": "ssh to" + "100." + "90." + "1." + "2",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := repo(t, map[string]string{"notes.txt": "host is " + addr + "\n"})
+			out, code := run(t, dir, noDenylist(t), "check-public.sh")
+			if code != 1 {
+				t.Fatalf("exit %d, want 1\n%s", code, out)
+			}
+			if !strings.Contains(out, "notes.txt:1") {
+				t.Errorf("output lacks notes.txt:1: %q", out)
+			}
+			if strings.Contains(out, "100.") {
+				t.Errorf("output leaks the address: %q", out)
+			}
+		})
+	}
+}
+
+// Addresses just outside 100.64.0.0/10, and numbers that only contain one, pass.
+func TestCheckPublicAllowsOutsideCGNAT(t *testing.T) {
+	for name, text := range map[string]string{
+		"below":          "100." + "63." + "255." + "255",
+		"above":          "100." + "128." + "0." + "1",
+		"public 100":     "100." + "200." + "1." + "1",
+		"longer prefix":  "1100." + "64." + "0." + "1",
+		"inside dotted":  "9." + "100." + "64." + "0." + "1",
+		"version string": "v1.100.64",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := repo(t, map[string]string{"notes.txt": "value " + text + "\n"})
+			out, code := run(t, dir, noDenylist(t), "check-public.sh")
+			if code != 0 {
+				t.Fatalf("exit %d, want 0\n%s", code, out)
+			}
+		})
+	}
+}
+
+// A tailnet name ends in the .ts.net suffix.
+func TestCheckPublicFlagsTailnetName(t *testing.T) {
+	suffix := ".ts" + ".net"
+	for name, text := range map[string]string{
+		"host":       "ssh box.tail1234" + suffix,
+		"upper case": "ssh BOX.TAIL1234" + strings.ToUpper(suffix),
+		"with port":  "https://box.tail1234" + suffix + ":8443/",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := repo(t, map[string]string{"notes.txt": text + "\n"})
+			out, code := run(t, dir, noDenylist(t), "check-public.sh")
+			if code != 1 {
+				t.Fatalf("exit %d, want 1\n%s", code, out)
+			}
+		})
+	}
+	// A longer word that starts with the suffix is not a tailnet name.
+	dir := repo(t, map[string]string{"notes.txt": "see a.ts" + ".network here\n"})
+	if out, code := run(t, dir, noDenylist(t), "check-public.sh"); code != 0 {
+		t.Fatalf("exit %d, want 0\n%s", code, out)
+	}
+}
+
 func TestCheckPublicFlagsHomePath(t *testing.T) {
 	for name, body := range map[string]string{
 		"mac":   "see " + "/Users" + "/someone/code\n",
