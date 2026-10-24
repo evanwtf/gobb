@@ -26,6 +26,10 @@ var (
 	ErrNotFound = errors.New("board: not found")
 	// ErrForbidden means the viewer knows the row exists but may not use it.
 	ErrForbidden = errors.New("board: forbidden")
+	// ErrTopicLocked and ErrForumLocked are an [ErrForbidden] that says why: a
+	// lock on the topic, or on its forum, stops a reply.
+	ErrTopicLocked = fmt.Errorf("%w: the topic is locked", ErrForbidden)
+	ErrForumLocked = fmt.Errorf("%w: the forum is locked", ErrForbidden)
 	// ErrGone means the row existed and was removed for good.
 	ErrGone = errors.New("board: gone")
 )

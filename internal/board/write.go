@@ -727,8 +727,8 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 		if err != nil {
 			return err
 		}
-		if lockStops(v, t.forumID, t.locked, forumLocked) {
-			return ErrForbidden
+		if err := lockStopError(v, t.forumID, t.locked, forumLocked); err != nil {
+			return err
 		}
 		au, err := resolveAuthor(ctx, tx, v, d, now)
 		if err != nil {

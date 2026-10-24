@@ -99,6 +99,9 @@ type TopicPage struct {
 	CanReply bool
 	// Buttons holds the buttons of each post of Posts, in order.
 	Buttons []PostButtons
+	// CanLock and CanUnlock say which topic action v is offered: the rule of
+	// [SetTopicLock] for the change to the other state. At most one is true.
+	CanLock, CanUnlock bool
 }
 
 // TopicView returns page number page (from 1) of topic topicID as v sees it.
@@ -179,6 +182,9 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 	}
 	out.CanReply = mayReplyTo(v, forumID, t.Visibility) && !lockStops(v, forumID, t.Locked, out.Forum.Locked)
 	if out.Buttons, err = pageButtons(ctx, q, v, out, out.CanReply); err != nil {
+		return TopicPage{}, err
+	}
+	if err := lockOffers(ctx, q, v, &out); err != nil {
 		return TopicPage{}, err
 	}
 	if err := fillCards(ctx, q, out.Posts); err != nil {

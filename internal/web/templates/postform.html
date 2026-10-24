@@ -62,7 +62,7 @@
   </div>
   {{- if .Data.ShowReason}}
   <div class="field">
-    <label for="post-reason">Reason for the edit</label>
+    <label for="post-reason">Edit reason</label>
     <input id="post-reason" name="reason" type="text" value="{{.Data.Reason}}"
       {{- if .Data.Err.Reason}} aria-invalid="true" aria-describedby="post-reason-error"{{end}}>
     {{- if .Data.Err.Reason}}<p class="field-error" id="post-reason-error" role="alert">{{.Data.Err.Reason}}</p>{{end}}

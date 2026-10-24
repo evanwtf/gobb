@@ -38,7 +38,23 @@ func mayReplyTo(v Viewer, forumID int64, visibility string) bool {
 // lockStops reports whether a lock on the topic or its forum stops v: v then
 // needs mod.lock in the forum.
 func lockStops(v Viewer, forumID int64, topicLocked, forumLocked bool) bool {
-	return (topicLocked || forumLocked) && !v.Perms.Has("mod.lock", forumID)
+	return lockStopError(v, forumID, topicLocked, forumLocked) != nil
+}
+
+// lockStopError is [lockStops] with the reason: [ErrTopicLocked] or
+// [ErrForumLocked], both an [ErrForbidden], or nil when no lock stops v. A lock
+// on the topic is named first.
+func lockStopError(v Viewer, forumID int64, topicLocked, forumLocked bool) error {
+	if v.Perms.Has("mod.lock", forumID) {
+		return nil
+	}
+	switch {
+	case topicLocked:
+		return ErrTopicLocked
+	case forumLocked:
+		return ErrForumLocked
+	}
+	return nil
 }
 
 // mayEdit decides whether v may edit a post of authorID in a topic. ok is the
@@ -125,6 +141,9 @@ func MayDownload(v Viewer, forumID int64) bool {
 // lock; a button is a hint, and the write checks again.
 type PostButtons struct {
 	Quote, Edit, Delete bool
+	// Restore shows on a deleted post (mod.delete). Approve shows on a held post
+	// (mod.approve), and on the first post of a held topic.
+	Restore, Approve bool
 }
 
 // pageButtons decides the buttons of each post of the page. canReply is the
@@ -133,31 +152,99 @@ func pageButtons(ctx context.Context, q db.Querier, v Viewer, out TopicPage, can
 	buttons := make([]PostButtons, len(out.Posts))
 	forumID := out.Forum.ID
 	firstID, loaded := int64(0), false
+	isFirst := func(postID int64) (bool, error) {
+		if !loaded {
+			loaded = true
+			err := q.QueryRow(ctx, `select id from posts where topic_id = $1 order by created_at, id limit 1`, out.Topic.ID).Scan(&firstID)
+			if err != nil {
+				return false, fmt.Errorf("board: read first post of topic %d: %w", out.Topic.ID, err)
+			}
+		}
+		return firstID == postID, nil
+	}
 	for i, p := range out.Posts {
 		b := &buttons[i]
 		b.Quote = canReply && p.Visibility == "approved" && out.Topic.Visibility == "approved"
-		if v.UserID == 0 || p.Visibility == "deleted" {
+		if v.UserID == 0 {
+			continue
+		}
+		if p.Visibility == "deleted" {
+			// The rule of RestorePost. A deleted post offers nothing else.
+			b.Restore = v.Perms.Has("mod.delete", forumID)
 			continue
 		}
 		_, b.Edit = mayEdit(v, p.Author.ID, forumID, out.Topic.Locked)
 		_, ok, err := mayDelete(v, p.Author.ID, forumID,
-			func() (bool, error) {
-				if !loaded {
-					loaded = true
-					err := q.QueryRow(ctx, `select id from posts where topic_id = $1 order by created_at, id limit 1`, out.Topic.ID).Scan(&firstID)
-					if err != nil {
-						return false, fmt.Errorf("board: read first post of topic %d: %w", out.Topic.ID, err)
-					}
-				}
-				return firstID == p.ID, nil
-			},
+			func() (bool, error) { return isFirst(p.ID) },
 			func() (int, error) { return approvedOthers(ctx, q, out.Topic.ID, p.ID) })
 		if err != nil {
 			return nil, err
 		}
 		b.Delete = ok
+		// The rule of ApprovePost: a held post, and the first post of a held topic.
+		if v.Perms.Has("mod.approve", forumID) {
+			switch {
+			case p.Visibility == "unapproved":
+				b.Approve = true
+			case out.Topic.Visibility == "unapproved":
+				if b.Approve, err = isFirst(p.ID); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 	return buttons, nil
+}
+
+// lockRights decides whether v may set the lock of topic t to locked. It is the
+// rule of [SetTopicLock], and a topic page asks it to decide whether to offer
+// Lock or Unlock. It gives [ErrForbidden] for no. It reads the log only for an
+// author who holds topic.lock_own and not mod.lock, and who unlocks.
+//
+// An author who holds topic.lock_own and not mod.lock may unlock only when the
+// latest topic.lock row of the topic names the author as actor. A topic that a
+// moderator locked, or that was imported locked and has no row, stays locked for
+// the author.
+func lockRights(ctx context.Context, q db.Querier, v Viewer, t topicRef, locked bool) error {
+	if v.UserID == 0 {
+		return ErrForbidden
+	}
+	own := t.authorID == v.UserID && v.Perms.Has("topic.lock_own", t.forumID)
+	mod := v.Perms.Has("mod.lock", t.forumID)
+	if !own && !mod {
+		return ErrForbidden
+	}
+	if t.moved {
+		return ErrForbidden
+	}
+	if !t.locked || locked || mod {
+		return nil
+	}
+	var actor *int64
+	err := q.QueryRow(ctx, `
+select actor_id from mod_log where target_type = 'topic' and target_id = $1 and action = 'topic.lock'
+ order by id desc limit 1`, t.id).Scan(&actor)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (actor == nil || *actor != v.UserID)) {
+		return ErrForbidden
+	}
+	if err != nil {
+		return fmt.Errorf("board: read the lock of topic %d: %w", t.id, err)
+	}
+	return nil
+}
+
+// lockOffers sets CanLock and CanUnlock of a topic page by [lockRights].
+func lockOffers(ctx context.Context, q db.Querier, v Viewer, out *TopicPage) error {
+	t := topicRef{id: out.Topic.ID, forumID: out.Forum.ID, authorID: out.Topic.Author.ID, locked: out.Topic.Locked}
+	err := lockRights(ctx, q, v, t, !t.locked)
+	switch {
+	case err == nil:
+		out.CanLock, out.CanUnlock = !t.locked, t.locked
+	case errors.Is(err, ErrForbidden):
+	default:
+		return err
+	}
+	return nil
 }
 
 // CanReply reports whether v may reply to topic topicID, with the rights of
@@ -184,10 +271,7 @@ func CanReply(ctx context.Context, q db.Querier, v Viewer, topicID int64) error 
 	if err != nil {
 		return err
 	}
-	if lockStops(v, t.forumID, t.locked, forumLocked) {
-		return ErrForbidden
-	}
-	return nil
+	return lockStopError(v, t.forumID, t.locked, forumLocked)
 }
 
 // CanStartTopic reports whether v may start a topic in forum forumID, with the

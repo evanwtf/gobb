@@ -179,7 +179,7 @@
     {{- if .IP}}
     <p class="post-ip">IP address: <code>{{.IP}}</code></p>
     {{- end}}
-    {{- if or .Actions.Quote .Actions.Edit .Actions.Delete}}
+    {{- if or .Actions.Quote .Actions.Edit .Actions.Delete .Actions.Restore .Actions.Approve}}
     <div class="post-actions">
       {{- if .Actions.Quote}}<a class="button-quiet button-link" href="{{path "t" (printf "%d" .TopicID) "reply"}}?quote={{.ID}}">Quote</a>{{end}}
       {{- if .Actions.Edit}}<a class="button-quiet button-link" href="{{path "p" (printf "%d" .ID) "edit"}}">Edit</a>{{end}}
@@ -187,6 +187,18 @@
       <form class="mark-form" method="post" action="{{path "p" (printf "%d" .ID) "delete"}}">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <button type="submit" class="button-quiet">Delete</button>
+      </form>
+      {{- end}}
+      {{- if .Actions.Restore}}
+      <form class="mark-form" method="post" action="{{path "p" (printf "%d" .ID) "restore"}}">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button type="submit" class="button-quiet">Restore</button>
+      </form>
+      {{- end}}
+      {{- if .Actions.Approve}}
+      <form class="mark-form" method="post" action="{{path "p" (printf "%d" .ID) "approve"}}">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button type="submit" class="button-quiet">Approve</button>
       </form>
       {{- end}}
     </div>

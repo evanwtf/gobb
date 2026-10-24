@@ -652,7 +652,7 @@ func TestPostingNeedsToken(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", "example-password")
 	before := dumpData(t, pool)
-	for _, target := range []string{"/f/2/post", "/t/1/reply", "/p/1/edit", "/p/1/delete"} {
+	for _, target := range []string{"/f/2/post", "/t/1/reply", "/p/1/edit", "/p/1/delete", "/p/1/restore", "/p/1/approve", "/t/1/lock", "/t/1/unlock"} {
 		form := url.Values{"title": {"x"}, "body": {"No token."}, "confirm": {"1"}}
 		for name, f := range map[string]url.Values{
 			"no token":    form,

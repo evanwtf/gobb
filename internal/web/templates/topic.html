@@ -13,8 +13,22 @@
   <p class="page-sub">Started by {{template "author" .Data.Topic.Author}} &middot; {{plural .Data.Topic.Replies "reply" "replies"}} &middot; {{plural .Data.Topic.Views "view" "views"}}</p>
 </header>
 {{template "heldnote" .Data.Held}}
-{{- if .Data.CanReply}}
-<div class="toolbar toolbar-start"><a class="button-quiet button-link" href="{{.Data.ReplyHref}}">Reply</a></div>
+{{- if or .Data.CanReply .Data.CanLock .Data.CanUnlock}}
+<div class="toolbar toolbar-start">
+  {{- if .Data.CanReply}}<a class="button-quiet button-link" href="{{.Data.ReplyHref}}">Reply</a>{{end}}
+  {{- if .Data.CanLock}}
+  <form class="mark-form" method="post" action="{{.Data.LockHref}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="button-quiet">Lock</button>
+  </form>
+  {{- end}}
+  {{- if .Data.CanUnlock}}
+  <form class="mark-form" method="post" action="{{.Data.UnlockHref}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="button-quiet">Unlock</button>
+  </form>
+  {{- end}}
+</div>
 {{- end}}
 
 {{- with .Data.Poll}}

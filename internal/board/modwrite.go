@@ -2,7 +2,6 @@ package board
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -216,32 +215,11 @@ func SetTopicLock(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int
 		if err != nil {
 			return err
 		}
-		if v.UserID == 0 {
-			return ErrForbidden
-		}
-		own := t.authorID == v.UserID && v.Perms.Has("topic.lock_own", t.forumID)
-		if !own && !v.Perms.Has("mod.lock", t.forumID) {
-			return ErrForbidden
-		}
-		if t.moved {
-			return ErrForbidden
+		if err := lockRights(ctx, tx, v, t, locked); err != nil {
+			return err
 		}
 		if t.locked == locked {
 			return nil
-		}
-		if !locked && !v.Perms.Has("mod.lock", t.forumID) {
-			// The author unlocks only a lock that the author made: a moderator's
-			// lock, and a lock that was imported with no row, stay.
-			var actor *int64
-			err := tx.QueryRow(ctx, `
-select actor_id from mod_log where target_type = 'topic' and target_id = $1 and action = 'topic.lock'
- order by id desc limit 1`, t.id).Scan(&actor)
-			if errors.Is(err, pgx.ErrNoRows) || (err == nil && (actor == nil || *actor != v.UserID)) {
-				return ErrForbidden
-			}
-			if err != nil {
-				return fmt.Errorf("board: read the lock of topic %d: %w", t.id, err)
-			}
 		}
 		if _, err := tx.Exec(ctx, `update topics set locked = $2 where id = $1`, t.id, locked); err != nil {
 			return fmt.Errorf("board: lock topic %d: %w", t.id, err)

@@ -27,6 +27,10 @@ type topicData struct {
 	// CanReply shows the Reply buttons. ReplyHref is the address of the form.
 	CanReply  bool
 	ReplyHref string
+	// CanLock and CanUnlock show the Lock or Unlock button. LockHref and
+	// UnlockHref are the addresses of the two forms.
+	CanLock, CanUnlock   bool
+	LockHref, UnlockHref string
 	// Held is true after a post that waits for approval: the page then says so.
 	Held bool
 }
@@ -104,6 +108,9 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 
 	d := topicData{Topic: tp.Topic, Forum: tp.Forum, Held: r.URL.Query().Get("held") == "1"}
 	d.CanReply = tp.CanReply
+	d.CanLock, d.CanUnlock = tp.CanLock, tp.CanUnlock
+	d.LockHref = s.path("t", strconv.FormatInt(id, 10), "lock")
+	d.UnlockHref = s.path("t", strconv.FormatInt(id, 10), "unlock")
 	d.ReplyHref = s.path("t", strconv.FormatInt(id, 10), "reply")
 	d.Crumbs = s.crumbsFor(tp.Crumbs)
 	d.Crumbs = append(d.Crumbs, crumb{Label: tp.Forum.Name, Href: s.path("f", strconv.FormatInt(tp.Forum.ID, 10))})

@@ -31,6 +31,10 @@ func checkBasePath(t *testing.T, where, body, base string) {
 func TestBasePathEverywhere(t *testing.T) {
 	b := linkBoard()
 	allowGroup(b, 2, 2, "post.delete_own")
+	// Alice, an admin, moderates forum 2 for the moderator forms below.
+	for _, o := range []string{"mod.delete", "mod.approve", "mod.lock"} {
+		allowGroup(b, 4, 2, o)
+	}
 	for _, g := range []int64{1, 2} {
 		allowGroup(b, g, 0, "account.search")
 		allowGroup(b, g, 2, "forum.search")
@@ -130,6 +134,54 @@ func TestBasePathEverywhere(t *testing.T) {
 	rec, _ = postAsAt(t, h, "/forum/", made+"/delete", alice, url.Values{"confirm": {"1"}})
 	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/forum/") {
 		t.Errorf("confirmed delete = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// The moderator forms and their answers keep the prefix: Approve on the held
+	// post, Lock, Unlock, Delete with its confirm step, and Restore.
+	mods := func(want ...string) {
+		t.Helper()
+		body := bodyOf(t, getAs(t, h, "/forum/t/1", alice))
+		checkBasePath(t, "moderator /forum/t/1", body, "/forum/")
+		for _, w := range want {
+			if !strings.Contains(body, `<form class="mark-form" method="post" action="`+w+`">`) {
+				t.Errorf("/forum/t/1 lacks the form %s", w)
+			}
+		}
+	}
+	mods("/forum/p/3/approve", "/forum/t/1/lock")
+	for _, c := range []struct{ target, loc string }{
+		{"/forum/p/3/approve", "/forum/p/3"},
+		{"/forum/t/1/lock", "/forum/t/1"},
+	} {
+		if rec, _ = postAsAt(t, h, "/forum/", c.target, alice, url.Values{}); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != c.loc {
+			t.Errorf("POST %s = %d %q, want 303 %q", c.target, rec.Code, rec.Header().Get("Location"), c.loc)
+		}
+	}
+	mods("/forum/t/1/unlock")
+	rec, _ = postAsAt(t, h, "/forum/", "/forum/p/4/delete", alice, url.Values{})
+	if body := bodyOf(t, rec); rec.Code != http.StatusOK || !strings.Contains(body, `action="/forum/p/4/delete"`) {
+		t.Errorf("moderator delete, first step = %d", rec.Code)
+	}
+	for _, c := range []struct {
+		target string
+		form   url.Values
+		loc    string
+	}{
+		{"/forum/t/1/unlock", url.Values{}, "/forum/t/1"},
+		{"/forum/p/4/delete", url.Values{"confirm": {"1"}}, "/forum/t/1"},
+		{"/forum/p/4/restore", url.Values{}, "/forum/p/4"},
+	} {
+		if c.target == "/forum/p/4/restore" {
+			mods("/forum/p/4/restore")
+		}
+		if rec, _ = postAsAt(t, h, "/forum/", c.target, alice, c.form); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != c.loc {
+			t.Errorf("POST %s = %d %q, want 303 %q", c.target, rec.Code, rec.Header().Get("Location"), c.loc)
+		}
+	}
+	for _, p := range []string{"/t/1/lock", "/p/4/restore"} {
+		if rec := request(t, h, http.MethodPost, p, alice, url.Values{}); rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s without the prefix: status %d, want 404", p, rec.Code)
+		}
 	}
 
 	// The pages that refuse a guest, and the account redirect, keep the prefix too.

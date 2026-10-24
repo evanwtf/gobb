@@ -121,13 +121,19 @@ func splitErr(err error) (rights, hard error) {
 // deniedTo answers 403 in the layout for a viewer who may not do what the page
 // is for. A guest gets the link to sign in.
 func (s *site) deniedTo(w http.ResponseWriter, p *page, action string) {
-	p.Title = "No access"
-	d := errorData{Status: http.StatusForbidden, Heading: "No access"}
+	msg := "You do not have the right to " + action + "."
 	if p.Viewer.UserID == 0 {
-		d.Message = "Sign in to " + action + "."
+		msg = "Sign in to " + action + "."
+	}
+	s.deniedWith(w, p, msg)
+}
+
+// deniedWith answers 403 in the layout with msg. A guest gets the link to sign in.
+func (s *site) deniedWith(w http.ResponseWriter, p *page, msg string) {
+	p.Title = "No access"
+	d := errorData{Status: http.StatusForbidden, Heading: "No access", Message: msg}
+	if p.Viewer.UserID == 0 {
 		d.Href, d.HrefLabel = s.loginHref(p.Return), "Sign in"
-	} else {
-		d.Message = "You do not have the right to " + action + "."
 	}
 	p.Data = d
 	s.render(w, http.StatusForbidden, "error.html", p)
@@ -218,11 +224,16 @@ func (s *site) renderForm(w http.ResponseWriter, status int, p *page, fd postFor
 // refuse answers a rights failure of a form page: 404 for what the viewer may not
 // see, 403 for what the viewer may not do.
 func (s *site) refuse(w http.ResponseWriter, r *http.Request, p *page, rights error, action string) {
-	if errors.Is(rights, board.ErrNotFound) {
+	switch {
+	case errors.Is(rights, board.ErrNotFound):
 		s.notFound(w, r)
-		return
+	case errors.Is(rights, board.ErrTopicLocked):
+		s.deniedWith(w, p, "This topic is locked.")
+	case errors.Is(rights, board.ErrForumLocked):
+		s.deniedWith(w, p, "This forum is locked.")
+	default:
+		s.deniedTo(w, p, action)
 	}
-	s.deniedTo(w, p, action)
 }
 
 // actionFor is the verb phrase of a refusal.
@@ -365,6 +376,12 @@ func (s *site) writeFailed(w http.ResponseWriter, r *http.Request, p *page, fd p
 		s.inputFailed(w, p, fd, in)
 	case errors.Is(err, board.ErrNotFound):
 		s.bareForm(w, r, p, http.StatusNotFound, noticeGone, fd.Source)
+	case errors.Is(err, board.ErrTopicLocked):
+		fd.Notice = "This topic is locked. Your text is below."
+		s.renderForm(w, http.StatusForbidden, p, fd)
+	case errors.Is(err, board.ErrForumLocked):
+		fd.Notice = "This forum is locked. Your text is below."
+		s.renderForm(w, http.StatusForbidden, p, fd)
 	case errors.Is(err, board.ErrForbidden):
 		fd.Notice = "You do not have the right to " + actionFor[kind] + ". Your text is below."
 		if p.Viewer.UserID == 0 {
@@ -575,16 +592,7 @@ func (s *site) afterDeleteTarget(ctx context.Context, v board.Viewer, dt board.D
 
 // deleteFailed answers the error of a delete step and reports whether it did.
 func (s *site) deleteFailed(w http.ResponseWriter, r *http.Request, p *page, err error) bool {
-	rights, hard := splitErr(err)
-	switch {
-	case hard != nil:
-		s.serverError(w, r, hard)
-	case rights != nil:
-		s.refuse(w, r, p, rights, "delete this post")
-	default:
-		return false
-	}
-	return true
+	return s.actionFailed(w, r, p, err, "delete this post")
 }
 
 // postItemData is the data of the "post" template: a post as the topic page and
