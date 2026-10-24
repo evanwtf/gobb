@@ -739,6 +739,8 @@ func gateHeld(t *testing.T) (*login.Service, *fakeVerify) {
 	t.Helper()
 	_, pool := newService(t)
 	exec(t, pool, `update users set password_hash = $1, password_scheme = 'legacy' where id = 3`, argonHash(65536))
+	// bob, carol and dave share one email address; alice keeps her own.
+	exec(t, pool, `update users set email = 'shared@example.com', email_clean = 'shared@example.com' where id in (2, 3, 4)`)
 	gate := login.NewGate(login.DefaultBudgetKiB)
 	for range 4 {
 		hold, err := gate.Acquire(t.Context(), password.HashMemoryKiB, time.Second)
@@ -766,18 +768,20 @@ func gateHeld(t *testing.T) (*login.Service, *fakeVerify) {
 	return svc, f
 }
 
-// The four kinds of name that a stranger can try: a legacy bcrypt hash (1,024
-// KiB by its own cost), a gobb hash (19,456 KiB), an imported argon2id hash
-// (65,536 KiB), and no account at all.
+// The kinds of name that a stranger can try: a legacy bcrypt hash (1,024 KiB by
+// its own cost), a gobb hash (19,456 KiB), an imported argon2id hash (65,536
+// KiB), no account at all, an email shared by three accounts and a unique email.
 var hashKinds = []struct{ kind, name string }{
 	{"legacy hash", "bob"},
 	{"gobb hash", "alice"},
 	{"legacy argon2id at 64 MiB", "carol"},
 	{"unknown name", "nobody"},
+	{"shared email", "shared@example.com"},
+	{"unique email", "alice@example.com"},
 }
 
-// With the gate full for a hash of 64 MiB and not for 19 MiB, every account and
-// an unknown name wait for the gate: they all charge the start-up charge of
+// With the gate full for a hash of 64 MiB and not for 19 MiB, every account, a
+// shared or unique email and an unknown name wait for the gate: they all charge the start-up charge of
 // 64 MiB. The wait ends in ErrBusy (503) for each, no sooner than the floor. A
 // name whose check fitted would get ErrWrong (200) instead, and the status would
 // tell a stranger that the account exists.
@@ -802,7 +806,7 @@ func TestCheckFloorHoldsOnBusy(t *testing.T) {
 }
 
 // A context that ends during the gate wait (the client half-closed) gives the
-// same error for all four, and no answer before the floor.
+// same error for every kind of name, and no answer before the floor.
 func TestCheckFloorHoldsOnGateCancel(t *testing.T) {
 	for _, k := range hashKinds {
 		t.Run(k.kind, func(t *testing.T) {

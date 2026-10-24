@@ -239,9 +239,18 @@ the operator:
   every visitor has the address of the proxy and shares one budget of 10 failures.
   The same mistake turns off the name limit for everyone: every member's known
   address is then the address of the proxy.
-- A failed sign-in takes at least 400 ms, even when the client closes its end of the
-  connection early. This holds for every failure after the limits pass: a wrong
-  password, a busy server, an inactive account and a ban.
+- A failed sign-in takes at least the floor, even when the client closes its end of
+  the connection early. This holds for every failure after the limits pass: a wrong
+  password, a busy server, an inactive account and a ban. The server sets the floor
+  at start: 2 × K × T, but at least 400 ms, rounded up to a whole 50 ms. T is the
+  slowest single password check, which the server times once for each kind and cost
+  of stored hash. K is the most accounts that share one email address, because a
+  sign-in by that address checks each of them. The start-up log line
+  `login: sign-in floor` gives the floor, T and K. The floor hides the time of the
+  hash while the host runs a check within twice its start-up time. Heavier CPU load
+  can still show the time.
+- A sign-in holds the memory gate once, for all of its checks. So a busy server
+  answers alike for a shared email address, a unique one and an unknown name.
 - Password checks share 128 MiB of memory. Every check holds the same share,
   whatever the kind of hash, so neither the wait nor the answer tells a stranger
   which names have accounts or which accounts have old hashes. The share follows the

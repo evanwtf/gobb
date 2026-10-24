@@ -66,7 +66,9 @@ func (e *LimitedError) Error() string {
 // email address is longer. The limit keeps the cleaning cheap.
 const maxName = 512
 
-// DefaultFloor is the least time that a failed check takes (see [Service.Floor]).
+// DefaultFloor is the least floor of a failed check (see [Service.Floor]).
+// [Service.LoadFloor] raises the floor above it when the checks of this host
+// need more.
 const DefaultFloor = 400 * time.Millisecond
 
 // The defaults of [New]. Spec 19 leaves the numbers to the builder.
@@ -114,8 +116,15 @@ type Service struct {
 	// inactive account, a ban and an error. The hashes of the imported
 	// board differ a lot in cost, and an unknown name costs one fast check, so
 	// without a floor the time to answer would tell a stranger whether a name or
-	// an address has an account. New sets it to [DefaultFloor]; a test may set it
-	// small. Zero means no floor. The wait comes after the gate is free again.
+	// an address has an account. The wait comes after the gate is free again.
+	//
+	// New sets it to [DefaultFloor]. [Service.LoadFloor] sets it at start to
+	// max(DefaultFloor, 2 × K × T), rounded up to a whole 50 ms: T is the
+	// slowest single wrong-password check on this host, and K is the most
+	// accounts that share one email address, so the most checks that one sign-in
+	// runs. The floor hides the hash time while the host runs a check within 2×
+	// of its start-up time. Heavier CPU load can still show the time. A test may
+	// set Floor directly and skip LoadFloor. Zero means no floor.
 	Floor time.Duration
 	// GateWait is how long a check waits for room in the gate. New sets it to
 	// [DefaultGateWait].
@@ -125,6 +134,12 @@ type Service struct {
 	stored atomic.Uint64
 	// hash makes the gobb hash of a rehash. A test may replace it.
 	hash func(string) (string, error)
+	// onAcquire, when set, sees each charge that the service asks of the gate.
+	// A test sets it.
+	onAcquire func(kib uint64)
+	// timeVerify, when set, replaces the timing of one check at start
+	// (LoadFloor). A test sets it, to control T without real hashes.
+	timeVerify func(stored, scheme string) time.Duration
 }
 
 // DefaultOptions returns new limiters and a new gate with the default numbers,
@@ -197,9 +212,12 @@ type candidate struct {
 //  7. A ban that has not ended is a [*BannedError].
 //  8. A hash that needs a rehash is replaced with a gobb hash.
 //
-// Each hash check, and each dummy check for a name with no account, holds the
-// same share of the gate while it runs ([Service.ChargeKiB]). When the gate
-// stays full, Check returns [ErrBusy].
+// A sign-in takes the gate once, before any hash, and holds it across all of
+// its hash work: the check of each account that the name finds (several for a
+// shared email address), or the dummy check for a name with no account. The
+// hold is the largest charge among them ([Service.ChargeKiB]). So a gate wait,
+// [ErrBusy] and a cancel of ctx happen once, at the same point, for every name.
+// When the gate stays full, Check returns [ErrBusy].
 //
 // A wrong password or an ambiguous address keeps the two reserved events. Any
 // other end gives them back: a good password, [ErrBusy], [ErrInactive], a ban, a
@@ -404,6 +422,78 @@ func (s *Service) LoadCharge(ctx context.Context) error {
 	return nil
 }
 
+// floorStep is the unit that LoadFloor rounds the floor up to.
+const floorStep = 50 * time.Millisecond
+
+// probePassword is the wrong password that LoadFloor checks. It is no one's.
+const probePassword = "gobb floor probe"
+
+// LoadFloor times the password checks of this host and sets [Service.Floor] to
+// max(DefaultFloor, 2 × K × T), rounded up to a whole 50 ms.
+//   - K is the most accounts that share one email_clean, or 1 when none share:
+//     the most checks that one sign-in runs.
+//   - T is the slowest single wrong-password check. One streaming query reads
+//     the stored hashes, and [password.CostShape] sorts them by format and cost
+//     parameters. LoadFloor times one check against one hash of each shape,
+//     and of the dummy check (the shape of a new gobb hash too).
+//
+// It logs one INFO line with the floor in ms, T in ms and K, with no name and
+// no hash. Call it once, after [Service.LoadCharge] and before the service
+// serves. The checks run one at a time, outside the gate.
+func (s *Service) LoadFloor(ctx context.Context) error {
+	var k int64
+	err := s.q.QueryRow(ctx, `select coalesce(max(n), 1) from (
+select count(*) as n from users where email_clean <> '' group by email_clean) shared`).Scan(&k)
+	if err != nil {
+		return fmt.Errorf("login: count shared email addresses: %w", err)
+	}
+	type sample struct{ stored, scheme string }
+	shapes := map[string]sample{}
+	if h := dummyHash(); h != "" {
+		shapes[password.CostShape("gobb", h)] = sample{h, "gobb"}
+	}
+	rows, err := s.q.Query(ctx, `select password_scheme, password_hash from users where password_hash <> ''`)
+	if err != nil {
+		return fmt.Errorf("login: read the stored hashes: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var scheme, hash string
+		if err := rows.Scan(&scheme, &hash); err != nil {
+			return fmt.Errorf("login: read the stored hashes: %w", err)
+		}
+		// A hash that Verify refuses before any work has no shape and no cost.
+		if shape := password.CostShape(scheme, hash); shape != "" {
+			if _, seen := shapes[shape]; !seen {
+				shapes[shape] = sample{hash, scheme}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("login: read the stored hashes: %w", err)
+	}
+	var slowest time.Duration
+	for _, sm := range shapes {
+		slowest = max(slowest, s.timeOne(sm.stored, sm.scheme))
+	}
+	floor := max(DefaultFloor, 2*time.Duration(k)*slowest)
+	floor = (floor + floorStep - 1) / floorStep * floorStep
+	s.Floor = floor
+	slog.Info("login: sign-in floor", "floor_ms", floor.Milliseconds(),
+		"t_ms", slowest.Round(time.Millisecond).Milliseconds(), "k", k, "shapes", len(shapes))
+	return nil
+}
+
+// timeOne returns how long one wrong-password check against stored takes.
+func (s *Service) timeOne(stored, scheme string) time.Duration {
+	if s.timeVerify != nil {
+		return s.timeVerify(stored, scheme)
+	}
+	start := time.Now()
+	s.opt.Verify(probePassword, stored, scheme)
+	return time.Since(start)
+}
+
 // ChargeKiB returns the share of the gate, in KiB, that every password check
 // holds: the larger of the memory of a new gobb hash ([password.HashMemoryKiB])
 // and the memory of the most costly stored hash that [Service.LoadCharge] found.
@@ -434,20 +524,51 @@ func (s *Service) chargeKiB(scheme, stored string) uint64 {
 	return max(s.ChargeKiB(), password.MemoryKiB(scheme, stored))
 }
 
-// verify checks pw against a stored hash. It holds the charge of the check
-// (chargeKiB) in the gate while the hash runs, and lets go before it returns.
-func (s *Service) verify(ctx context.Context, pw, stored, scheme string) (ok, needsRehash bool, err error) {
-	release, err := s.acquire(ctx, s.chargeKiB(scheme, stored))
+// hashJob is one password check of a sign-in: a stored hash and its scheme.
+// A dummy job checks the made-up dummy hash; its result never counts.
+type hashJob struct {
+	stored, scheme string
+	dummy          bool
+	ok, rehash     bool
+}
+
+// dummyJob returns the job of one dummy check.
+func dummyJob() hashJob {
+	return hashJob{stored: dummyHash(), scheme: "gobb", dummy: true}
+}
+
+// runJobs checks pw against every job in one hold of the gate. The hold is the
+// largest charge among the jobs (chargeKiB), taken once before the first hash
+// and given back after the last. A dummy job with no dummy hash (password.Hash
+// failed at its first use) does no work.
+func (s *Service) runJobs(ctx context.Context, pw string, jobs []hashJob) error {
+	var kib uint64
+	for _, j := range jobs {
+		kib = max(kib, s.chargeKiB(j.scheme, j.stored))
+	}
+	release, err := s.acquire(ctx, kib)
 	if err != nil {
-		return false, false, err
+		return err
 	}
 	defer release()
-	ok, needsRehash = s.opt.Verify(pw, stored, scheme)
-	return ok, needsRehash, nil
+	for i := range jobs {
+		j := &jobs[i]
+		if j.stored == "" {
+			continue
+		}
+		ok, rehash := s.opt.Verify(pw, j.stored, j.scheme)
+		if !j.dummy {
+			j.ok, j.rehash = ok, rehash
+		}
+	}
+	return nil
 }
 
 // acquire takes kib from the gate. With no gate, it takes nothing.
 func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
+	if s.onAcquire != nil {
+		s.onAcquire(kib)
+	}
 	if s.opt.Gate == nil {
 		return func() {}, nil
 	}
@@ -456,7 +577,7 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 
 func (s *Service) check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
 	if !utf8.ValidString(name) || len(name) > maxName {
-		if err := s.burn(ctx, pw); err != nil {
+		if err := s.runJobs(ctx, pw, []hashJob{dummyJob()}); err != nil {
 			return 0, err
 		}
 		return 0, ErrWrong
@@ -466,26 +587,28 @@ func (s *Service) check(ctx context.Context, name, pw string, ip netip.Addr, now
 		return 0, err
 	}
 	if len(users) == 0 {
-		if err := s.burn(ctx, pw); err != nil {
+		if err := s.runJobs(ctx, pw, []hashJob{dummyJob()}); err != nil {
 			return 0, err
 		}
 		return 0, ErrWrong
 	}
 
+	// One job per account, in one hold of the gate. An account with no hash
+	// runs the dummy check and never matches.
+	jobs := make([]hashJob, len(users))
+	for i, u := range users {
+		jobs[i] = hashJob{stored: u.hash, scheme: u.scheme}
+		if u.hash == "" {
+			jobs[i] = dummyJob()
+		}
+	}
+	if err := s.runJobs(ctx, pw, jobs); err != nil {
+		return 0, err
+	}
 	matches := 0
 	for i := range users {
-		u := &users[i]
-		if u.hash == "" {
-			if err := s.burn(ctx, pw); err != nil {
-				return 0, err
-			}
-			continue
-		}
-		u.matched, u.needsRehash, err = s.verify(ctx, pw, u.hash, u.scheme)
-		if err != nil {
-			return 0, err
-		}
-		if u.matched {
+		users[i].matched, users[i].needsRehash = jobs[i].ok, jobs[i].rehash
+		if users[i].matched {
 			matches++
 		}
 	}
@@ -623,27 +746,23 @@ update users set password_hash = $2, password_scheme = 'gobb'
 }
 
 var (
-	burnOnce sync.Once
-	burnHash string
+	dummyOnce sync.Once
+	dummy     string
 )
 
-// burn does the work of one password check against a made-up gobb hash, so that
-// a name that matches no account, or an account with no password, takes about as
-// long as one that does. Without it, the time to answer would tell a stranger
-// which names exist. It runs through the same gate and the same Verify as a real
-// check. It is the one dummy check.
-func (s *Service) burn(ctx context.Context, pw string) error {
-	burnOnce.Do(func() {
+// dummyHash returns a made-up gobb hash, made once. A sign-in checks the
+// password against it when the name matches no account, or an account with no
+// password, so that such a name takes about as long as one that does. Without
+// it, the time to answer would tell a stranger which names exist. It is "" when
+// password.Hash fails.
+func dummyHash() string {
+	dummyOnce.Do(func() {
 		h, err := password.Hash("gobb burn password")
 		if err != nil {
 			slog.Error("login: cannot make the dummy hash", "err", err)
 			return
 		}
-		burnHash = h
+		dummy = h
 	})
-	if burnHash == "" {
-		return nil
-	}
-	_, _, err := s.verify(ctx, pw, burnHash, "gobb")
-	return err
+	return dummy
 }

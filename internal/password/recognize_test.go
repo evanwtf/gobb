@@ -211,3 +211,43 @@ func TestBcryptShapeAcceptsGeneratedHashes(t *testing.T) {
 		}
 	}
 }
+
+// CostShape keys a hash by its format and cost parameters, without the salt or
+// the digest, so two hashes with one key cost the same to check.
+func TestCostShape(t *testing.T) {
+	bcrypt10 := vectorByName(t, "bcrypt-horse").Hash
+	argon := vectorByName(t, "argon2id-horse").Hash
+	chain := vectorByName(t, "chain-horse").Hash
+	other := map[string]string{}
+	for _, v := range loadVectors(t) {
+		other[v.Name[:strings.Index(v.Name, "-")]] = v.Hash
+	}
+	gobbHash := mustHash(t, "x")
+	for _, c := range []struct {
+		name, scheme, hash, want string
+	}{
+		{"gobb", "gobb", gobbHash, "gobb argon2id m=19456,t=2,p=1"},
+		{"legacy argon2id", "legacy", argon, "legacy argon2id m=65536,t=4,p=2"},
+		{"bcrypt", "legacy", bcrypt10, "legacy bcrypt 10"},
+		{"bcrypt cost 4", "legacy", strings.Replace(bcrypt10, "$10$", "$04$", 1), "legacy bcrypt 04"},
+		{"chain", "legacy", chain, "legacy chain " + chain[len("$chain$phpass,"):len("$chain$phpass,")+1] + " bcrypt 10"},
+		{"empty", "legacy", "", ""},
+		{"refused shape", "legacy", "md5:abc", ""},
+		{"over the cap", "legacy", strings.Replace(capStoredHash(), "m=262144,", "m=999999999,", 1), ""},
+		{"unknown scheme", "other", gobbHash, ""},
+	} {
+		if got := CostShape(c.scheme, c.hash); got != c.want {
+			t.Errorf("%s: CostShape = %q, want %q", c.name, got, c.want)
+		}
+	}
+	// The salt and the digest do not change the key.
+	if a, b := CostShape("gobb", gobbHash), CostShape("gobb", mustHash(t, "y")); a != b {
+		t.Errorf("two gobb hashes have the keys %q and %q", a, b)
+	}
+	// Every vector kind has a key, and the same kind gives the same key.
+	for kind, h := range other {
+		if CostShape("legacy", h) == "" {
+			t.Errorf("the %s vectors have no key", kind)
+		}
+	}
+}

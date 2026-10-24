@@ -48,7 +48,8 @@ type Options struct {
 	// Now returns the current time. The default is time.Now.
 	Now func() time.Time
 	// LoginFloor is the least time that a failed sign-in takes. Zero means the
-	// default of 400 ms. Tests set it small.
+	// floor that New times at start (login.Service.LoadFloor): at least 400 ms.
+	// Tests set it, and skip the timing.
 	LoginFloor time.Duration
 	// LoginGate replaces the memory gate of password checks. Nil means a gate
 	// with the default budget. Tests use it to fill the gate.
@@ -88,8 +89,9 @@ var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
 // templates once, so a broken template fails here and not on a request. It reads
-// the legacy routes once too, and sets the gate charge of the password checks
-// from the stored hashes ([login.Service.LoadCharge]).
+// the legacy routes once too, sets the gate charge of the password checks from
+// the stored hashes ([login.Service.LoadCharge]), and times the checks to set the
+// floor of a failed sign-in ([login.Service.LoadFloor]).
 func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
 	lo := login.DefaultOptions()
 	if opt.LoginGate != nil {
@@ -120,6 +122,13 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	// Like the legacy table, it is read once: the server stops for an import.
 	if err := s.login.LoadCharge(ctx); err != nil {
 		return nil, err
+	}
+	// The floor of a failed sign-in covers the slowest sign-in on this host. A
+	// test that sets LoginFloor skips the timing.
+	if opt.LoginFloor == 0 {
+		if err := s.login.LoadFloor(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	inner := http.NewServeMux()

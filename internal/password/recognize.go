@@ -1,6 +1,9 @@
 package password
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Recognized reports whether Verify can match a stored hash under scheme. It parses the
 // hash and applies the same shape and caps that Verify applies. It runs no bcrypt,
@@ -78,4 +81,40 @@ func MemoryKiB(scheme, hash string) uint64 {
 		}
 	}
 	return cost
+}
+
+// CostShape returns a key for the cost of checking a hash stored under scheme:
+// the scheme, the format and its cost parameters, without the salt or the
+// digest. Two hashes with one key cost about the same to check. The key of an
+// argon2id hash is "<scheme> argon2id m=…,t=…,p=…", of a bcrypt hash "legacy
+// bcrypt <cost>", and of a chain "legacy chain <count character> bcrypt <cost>".
+// A hash that Verify refuses before any work, the empty hash and an unknown
+// scheme give "". CostShape parses the hash and runs no hash.
+func CostShape(scheme, hash string) string {
+	argon := func() string {
+		p, err := parsePHC(hash)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("%s argon2id m=%d,t=%d,p=%d", scheme, p.m, p.t, p.p)
+	}
+	switch scheme {
+	case "gobb":
+		return argon()
+	case "legacy":
+		switch {
+		case isBcryptHash(hash):
+			if bcryptShapeOK(hash) {
+				return "legacy bcrypt " + hash[4:6]
+			}
+		case strings.HasPrefix(hash, argonPrefix):
+			return argon()
+		case strings.HasPrefix(hash, chainPrefix):
+			rest := strings.TrimPrefix(hash, chainPrefix)
+			if chainShapeOK(rest) {
+				return "legacy chain " + rest[:1] + " bcrypt " + rest[phpassSettingLen+4:phpassSettingLen+6]
+			}
+		}
+	}
+	return ""
 }

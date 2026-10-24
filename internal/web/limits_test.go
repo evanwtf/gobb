@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/evanwtf/gobb/bundle"
+	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/password"
@@ -230,6 +231,42 @@ func TestLoginChargeFollowsStoredHashes(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("POST /login as %s = %d, want 503", name, rec.Code)
 		}
+	}
+}
+
+// web.New times the password checks at start and sets the sign-in floor, with
+// one log line. A test that sets LoginFloor skips the timing.
+func TestNewTimesTheFloor(t *testing.T) {
+	pool, dataDir := boardtest.Load(t, bundletest.Small())
+	floorLines := func(opt Options) []string {
+		logs := captureLogs(t)
+		opt.DataDir = dataDir
+		if _, err := New(t.Context(), pool, opt); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, l := range logs.lines() {
+			if strings.Contains(l, "login: sign-in floor") {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	lines := floorLines(Options{})
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") {
+		t.Fatalf("start-up floor lines = %q, want one INFO line", lines)
+	}
+	// The small board shares no email address, so K is 1. The floor is at least
+	// the default and a whole number of 50 ms; T depends on this host.
+	m := regexp.MustCompile(`floor_ms=(\d+) t_ms=\d+ k=1\b`).FindStringSubmatch(lines[0])
+	if m == nil {
+		t.Fatalf("the floor line %q has no floor_ms, t_ms and k=1", lines[0])
+	}
+	if ms, _ := strconv.Atoi(m[1]); ms < 400 || ms%50 != 0 {
+		t.Errorf("floor_ms = %d, want at least 400 and a multiple of 50", ms)
+	}
+	if lines := floorLines(Options{LoginFloor: time.Millisecond}); len(lines) != 0 {
+		t.Errorf("a set LoginFloor still timed the checks: %q", lines)
 	}
 }
 
