@@ -140,7 +140,7 @@ Plan 3's final re-review approved the read side and left four Minors. Its report
 
 Rules:
 - **The quadratic parse.** Fix it (roadmap, "Carried from Plan 3"). A repeated `[a](` is the known case.
-- **Angle-bracket text.** Text that appears only inside angle brackets (`<like this>`) reaches `Rendered.Text`, so search finds it.
+- **Angle-bracket text.** Search finds text that appears only inside angle brackets (`<like this>`). `Rendered.Text` keeps the brackets. (Ruling in review: migration `0008` maps `<` and `>` to spaces inside the search expressions only, because PostgreSQL's text-search parser drops `<word ...>` as a tag.)
 - **`htmlcheck.Check`** tokenizes HTML with `golang.org/x/net/html` and fails on any of these:
   - an element outside the renderer's allowlist;
   - an attribute outside that element's allowlist;
