@@ -29,6 +29,14 @@ const (
 // refuses a lower count.
 const minPhpassIndex = 7
 
+// bcryptHashLen is the length of a bcrypt hash: a 7-byte prefix, a 22-character salt
+// and a 31-character hash.
+const bcryptHashLen = 60
+
+// bcryptAlphabet is the base64 alphabet of bcrypt. The position of a character in it
+// is the value of that character.
+const bcryptAlphabet = "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
 // Limits on the cost that a stored argon2id hash may demand. A stored hash must
 // not make a login use unbounded memory or time.
 const (
@@ -76,15 +84,44 @@ func isBcryptHash(stored string) bool {
 		strings.HasPrefix(stored, "$2b$")
 }
 
-// bcryptMatches compares input with a bcrypt hash. It refuses a cost above
-// maxBcryptCost before any bcrypt work. x/crypto accepts the $2y$ marker, so the
-// rewrite to $2a$ is defensive.
+// bcryptMatches compares input with a bcrypt hash. It refuses a hash with the wrong
+// shape, and a cost above maxBcryptCost, before any bcrypt work. x/crypto accepts the
+// $2y$ marker, so the rewrite to $2a$ is defensive.
 func bcryptMatches(hash, input string) bool {
-	if !bcryptCostOK(hash) {
+	if !bcryptShapeOK(hash) {
 		return false
 	}
 	hash = normalizeBcryptPrefix(hash)
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(input)) == nil
+}
+
+// bcryptShapeOK reports whether hash has the exact form of a bcrypt hash, with a cost
+// within the caps. The hash must be 60 bytes long and start with a bcrypt marker. Its
+// last 53 bytes must use the bcrypt alphabet. The last byte must have zero in its two
+// unused low bits. It runs no bcrypt work.
+func bcryptShapeOK(hash string) bool {
+	if len(hash) != bcryptHashLen || !isBcryptHash(hash) {
+		return false
+	}
+	if !isDigit(hash[4]) || !isDigit(hash[5]) || hash[6] != '$' || !bcryptCostOK(hash) {
+		return false
+	}
+	for i := 7; i < len(hash); i++ {
+		v := strings.IndexByte(bcryptAlphabet, hash[i])
+		if v < 0 {
+			return false
+		}
+		// The encoder writes zero bits in the two unused low bits of the last character.
+		if i == len(hash)-1 && v%4 != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// isDigit reports whether c is an ASCII decimal digit.
+func isDigit(c byte) bool {
+	return '0' <= c && c <= '9'
 }
 
 // bcryptCostOK reports whether hash is a bcrypt hash with a cost of at most
@@ -122,14 +159,14 @@ func argon2idMatches(stored, form string) bool {
 }
 
 // chainShapeOK reports whether rest, the part of a chain hash after "$chain$phpass,",
-// has a portable-hash setting and a bcrypt hash, and both are within the caps. It
-// runs no MD5 or bcrypt work.
+// has a portable-hash setting within the caps and a bcrypt hash that bcryptShapeOK
+// accepts. It runs no MD5 or bcrypt work.
 func chainShapeOK(rest string) bool {
-	if len(rest) < phpassSettingLen || !strings.HasPrefix(rest[phpassSettingLen:], "$2") {
+	if len(rest) < phpassSettingLen {
 		return false
 	}
 	setting, bc := rest[:phpassSettingLen], rest[phpassSettingLen:]
-	return phpassIndexOK(setting) && bcryptCostOK(bc)
+	return phpassIndexOK(setting) && bcryptShapeOK(bc)
 }
 
 // chainMatches checks the part of a chain hash after "$chain$phpass,". That part

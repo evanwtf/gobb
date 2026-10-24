@@ -2,14 +2,16 @@ package password
 
 import "strings"
 
-// Recognized reports whether a stored hash has a form and cost that Verify can check.
-// It parses the hash and applies the caps that Verify applies. It runs no bcrypt,
+// Recognized reports whether Verify can match a stored hash under scheme. It parses the
+// hash and applies the same shape and caps that Verify applies. It runs no bcrypt,
 // argon2 or phpass work. The scheme is "gobb" or "legacy". Any other scheme gives
 // false.
 //
-// A bcrypt hash passes when its cost is within the cap. The check does not read the
-// rest of a bcrypt hash, so a hash with a damaged body can pass and still fail to
-// match.
+// A bcrypt hash passes when it is 60 bytes long and starts with $2a$, $2b$ or $2y$. Its
+// cost is two digits, from 04 to 14. Its last 53 bytes use the bcrypt alphabet,
+// ./A-Za-z0-9. Its last byte has a position in the alphabet that is a multiple of 4, so
+// that its two unused low bits are zero. A chain hash passes when its count character
+// gives an index from 7 to 18 in the phpass alphabet, and its bcrypt part passes.
 func Recognized(scheme, hash string) bool {
 	switch scheme {
 	case "gobb":
@@ -28,7 +30,7 @@ func legacyRecognized(stored string) bool {
 	case stored == "":
 		return true
 	case isBcryptHash(stored):
-		return bcryptCostOK(stored)
+		return bcryptShapeOK(stored)
 	case strings.HasPrefix(stored, argonPrefix):
 		_, err := parsePHC(stored)
 		return err == nil

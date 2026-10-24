@@ -1,9 +1,12 @@
 package password
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestRecognized(t *testing.T) {
@@ -46,23 +49,32 @@ func TestRecognized(t *testing.T) {
 	}
 }
 
-// The hash is the real cost-10 vector with its cost edited to 14. Recognized parses
-// the cost and runs no bcrypt work. A bcrypt run at cost 14 takes far longer than
-// the bound, so a run would fail the test.
+// Each hash sits at a cap: a bcrypt cost of 14, a chain hash with phpass count index
+// 18 and a bcrypt cost of 14, and an argon2id memory of 256 MiB. Recognized parses each
+// hash and runs no bcrypt, argon2 or phpass work. One bcrypt run at cost 14 takes far
+// longer than the bound, so a run would fail the test.
 func TestRecognizedIsFast(t *testing.T) {
 	orig := vectorByName(t, "bcrypt-horse").Hash
-	hash := strings.Replace(orig, "$10$", "$14$", 1)
-	if hash == orig {
-		t.Fatal("no cost 10 in the vector hash")
+	bcrypt14 := strings.Replace(orig, "$10$", "$14$", 1)
+	rest := strings.TrimPrefix(vectorByName(t, "chain-horse").Hash, chainPrefix)
+	setting, bc := rest[:phpassSettingLen], rest[phpassSettingLen:]
+	chainBC14 := strings.Replace(bc, "$2y$10$", "$2y$14$", 1)
+	if bcrypt14 == orig || chainBC14 == bc {
+		t.Fatal("precondition: no cost 10 to edit")
 	}
+	chain18 := chainPrefix + string(phpassAlphabet[18]) + setting[1:] + chainBC14
+	hashes := []string{bcrypt14, chain18, capStoredHash()}
+
 	start := time.Now()
 	for range 1000 {
-		if !Recognized("legacy", hash) {
-			t.Fatal("bcrypt cost 14 is not recognized")
+		for _, h := range hashes {
+			if !Recognized("legacy", h) {
+				t.Fatalf("hash of %d bytes is not recognized", len(h))
+			}
 		}
 	}
 	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
-		t.Errorf("1,000 calls took %v, want under 50ms", elapsed)
+		t.Errorf("3,000 calls took %v, want under 50ms", elapsed)
 	}
 }
 
@@ -106,5 +118,96 @@ func TestRecognizedCoversVerifiedVectors(t *testing.T) {
 	}
 	if verified == 0 {
 		t.Fatal("no vector verifies, so the check proves nothing")
+	}
+}
+
+// Each case breaks one rule of the bcrypt shape in the real cost-10 vector. Recognized
+// must refuse each hash, and VerifyLegacy must refuse the password for it.
+func TestDeadBcryptHashesAreRefused(t *testing.T) {
+	v := vectorByName(t, "bcrypt-horse")
+	raw, err := base64.StdEncoding.DecodeString(v.RawB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyLegacy(string(raw), v.Hash) {
+		t.Fatal("precondition: bcrypt vector does not verify")
+	}
+	h := v.Hash
+	const saltAt, bodyAt = 7, 40
+	cases := []struct {
+		name string
+		hash string
+	}{
+		{"59 bytes", h[:len(h)-1]},
+		{"61 bytes, with a trailing A", h + "A"},
+		{"salt character outside the alphabet", h[:saltAt] + "!" + h[saltAt+1:]},
+		{"hash character outside the alphabet", h[:bodyAt] + "!" + h[bodyAt+1:]},
+		{"last character with unused bits set", h[:len(h)-1] + "/"},
+		{"cost with a plus sign", h[:4] + "+4" + h[6:]},
+		{"cost below the bcrypt minimum", h[:4] + "03" + h[6:]},
+		{"cost above the cap", h[:4] + "15" + h[6:]},
+		{"marker $2x$", h[:2] + "x" + h[3:]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if Recognized("legacy", tc.hash) {
+				t.Error("Recognized accepted the hash")
+			}
+			if VerifyLegacy(string(raw), tc.hash) {
+				t.Error("VerifyLegacy accepted the password for the hash")
+			}
+		})
+	}
+}
+
+// Each case breaks the bcrypt part of the real chain vector. The bcrypt part is the last
+// 60 bytes of the chain hash.
+func TestDeadChainHashesAreRefused(t *testing.T) {
+	v := vectorByName(t, "chain-horse")
+	raw, err := base64.StdEncoding.DecodeString(v.RawB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyLegacy(string(raw), v.Hash) {
+		t.Fatal("precondition: chain vector does not verify")
+	}
+	h := v.Hash
+	bcAt := len(chainPrefix) + phpassSettingLen
+	if len(h) != bcAt+60 {
+		t.Fatalf("precondition: chain hash is %d bytes, want %d", len(h), bcAt+60)
+	}
+	cases := []struct {
+		name string
+		hash string
+	}{
+		{"one byte cut from the end", h[:len(h)-1]},
+		{"a trailing A", h + "A"},
+		{"bcrypt salt character outside the alphabet", h[:bcAt+7] + "!" + h[bcAt+8:]},
+		{"bcrypt hash character outside the alphabet", h[:bcAt+40] + "!" + h[bcAt+41:]},
+		{"bcrypt last character with unused bits set", h[:len(h)-1] + "/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if Recognized("legacy", tc.hash) {
+				t.Error("Recognized accepted the chain hash")
+			}
+			if VerifyLegacy(string(raw), tc.hash) {
+				t.Error("VerifyLegacy accepted the password for the chain hash")
+			}
+		})
+	}
+}
+
+// The shape rules accept every hash that the bcrypt library writes. Each hash has a new
+// random salt.
+func TestBcryptShapeAcceptsGeneratedHashes(t *testing.T) {
+	for range 64 {
+		h, err := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bcryptShapeOK(string(h)) || !Recognized("legacy", string(h)) {
+			t.Fatalf("library hash of %d bytes is refused by the shape rules", len(h))
+		}
 	}
 }
