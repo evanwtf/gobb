@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/password"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 )
 
@@ -313,5 +314,284 @@ func TestCheckBusy(t *testing.T) {
 	// The busy try did not count: this address has a limit of 1 failure.
 	if id, err := svc.Check(t.Context(), "alice", "right", ip, now); err != nil || id != 1 {
 		t.Errorf("after the gate freed = %d, %v", id, err)
+	}
+}
+
+// flood sends n wrong guesses at once and returns how many were limited.
+func flood(t *testing.T, svc *login.Service, n int, name string, from func(i int) netip.Addr) (limited int64) {
+	t.Helper()
+	var wg sync.WaitGroup
+	var lim atomic.Int64
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.Check(t.Context(), name, "wrong", from(i), now)
+			var l *login.LimitedError
+			if errors.As(err, &l) {
+				lim.Add(1)
+			} else if !errors.Is(err, login.ErrWrong) {
+				t.Errorf("Check %d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+	return lim.Load()
+}
+
+// Parallel guesses cannot pass a limit that the first of them has not reached:
+// the limit is taken under one lock before the hash.
+func TestParallelGuessesFromOneIP(t *testing.T) {
+	svc, f, _ := limitedService(t, 10, 1000, nil)
+	f.sleep = 20 * time.Millisecond
+	limited := flood(t, svc, 50, "alice", func(int) netip.Addr { return ip })
+	if got := f.calls.Load(); got > 10 {
+		t.Errorf("Verify ran %d times for 50 parallel guesses, want at most 10", got)
+	}
+	if limited < 40 {
+		t.Errorf("%d tries were limited, want at least 40", limited)
+	}
+}
+
+func TestParallelGuessesAtOneName(t *testing.T) {
+	svc, f, _ := limitedService(t, 1000, 20, nil)
+	f.sleep = 20 * time.Millisecond
+	limited := flood(t, svc, 50, "alice", func(i int) netip.Addr { return addr(i) })
+	if got := f.calls.Load(); got > 20 {
+		t.Errorf("Verify ran %d times for 50 parallel guesses at one name, want at most 20", got)
+	}
+	if limited < 30 {
+		t.Errorf("%d tries were limited, want at least 30", limited)
+	}
+}
+
+// An IPv6 client holds a /64, so its addresses share one budget. An IPv4-mapped
+// address is the IPv4 address.
+func TestIPv6KeyedBy64(t *testing.T) {
+	svc, _, _ := limitedService(t, 3, 1000, nil)
+	ctx := t.Context()
+	for i := range 3 {
+		a := netip.MustParseAddr(fmt.Sprintf("2001:db8:1:2::%x", i+1))
+		if _, err := svc.Check(ctx, "alice", "wrong", a, now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("try %d: %v", i+1, err)
+		}
+	}
+	var limited *login.LimitedError
+	same := netip.MustParseAddr("2001:db8:1:2:ffff:ffff:ffff:ffff")
+	if _, err := svc.Check(ctx, "alice", "right", same, now); !errors.As(err, &limited) {
+		t.Errorf("another address of the same /64: %v, want *LimitedError", err)
+	}
+	other := netip.MustParseAddr("2001:db8:1:3::1")
+	if id, err := svc.Check(ctx, "alice", "right", other, now); err != nil || id != 1 {
+		t.Errorf("an address of another /64 = %d, %v", id, err)
+	}
+	// IPv4 stays per address; a mapped address is the IPv4 address.
+	for range 3 {
+		_, _ = svc.Check(ctx, "alice", "wrong", netip.MustParseAddr("::ffff:10.7.7.7"), now)
+	}
+	if _, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("10.7.7.7"), now); !errors.As(err, &limited) {
+		t.Errorf("plain form of a mapped address: %v, want *LimitedError", err)
+	}
+	if id, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("10.7.7.8"), now); err != nil || id != 1 {
+		t.Errorf("the next IPv4 address = %d, %v", id, err)
+	}
+}
+
+// When both limits are over, the longer wait is the answer.
+func TestLongerWaitWins(t *testing.T) {
+	svc, _, _ := limitedService(t, 2, 2, nil)
+	ctx := t.Context()
+	// The name has 2 failures at now, from other addresses; the address has 2
+	// failures at now+10m, so its window ends at now+25m and the name's at now+60m.
+	for i := range 2 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
+	}
+	later := now.Add(10 * time.Minute)
+	for range 2 {
+		_, _ = svc.Check(ctx, "nobody", "wrong", ip, later)
+	}
+	var limited *login.LimitedError
+	_, err := svc.Check(ctx, "alice", "right", ip, later)
+	if !errors.As(err, &limited) {
+		t.Fatalf("err = %v", err)
+	}
+	if want := 50 * time.Minute; limited.RetryAfter != want {
+		t.Errorf("RetryAfter = %v, want %v (the name's wait, not the address's 15m)", limited.RetryAfter, want)
+	}
+	// With the name free again, only the address's wait remains.
+	_, err = svc.Check(ctx, "bob", "right", ip, later)
+	if !errors.As(err, &limited) || limited.RetryAfter != 15*time.Minute {
+		t.Errorf("address only: %v, want 15m", err)
+	}
+}
+
+// A try that did not fail the password gives its reservation back.
+func TestRefunds(t *testing.T) {
+	ctx := t.Context()
+	t.Run("inactive", func(t *testing.T) {
+		svc, _, pool := limitedService(t, 1, 1, nil)
+		exec(t, pool, `update users set password_hash = (select password_hash from users where id = 1), password_scheme = 'gobb' where id = 4`)
+		for range 3 {
+			if _, err := svc.Check(ctx, "dave", "right", ip, now); !errors.Is(err, login.ErrInactive) {
+				t.Fatalf("err = %v, want ErrInactive each time", err)
+			}
+		}
+	})
+	t.Run("banned", func(t *testing.T) {
+		svc, _, _ := limitedService(t, 1, 1, nil)
+		var banned *login.BannedError
+		for range 3 {
+			if _, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("10.99.1.2"), now); !errors.As(err, &banned) {
+				t.Fatalf("err = %v, want a ban each time", err)
+			}
+		}
+	})
+	t.Run("database error", func(t *testing.T) {
+		svc, _, _ := limitedService(t, 1, 1, nil)
+		dead, cancel := context.WithCancel(ctx)
+		cancel()
+		for range 3 {
+			if _, err := svc.Check(dead, "alice", "right", ip, now); err == nil {
+				t.Fatal("no error with a dead context")
+			}
+		}
+		if id, err := svc.Check(ctx, "alice", "right", ip, now); err != nil || id != 1 {
+			t.Errorf("after the errors = %d, %v", id, err)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		svc, _, _ := limitedService(t, 1, 1, nil)
+		for range 3 {
+			if id, err := svc.Check(ctx, "alice", "right", ip, now); err != nil || id != 1 {
+				t.Fatalf("good sign-in = %d, %v", id, err)
+			}
+		}
+	})
+}
+
+// A name that the limit holds can still be used from an address that the account
+// has used before. The address limit still applies there. A stranger gets the same
+// 429 whether or not the account exists.
+func TestKnownAddressSkipsNameLimit(t *testing.T) {
+	svc, f, pool := limitedService(t, 5, 3, nil)
+	ctx := t.Context()
+	home := netip.MustParseAddr("10.5.5.5")
+	homeV6 := netip.MustParseAddr("2001:db8:aa:bb::1")
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, $1, $3), (1, $2, $3)`, home, homeV6, now)
+
+	for i := range 3 {
+		if _, err := svc.Check(ctx, "alice", "wrong", addr(i), now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("try %d: %v", i, err)
+		}
+	}
+	var limited *login.LimitedError
+	if _, err := svc.Check(ctx, "alice", "right", addr(20), now); !errors.As(err, &limited) {
+		t.Fatalf("a stranger's address: %v, want *LimitedError", err)
+	}
+	// The name is locked for a stranger. A wrong password at home is still wrong,
+	// and counts against the address.
+	if _, err := svc.Check(ctx, "alice", "wrong", home, now); !errors.Is(err, login.ErrWrong) {
+		t.Errorf("wrong password from home: %v, want ErrWrong", err)
+	}
+	// The right password at home signs in, and clears the name.
+	if id, err := svc.Check(ctx, "alice", "right", home, now); err != nil || id != 1 {
+		t.Fatalf("home with the right password = %d, %v", id, err)
+	}
+	if id, err := svc.Check(ctx, "alice", "right", addr(21), now); err != nil || id != 1 {
+		t.Errorf("a stranger after the name was cleared = %d, %v", id, err)
+	}
+
+	// Lock the name again. Another address of the home /64 counts as home.
+	for i := range 3 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(30+i), now)
+	}
+	if _, err := svc.Check(ctx, "alice", "right", addr(40), now); !errors.As(err, &limited) {
+		t.Fatalf("locked again: %v", err)
+	}
+	near := netip.MustParseAddr("2001:db8:aa:bb::77")
+	if id, err := svc.Check(ctx, "alice", "right", near, now); err != nil || id != 1 {
+		t.Errorf("an address in the home /64 = %d, %v", id, err)
+	}
+
+	// An unknown name is locked the same way for everyone, and a known address of
+	// someone else does not help.
+	for i := range 3 {
+		_, _ = svc.Check(ctx, "nobody", "wrong", addr(50+i), now)
+	}
+	before := f.calls.Load()
+	if _, err := svc.Check(ctx, "nobody", "right", home, now); !errors.As(err, &limited) {
+		t.Errorf("unknown name from alice's home: %v, want *LimitedError", err)
+	}
+	if _, err := svc.Check(ctx, "nobody", "right", addr(60), now); !errors.As(err, &limited) {
+		t.Errorf("unknown name from a stranger: %v, want *LimitedError", err)
+	}
+	if f.calls.Load() != before {
+		t.Error("Verify ran for a limited unknown name")
+	}
+}
+
+// The address limit holds at a known address too.
+func TestKnownAddressStillHasIPLimit(t *testing.T) {
+	svc, _, pool := limitedService(t, 2, 1, nil)
+	ctx := t.Context()
+	home := netip.MustParseAddr("10.5.5.5")
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, $1, $2)`, home, now)
+	_, _ = svc.Check(ctx, "alice", "wrong", addr(1), now) // the name limit is 1
+	for range 2 {
+		if _, err := svc.Check(ctx, "alice", "wrong", home, now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("from home: %v", err)
+		}
+	}
+	var limited *login.LimitedError
+	if _, err := svc.Check(ctx, "alice", "right", home, now); !errors.As(err, &limited) {
+		t.Errorf("third try from home: %v, want *LimitedError", err)
+	}
+}
+
+// The first sign-in after the cutover rehashes a legacy hash. The hash runs
+// inside the gate. When the gate stays full, the sign-in still succeeds, the old
+// hash stays, and the next sign-in tries again.
+func TestRehashUsesGate(t *testing.T) {
+	_, pool := newService(t)
+	gate := login.NewGate(1024)
+	var hold atomic.Pointer[func()]
+	verify := func(raw, stored, scheme string) (bool, bool) {
+		ok, rehash := password.Verify(raw, stored, scheme)
+		if ok && hold.Load() == nil {
+			// While this check holds the gate, queue a holder for all of it. It
+			// runs first when this check lets go.
+			go func() {
+				rel, err := gate.Acquire(context.Background(), 1024, 10*time.Second)
+				if err == nil {
+					hold.Store(&rel)
+				}
+			}()
+			time.Sleep(100 * time.Millisecond)
+		}
+		return ok, rehash
+	}
+	svc := login.NewWith(pool, login.Options{Gate: gate, Verify: verify})
+	svc.Floor = 0
+	svc.GateWait = 100 * time.Millisecond
+
+	id, err := svc.Check(t.Context(), "bob", pw, ip, now)
+	if err != nil || id != 2 {
+		t.Fatalf("Check = %d, %v; want 2, nil (a busy gate does not fail the sign-in)", id, err)
+	}
+	var scheme string
+	if err := pool.QueryRow(t.Context(), `select password_scheme from users where id = 2`).Scan(&scheme); err != nil || scheme != "legacy" {
+		t.Errorf("scheme = %q (%v): the rehash ran outside the gate", scheme, err)
+	}
+	rel := hold.Load()
+	if rel == nil {
+		t.Fatal("the test holder never got the gate")
+	}
+	(*rel)()
+	svc.GateWait = 5 * time.Second
+	if id, err := svc.Check(t.Context(), "bob", pw, ip, now); err != nil || id != 2 {
+		t.Fatalf("second Check = %d, %v", id, err)
+	}
+	if err := pool.QueryRow(t.Context(), `select password_scheme from users where id = 2`).Scan(&scheme); err != nil || scheme != "gobb" {
+		t.Errorf("scheme = %q (%v) after the gate freed, want gobb", scheme, err)
 	}
 }

@@ -156,10 +156,19 @@ type candidate struct {
 // Check finds the user for name (a username or an email address) and verifies
 // pw. On success it returns the ID of the user.
 //
-// The limits come first. If the address or the cleaned name has too many
-// failures in its window, Check returns a [*LimitedError] at once: it does no
-// lookup and no hash, and it does not wait for the floor. A name with no account
-// is limited like one with an account.
+// The limits come first, and they are reserved, not only tested: Check takes one
+// event from the limit of the address and one from the limit of the cleaned name,
+// each in one step under the lock of its limiter, before any hash. Parallel
+// guesses therefore cannot pass a limit that the first of them has not reached.
+// If either limit is full, Check returns a [*LimitedError] with the longer wait;
+// it does no hash and does not wait for the floor. A name with no account is
+// limited like one with an account.
+//
+// One exception: when only the limit of the name is full, and the address of the
+// client is one that an account with that name has used before (user_ips), the
+// limit of the name does not apply to this try. The limit of the address still
+// does. The lookup runs for every name, with or without an account, so a
+// stranger sees the same answer either way.
 //
 // Then the order is fixed, so that the errors tell a stranger nothing:
 //  1. A name that is not valid UTF-8, or is too long, is [ErrWrong].
@@ -178,62 +187,141 @@ type candidate struct {
 // memory it needs in the gate while it runs. When the gate stays full, Check
 // returns [ErrBusy].
 //
-// A wrong password or an ambiguous address adds one failure to the address and
-// to the name. A good password clears the name. A failure that a stranger can
-// cause with a guess (ErrWrong or ErrAmbiguous) returns no sooner than Floor
-// after the call began. The wait comes after the gate is released, and ends
-// early when ctx ends; the answer does not change.
+// A wrong password or an ambiguous address keeps the two reserved events. Any
+// other end gives them back: a good password, [ErrBusy], [ErrInactive], a ban, a
+// context or a database error. A good password also clears the name. A failure
+// that a stranger can cause with a guess (ErrWrong or ErrAmbiguous) returns no
+// sooner than Floor after the call began. The wait comes after the gate is
+// released, and ends early when ctx ends; the answer does not change.
 func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
 	start := time.Now()
-	ipKey, nameKey, nameOK := s.keys(name, ip)
-	if wait, limited := s.limited(ipKey, nameKey, nameOK, now); limited {
-		return 0, &LimitedError{RetryAfter: wait}
+	k := s.keys(name, ip)
+	held, err := s.reserve(ctx, name, k, ip, now)
+	if err != nil {
+		return 0, err
 	}
 	id, err := s.check(ctx, name, pw, ip, now)
 	switch {
 	case errors.Is(err, ErrWrong) || errors.Is(err, ErrAmbiguous):
-		if s.opt.IPLimit != nil {
-			s.opt.IPLimit.Add(ipKey, now)
-		}
-		if s.opt.NameLimit != nil && nameOK {
-			s.opt.NameLimit.Add(nameKey, now)
-		}
 		s.wait(ctx, start)
 	case err == nil:
-		if s.opt.NameLimit != nil && nameOK {
-			s.opt.NameLimit.Reset(nameKey)
+		s.refund(held, k, now, false)
+		if s.opt.NameLimit != nil && k.nameOK {
+			s.opt.NameLimit.Reset(k.name)
 		}
+	default:
+		s.refund(held, k, now, true)
 	}
 	return id, err
 }
 
-// keys returns the limiter keys of a sign-in: the client address, and the
-// cleaned name. A name that is not valid UTF-8, or is too long, has no key
-// (nameOK is false), and counts against the address only.
-func (s *Service) keys(name string, ip netip.Addr) (ipKey, nameKey string, nameOK bool) {
-	ipKey = ip.Unmap().WithZone("").String()
-	if !utf8.ValidString(name) || len(name) > maxName {
-		return ipKey, "", false
-	}
-	return ipKey, account.CleanUsername(name), true
+// limitKeys are the keys of one sign-in in the two limiters.
+type limitKeys struct {
+	ip string
+	// prefix is the range of the client that the address limit counts: the
+	// address for IPv4, the /64 for IPv6. It is invalid when the address is.
+	prefix netip.Prefix
+	name   string
+	// nameOK is false for a name that is not valid UTF-8 or is too long. Such a
+	// name has no key in the name limit, and counts against the address only.
+	nameOK bool
 }
 
-// limited reports whether the address or the name is over its limit, and the
-// longer of the two waits.
-func (s *Service) limited(ipKey, nameKey string, nameOK bool, now time.Time) (time.Duration, bool) {
-	var wait time.Duration
-	limited := false
+// held says which events a try has reserved.
+type held struct{ ip, name bool }
+
+// keys returns the limiter keys of a sign-in. The address key is the plain
+// address for IPv4 (an IPv4-mapped address first becomes the IPv4 address) and
+// the /64 for IPv6, since one client holds a whole /64. The name key is the
+// cleaned name.
+func (s *Service) keys(name string, ip netip.Addr) limitKeys {
+	var k limitKeys
+	if ip.IsValid() {
+		ip = ip.Unmap().WithZone("")
+		bits := 64
+		if ip.Is4() {
+			bits = 32
+		}
+		k.prefix = netip.PrefixFrom(ip, bits).Masked()
+		k.ip = k.prefix.String()
+	} else {
+		k.ip = "invalid"
+	}
+	if utf8.ValidString(name) && len(name) <= maxName {
+		k.name, k.nameOK = account.CleanUsername(name), true
+	}
+	return k
+}
+
+// reserve takes one event from each limit, or returns a [*LimitedError] with the
+// longer wait of the limits that are full. When the limit of the name is the only
+// one that is full and the client address is known to an account with that name,
+// the name limit is skipped. A database error gives the events back.
+func (s *Service) reserve(ctx context.Context, name string, k limitKeys, ip netip.Addr, now time.Time) (held, error) {
+	var h held
+	var ipWait, nameWait time.Duration
+	ipOver, nameOver := false, false
 	if s.opt.IPLimit != nil {
-		if over, w := s.opt.IPLimit.Over(ipKey, now); over {
-			wait, limited = max(wait, w), true
+		ok, w := s.opt.IPLimit.Take(k.ip, now)
+		h.ip, ipOver, ipWait = ok, !ok, w
+	}
+	if s.opt.NameLimit != nil && k.nameOK {
+		ok, w := s.opt.NameLimit.Take(k.name, now)
+		h.name, nameOver, nameWait = ok, !ok, w
+	}
+	if ipOver {
+		s.refund(h, k, now, true)
+		return held{}, &LimitedError{RetryAfter: max(ipWait, nameWait)}
+	}
+	if nameOver {
+		known, err := s.knownAddress(ctx, name, k)
+		if err != nil {
+			s.refund(h, k, now, true)
+			return held{}, err
+		}
+		if !known {
+			s.refund(h, k, now, true)
+			return held{}, &LimitedError{RetryAfter: nameWait}
 		}
 	}
-	if s.opt.NameLimit != nil && nameOK {
-		if over, w := s.opt.NameLimit.Over(nameKey, now); over {
-			wait, limited = max(wait, w), true
-		}
+	return h, nil
+}
+
+// refund gives back the events that h holds. The name event goes back only when
+// withName is true; a good password clears the whole name instead.
+func (s *Service) refund(h held, k limitKeys, now time.Time, withName bool) {
+	if h.ip {
+		s.opt.IPLimit.Refund(k.ip, now)
 	}
-	return wait, limited
+	if h.name && withName {
+		s.opt.NameLimit.Refund(k.name, now)
+	}
+}
+
+// knownAddress reports whether an account that name finds has used the client
+// range (user_ips). It looks the name up even when no account has it, and runs
+// the query for the addresses with an empty list of accounts, so the work does
+// not tell a stranger whether the name exists.
+func (s *Service) knownAddress(ctx context.Context, name string, k limitKeys) (bool, error) {
+	users, err := s.find(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	ids := make([]int64, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.id)
+	}
+	var prefix any
+	if k.prefix.IsValid() {
+		prefix = k.prefix
+	}
+	var known bool
+	err = s.q.QueryRow(ctx, `select exists (
+select 1 from user_ips where user_id = any($1) and ip <<= $2::inet)`, ids, prefix).Scan(&known)
+	if err != nil {
+		return false, fmt.Errorf("login: known address: %w", err)
+	}
+	return known, nil
 }
 
 // wait sleeps until Floor has passed since start, or until ctx ends.
@@ -412,12 +500,20 @@ func inetArg(ip netip.Addr) any {
 	return ip.Unmap().WithZone("")
 }
 
-// rehash replaces the stored hash of u with a gobb hash of pw. The update names
-// the old hash, so that two sign-ins at once, or a password change in between,
+// rehash replaces the stored hash of u with a gobb hash of pw. The hash runs
+// inside the gate. The update names the old hash, so that two sign-ins at once, or a password change in between,
 // do not overwrite a newer hash. A failure is logged and does not fail the
 // sign-in: the member has proved the password.
 func (s *Service) rehash(ctx context.Context, u candidate, pw string) {
+	// The hash needs memory like any check, so it holds the gate. When the gate
+	// stays full, skip: the password is right, and the next sign-in tries again.
+	release, err := s.acquire(ctx, password.HashMemoryKiB)
+	if err != nil {
+		slog.Warn("login: skipped a rehash", "user", u.id, "err", err)
+		return
+	}
 	fresh, err := password.Hash(pw)
+	release()
 	if err != nil {
 		slog.Warn("login: cannot rehash a password", "user", u.id, "err", err)
 		return

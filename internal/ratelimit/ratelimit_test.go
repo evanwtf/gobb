@@ -1,6 +1,9 @@
 package ratelimit_test
 
 import (
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,5 +116,117 @@ func TestLimiterAddKnownKeyKeepsSize(t *testing.T) {
 	}
 	if n := l.Len(); n != 2 {
 		t.Errorf("Len = %d, want 2", n)
+	}
+}
+
+func TestTake(t *testing.T) {
+	l := ratelimit.New(3, time.Minute, 10)
+	for i := range 3 {
+		ok, _ := l.Take("k", t0.Add(time.Duration(i)*10*time.Second))
+		if !ok {
+			t.Fatalf("Take %d refused under the limit", i+1)
+		}
+	}
+	ok, wait := l.Take("k", t0.Add(30*time.Second))
+	if ok {
+		t.Fatal("4th Take allowed with limit 3")
+	}
+	if wait != 30*time.Second {
+		t.Errorf("wait = %v, want 30s", wait)
+	}
+	// A refused Take records nothing: the oldest event still leaves at t0+1m.
+	if ok, _ := l.Take("k", t0.Add(61*time.Second)); !ok {
+		t.Error("Take refused after the oldest event left")
+	}
+	if ok, _ := l.Take("other", t0); !ok {
+		t.Error("another key refused")
+	}
+}
+
+// Take is one step under the lock: parallel callers get exactly limit grants.
+func TestTakeParallel(t *testing.T) {
+	l := ratelimit.New(10, time.Hour, 10)
+	var granted atomic.Int64
+	var wg sync.WaitGroup
+	for range 200 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ok, _ := l.Take("k", t0); ok {
+				granted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := granted.Load(); got != 10 {
+		t.Errorf("granted %d, want 10", got)
+	}
+}
+
+func TestRefund(t *testing.T) {
+	l := ratelimit.New(2, time.Minute, 10)
+	l.Take("k", t0)
+	l.Take("k", t0.Add(time.Second))
+	if over, _ := l.Over("k", t0.Add(2*time.Second)); !over {
+		t.Fatal("not over at the limit")
+	}
+	l.Refund("k", t0.Add(time.Second))
+	if over, _ := l.Over("k", t0.Add(2*time.Second)); over {
+		t.Error("still over after a refund")
+	}
+	// The event at t0 is the one that stays: it leaves at t0+1m.
+	l.Take("k", t0.Add(3*time.Second))
+	if over, wait := l.Over("k", t0.Add(4*time.Second)); !over || wait != 56*time.Second {
+		t.Errorf("Over = %v, %v; want true, 56s", over, wait)
+	}
+	l.Refund("never", t0) // no panic
+	l.Refund("k", t0.Add(time.Hour))
+	if over, _ := l.Over("k", t0.Add(4*time.Second)); !over {
+		t.Error("a refund of an event that does not exist removed another")
+	}
+	// Refunding the last event drops the key.
+	one := ratelimit.New(1, time.Minute, 10)
+	one.Take("a", t0)
+	one.Refund("a", t0)
+	if n := one.Len(); n != 0 {
+		t.Errorf("Len = %d after the only event was refunded, want 0", n)
+	}
+}
+
+// A key that is over its limit survives a flood of keys with one event each.
+func TestLimiterEvictionKeepsLockedKey(t *testing.T) {
+	l := ratelimit.New(20, time.Hour, 100)
+	for i := range 20 {
+		l.Add("locked", t0.Add(time.Duration(i)*time.Second))
+	}
+	if over, _ := l.Over("locked", t0.Add(time.Minute)); !over {
+		t.Fatal("precondition: locked is over its limit")
+	}
+	for i := range 10000 {
+		l.Add(fmt.Sprintf("junk-%d", i), t0.Add(time.Minute+time.Duration(i)*time.Millisecond))
+	}
+	if over, _ := l.Over("locked", t0.Add(2*time.Minute)); !over {
+		t.Error("a flood of one-event keys freed a locked key")
+	}
+	if n := l.Len(); n > 100 {
+		t.Errorf("Len = %d, want at most 100", n)
+	}
+}
+
+// A key with fewer events goes before a key with more; with equal counts, the
+// key with the oldest last event goes first.
+func TestLimiterEvictionOrder(t *testing.T) {
+	l := ratelimit.New(5, time.Hour, 3)
+	l.Add("two", t0)
+	l.Add("two", t0.Add(time.Second))
+	l.Add("old", t0.Add(time.Minute))
+	l.Add("new", t0.Add(2*time.Minute))
+	l.Add("x", t0.Add(3*time.Minute)) // full: drops "old", the oldest of the one-event keys
+	if l.Has("old") || !l.Has("two") || !l.Has("new") || !l.Has("x") {
+		t.Fatalf("after x: old=%t two=%t new=%t x=%t", l.Has("old"), l.Has("two"), l.Has("new"), l.Has("x"))
+	}
+	l.Add("y", t0.Add(4*time.Minute)) // drops "new", not "two" with its two events
+	if l.Has("new") || !l.Has("two") || !l.Has("x") || !l.Has("y") {
+		t.Errorf("after y: new=%t two=%t x=%t y=%t", l.Has("new"), l.Has("two"), l.Has("x"), l.Has("y"))
 	}
 }

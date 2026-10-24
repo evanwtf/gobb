@@ -184,6 +184,23 @@ from the same origin: the browser's `Origin` or `Sec-Fetch-Site` header is check
 against the `Host` header. A reverse proxy has to pass the `Host` header of the visitor
 on to gobb.
 
+### Sign-in limits
+
+Failed sign-ins are limited. One client address may fail 10 times in 15 minutes (a
+client on IPv6 counts as its whole /64), and one typed name may fail 20 times in an
+hour. Past a limit, the sign-in page answers 429 and says how long to wait. Notes for
+the operator:
+
+- The name limit counts the name as typed, after cleaning. A username and an email
+  address for one account are two names, so that account has two budgets.
+- A name that is over its limit still works from an address that the account has used
+  before. The address limit still applies there.
+- The counts live in memory. A restart sets them to zero.
+- Behind a proxy, set `GOBB_TRUSTED_PROXIES` to the proxy. Without it, every visitor
+  has the address of the proxy and shares one budget of 10 failures.
+- Password checks share 128 MiB of memory. A check that finds no room for 5 seconds
+  answers 503.
+
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 25 seconds. A second signal exits at once.
 

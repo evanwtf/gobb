@@ -33,6 +33,9 @@ const (
 	gobbKeyLen      = 32    // bytes
 )
 
+// HashMemoryKiB is the memory that [Hash] needs: the memory of a new gobb hash.
+const HashMemoryKiB = gobbMemory
+
 // Hash returns a gobb hash of raw. The hash is an argon2id PHC string with a new
 // random salt. The password is hashed in NFC form, with no other change. Hash
 // returns an error for a password over 4,096 bytes (counted before NFC), invalid

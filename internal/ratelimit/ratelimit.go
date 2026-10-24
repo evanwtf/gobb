@@ -42,9 +42,58 @@ func (l *Limiter) Over(key string, now time.Time) (over bool, wait time.Duration
 	return true, events[0].Add(l.window).Sub(now)
 }
 
+// Take is Over and Add in one step under the lock. When key has fewer than limit
+// events inside the window, Take records an event at now and returns true. When
+// it has limit events, Take records nothing and returns false with the wait until
+// the oldest leaves the window. A caller that must not let parallel requests pass
+// a limit takes the event first, before the work, and gives it back with
+// [Limiter.Refund] when the work does not count.
+func (l *Limiter) Take(key string, now time.Time) (ok bool, wait time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	events := l.live(key, now)
+	if len(events) >= l.limit {
+		return false, events[0].Add(l.window).Sub(now)
+	}
+	if events == nil && len(l.keys) >= l.maxKeys {
+		l.makeRoom(now)
+	}
+	l.keys[key] = append(events, now)
+	return true, 0
+}
+
+// Refund removes the most recent event of key that was recorded at at, as
+// [Limiter.Take] or [Limiter.Add] did. It does nothing when there is none.
+func (l *Limiter) Refund(key string, at time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	events := l.keys[key]
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Equal(at) {
+			events = append(events[:i:i], events[i+1:]...)
+			if len(events) == 0 {
+				delete(l.keys, key)
+			} else {
+				l.keys[key] = events
+			}
+			return
+		}
+	}
+}
+
+// Has reports whether the Limiter holds key.
+func (l *Limiter) Has(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.keys[key]
+	return ok
+}
+
 // Add records one event for key at now. When the Limiter holds maxKeys keys and
 // key is new, Add first drops the keys that have no event inside the window, and
-// then, if it is still full, the key with the oldest last event.
+// then, if it is still full, the key with the fewest events (the one that is
+// closest to free), the oldest last event first among equals. A key at its limit
+// is the last to go, so a flood of new keys does not free a locked one.
 func (l *Limiter) Add(key string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -94,7 +143,8 @@ func (l *Limiter) live(key string, now time.Time) []time.Time {
 }
 
 // makeRoom drops the keys with no event inside the window; if none went, it drops
-// the key with the oldest last event. The caller holds the lock.
+// the key with the fewest events, and among equals the one with the oldest last
+// event. The caller holds the lock.
 func (l *Limiter) makeRoom(now time.Time) {
 	cut := now.Add(-l.window)
 	for k, events := range l.keys {
@@ -105,13 +155,15 @@ func (l *Limiter) makeRoom(now time.Time) {
 	if len(l.keys) < l.maxKeys {
 		return
 	}
-	var oldest string
-	var oldestAt time.Time
+	var victim string
+	var victimN int
+	var victimAt time.Time
 	first := true
 	for k, events := range l.keys {
-		if last := events[len(events)-1]; first || last.Before(oldestAt) {
-			oldest, oldestAt, first = k, last, false
+		n, last := len(events), events[len(events)-1]
+		if first || n < victimN || (n == victimN && last.Before(victimAt)) {
+			victim, victimN, victimAt, first = k, n, last, false
 		}
 	}
-	delete(l.keys, oldest)
+	delete(l.keys, victim)
 }

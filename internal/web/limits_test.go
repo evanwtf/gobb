@@ -94,7 +94,7 @@ func TestLoginHTTPLimits(t *testing.T) {
 		t.Errorf("Cache-Control = %q", limited.Header().Get("Cache-Control"))
 	}
 	// Another address signs in at once.
-	if ok := proxied(t, h, "/login", "2001:db8::6", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
+	if ok := proxied(t, h, "/login", "2001:db8:0:6::1", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
 		t.Errorf("another address = %d, want 303", ok.Code)
 	}
 }
@@ -131,12 +131,12 @@ func TestLoginNameLimitHTTP(t *testing.T) {
 		return url.Values{"name": {"bob"}, "password": {pw}, "csrf": {token}}
 	}
 	for i := range 20 {
-		addr := "2001:db8::" + strconv.Itoa(0x100+i)
+		addr := "2001:db8:" + strconv.Itoa(0x100+i) + "::1" // one /64 each
 		if rec := proxied(t, h, "/login", addr, cookies, form("wrong")); rec.Code != http.StatusOK {
 			t.Fatalf("failure %d = %d", i+1, rec.Code)
 		}
 	}
-	rec := proxied(t, h, "/login", "2001:db8::900", cookies, form(testPassword))
+	rec := proxied(t, h, "/login", "2001:db8:900::1", cookies, form(testPassword))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("21st = %d, want 429", rec.Code)
 	}
@@ -145,7 +145,7 @@ func TestLoginNameLimitHTTP(t *testing.T) {
 	}
 	// After the wait, the right password works.
 	clock = clock.Add(61 * time.Minute)
-	if ok := proxied(t, h, "/login", "2001:db8::900", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
+	if ok := proxied(t, h, "/login", "2001:db8:900::1", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
 		t.Errorf("after the wait = %d, want 303", ok.Code)
 	}
 }
@@ -198,15 +198,18 @@ func TestLoginBusy(t *testing.T) {
 	}
 }
 
+// bodyCaps lists every POST route: its pattern in site.go, an address that
+// matches it, and the cap of its body.
 var bodyCaps = []struct {
-	route string
-	limit int
+	pattern string
+	route   string
+	limit   int
 }{
-	{"/login", 16 << 10},
-	{"/logout", 4 << 10},
-	{"/scheme", 4 << 10},
-	{"/read", 4 << 10},
-	{"/f/1/read", 4 << 10},
+	{"/login", "/login", 16 << 10},
+	{"/logout", "/logout", 4 << 10},
+	{"/scheme", "/scheme", 4 << 10},
+	{"/read", "/read", 4 << 10},
+	{"/f/{id}/read", "/f/1/read", 4 << 10},
 }
 
 // Every POST route has a cap on its body. A body over it answers 413 in the
@@ -233,14 +236,31 @@ func TestPostBodyCaps(t *testing.T) {
 }
 
 // The caps cover every POST route that exists: the test fails when a route is
-// added with no row in bodyCaps.
+// added with no row in bodyCaps, and when a row names a route that is gone.
 func TestPostRoutesHaveCaps(t *testing.T) {
 	src, err := os.ReadFile("site.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	routes := regexp.MustCompile(`Handle\("POST ([^"]+)"`).FindAllStringSubmatch(string(src), -1)
-	if len(routes) != len(bodyCaps) {
-		t.Fatalf("site.go has %d POST routes, bodyCaps lists %d", len(routes), len(bodyCaps))
+	found := map[string]bool{}
+	for _, m := range regexp.MustCompile(`Handle(?:Func)?\("POST ([^"]+)"`).FindAllStringSubmatch(string(src), -1) {
+		found[m[1]] = true
+	}
+	listed := map[string]bool{}
+	for _, c := range bodyCaps {
+		listed[c.pattern] = true
+	}
+	if len(found) == 0 {
+		t.Fatal("found no POST route in site.go")
+	}
+	for p := range found {
+		if !listed[p] {
+			t.Errorf("POST %s has no row in bodyCaps", p)
+		}
+	}
+	for p := range listed {
+		if !found[p] {
+			t.Errorf("bodyCaps lists POST %s, which site.go does not route", p)
+		}
 	}
 }
