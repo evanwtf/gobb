@@ -15,9 +15,10 @@ import (
 const (
 	maxLoginBody = 16 << 10
 	maxPostBody  = 4 << 10
-	// maxPostingBody is the cap of the posting forms: a body of 60,000 bytes, a
-	// title, and the escapes that a form adds.
-	maxPostingBody = 128 << 10
+	// maxPostingBody is the cap of the posting forms. A body of 60,000 bytes of
+	// 3-byte characters percent-encodes to 180,000 bytes, and the title and the
+	// other fields come on top.
+	maxPostingBody = 256 << 10
 )
 
 // newCSRFSecret returns 32 random bytes in base64url, the value of a guest's
@@ -50,7 +51,26 @@ func (s *site) protect(limit int64, h http.HandlerFunc) http.Handler {
 // visitor has no live session, signedOut answers instead of the 403. Sign-out
 // uses it, because a visitor who is signed out has nothing to protect.
 func (s *site) protectOr(limit int64, h, signedOut http.HandlerFunc) http.Handler {
-	return s.crossOrigin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return s.guardPost(s.crossOrigin, limit, h, signedOut, false)
+}
+
+// protectPosting is [site.protect] for a form that carries the text of a post. A
+// request that fails the cross-origin check or the token check is not trusted,
+// so the answer never echoes its body. The 403 says that the form expired and
+// tells the member to use the Back button to get the text back: a signed-out
+// session, a wrong token and a cross-site request all reach this one page.
+func (s *site) protectPosting(limit int64, h http.HandlerFunc) http.Handler {
+	return s.guardPost(s.crossOriginPosting, limit, h, nil, true)
+}
+
+// The text of the 403 of a posting form that cannot be checked.
+const (
+	expiredHeading = "Form expired"
+	expiredMessage = "This form expired. Use your browser's Back button to get your text back, then reload the page and post again."
+)
+
+func (s *site) guardPost(cop *http.CrossOriginProtection, limit int64, h, signedOut http.HandlerFunc, expired bool) http.Handler {
+	return cop.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if err := r.ParseForm(); err != nil {
 			var tooBig *http.MaxBytesError
@@ -73,6 +93,8 @@ func (s *site) protectOr(limit int64, h, signedOut http.HandlerFunc) http.Handle
 		// in logs and in the Referer header.
 		if !session.CheckCSRF(id.secret(), r.PostForm.Get("csrf")) {
 			switch {
+			case expired:
+				s.fail(w, r, http.StatusForbidden, expiredHeading, expiredMessage)
 			case id.token == "" && signedOut != nil:
 				signedOut(w, r)
 			case id.ended:
@@ -85,6 +107,12 @@ func (s *site) protectOr(limit int64, h, signedOut http.HandlerFunc) http.Handle
 		}
 		h(w, r)
 	}))
+}
+
+// denyExpired answers a posting form that http.CrossOriginProtection refused. It
+// echoes nothing.
+func (s *site) denyExpired(w http.ResponseWriter, r *http.Request) {
+	s.fail(w, r, http.StatusForbidden, expiredHeading, expiredMessage)
 }
 
 // denyCrossOrigin answers a POST that http.CrossOriginProtection refused.

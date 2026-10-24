@@ -77,8 +77,9 @@ type site struct {
 	assetVersion string
 	// login checks the sign-ins.
 	login *login.Service
-	// crossOrigin guards every POST route.
-	crossOrigin *http.CrossOriginProtection
+	// crossOrigin guards every POST route. crossOriginPosting guards the posting
+	// forms, whose refusal never echoes the body.
+	crossOrigin, crossOriginPosting *http.CrossOriginProtection
 	// legacy holds the old routes and file prefixes of the board. It is read
 	// once, in New: the server stops for an import.
 	legacy *legacy.Table
@@ -120,6 +121,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection()}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
+	s.crossOriginPosting = http.NewCrossOriginProtection()
+	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
 	if opt.LoginFloor != 0 {
 		s.login.Floor = opt.LoginFloor
 	}
@@ -169,11 +172,11 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /t/{id}/new", s.topicNew)
 	inner.HandleFunc("GET /new", s.newPage)
 	inner.HandleFunc("GET /f/{id}/post", s.postForm(kindTopic))
-	inner.Handle("POST /f/{id}/post", s.protect(maxPostingBody, s.postSubmit(kindTopic)))
+	inner.Handle("POST /f/{id}/post", s.protectPosting(maxPostingBody, s.postSubmit(kindTopic)))
 	inner.HandleFunc("GET /t/{id}/reply", s.postForm(kindReply))
-	inner.Handle("POST /t/{id}/reply", s.protect(maxPostingBody, s.postSubmit(kindReply)))
+	inner.Handle("POST /t/{id}/reply", s.protectPosting(maxPostingBody, s.postSubmit(kindReply)))
 	inner.HandleFunc("GET /p/{id}/edit", s.postForm(kindEdit))
-	inner.Handle("POST /p/{id}/edit", s.protect(maxPostingBody, s.postSubmit(kindEdit)))
+	inner.Handle("POST /p/{id}/edit", s.protectPosting(maxPostingBody, s.postSubmit(kindEdit)))
 	inner.Handle("POST /p/{id}/delete", s.protect(maxPostBody, s.deletePost))
 	inner.Handle("POST /read", s.protect(maxPostBody, s.markAllRead))
 	inner.Handle("POST /f/{id}/read", s.protect(maxPostBody, s.markForumRead))

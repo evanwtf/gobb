@@ -1,4 +1,16 @@
 {{define "content"}}
+{{- if .Data.Bare}}
+<header class="page-head">
+  <h1>{{.Data.Heading}}</h1>
+</header>
+<div class="form-error" role="alert">
+  <p class="form-error-text">{{.Data.Notice}}</p>
+</div>
+<div class="field">
+  <label for="bare-body">Your text</label>
+  <textarea id="bare-body" name="body" rows="14">{{textareaValue .Data.Source}}</textarea>
+</div>
+{{- else}}
 {{template "crumbs" .Data.Crumbs}}
 <header class="page-head">
   <h1>{{.Data.Heading}}</h1>
@@ -62,4 +74,5 @@
     <a class="button-quiet button-link" href="{{.Data.Cancel}}">Cancel</a>
   </div>
 </form>
+{{- end}}
 {{end}}

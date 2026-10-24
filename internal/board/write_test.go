@@ -774,10 +774,12 @@ func TestQuoteSource(t *testing.T) {
 		t.Errorf("tree = %s, want a quote", b.JSON)
 	}
 
-	// A viewer without the right to reply may not quote.
+	// The reply rights belong to the topic that the reply goes into (ruling T3-C1):
+	// a viewer who reads the post may quote it, whatever the rights in its forum.
 	denyOpts(t, pool, carol, 2, "topic.reply")
-	_, err = board.QuoteSource(ctx, pool, viewerFor(t, pool, carol), 2)
-	wantIs(t, err, board.ErrForbidden, "quote without topic.reply")
+	if _, err := board.QuoteSource(ctx, pool, viewerFor(t, pool, carol), 2); err != nil {
+		t.Errorf("quote without topic.reply in the forum of the post: %v", err)
+	}
 }
 
 // TestGuestNameShowsWhatTheCheckSaw: a guest name that CleanUsername changes

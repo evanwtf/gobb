@@ -53,6 +53,9 @@ type ForumPage struct {
 	// Topics holds the page: sticky first, then the newest activity.
 	Topics      []TopicRow
 	Page, Pages int
+	// CanStart is true when v may start a topic in the forum: the rule of
+	// [CanStartTopic].
+	CanStart bool
 }
 
 // LinkError is the error of [ForumView] for a link forum. The caller redirects
@@ -149,7 +152,7 @@ func ForumView(ctx context.Context, q db.Querier, v Viewer, forumID int64, page 
 		// locateForum found the forum and v may not read it, so v may list it.
 		return ForumPage{}, ErrForbidden
 	}
-	out := ForumPage{Forum: f, Crumbs: crumbs, Subforums: f.Children, Page: page}
+	out := ForumPage{Forum: f, Crumbs: crumbs, Subforums: f.Children, Page: page, CanStart: mayStart(v, forumID, f.Kind, f.Locked)}
 
 	sc, err := newScope(ctx, q, v)
 	if err != nil {

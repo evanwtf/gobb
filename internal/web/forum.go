@@ -124,7 +124,7 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		Topics:     rowViews(fp.Topics, loc),
 		Pager:      newPager(s.path("f", strconv.FormatInt(id, 10)), fp.Page, fp.Pages),
 		IsCategory: fp.Forum.Kind == "category",
-		CanStart:   canStartIn(p.Viewer, fp.Forum),
+		CanStart:   fp.CanStart,
 		PostHref:   s.path("f", strconv.FormatInt(id, 10), "post"),
 		Held:       r.URL.Query().Get("held") == "1",
 	}

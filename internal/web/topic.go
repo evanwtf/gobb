@@ -38,7 +38,7 @@ type postView struct {
 	HTML, SigHTML template.HTML
 	Loc           *time.Location
 	// Actions are the buttons that the viewer sees on the post.
-	Actions postActions
+	Actions board.PostButtons
 	// Preview is true for the preview of a form: the post has no ID, no
 	// permalink and no buttons.
 	Preview bool
@@ -103,13 +103,13 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d := topicData{Topic: tp.Topic, Forum: tp.Forum, Held: r.URL.Query().Get("held") == "1"}
-	d.CanReply = canReplyTo(p.Viewer, tp)
+	d.CanReply = tp.CanReply
 	d.ReplyHref = s.path("t", strconv.FormatInt(id, 10), "reply")
 	d.Crumbs = s.crumbsFor(tp.Crumbs)
 	d.Crumbs = append(d.Crumbs, crumb{Label: tp.Forum.Name, Href: s.path("f", strconv.FormatInt(tp.Forum.ID, 10))})
 	d.Posts = make([]postView, len(tp.Posts))
 	for i, post := range tp.Posts {
-		pv := postView{Post: post, Loc: p.Viewer.Loc, Actions: actionsFor(p.Viewer, tp, i, post, d.CanReply)}
+		pv := postView{Post: post, Loc: p.Viewer.Loc, Actions: tp.Buttons[i]}
 		body := markup.Render(post.Tree, rc)
 		p.addRendered(body)
 		pv.HTML = body.HTML

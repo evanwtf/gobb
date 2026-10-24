@@ -341,6 +341,23 @@ select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_
 	if err != nil {
 		return topicRef{}, fmt.Errorf("board: read topic %d: %w", id, err)
 	}
+	if moved != nil {
+		// A marker whose target the viewer cannot see does not exist for the
+		// viewer, as on the read side ([TopicView]): the answer is the one for a
+		// missing topic. A marker that points at itself leads nowhere.
+		if *moved == id {
+			return topicRef{}, ErrNotFound
+		}
+		var seen bool
+		err := q.QueryRow(ctx, `select exists (select 1 from topics m where m.id = $5 and `+visible("m", 1)+`)`,
+			append(sc.args(), *moved)...).Scan(&seen)
+		if err != nil {
+			return topicRef{}, fmt.Errorf("board: read topic %d: %w", *moved, err)
+		}
+		if !seen {
+			return topicRef{}, ErrNotFound
+		}
+	}
 	t.moved = moved != nil
 	return t, nil
 }
@@ -350,14 +367,36 @@ select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_
 // takes it last. A write never waits for a topic or a post while it holds a
 // forum, so two writes never wait for each other in a circle.
 func lockForum(ctx context.Context, tx pgx.Tx, id int64) (kind string, locked bool, err error) {
-	err = tx.QueryRow(ctx, `select kind, locked from forums where id = $1 for no key update`, id).Scan(&kind, &locked)
+	return forumRow(ctx, tx, id, true)
+}
+
+// forumRow reads the kind and the lock state of forum id, with the row lock
+// optional. A missing forum gives [ErrNotFound].
+func forumRow(ctx context.Context, q db.Querier, id int64, lock bool) (kind string, locked bool, err error) {
+	sql := `select kind, locked from forums where id = $1`
+	if lock {
+		sql += ` for no key update`
+	}
+	err = q.QueryRow(ctx, sql, id).Scan(&kind, &locked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, ErrNotFound
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("board: lock forum %d: %w", id, err)
+		return "", false, fmt.Errorf("board: read forum %d: %w", id, err)
 	}
 	return kind, locked, nil
+}
+
+// readForum is the forum step of a new topic for viewer v: a forum that is
+// missing, or that v cannot read, gives [ErrNotFound]. [NewTopic] calls it with
+// the row lock, and [CanStartTopic] without.
+func readForum(ctx context.Context, q db.Querier, v Viewer, id int64, lock bool) (kind string, locked bool, err error) {
+	if !v.Perms.Has("forum.read", id) {
+		// The same answer for a forum that is missing and for one that is hidden;
+		// a forum that does not exist holds no grants either.
+		return "", false, ErrNotFound
+	}
+	return forumRow(ctx, q, id, lock)
 }
 
 // author is who a new post belongs to.
@@ -370,7 +409,7 @@ type author struct {
 // resolveAuthor names the author of a new post. A member must be an active user
 // of the board. A guest needs a valid name and an address that no ban holds.
 // The address check is a refusal; the name check is an input error.
-func resolveAuthor(ctx context.Context, tx pgx.Tx, v Viewer, d Draft, now time.Time) (author, error) {
+func resolveAuthor(ctx context.Context, tx db.Querier, v Viewer, d Draft, now time.Time) (author, error) {
 	au := author{ip: d.IP}
 	if v.UserID != 0 {
 		err := tx.QueryRow(ctx, `select username from users where id = $1 and state = 'active'`, v.UserID).Scan(&au.name)
@@ -548,14 +587,7 @@ func NewTopic(ctx context.Context, pool *pgxpool.Pool, v Viewer, forumID int64, 
 		if err := lockAuthor(ctx, tx, v, d.IP); err != nil {
 			return err
 		}
-		var exists bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from forums where id = $1)`, forumID).Scan(&exists); err != nil {
-			return fmt.Errorf("board: read forum %d: %w", forumID, err)
-		}
-		if !exists || !v.Perms.Has("forum.read", forumID) {
-			return ErrNotFound
-		}
-		kind, locked, err := lockForum(ctx, tx, forumID)
+		kind, locked, err := readForum(ctx, tx, v, forumID, true)
 		if err != nil {
 			return err
 		}
@@ -655,10 +687,10 @@ select id from posts
 
 // Reply adds the post d to topic topicID and returns its ID.
 //
-//   - A topic that v cannot see is [ErrNotFound], as a missing one is.
-//   - v needs topic.reply in the forum. The topic must be approved, and not a
-//     moved-topic marker. The topic and its forum must be unlocked, or v needs
-//     mod.lock. Else [ErrForbidden].
+//   - A topic that v cannot see is [ErrNotFound], as a missing one is. So is a
+//     moved-topic marker, whatever its target: a marker is no reply target.
+//   - v needs topic.reply in the forum. The topic must be approved. The topic and
+//     its forum must be unlocked, or v needs mod.lock. Else [ErrForbidden].
 //   - A post with the same author, topic and text from the last 60 seconds is
 //     the same post sent twice: the write returns the earlier post. For a
 //     guest, the same author is the same address.
@@ -681,7 +713,12 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 		if err != nil {
 			return err
 		}
-		if !mayReplyTo(v, t) {
+		if t.moved {
+			// A marker is never a reply target, whatever its target: the answer is
+			// the one for a missing topic.
+			return ErrNotFound
+		}
+		if !mayReplyTo(v, t.forumID, t.visibility) {
 			return ErrForbidden
 		}
 		// The forum lock comes after the checks that need no forum row, so a writer
@@ -869,38 +906,31 @@ update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
 //
 // followed by a blank line, so that the writer types below it.
 //
-// Only an approved post in an approved topic can be quoted, and v must read its
-// forum and hold topic.reply there. The lock on the topic and the forum of the
-// quoted post does not matter: a quote can go into another topic, and the caller
-// checks the topic that the reply goes into with [CanReply]. A post that v cannot
+// Only an approved post in an approved topic that is no moved-topic marker can
+// be quoted, and v must be able to read it. The rights of v to reply belong to
+// the topic that the reply goes into, which the caller checks with [CanReply]: a
+// quote can come from another forum and from a locked topic. A post that v cannot
 // see, an unapproved post, a deleted post, and a post in a deleted or held topic
 // give [ErrNotFound], even to a moderator who sees them on the page: the text of
-// a hidden post never reaches a form. A viewer who reads the post but holds no
-// topic.reply there gets [ErrForbidden].
+// a hidden post never reaches a form.
 func QuoteSource(ctx context.Context, q db.Querier, v Viewer, postID int64) (string, error) {
 	sc, err := newScope(ctx, q, v)
 	if err != nil {
 		return "", err
 	}
-	var (
-		forumID    int64
-		name, text string
-	)
+	var name, text string
 	err = q.QueryRow(ctx, `
-select p.forum_id, coalesce(u.username, p.author_name), p.body_source
+select coalesce(u.username, p.author_name), p.body_source
   from posts p
   join topics t on t.id = p.topic_id
   left join users u on u.id = p.author_id
- where p.id = $5 and p.visibility = 'approved' and t.visibility = 'approved'
-   and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).Scan(&forumID, &name, &text)
+ where p.id = $5 and p.visibility = 'approved' and t.visibility = 'approved' and t.moved_to_topic_id is null
+   and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).Scan(&name, &text)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("board: read post %d: %w", postID, err)
-	}
-	if !v.Perms.Has("topic.reply", forumID) {
-		return "", ErrForbidden
 	}
 	var sb strings.Builder
 	sb.WriteString("> **" + escapeMarkdown(name) + "** [wrote](/p/" + strconv.FormatInt(postID, 10) + "):\n>\n")

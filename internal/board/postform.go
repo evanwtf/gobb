@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -26,11 +27,12 @@ func mayStart(v Viewer, forumID int64, kind string, locked bool) bool {
 	return !locked || v.Perms.Has("mod.lock", forumID)
 }
 
-// mayReplyTo reports whether v holds topic.reply in the forum of t, and t is an
-// approved topic that is no moved-topic marker. The locks come next, in
+// mayReplyTo reports whether v holds topic.reply in the forum of a topic that
+// has the given visibility. A moved-topic marker is no reply target at all: the
+// callers answer [ErrNotFound] for it before they ask. The locks come next, in
 // [lockStops].
-func mayReplyTo(v Viewer, t topicRef) bool {
-	return v.Perms.Has("topic.reply", t.forumID) && t.visibility == "approved" && !t.moved
+func mayReplyTo(v Viewer, forumID int64, visibility string) bool {
+	return v.Perms.Has("topic.reply", forumID) && visibility == "approved"
 }
 
 // lockStops reports whether a lock on the topic or its forum stops v: v then
@@ -39,48 +41,130 @@ func lockStops(v Viewer, forumID int64, topicLocked, forumLocked bool) bool {
 	return (topicLocked || forumLocked) && !v.Perms.Has("mod.lock", forumID)
 }
 
-// editRights decides whether v may edit post p of topic t. It returns own true
-// when the author's right alone allows it (post.edit_own in an unlocked topic),
-// and false when mod.edit does. A guest, and anyone else, gets [ErrForbidden].
-func editRights(v Viewer, p postRef, t topicRef) (own bool, err error) {
+// mayEdit decides whether v may edit a post of authorID in a topic. ok is the
+// answer; own is true when the author's right alone allows it (post.edit_own in
+// an unlocked topic) and false when mod.edit does. A guest never edits.
+func mayEdit(v Viewer, authorID, forumID int64, topicLocked bool) (own, ok bool) {
 	if v.UserID == 0 {
-		return false, ErrForbidden
+		return false, false
 	}
-	own = p.authorID == v.UserID && v.Perms.Has("post.edit_own", p.forumID) && !t.locked
-	if !own && !v.Perms.Has("mod.edit", p.forumID) {
+	own = authorID == v.UserID && v.Perms.Has("post.edit_own", forumID) && !topicLocked
+	return own, own || v.Perms.Has("mod.edit", forumID)
+}
+
+// editRights is [mayEdit] for a post and topic that were read: it gives
+// [ErrForbidden] for no.
+func editRights(v Viewer, p postRef, t topicRef) (own bool, err error) {
+	own, ok := mayEdit(v, p.authorID, p.forumID, t.locked)
+	if !ok {
 		return false, ErrForbidden
 	}
 	return own, nil
 }
 
-// deleteRights decides whether v may delete post p. It returns own true when
-// the author's right alone allows it. The first post of a topic that holds other
-// approved posts is not the author's to delete. A guest, and anyone else, gets
-// [ErrForbidden].
-func deleteRights(ctx context.Context, q db.Querier, v Viewer, p postRef) (own bool, err error) {
+// mayDelete decides whether v may delete a post of authorID. ok is the answer;
+// own is true when the author's right alone allows it. The first post of a
+// topic that holds other approved posts is not the author's to delete: isFirst
+// and others are asked only when the author's right is the one that decides. A
+// guest never deletes.
+func mayDelete(v Viewer, authorID, forumID int64, isFirst func() (bool, error), others func() (int, error)) (own, ok bool, err error) {
 	if v.UserID == 0 {
-		return false, ErrForbidden
+		return false, false, nil
 	}
-	own = p.authorID == v.UserID && v.Perms.Has("post.delete_own", p.forumID)
-	if own && p.first {
-		var others int
-		err := q.QueryRow(ctx, `select count(*) from posts where topic_id = $1 and id <> $2 and visibility = 'approved'`,
-			p.topicID, p.id).Scan(&others)
+	own = authorID == v.UserID && v.Perms.Has("post.delete_own", forumID)
+	if own {
+		first, err := isFirst()
 		if err != nil {
-			return false, fmt.Errorf("board: count posts of topic %d: %w", p.topicID, err)
+			return false, false, err
 		}
-		own = others == 0
+		if first {
+			n, err := others()
+			if err != nil {
+				return false, false, err
+			}
+			own = n == 0
+		}
 	}
-	if !own && !v.Perms.Has("mod.delete", p.forumID) {
+	return own, own || v.Perms.Has("mod.delete", forumID), nil
+}
+
+// approvedOthers counts the approved posts of a topic other than postID.
+func approvedOthers(ctx context.Context, q db.Querier, topicID, postID int64) (int, error) {
+	var n int
+	err := q.QueryRow(ctx, `select count(*) from posts where topic_id = $1 and id <> $2 and visibility = 'approved'`,
+		topicID, postID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("board: count posts of topic %d: %w", topicID, err)
+	}
+	return n, nil
+}
+
+// deleteRights is [mayDelete] for a post that was read: it gives [ErrForbidden]
+// for no.
+func deleteRights(ctx context.Context, q db.Querier, v Viewer, p postRef) (own bool, err error) {
+	own, ok, err := mayDelete(v, p.authorID, p.forumID,
+		func() (bool, error) { return p.first, nil },
+		func() (int, error) { return approvedOthers(ctx, q, p.topicID, p.id) })
+	if err != nil {
+		return false, err
+	}
+	if !ok {
 		return false, ErrForbidden
 	}
 	return own, nil
+}
+
+// MayDownload reports whether v may load the attachments of the posts of a
+// forum: account.download, and attach.download in the forum.
+func MayDownload(v Viewer, forumID int64) bool {
+	return v.Perms.Has("account.download", 0) && v.Perms.Has("attach.download", forumID)
+}
+
+// PostButtons are the buttons that a post shows to a viewer. They are the rules
+// of [CanReply], [LoadEdit] and [LoadDelete] applied to the post, with no row
+// lock; a button is a hint, and the write checks again.
+type PostButtons struct {
+	Quote, Edit, Delete bool
+}
+
+// pageButtons decides the buttons of each post of the page. canReply is the
+// answer of the reply rule for the topic.
+func pageButtons(ctx context.Context, q db.Querier, v Viewer, out TopicPage, canReply bool) ([]PostButtons, error) {
+	buttons := make([]PostButtons, len(out.Posts))
+	forumID := out.Forum.ID
+	firstID, loaded := int64(0), false
+	for i, p := range out.Posts {
+		b := &buttons[i]
+		b.Quote = canReply && p.Visibility == "approved" && out.Topic.Visibility == "approved"
+		if v.UserID == 0 || p.Visibility == "deleted" {
+			continue
+		}
+		_, b.Edit = mayEdit(v, p.Author.ID, forumID, out.Topic.Locked)
+		_, ok, err := mayDelete(v, p.Author.ID, forumID,
+			func() (bool, error) {
+				if !loaded {
+					loaded = true
+					err := q.QueryRow(ctx, `select id from posts where topic_id = $1 order by created_at, id limit 1`, out.Topic.ID).Scan(&firstID)
+					if err != nil {
+						return false, fmt.Errorf("board: read first post of topic %d: %w", out.Topic.ID, err)
+					}
+				}
+				return firstID == p.ID, nil
+			},
+			func() (int, error) { return approvedOthers(ctx, q, out.Topic.ID, p.ID) })
+		if err != nil {
+			return nil, err
+		}
+		b.Delete = ok
+	}
+	return buttons, nil
 }
 
 // CanReply reports whether v may reply to topic topicID, with the rights of
-// [Reply] and none of its effects. A topic that v cannot see, or that is missing,
-// gives [ErrNotFound]; a viewer who may see it and not reply gives
-// [ErrForbidden]. A page calls it before it shows the reply form.
+// [Reply] and none of its effects. A topic that v cannot see, a moved-topic
+// marker, or a missing topic gives [ErrNotFound]; a viewer who may see the topic
+// and not reply gives [ErrForbidden]. A page calls it before it shows the reply
+// form.
 func CanReply(ctx context.Context, q db.Querier, v Viewer, topicID int64) error {
 	sc, err := newScope(ctx, q, v)
 	if err != nil {
@@ -90,12 +174,15 @@ func CanReply(ctx context.Context, q db.Querier, v Viewer, topicID int64) error 
 	if err != nil {
 		return err
 	}
-	if !mayReplyTo(v, t) {
+	if t.moved {
+		return ErrNotFound
+	}
+	if !mayReplyTo(v, t.forumID, t.visibility) {
 		return ErrForbidden
 	}
-	var forumLocked bool
-	if err := q.QueryRow(ctx, `select locked from forums where id = $1`, t.forumID).Scan(&forumLocked); err != nil {
-		return fmt.Errorf("board: read forum %d: %w", t.forumID, err)
+	_, forumLocked, err := forumRow(ctx, q, t.forumID, false)
+	if err != nil {
+		return err
 	}
 	if lockStops(v, t.forumID, t.locked, forumLocked) {
 		return ErrForbidden
@@ -108,19 +195,46 @@ func CanReply(ctx context.Context, q db.Querier, v Viewer, topicID int64) error 
 // that is missing, gives [ErrNotFound]; a viewer who may read it and not start a
 // topic there gives [ErrForbidden].
 func CanStartTopic(ctx context.Context, q db.Querier, v Viewer, forumID int64) error {
-	var (
-		kind   string
-		locked bool
-	)
-	err := q.QueryRow(ctx, `select kind, locked from forums where id = $1`, forumID).Scan(&kind, &locked)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !v.Perms.Has("forum.read", forumID)) {
-		return ErrNotFound
-	}
+	kind, locked, err := readForum(ctx, q, v, forumID, false)
 	if err != nil {
-		return fmt.Errorf("board: read forum %d: %w", forumID, err)
+		return err
 	}
 	if !mayStart(v, forumID, kind, locked) {
 		return ErrForbidden
+	}
+	return nil
+}
+
+// DraftChecks says which checks of a save [CheckDraft] runs.
+type DraftChecks struct {
+	// Author checks the writer of a new post: an active member, or a guest with a
+	// valid name and an address that no ban holds.
+	Author bool
+	// Title checks the title (a new topic, and the edit of a first post).
+	Title bool
+	// Reason checks the edit reason (the edit of another member's post).
+	Reason bool
+}
+
+// CheckDraft runs the checks of a save that do not need the body, in the order of
+// the save, so that a preview refuses what the save would refuse. The errors are
+// those of the save: an [*InputError], or [ErrForbidden] for a banned address. It
+// writes nothing.
+func CheckDraft(ctx context.Context, q db.Querier, v Viewer, d Draft, reason string, c DraftChecks, now time.Time) error {
+	if c.Reason {
+		if _, err := cleanReason(reason); err != nil {
+			return err
+		}
+	}
+	if c.Author {
+		if _, err := resolveAuthor(ctx, q, v, d, now); err != nil {
+			return err
+		}
+	}
+	if c.Title {
+		if _, err := cleanTitle(d.Title); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -224,7 +338,8 @@ func ForumHead(ctx context.Context, q db.Querier, v Viewer, forumID int64) (*For
 
 // TopicHead returns the title of topic topicID, its forum and the ancestors of
 // the forum that v may list, for the heading of a form. A topic that v cannot
-// see, or that is missing, gives [ErrNotFound]. It reads no posts.
+// see, a moved-topic marker, or a missing topic gives [ErrNotFound]: a marker
+// carries the title of a topic that v may not see. It reads no posts.
 func TopicHead(ctx context.Context, q db.Querier, v Viewer, topicID int64) (string, *Forum, []*Forum, error) {
 	sc, err := newScope(ctx, q, v)
 	if err != nil {
@@ -233,6 +348,9 @@ func TopicHead(ctx context.Context, q db.Querier, v Viewer, topicID int64) (stri
 	t, err := readTopic(ctx, q, sc, topicID, false)
 	if err != nil {
 		return "", nil, nil, err
+	}
+	if t.moved {
+		return "", nil, nil, ErrNotFound
 	}
 	var title string
 	if err := q.QueryRow(ctx, `select title from topics where id = $1`, topicID).Scan(&title); err != nil {

@@ -95,6 +95,10 @@ type TopicPage struct {
 	// CanDownload is true when the viewer has account.download and the
 	// attach.download right of the forum, so that /a/{id} serves them a file.
 	CanDownload bool
+	// CanReply is true when v may reply to the topic: the rule of [CanReply].
+	CanReply bool
+	// Buttons holds the buttons of each post of Posts, in order.
+	Buttons []PostButtons
 }
 
 // TopicView returns page number page (from 1) of topic topicID as v sees it.
@@ -155,7 +159,7 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 		return TopicPage{}, err
 	}
 	out.Forum, out.Crumbs, out.Page = f, crumbs, page
-	out.CanDownload = v.Perms.Has("account.download", 0) && v.Perms.Has("attach.download", forumID)
+	out.CanDownload = MayDownload(v, forumID)
 
 	var n int
 	err = q.QueryRow(ctx, `select count(*) from posts p where p.topic_id = $5 and `+visible("p", 1),
@@ -171,6 +175,10 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 	showIP := v.Perms.Has("mod.view_ip", forumID)
 	out.Posts, err = readPosts(ctx, q, sc, topicID, page, showIP)
 	if err != nil {
+		return TopicPage{}, err
+	}
+	out.CanReply = mayReplyTo(v, forumID, t.Visibility) && !lockStops(v, forumID, t.Locked, out.Forum.Locked)
+	if out.Buttons, err = pageButtons(ctx, q, v, out, out.CanReply); err != nil {
 		return TopicPage{}, err
 	}
 	if err := fillCards(ctx, q, out.Posts); err != nil {

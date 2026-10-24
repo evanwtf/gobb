@@ -21,7 +21,7 @@ func TestCanReply(t *testing.T) {
 	wantIs(t, board.CanReply(ctx, pool, c, 9999), board.ErrNotFound, "missing topic")
 	wantIs(t, board.CanReply(ctx, pool, c, 2), board.ErrNotFound, "topic in an unreadable forum")
 	wantIs(t, board.CanReply(ctx, pool, asGuest(t, pool), 1), board.ErrForbidden, "guest without topic.reply")
-	wantIs(t, board.CanReply(ctx, pool, viewerFor(t, pool, alice), 3), board.ErrForbidden, "moved-topic marker")
+	wantIs(t, board.CanReply(ctx, pool, viewerFor(t, pool, alice), 3), board.ErrNotFound, "moved-topic marker")
 
 	if _, err := pool.Exec(ctx, `update topics set locked = true where id = 1`); err != nil {
 		t.Fatal(err)

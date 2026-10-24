@@ -231,7 +231,7 @@ func TestWriteRights(t *testing.T) {
 		pool, _ := boardtest.Load(t, bundletest.Small())
 		grantOpts(t, pool, alice, 3, "topic.reply")
 		_, err := board.Reply(ctx, pool, viewerFor(t, pool, alice), 3, board.Draft{Source: "reply", IP: ip1}, t0)
-		wantIs(t, err, board.ErrForbidden, "marker")
+		wantIs(t, err, board.ErrNotFound, "marker")
 	})
 
 	t.Run("edit own post needs post.edit_own, the author and an unlocked topic", func(t *testing.T) {

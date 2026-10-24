@@ -101,20 +101,67 @@ func inputValue(page, name string) (string, bool) {
 }
 
 // postBodies returns the raw inner HTML of every element with the class
-// post-body, cut from the page between its start tag and its matching end tag.
-// The bytes are the ones the server wrote, not a tree that a parser repaired.
-func postBodies(page string) []string {
+// post-body, cut from the page between its start tag and its matching end tag,
+// counted by depth. The bytes are the ones the server wrote, not a tree that a
+// parser repaired.
+//
+// A stray end tag inside a body would end the element early and let the bytes
+// after it escape the check. So the markup that follows each cut must be the
+// template's own: the attachments, the edit note, the signature, the address or
+// the buttons of the post, or the end of the post (the </div> of the post and the
+// </article>). Anything else is reported in problems.
+func postBodies(page string) (bodies, problems []string) {
 	z := xhtml.NewTokenizer(strings.NewReader(page))
-	var out []string
-	pos, start, depth := 0, -1, 0
+	// after is 0 outside the tail of a body. It is 1 right after a body ends, when
+	// the next markup must be an optional part of the post or the end of the
+	// post-main element. It is 2 after that end, when </article> must follow.
+	pos, start, depth, after := 0, -1, 0, 0
 	for {
 		tt := z.Next()
 		raw := z.Raw()
 		before := pos
 		pos += len(raw)
+		if tt == xhtml.ErrorToken {
+			if start >= 0 {
+				problems = append(problems, "a post-body element is not closed")
+			}
+			return bodies, problems
+		}
+		if after > 0 && start < 0 && !(tt == xhtml.TextToken && strings.TrimSpace(string(raw)) == "") {
+			ok := false
+			switch tt {
+			case xhtml.StartTagToken:
+				tn, hasAttr := z.TagName()
+				class := ""
+				for hasAttr {
+					var k, v []byte
+					k, v, hasAttr = z.TagAttr()
+					if string(k) == "class" {
+						class = string(v)
+					}
+				}
+				ok = after == 1 && (string(tn) == "section" && class == "attachments" ||
+					string(tn) == "p" && (class == "edit-note" || class == "post-ip") ||
+					string(tn) == "div" && (class == "signature" || class == "post-actions"))
+				after = 0
+			case xhtml.EndTagToken:
+				tn, _ := z.TagName()
+				switch {
+				case after == 1 && string(tn) == "div":
+					ok, after = true, 2
+				case after == 2 && string(tn) == "article":
+					ok, after = true, 0
+				default:
+					after = 0
+				}
+			default:
+				after = 0
+			}
+			if !ok {
+				problems = append(problems, fmt.Sprintf("unexpected markup after a post body: %q", raw))
+			}
+		}
 		switch tt {
-		case xhtml.ErrorToken:
-			return out
 		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
 			tn, hasAttr := z.TagName()
 			if string(tn) != "div" || tt == xhtml.SelfClosingTagToken {
@@ -134,8 +181,8 @@ func postBodies(page string) []string {
 		case xhtml.EndTagToken:
 			if tn, _ := z.TagName(); start >= 0 && string(tn) == "div" {
 				if depth--; depth == 0 {
-					out = append(out, page[start:before])
-					start = -1
+					bodies = append(bodies, page[start:before])
+					start, after = -1, 1
 				}
 			}
 		}
@@ -352,7 +399,6 @@ func TestQuoteHiddenPostIsNotFound(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `update posts set visibility = 'deleted' where id = 4`); err != nil {
 		t.Fatal(err)
 	}
-	missing := get2(t, h, "/t/1/reply?quote=9999", carol)
 	for _, c := range []struct {
 		who    string
 		cookie []*http.Cookie
@@ -374,7 +420,10 @@ func TestQuoteHiddenPostIsNotFound(t *testing.T) {
 		if strings.Contains(body, "<textarea") {
 			t.Errorf("%s: the page holds a form", c.who)
 		}
-		if c.who[:5] == "carol" && shape(body, "/t/1/reply?quote=5") != shape(missing, "/t/1/reply?quote=9999") {
+		// The same page as for a post that does not exist, for the same viewer.
+		missing := get2(t, h, "/t/1/reply?quote=9999", c.cookie)
+		want := fmt.Sprintf("/t/1/reply?quote=%d", c.quote)
+		if shape(body, want) != shape(missing, "/t/1/reply?quote=9999") {
 			t.Errorf("%s: the 404 differs from the 404 of a missing post", c.who)
 		}
 	}
@@ -393,8 +442,9 @@ func TestQuoteHiddenPostIsNotFound(t *testing.T) {
 	if rec := getAs(t, h, "/t/2/reply", carol); rec.Code != http.StatusNotFound {
 		t.Errorf("reply form of an unreadable topic = %d, want 404", rec.Code)
 	}
-	// A quote of a post from another topic is allowed when the viewer reads it,
-	// even when the quoted post's own topic is locked.
+	// The reply rights of the target topic still apply to a quote: a locked topic
+	// gives 403 whatever the quoted post. (A quote from another forum, and from a
+	// locked topic, is allowed: see TestQuoteAcrossForums.)
 	if _, err := pool.Exec(t.Context(), `update topics set locked = true where id = 1`); err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +563,7 @@ func TestPreviewSavesNothing(t *testing.T) {
 	}{
 		{"/f/2/post", url.Values{"title": {"Draft"}, "body": {"Some **bold** text."}, "preview": {"1"}}},
 		{"/t/1/reply", url.Values{"body": {"Some **bold** text."}, "preview": {"1"}}},
-		{"/p/2/edit", url.Values{"body": {"Some **bold** text."}, "preview": {"1"}}},
+		{"/p/2/edit", url.Values{"title": {"Welcome to the example board"}, "body": {"Some **bold** text."}, "preview": {"1"}}},
 	} {
 		// alice may edit only her own post: use post 1 for the edit.
 		target := c.target
@@ -526,7 +576,10 @@ func TestPreviewSavesNothing(t *testing.T) {
 			t.Errorf("%s: preview status %d", target, rec.Code)
 			continue
 		}
-		bodies := postBodies(page)
+		bodies, problems := postBodies(page)
+		for _, pr := range problems {
+			t.Errorf("%s: %s", target, pr)
+		}
 		if len(bodies) != 1 || !strings.Contains(bodies[0], "<strong>bold</strong>") {
 			t.Errorf("%s: preview bodies = %q", target, bodies)
 			continue
@@ -562,7 +615,7 @@ func TestPreviewOfEditAgreesWithSave(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preview of the edit = %d\n%s", rec.Code, bodyOf(t, rec))
 	}
-	bodies := postBodies(bodyOf(t, rec))
+	bodies, _ := postBodies(bodyOf(t, rec))
 	if len(bodies) != 1 {
 		t.Fatalf("%d preview bodies", len(bodies))
 	}
@@ -584,7 +637,7 @@ func TestPreviewOfEditAgreesWithSave(t *testing.T) {
 	// The save shows the same body as the preview.
 	rec = send(t, h, "/p/3/edit", c, url.Values{"body": {src}})
 	idOf(t, rec)
-	saved := postBodies(topicOf(t, h, 3, c))
+	saved, _ := postBodies(topicOf(t, h, 3, c))
 	found := false
 	for _, s := range saved {
 		found = found || s == preview
@@ -858,32 +911,81 @@ func policySources(policy, name string) []string {
 	return strings.Fields(v)
 }
 
-// checkPolicy fails the test for a policy that is weaker than the base policy in
-// a way that no embed explains.
-func checkPolicy(t *testing.T, where, policy string, embeds bool) {
-	t.Helper()
+// policyDirectives splits a policy into its directives.
+func policyDirectives(policy string) map[string]string {
+	out := map[string]string{}
+	for _, d := range strings.Split(policy, ";") {
+		d = strings.TrimSpace(d)
+		if name, v, _ := strings.Cut(d, " "); name != "" {
+			out[name] = v
+		}
+	}
+	return out
+}
+
+// policyProblems compares the policy of a page with the policy of a page that
+// has no payloads (base), directive by directive. Without an embed the two must
+// be equal. With an embed, four directives may grow by what the embed needs and
+// nothing else: frame-src lists only origins of markup.EmbedOrigins(); script-src
+// and connect-src add https origins to 'self'; style-src may add 'unsafe-inline'.
+// Every other directive stays as it is.
+func policyProblems(policy, base string, embeds bool) []string {
+	var out []string
+	got, want := policyDirectives(policy), policyDirectives(base)
+	explained := map[string]bool{}
+	if embeds {
+		explained = map[string]bool{"frame-src": true, "script-src": true, "connect-src": true, "style-src": true}
+	}
+	for name := range want {
+		if !explained[name] && got[name] != want[name] {
+			out = append(out, fmt.Sprintf("%s = %q, want %q", name, got[name], want[name]))
+		}
+	}
+	for name := range got {
+		if _, ok := want[name]; !ok {
+			out = append(out, fmt.Sprintf("new directive %s %q", name, got[name]))
+		}
+	}
 	if !embeds {
-		if policy != wantBaseCSP {
-			t.Errorf("%s: policy %q, want the base policy", where, policy)
-		}
-		return
+		return out
 	}
-	for _, d := range []string{"default-src", "img-src", "font-src", "form-action", "frame-ancestors", "base-uri", "object-src"} {
-		got, _ := directive(policy, d)
-		want, _ := directive(wantBaseCSP, d)
-		if got != want {
-			t.Errorf("%s: %s = %q, want %q", where, d, got, want)
-		}
+	origin := func(src string) bool {
+		return strings.HasPrefix(src, "https://") && !strings.ContainsAny(src[len("https://"):], "/*'")
 	}
-	origins := markup.EmbedOrigins()
-	for _, src := range policySources(policy, "frame-src") {
+	for _, src := range strings.Fields(got["frame-src"]) {
 		ok := src == "'none'"
-		for _, o := range origins {
+		for _, o := range markup.EmbedOrigins() {
 			ok = ok || src == o
 		}
 		if !ok {
-			t.Errorf("%s: frame-src holds %q", where, src)
+			out = append(out, fmt.Sprintf("frame-src holds %q, which is no embed origin", src))
 		}
+	}
+	for _, name := range []string{"script-src", "connect-src"} {
+		srcs := strings.Fields(got[name])
+		if len(srcs) == 0 || srcs[0] != "'self'" {
+			out = append(out, fmt.Sprintf("%s = %v", name, srcs))
+		}
+		for _, src := range srcs[min(1, len(srcs)):] {
+			if !origin(src) {
+				out = append(out, fmt.Sprintf("%s holds %q", name, src))
+			}
+		}
+	}
+	for _, src := range strings.Fields(got["style-src"]) {
+		if src != "'self'" && src != "'unsafe-inline'" {
+			out = append(out, fmt.Sprintf("style-src holds %q", src))
+		}
+	}
+	return out
+}
+
+// checkPolicy fails the test for a policy that is not the base policy and that no
+// embed explains.
+func checkPolicy(t *testing.T, where, policy, base string, embeds bool) {
+	t.Helper()
+	for _, pr := range policyProblems(policy, base, embeds) {
+		t.Errorf("%s: policy: %s", where, pr)
 	}
 	checkScriptSrc(t, where, policy)
 }
@@ -964,6 +1066,11 @@ func TestPayloadsThroughPosting(t *testing.T) {
 	// Every payload goes through the preview and then through a save. A payload
 	// that the form refuses (an empty text, or bytes that are not UTF-8) must come
 	// back with the text in the form and no post.
+	// The policy of a page with no payloads in it.
+	basePolicy := getAs(t, h, "/t/2", a).Header().Get("Content-Security-Policy")
+	if basePolicy != wantBaseCSP {
+		t.Fatalf("the policy of a plain topic page is %q", basePolicy)
+	}
 	page := bodyOf(t, getAs(t, h, "/t/1/reply", a))
 	token := formToken(t, page)
 	previewed, accepted, refused, checked := 0, 0, 0, 0
@@ -974,7 +1081,11 @@ func TestPayloadsThroughPosting(t *testing.T) {
 		switch {
 		case rec.Code == http.StatusOK:
 			previewed++
-			for _, b := range postBodies(out) {
+			bs, problems := postBodies(out)
+			for _, pr := range problems {
+				t.Errorf("payloads.txt:%d preview: %s", p.line, pr)
+			}
+			for _, b := range bs {
 				htmlcheck.Check(t, b)
 				checked++
 			}
@@ -992,7 +1103,7 @@ func TestPayloadsThroughPosting(t *testing.T) {
 		where := fmt.Sprintf("payloads.txt:%d preview", p.line)
 		csp := rec.Header().Get("Content-Security-Policy")
 		extra := checkScripts(t, where, out, csp)
-		checkPolicy(t, where, csp, extra > 0 || strings.Contains(out, "<iframe"))
+		checkPolicy(t, where, csp, basePolicy, extra > 0 || strings.Contains(out, "<iframe"))
 
 		rec = request(t, h, http.MethodPost, "/t/1/reply", a, url.Values{"csrf": {token}, "body": {p.text}})
 		switch {
@@ -1021,7 +1132,10 @@ func TestPayloadsThroughPosting(t *testing.T) {
 		}
 		out := bodyOf(t, rec)
 		pages++
-		bs := postBodies(out)
+		bs, problems := postBodies(out)
+		for _, pr := range problems {
+			t.Errorf("topic page %d: %s", n, pr)
+		}
 		if len(bs) != articleCount(out) {
 			t.Errorf("page %d: %d post bodies for %d posts", n, len(bs), articleCount(out))
 		}
@@ -1033,7 +1147,7 @@ func TestPayloadsThroughPosting(t *testing.T) {
 		where := fmt.Sprintf("topic page %d", n)
 		csp := rec.Header().Get("Content-Security-Policy")
 		extra := checkScripts(t, where, out, csp)
-		checkPolicy(t, where, csp, extra > 0 || strings.Contains(out, "<iframe"))
+		checkPolicy(t, where, csp, basePolicy, extra > 0 || strings.Contains(out, "<iframe"))
 	}
 	var visible int
 	if err := pool.QueryRow(t.Context(), `select count(*) from posts where topic_id = 1 and visibility = 'approved'`).Scan(&visible); err != nil {

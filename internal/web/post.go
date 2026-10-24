@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,6 +50,10 @@ type postFormData struct {
 	// Notice is a message for the whole form, such as a refusal.
 	Notice  string
 	Preview *postView
+	// Bare is true for the page that only hands the text back: the target is gone,
+	// or the page could not be built. It shows no title, no crumbs and no submit
+	// button, only the text.
+	Bare bool
 
 	// forumID is the forum of the post, for the parse of a preview. edit is set
 	// for the edit of a post.
@@ -137,6 +142,24 @@ func (s *site) formFrame(ctx context.Context, r *http.Request, p *page, kind pos
 	v := p.Viewer
 	fd.ShowName = v.UserID == 0
 	idText := strconv.FormatInt(id, 10)
+	// What needs no read comes first, so that a failed read still leaves a form
+	// that can be sent again.
+	switch kind {
+	case kindTopic:
+		fd.Heading, fd.Submit = "New topic", "Post topic"
+		fd.Action, fd.Cancel = s.path("f", idText, "post"), s.path("f", idText)
+		fd.ShowTitle, fd.forumID = true, id
+	case kindReply:
+		fd.Heading, fd.Submit = "Post a reply", "Post reply"
+		fd.Action, fd.Cancel = s.path("t", idText, "reply"), s.path("t", idText)
+	case kindEdit:
+		fd.Heading, fd.Submit = "Edit post", "Save changes"
+		fd.Action, fd.Cancel = s.path("p", idText, "edit"), s.path("p", idText)
+		// A refused edit still shows the form to a member who may see the post
+		// (ErrForbidden), with the title field when the member sent one.
+		fd.ShowTitle = r.PostForm.Has("title")
+		fd.ShowReason = r.PostForm.Has("reason")
+	}
 	switch kind {
 	case kindTopic:
 		rights, hard = splitErr(board.CanStartTopic(ctx, s.pool, v, id))
@@ -147,10 +170,8 @@ func (s *site) formFrame(ctx context.Context, r *http.Request, p *page, kind pos
 		if err != nil {
 			return fd, nil, err
 		}
-		fd.Heading, fd.Context = "New topic", "in "+forum.Name
-		fd.Action, fd.Cancel, fd.Submit = s.path("f", idText, "post"), s.path("f", idText), "Post topic"
+		fd.Context = "in " + forum.Name
 		fd.Crumbs = append(s.crumbsFor(crumbs), crumb{Label: forum.Name, Href: s.path("f", idText)})
-		fd.ShowTitle, fd.forumID = true, id
 	case kindReply:
 		rights, hard = splitErr(board.CanReply(ctx, s.pool, v, id))
 		if hard != nil || errors.Is(rights, board.ErrNotFound) {
@@ -160,8 +181,7 @@ func (s *site) formFrame(ctx context.Context, r *http.Request, p *page, kind pos
 		if err != nil {
 			return fd, nil, err
 		}
-		fd.Heading, fd.Context, fd.TopicTitle = "Post a reply", "to "+title, title
-		fd.Action, fd.Cancel, fd.Submit = s.path("t", idText, "reply"), s.path("t", idText), "Post reply"
+		fd.Context, fd.TopicTitle = "to "+title, title
 		fd.Crumbs = append(s.crumbsFor(crumbs),
 			crumb{Label: forum.Name, Href: s.path("f", strconv.FormatInt(forum.ID, 10))},
 			crumb{Label: title, Href: s.path("t", idText)})
@@ -169,13 +189,7 @@ func (s *site) formFrame(ctx context.Context, r *http.Request, p *page, kind pos
 	case kindEdit:
 		e, err := board.LoadEdit(ctx, s.pool, v, id)
 		rights, hard = splitErr(err)
-		fd.Heading, fd.Submit = "Edit post", "Save changes"
-		fd.Action, fd.Cancel = s.path("p", idText, "edit"), s.path("p", idText)
 		if hard != nil || rights != nil {
-			// A refused edit still shows the form to a member who may see the post
-			// (ErrForbidden), with the title field when the member sent one.
-			fd.ShowTitle = r.PostForm.Has("title")
-			fd.ShowReason = r.PostForm.Has("reason")
 			return fd, rights, hard
 		}
 		forum, crumbs, err := board.ForumHead(ctx, s.pool, v, e.ForumID)
@@ -259,9 +273,41 @@ func (s *site) postForm(kind postKind) http.HandlerFunc {
 	}
 }
 
-// postSubmit serves the POST of a posting form: a preview, or the save.
+// The notices of the pages that hand the text back.
+const (
+	noticeServerError = "Something went wrong, and your post was not saved. Your text is below. Try again in a moment."
+	noticeGone        = "This topic is no longer available. Copy your text before you leave this page."
+)
+
+// failStatus is 503 for a request that ran out of time and 500 for any other
+// failure of the database.
+func failStatus(r *http.Request, err error) int {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusInternalServerError
+}
+
+// bareForm answers with a page that only hands the text back, in a textarea. It
+// shows no title, no crumbs and no submit button, so it reveals nothing that the
+// member could not see: the target is gone, or the page could not be built. p is
+// nil when even the page of the viewer could not be built; the page is then a
+// guest's, from the settings in memory.
+func (s *site) bareForm(w http.ResponseWriter, r *http.Request, p *page, status int, notice, text string) {
+	if p == nil {
+		p = s.framePage(r, "Your text")
+	}
+	s.renderForm(w, status, p, postFormData{Heading: "Your text", Notice: notice, Source: text, Bare: true})
+}
+
+// postSubmit serves the POST of a posting form: a preview, or the save. Whatever
+// happens after the csrf check, the member's text comes back: in the form, or when
+// there is no form to show, in a bare one.
 func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		form := r.PostForm
+		d := board.Draft{Title: form.Get("title"), Source: form.Get("body"), GuestName: form.Get("guest_name"), IP: s.clientIP(r)}
+		reason := form.Get("reason")
 		id, ok := pathID(r, "id")
 		if !ok {
 			s.notFound(w, r)
@@ -270,57 +316,65 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 		ctx := r.Context()
 		p, err := s.begin(w, r, "", "index")
 		if err != nil {
-			s.serverError(w, r, err)
+			slog.Error("posting: page", "path", r.URL.Path, "err", err)
+			s.bareForm(w, r, nil, failStatus(r, err), noticeServerError, d.Source)
 			return
 		}
 		fd, rights, hard := s.formFrame(ctx, r, p, kind, id)
-		if hard != nil {
-			s.serverError(w, r, hard)
-			return
-		}
-		if errors.Is(rights, board.ErrNotFound) {
-			s.notFound(w, r)
-			return
-		}
 		// What the member sent goes back into the form byte for byte, whatever
 		// happens next.
-		form := r.PostForm
-		d := board.Draft{Title: form.Get("title"), Source: form.Get("body"), GuestName: form.Get("guest_name"), IP: s.clientIP(r)}
-		reason := form.Get("reason")
 		if kind != kindEdit || fd.ShowTitle {
 			fd.Title = d.Title
 		}
 		fd.Source, fd.GuestName, fd.Reason = d.Source, d.GuestName, reason
-		if rights != nil {
-			fd.Notice = "You do not have the right to " + actionFor[kind] + ". Your text is below."
-			if p.Viewer.UserID == 0 {
-				fd.Notice = "You do not have the right to " + actionFor[kind] + " as a guest. Sign in, or copy your text first."
-			}
-			s.renderForm(w, http.StatusForbidden, p, fd)
+		if hard != nil {
+			s.writeFailed(w, r, p, fd, kind, hard)
 			return
 		}
-
+		if rights != nil {
+			s.writeFailed(w, r, p, fd, kind, rights)
+			return
+		}
 		if form.Get("preview") != "" {
-			s.preview(w, r, p, fd, d)
+			s.preview(w, r, p, fd, kind, d, reason)
 			return
 		}
 		postID, err := s.save(ctx, kind, p, id, d, reason)
-		switch rights, hard := splitErr(err); {
-		case hard != nil:
-			var in *board.InputError
-			if errors.As(hard, &in) {
-				s.inputFailed(w, p, fd, in)
-				return
-			}
-			s.serverError(w, r, hard)
-		case errors.Is(rights, board.ErrNotFound):
-			s.notFound(w, r)
-		case rights != nil:
-			fd.Notice = "You do not have the right to " + actionFor[kind] + " now. Your text is below."
-			s.renderForm(w, http.StatusForbidden, p, fd)
-		default:
-			s.afterPost(w, r, p, kind, id, postID)
+		if err != nil {
+			s.writeFailed(w, r, p, fd, kind, err)
+			return
 		}
+		topicID := id
+		if fd.edit != nil {
+			topicID = fd.edit.TopicID
+		}
+		s.afterPost(w, r, p, kind, topicID, postID)
+	}
+}
+
+// writeFailed answers the failure of a posting step with the text of the member:
+//   - an [*board.InputError]: 400, the form, and the message beside its field;
+//   - [board.ErrNotFound], the target gone or hidden: 404 and a bare form;
+//   - [board.ErrForbidden]: 403 and the form, with a notice;
+//   - any other error, a database failure or a timeout: 500 (503 for a timeout),
+//     the form, and a fixed notice that carries no detail.
+func (s *site) writeFailed(w http.ResponseWriter, r *http.Request, p *page, fd postFormData, kind postKind, err error) {
+	var in *board.InputError
+	switch {
+	case errors.As(err, &in):
+		s.inputFailed(w, p, fd, in)
+	case errors.Is(err, board.ErrNotFound):
+		s.bareForm(w, r, p, http.StatusNotFound, noticeGone, fd.Source)
+	case errors.Is(err, board.ErrForbidden):
+		fd.Notice = "You do not have the right to " + actionFor[kind] + ". Your text is below."
+		if p.Viewer.UserID == 0 {
+			fd.Notice = "You do not have the right to " + actionFor[kind] + " as a guest. Sign in, or copy your text first."
+		}
+		s.renderForm(w, http.StatusForbidden, p, fd)
+	default:
+		slog.Error("posting failed", "path", r.URL.Path, "err", err)
+		fd.Notice = noticeServerError
+		s.renderForm(w, failStatus(r, err), p, fd)
 	}
 }
 
@@ -354,29 +408,51 @@ func (s *site) inputFailed(w http.ResponseWriter, p *page, fd postFormData, in *
 // afterPost answers a saved post with 303 to /p/{id}. A post that waits for
 // approval is not visible to a guest (or to anyone else who cannot approve), so
 // /p/{id} would be a 404: the answer then goes to the topic, or to the forum for
-// a new topic, with the note that the post waits.
+// a new topic, with the note that the post waits. For an edit, id is the topic
+// of the post, and the answer goes to the topic with no note. For a new topic and
+// a reply, id is the forum and the topic.
 func (s *site) afterPost(w http.ResponseWriter, r *http.Request, p *page, kind postKind, id, postID int64) {
 	_, _, err := board.PostLocation(r.Context(), s.pool, p.Viewer, postID)
 	switch {
 	case err == nil:
 		http.Redirect(w, r, s.path("p", strconv.FormatInt(postID, 10)), http.StatusSeeOther)
 	case errors.Is(err, board.ErrNotFound):
-		target := s.path("f", strconv.FormatInt(id, 10))
-		if kind != kindTopic {
-			target = s.path("t", strconv.FormatInt(id, 10))
-		}
-		http.Redirect(w, r, target+"?held=1", http.StatusSeeOther)
+		http.Redirect(w, r, s.heldTarget(kind, id), http.StatusSeeOther)
 	default:
-		s.serverError(w, r, err)
+		// The post is saved. Send the member to the page that holds it.
+		slog.Warn("posting: locate the saved post", "post", postID, "err", err)
+		http.Redirect(w, r, s.heldTarget(kind, id), http.StatusSeeOther)
 	}
 }
 
+// heldTarget is where a saved post that the viewer cannot see sends the viewer.
+func (s *site) heldTarget(kind postKind, id int64) string {
+	idText := strconv.FormatInt(id, 10)
+	switch kind {
+	case kindTopic:
+		return s.path("f", idText) + "?held=1"
+	case kindReply:
+		return s.path("t", idText) + "?held=1"
+	}
+	return s.path("t", idText)
+}
+
 // preview answers 200 with the form and the rendered post above it. It saves
-// nothing. It runs board.ParseBody as the save does (ParseBodyKeeping with the
-// stored flags and tree for an edit, exactly as EditPost passes them), so a
-// preview never disagrees with the save.
-func (s *site) preview(w http.ResponseWriter, r *http.Request, p *page, fd postFormData, d board.Draft) {
+// nothing. It runs the checks of a save that do not need the body
+// ([board.CheckDraft]: the title, the guest name, the reason), then
+// board.ParseBody as the save does (ParseBodyKeeping with the stored flags and
+// tree for an edit, exactly as EditPost passes them), so a preview never
+// disagrees with the save.
+func (s *site) preview(w http.ResponseWriter, r *http.Request, p *page, fd postFormData, kind postKind, d board.Draft, reason string) {
 	ctx := r.Context()
+	checks := board.DraftChecks{Author: kind != kindEdit, Title: kind == kindTopic}
+	if fd.edit != nil {
+		checks.Title, checks.Reason = fd.edit.First, fd.edit.Moderated
+	}
+	if err := board.CheckDraft(ctx, s.pool, p.Viewer, d, reason, checks, s.opt.Now()); err != nil {
+		s.writeFailed(w, r, p, fd, kind, err)
+		return
+	}
 	var (
 		body board.Body
 		err  error
@@ -386,18 +462,13 @@ func (s *site) preview(w http.ResponseWriter, r *http.Request, p *page, fd postF
 	} else {
 		body, err = board.ParseBody(ctx, s.pool, p.Viewer, fd.forumID, d.Source, nil)
 	}
-	var in *board.InputError
-	if errors.As(err, &in) {
-		s.inputFailed(w, p, fd, in)
-		return
-	}
 	if err != nil {
-		s.serverError(w, r, err)
+		s.writeFailed(w, r, p, fd, kind, err)
 		return
 	}
 	rc, err := s.renderContext(ctx, p.Viewer, fd.forumID)
 	if err != nil {
-		s.serverError(w, r, err)
+		s.writeFailed(w, r, p, fd, kind, err)
 		return
 	}
 	rendered := markup.Render(body.Tree, rc)
@@ -407,7 +478,7 @@ func (s *site) preview(w http.ResponseWriter, r *http.Request, p *page, fd postF
 	if v := p.Viewer; v.UserID != 0 {
 		card, err := board.Card(ctx, s.pool, v.UserID)
 		if err != nil {
-			s.serverError(w, r, err)
+			s.writeFailed(w, r, p, fd, kind, err)
 			return
 		}
 		pv.Author = board.Author{ID: v.UserID, Name: v.Name}
@@ -432,7 +503,7 @@ func (s *site) renderContext(ctx context.Context, v board.Viewer, forumID int64)
 		return markup.RenderContext{}, err
 	}
 	rc := markup.RenderContext{Smiley: smileys, BasePath: s.base}
-	if !(v.Perms.Has("account.download", 0) && v.Perms.Has("attach.download", forumID)) {
+	if !board.MayDownload(v, forumID) {
 		note := "not available to you"
 		if v.UserID == 0 {
 			note = "sign in to view"
@@ -476,16 +547,30 @@ func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 	if s.deleteFailed(w, r, p, board.DeletePost(ctx, s.pool, p.Viewer, id, s.opt.Now())) {
 		return
 	}
-	// Back to the topic. When the topic is gone for the viewer (the first post
-	// held it), to the forum.
-	target := s.path("t", strconv.FormatInt(dt.TopicID, 10))
-	if _, _, _, err := board.TopicHead(ctx, s.pool, p.Viewer, dt.TopicID); errors.Is(err, board.ErrNotFound) {
-		target = s.path("f", strconv.FormatInt(dt.ForumID, 10))
-	} else if err != nil {
-		s.serverError(w, r, err)
-		return
+	// The delete is done. Whatever happens next, the answer is a 303.
+	http.Redirect(w, r, s.afterDeleteTarget(ctx, p.Viewer, dt), http.StatusSeeOther)
+}
+
+// afterDeleteTarget is where a viewer goes after a delete that committed: the
+// topic; when the topic is gone for the viewer (the first post held it) or cannot
+// be read, the forum; when the forum cannot be read either, the index. It never
+// fails: the delete is done.
+func (s *site) afterDeleteTarget(ctx context.Context, v board.Viewer, dt board.DeleteForm) string {
+	_, _, _, err := board.TopicHead(ctx, s.pool, v, dt.TopicID)
+	if err == nil {
+		return s.path("t", strconv.FormatInt(dt.TopicID, 10))
 	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	if !errors.Is(err, board.ErrNotFound) {
+		slog.Warn("delete: locate the topic", "topic", dt.TopicID, "err", err)
+	}
+	if dt.ForumID != 0 {
+		if _, _, err := board.ForumHead(ctx, s.pool, v, dt.ForumID); err == nil {
+			return s.path("f", strconv.FormatInt(dt.ForumID, 10))
+		} else if !errors.Is(err, board.ErrNotFound) {
+			slog.Warn("delete: locate the forum", "forum", dt.ForumID, "err", err)
+		}
+	}
+	return s.path()
 }
 
 // deleteFailed answers the error of a delete step and reports whether it did.
@@ -500,43 +585,6 @@ func (s *site) deleteFailed(w http.ResponseWriter, r *http.Request, p *page, err
 		return false
 	}
 	return true
-}
-
-// postActions are the buttons that a post shows to a viewer. They only mirror
-// the rights of the board functions; the functions check again.
-type postActions struct {
-	Quote, Edit, Delete bool
-}
-
-// actionsFor decides the buttons of post number i of the page of a topic. canReply
-// is the right to reply to the topic.
-func actionsFor(v board.Viewer, tp board.TopicPage, i int, post board.Post, canReply bool) postActions {
-	var a postActions
-	a.Quote = canReply && post.Visibility == "approved" && tp.Topic.Visibility == "approved"
-	if v.UserID == 0 || post.Visibility == "deleted" {
-		return a
-	}
-	forumID := tp.Forum.ID
-	own := post.Author.ID == v.UserID
-	first := tp.Page == 1 && i == 0
-	a.Edit = (own && v.Perms.Has("post.edit_own", forumID) && !tp.Topic.Locked) || v.Perms.Has("mod.edit", forumID)
-	a.Delete = v.Perms.Has("mod.delete", forumID) ||
-		(own && v.Perms.Has("post.delete_own", forumID) && !(first && tp.Topic.Replies > 0))
-	return a
-}
-
-// canReplyTo mirrors the reply right for the buttons of a topic page.
-func canReplyTo(v board.Viewer, tp board.TopicPage) bool {
-	forumID := tp.Forum.ID
-	if !v.Perms.Has("topic.reply", forumID) || tp.Topic.Visibility != "approved" {
-		return false
-	}
-	return !(tp.Topic.Locked || tp.Forum.Locked) || v.Perms.Has("mod.lock", forumID)
-}
-
-// canStartIn mirrors the new-topic right for the button of a forum page.
-func canStartIn(v board.Viewer, f *board.Forum) bool {
-	return f.Kind == "forum" && v.Perms.Has("topic.start", f.ID) && (!f.Locked || v.Perms.Has("mod.lock", f.ID))
 }
 
 // postItemData is the data of the "post" template: a post as the topic page and
