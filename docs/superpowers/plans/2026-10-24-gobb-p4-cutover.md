@@ -92,6 +92,31 @@
 
 ---
 
+### Task 0: Carried from Plan 3's last review
+
+Plan 3's final re-review approved the read side and left four Minors. Its report is `plan3-final-rereview.md` in this plan.s workspace.
+
+**Files:** `internal/login/` (the hold and the floor clock, and their tests), `internal/web/` (error answers, and their tests), `README.md`, `docs/changelog.md`.
+
+- **R1. A shared-email sign-in holds K checks' memory at once.** `runJobs` collects only at release. Run `runtime.GC()` before each check after the first, so a finished check's memory is free before the next one starts, as the README says.
+  - Test: a hook counts collections inside one hold of three checks, and expects two.
+- **R2. The lookup sits outside the floor.** Since Plan 3's T8e, a missing name answers about 0.1 ms after an existing one. Move the floor's start forward by the gate wait only, not by the lookup time.
+  - Test: with a fake lookup that takes 5 ms more for a missing name, the two answer times agree within 1 ms.
+- **R3. Two tests cannot see what they name.** Make `TestHoldEndsWithACollection` fail when the release comes before the collection. Make `TestLoadFloorHoldsTheGate` fail without the collection after `LoadFloor`. Show both failures with a mutation.
+- **R4. Plain text from the standard library.**
+  - A bad `Range` header gets a plain-text 416 from `http.ServeContent`.
+  - Under a base path, a percent-encoded letter of the base path gets a plain-text 404 from `http.StripPrefix`.
+  - Answer both with the themed page (spec 13). Extend `TestNoPlainTextErrors` with each case.
+
+- [ ] **Step 1: Write the failing tests and show each one fails.**
+- [ ] **Step 2: Implement.**
+- [ ] **Step 3: Run** `GOBB_TEST_DATABASE_URL=… go test -race ./internal/...`. Expected: PASS, no skips.
+- [ ] **Step 4: Commit and push.** `git commit -m "login, web: fixes from the read side's last review"`
+
+**Checkpoint:** a shared-email sign-in on the controller's capped copy stays near 137 MiB.
+
+---
+
 ### Task 1: Harden the markup for writes
 
 **Files:**
