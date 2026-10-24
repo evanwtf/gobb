@@ -1,0 +1,8 @@
+{"group_id":4,"user_id":1,"leader":true,"pending":false}
+{"group_id":3,"user_id":2,"leader":false,"pending":false}
+{"group_id":2,"user_id":1,"leader":false,"pending":false}
+{"group_id":2,"user_id":2,"leader":false,"pending":false}
+{"group_id":2,"user_id":3,"leader":false,"pending":false}
+{"group_id":2,"user_id":4,"leader":false,"pending":false}
+{"group_id":5,"user_id":2,"leader":true,"pending":false}
+{"group_id":5,"user_id":3,"leader":false,"pending":true}

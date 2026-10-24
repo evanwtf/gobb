@@ -1,0 +1,17 @@
+{"group_id":1,"user_id":null,"forum_id":1,"role_id":null,"option":"forum.list","setting":"yes"}
+{"group_id":1,"user_id":null,"forum_id":2,"role_id":null,"option":"forum.list","setting":"yes"}
+{"group_id":1,"user_id":null,"forum_id":2,"role_id":null,"option":"forum.read","setting":"yes"}
+{"group_id":2,"user_id":null,"forum_id":1,"role_id":null,"option":"forum.list","setting":"yes"}
+{"group_id":2,"user_id":null,"forum_id":2,"role_id":null,"option":"forum.list","setting":"yes"}
+{"group_id":2,"user_id":null,"forum_id":2,"role_id":null,"option":"forum.read","setting":"yes"}
+{"group_id":2,"user_id":null,"forum_id":2,"role_id":1,"option":null,"setting":null}
+{"group_id":2,"user_id":null,"forum_id":0,"role_id":2,"option":null,"setting":null}
+{"group_id":3,"user_id":null,"forum_id":0,"role_id":null,"option":"mod.edit","setting":"yes"}
+{"group_id":3,"user_id":null,"forum_id":0,"role_id":null,"option":"mod.approve","setting":"yes"}
+{"group_id":4,"user_id":null,"forum_id":0,"role_id":null,"option":"admin","setting":"yes"}
+{"group_id":4,"user_id":null,"forum_id":3,"role_id":null,"option":"forum.list","setting":"yes"}
+{"group_id":4,"user_id":null,"forum_id":3,"role_id":null,"option":"forum.read","setting":"yes"}
+{"group_id":5,"user_id":null,"forum_id":3,"role_id":null,"option":"forum.list","setting":"yes"}
+{"group_id":5,"user_id":null,"forum_id":3,"role_id":null,"option":"forum.read","setting":"yes"}
+{"group_id":5,"user_id":null,"forum_id":3,"role_id":null,"option":"topic.reply","setting":"yes"}
+{"group_id":null,"user_id":4,"forum_id":2,"role_id":null,"option":"forum.read","setting":"never"}

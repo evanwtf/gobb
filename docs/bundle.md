@@ -8,6 +8,10 @@ holds the same format as types, and it checks a bundle without a database.
 not guess at data it does not model. Unknown fields, unknown enum values, broken
 references and a count that disagrees with the manifest all stop the import.
 
+`docs/example-bundle/` is a complete small bundle with made-up data. A test keeps it in
+step with the format, and `bundle.Check` accepts it. `bundle.Check` proves the rules that
+span rows (unique IDs, references, files) without a database.
+
 ## Layout
 
 A bundle is a directory, or a gzip-compressed tar archive of that directory. An

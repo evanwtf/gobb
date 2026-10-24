@@ -80,3 +80,12 @@ that the pages stand on.
   its end, so a bad checksum, a cut trailer and trailing data fail. `Each` refuses a CR
   line ending and a lone surrogate escape. Integer fields now stop at 2,147,483,647,
   and an email ban needs an address.
+- The whole-bundle check: `bundle.Check` reads each data file once and proves the rules
+  that span rows, with no database. It covers unique IDs and keys, every reference, the
+  four built-in groups, an active owner, unique cleaned user names, forum parent cycles,
+  topics only in forums of kind forum, moved-topic markers, poll vote limits, the scope
+  fit of a role grant, legacy route targets (a user route may name a gone user) and the
+  files rule. It keeps only IDs and keys, and returns up to 100 errors in file order.
+  `internal/bundletest` builds a small valid board for tests, and `docs/example-bundle/`
+  holds that board as a committed example. `go test ./bundle -run TestExampleBundle
+  -update` regenerates it.

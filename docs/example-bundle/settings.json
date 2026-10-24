@@ -1,0 +1,13 @@
+{
+  "board_name": "Example Board",
+  "board_description": "A board for examples",
+  "timezone": "America/New_York",
+  "default_color_scheme": "slate",
+  "registration": "approval",
+  "email_notifications": true,
+  "header_image": {
+    "path": "header/banner.png",
+    "size": 73,
+    "sha256": "dbda582cee9c9c6713a8b4450ed6ebfd737ea7f63b2ca0c081170e91f0b85b93"
+  }
+}

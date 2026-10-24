@@ -1,0 +1,3 @@
+{"id":1,"parent_id":null,"kind":"category","name":"General","description":"Talk about anything","rules":"","link_url":null,"locked":false,"position":1}
+{"id":2,"parent_id":1,"kind":"forum","name":"Main Discussion","description":"The main forum","rules":"Be kind.","link_url":null,"locked":false,"position":1}
+{"id":3,"parent_id":2,"kind":"forum","name":"Members Lounge","description":"A quiet room","rules":"","link_url":null,"locked":false,"position":1}

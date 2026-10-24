@@ -1,0 +1,5 @@
+{"id":1,"name":"guests","builtin":"guests","kind":"builtin","description":"Visitors who are not signed in"}
+{"id":2,"name":"members","builtin":"members","kind":"builtin","description":"Every registered user"}
+{"id":3,"name":"moderators","builtin":"moderators","kind":"builtin","description":"Moderators of the board"}
+{"id":4,"name":"admins","builtin":"admins","kind":"builtin","description":"Administrators of the board"}
+{"id":5,"name":"Beta testers","builtin":null,"kind":"request","description":"People who try new features"}
