@@ -15,15 +15,22 @@ import (
 // batchSize is the number of rows that a bulk load sends in one COPY.
 const batchSize = 1000
 
-// bulk collects rows for one table and sends them with CopyFrom in batches of
-// batchSize rows. A batch is one COPY statement, so the memory it holds is at
-// most batchSize rows.
+// maxBatchBytes is the most row bytes that a batch holds before a bulk load
+// sends it, whatever the row count. A variable, so that a test can lower it.
+var maxBatchBytes = 8 << 20
+
+// bulk collects rows for one table and sends them with CopyFrom in batches. A
+// batch is one COPY statement. It holds at most batchSize rows and about
+// maxBatchBytes bytes of row text, so the memory it holds is bounded for any
+// row size.
 type bulk struct {
 	tx    pgx.Tx
 	file  string // the data file the rows come from, for error messages
 	table string
 	cols  []string
 	rows  [][]any
+	bytes int // the string bytes in rows
+	sent  int // the number of batches sent so far
 	first int // the line of the first row in rows
 	last  int // the line of the last row in rows
 }
@@ -40,10 +47,24 @@ func (b *bulk) add(ctx context.Context, line int, row ...any) error {
 	}
 	b.last = line
 	b.rows = append(b.rows, row)
-	if len(b.rows) >= batchSize {
+	b.bytes += rowBytes(row)
+	if len(b.rows) >= batchSize || b.bytes > maxBatchBytes {
 		return b.flush(ctx)
 	}
 	return nil
+}
+
+// rowBytes returns the number of bytes in the string values of a row. For a
+// post or a message these are the source, the tree and the text, which are the
+// bulk of the row, and a few short labels.
+func rowBytes(row []any) int {
+	n := 0
+	for _, v := range row {
+		if s, ok := v.(string); ok {
+			n += len(s)
+		}
+	}
+	return n
 }
 
 // flush sends the queued rows. The error names the lines of the batch, because
@@ -57,6 +78,8 @@ func (b *bulk) flush(ctx context.Context) error {
 		return fmt.Errorf("%s.jsonl:%d-%d: insert into %s: %w", b.file, b.first, b.last, b.table, err)
 	}
 	b.rows = b.rows[:0]
+	b.bytes = 0
+	b.sent++
 	return nil
 }
 
@@ -214,7 +237,7 @@ func loadAttachments(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 
 func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 	pms := newBulk(tx, "pms", "pms",
-		"id", "author_id", "author_ip", "created_at", "subject", "body_source",
+		"id", "author_id", "author_name", "author_ip", "created_at", "subject", "body_source",
 		"body_tree", "body_text", "enable_markdown", "enable_smilies",
 		"enable_autolink", "enable_sig", "author_deleted")
 	rcpts := newBulk(tx, "pms", "pm_recipients", "pm_id", "user_id", "kind", "is_read", "is_deleted")
@@ -228,7 +251,7 @@ func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 		if err != nil {
 			return idErr("pms", line, m.ID, "body", err)
 		}
-		if err := pms.add(ctx, line, m.ID, m.AuthorID, ip, m.CreatedAt, m.Subject,
+		if err := pms.add(ctx, line, m.ID, m.AuthorID, m.AuthorName, ip, m.CreatedAt, m.Subject,
 			m.Body.Source, tree, text, m.Body.Markdown, m.Body.Smilies, m.Body.Autolink,
 			m.ShowSignature, m.AuthorDeleted); err != nil {
 			return err

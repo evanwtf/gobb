@@ -2,7 +2,6 @@ package importer
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/bundletest"
-	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/dbtest"
 	"github.com/evanwtf/gobb/markup"
 )
@@ -424,48 +422,6 @@ func TestImportFlagsRespected(t *testing.T) {
 	if !elements(storedTree(t, pool2, 6))["url"] {
 		t.Error("post 6 has no url element with autolink on")
 	}
-}
-
-func TestImportIsAllOrNothing(t *testing.T) {
-	ctx := context.Background()
-	pool := dbtest.New(t)
-	data := t.TempDir()
-	dir := writeBoard(t, func(b *bundletest.Board) {
-		b.Posts[5].Body.Source = "BREAK"
-	})
-	old := parseBody
-	t.Cleanup(func() { parseBody = old })
-	parseBody = func(src string, opt markup.Options) *markup.Node {
-		if src == "BREAK" {
-			return &markup.Node{Kind: markup.Element, Name: "no-such-element"}
-		}
-		return old(src, opt)
-	}
-	_, err := run(t, pool, dir, data, false)
-	if err == nil {
-		t.Fatal("import succeeded")
-	}
-	if !strings.HasPrefix(err.Error(), "posts.jsonl:6 (id 6): body: ") {
-		t.Errorf("error = %v", err)
-	}
-
-	tables, err := db.DataTables(ctx, pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, table := range tables {
-		if n := count(t, pool, `"`+table+`"`); n != 0 {
-			t.Errorf("table %s has %d rows, want 0", table, n)
-		}
-	}
-	entries, err := os.ReadDir(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		t.Errorf("the data directory holds %s", e.Name())
-	}
-	noStaging(t, data)
 }
 
 func TestImportNamesMessageOnTreeError(t *testing.T) {

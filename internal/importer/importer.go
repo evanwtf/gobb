@@ -40,6 +40,10 @@ type Options struct {
 	Replace bool
 }
 
+// now returns the time that names the .replaced-<stamp> directory. The tests
+// replace it.
+var now = time.Now
+
 // parseBody turns a Markdown source into a tree. The tests replace it.
 var parseBody = markup.Parse
 
@@ -174,12 +178,13 @@ func Run(ctx context.Context, pool *pgxpool.Pool, src string, opt Options) (coun
 	}
 	counts["files"] = files
 
-	if err := installFiles(opt.DataDir, staging, opt.Replace, time.Now()); err != nil {
+	if err := installFiles(opt.DataDir, staging, opt.Replace, now()); err != nil {
 		keep = true
 		return nil, fmt.Errorf("importer: the rows are committed, but moving the files failed: %w; "+
 			"the staged files are in %s; run the import again with --replace to repair it", err, staging)
 	}
-	slog.Info("import done", "files", files)
+	m := r.Manifest()
+	slog.Info("import done", "files", files, "source", m.Source, "created_at", m.CreatedAt)
 	return counts, nil
 }
 
@@ -253,10 +258,28 @@ func load(ctx context.Context, conn *pgxpool.Conn, tables []string, r *source, r
 	if err := db.ResetSequences(ctx, tx); err != nil {
 		return nil, err
 	}
+	if err := reserveGoneUserIDs(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("importer: commit: %w", err)
 	}
 	return counts, nil
+}
+
+// reserveGoneUserIDs moves the users sequence past the largest ID in users and
+// gone_users. A gone user's URL answers 410 for good, so a new member never
+// gets that ID. It runs after db.ResetSequences, which looks at users only.
+func reserveGoneUserIDs(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx,
+		`select setval(pg_get_serial_sequence('users', 'id'),
+		        greatest((select coalesce(max(id), 0) from users),
+		                 (select coalesce(max(id), 0) from gone_users)) + 1,
+		        false)`)
+	if err != nil {
+		return fmt.Errorf("importer: reserve the IDs of gone users: %w", err)
+	}
+	return nil
 }
 
 // settingRow is one row of the settings table.

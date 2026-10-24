@@ -267,8 +267,9 @@ func TestImportPeopleAndPermissions(t *testing.T) {
 		 values ('erin', 'erin', '', '', '', 'gobb', 'active', now()) returning id`).Scan(&next); err != nil {
 		t.Fatal(err)
 	}
-	if next != 5 {
-		t.Errorf("next user ID = %d, want 5", next)
+	// Users run 1 to 4 and gone user 8 holds ID 8, so the next ID is 9.
+	if next != 9 {
+		t.Errorf("next user ID = %d, want 9", next)
 	}
 	if err := pool.QueryRow(ctx,
 		`insert into forums (kind, name) values ('forum', 'x') returning id`).Scan(&next); err != nil {
@@ -511,8 +512,10 @@ func TestImportRefusesChangedFile(t *testing.T) {
 	pool := dbtest.New(t)
 	data := t.TempDir()
 	dir := writeBoard(t, nil)
-	// A file with the right size and the wrong content passes no check at all,
-	// so Check refuses it first. The message names the path.
+	// The file has the size that the row states, but not its SHA-256. The
+	// importer would copy it without complaint, so only Check can refuse the
+	// import here. The test proves that Check catches the changed file, and that
+	// its message names the path.
 	if err := os.WriteFile(filepath.Join(dir, "files", "avatars", "1.png"),
 		make([]byte, len(bundletest.Small().Files["avatars/1.png"])), 0o644); err != nil {
 		t.Fatal(err)

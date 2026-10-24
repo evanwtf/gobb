@@ -322,9 +322,11 @@ func loadStaticPages(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 			return rowErr("static_pages", line, "slug "+p.Slug, "body", err)
 		}
 		_, err = tx.Exec(ctx,
-			`insert into static_pages (slug, title, body_source, body_tree, updated_at)
-			 values ($1, $2, $3, $4::jsonb, $5)`,
-			p.Slug, p.Title, p.Body.Source, tree, p.UpdatedAt)
+			`insert into static_pages (slug, title, body_source, body_tree,
+			     enable_markdown, enable_smilies, enable_autolink, updated_at)
+			 values ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)`,
+			p.Slug, p.Title, p.Body.Source, tree,
+			p.Body.Markdown, p.Body.Smilies, p.Body.Autolink, p.UpdatedAt)
 		if err != nil {
 			return rowErr("static_pages", line, "slug "+p.Slug, "insert", err)
 		}
