@@ -14,7 +14,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// maxLegacyForm is the longest legacy form VerifyLegacy hashes, in bytes.
+// maxLegacyForm is the longest raw input and the longest legacy form that
+// VerifyLegacy accepts, in bytes.
 const maxLegacyForm = 4096
 
 // Limits on the work that a stored bcrypt or phpass hash may demand. Each step up in
@@ -42,8 +43,12 @@ const (
 // VerifyLegacy reports whether raw matches stored, a password hash from the
 // imported board. It supports bcrypt ($2y$, $2a$, $2b$), argon2id and the
 // chain format ($chain$phpass,). It returns false for any other format, for a
-// password with no legacy form and for a form over 4,096 bytes.
+// password with no legacy form, for raw input over 4,096 bytes and for a form over
+// 4,096 bytes. The raw check runs first, before any transform.
 func VerifyLegacy(raw, stored string) bool {
+	if len(raw) > maxLegacyForm {
+		return false
+	}
 	form, ok := LegacyForm(raw)
 	if !ok || form == "" || len(form) > maxLegacyForm {
 		return false

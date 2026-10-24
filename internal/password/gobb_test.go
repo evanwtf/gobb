@@ -116,15 +116,16 @@ func TestErrTooLongNamesTheLimit(t *testing.T) {
 	}
 }
 
-// The limit counts bytes after NFC. A password of 4,096 bytes is accepted. So is
-// decomposed text of 4,500 bytes, which is 3,000 bytes after NFC.
+// A password of 4,096 raw bytes is accepted. So is decomposed text of 3,600 bytes,
+// which is 2,400 bytes after NFC. A raw input over 4,096 bytes is refused before NFC
+// (see TestRawOverLimitIsRefusedBeforeNFC).
 func TestHashLengthLimit(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  string
 	}{
 		{"4,096 bytes", strings.Repeat("a", 4096)},
-		{"decomposed, 4,500 bytes raw", strings.Repeat("e\u0301", 1500)},
+		{"decomposed, 3,600 bytes raw", strings.Repeat("e\u0301", 1200)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,5 +237,46 @@ func TestVerifyUnknownScheme(t *testing.T) {
 		if ok, rehash := Verify("s3cret", stored, scheme); ok || rehash {
 			t.Errorf("scheme %q: Verify = %t, %t; want false, false", scheme, ok, rehash)
 		}
+	}
+}
+
+// The 4,096-byte limit counts the raw input, before NFC. 1,500 copies of a
+// decomposed "e with acute" are 4,500 bytes raw and 3,000 bytes in NFC.
+func TestRawOverLimitIsRefusedBeforeNFC(t *testing.T) {
+	raw := strings.Repeat("é", 1500)
+	if len(raw) != 4500 {
+		t.Fatalf("precondition: len = %d", len(raw))
+	}
+	if form, err := gobbForm(strings.Repeat("é", 1500)); err != nil || len(form) != 3000 {
+		t.Fatalf("precondition: the NFC form is %d bytes, err %v", len(form), err)
+	}
+	if _, err := Hash(raw); !errors.Is(err, ErrTooLong) {
+		t.Errorf("Hash error = %v, want ErrTooLong", err)
+	}
+
+	// A hash of the NFC form must not match the longer raw input.
+	stored := mustHash(t, strings.Repeat("é", 1500))
+	if ok, _ := Verify(raw, stored, "gobb"); ok {
+		t.Error("Verify accepted 4,500 raw bytes")
+	}
+	if ok, _ := Verify(strings.Repeat("é", 1500), stored, "gobb"); !ok {
+		t.Error("Verify refused the 3,000-byte NFC password")
+	}
+}
+
+func TestHugeInputIsRefusedFast(t *testing.T) {
+	huge := strings.Repeat("a", 3<<20)
+	start := time.Now()
+	_, err := Hash(huge)
+	ok, _ := Verify(huge, capStoredHash(), "gobb")
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrTooLong) {
+		t.Errorf("Hash error = %v, want ErrTooLong", err)
+	}
+	if ok {
+		t.Error("Verify accepted 3 MB")
+	}
+	if elapsed > 5*time.Millisecond {
+		t.Errorf("3 MB took %v for Hash and Verify, want under 5ms", elapsed)
 	}
 }

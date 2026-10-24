@@ -19,7 +19,8 @@ var (
 	ErrTooLong = fmt.Errorf("password: longer than %d bytes", maxGobbForm)
 )
 
-// maxGobbForm is the longest form that Hash and Verify accept, in bytes.
+// maxGobbForm is the longest input that Hash and Verify accept, in bytes. The limit
+// applies to the raw input first, and again to the NFC form.
 const maxGobbForm = 4096
 
 // The parameters of a new gobb hash. Verify asks for a new hash when a stored hash
@@ -34,8 +35,8 @@ const (
 
 // Hash returns a gobb hash of raw. The hash is an argon2id PHC string with a new
 // random salt. The password is hashed in NFC form, with no other change. Hash
-// returns an error for invalid UTF-8, an empty password, or a password over 4,096
-// bytes after NFC.
+// returns an error for a password over 4,096 bytes (counted before NFC), invalid
+// UTF-8, an empty password, or a form over 4,096 bytes after NFC.
 func Hash(raw string) (string, error) {
 	form, err := gobbForm(raw)
 	if err != nil {
@@ -89,9 +90,13 @@ func verifyGobb(raw, stored string) (ok, needsRehash bool) {
 }
 
 // gobbForm returns the form that gobb hashes: raw in NFC, with no other change. It
-// refuses invalid UTF-8, an empty form and a form over maxGobbForm bytes. It does no
-// hash work.
+// refuses raw input over maxGobbForm bytes first, before any transform. Then it
+// refuses invalid UTF-8, an empty form and an NFC form over maxGobbForm bytes. It
+// does no hash work.
 func gobbForm(raw string) (string, error) {
+	if len(raw) > maxGobbForm {
+		return "", ErrTooLong
+	}
 	if !utf8.ValidString(raw) {
 		return "", ErrNotUTF8
 	}

@@ -468,3 +468,42 @@ func FuzzVerifyLegacy(f *testing.F) {
 		_ = VerifyLegacy(raw, stored)
 	})
 }
+
+// The 4,096-byte limit counts the raw input. A password whose legacy form is
+// short, because the trim removes its trailing spaces, is still refused.
+func TestVerifyLegacyRefusesRawOverLimitBeforeTransform(t *testing.T) {
+	bc, err := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt: %v", err)
+	}
+	if !VerifyLegacy("pw", string(bc)) {
+		t.Fatal("precondition: pw does not verify")
+	}
+	if !VerifyLegacy("pw"+strings.Repeat(" ", 4094), string(bc)) {
+		t.Fatal("precondition: a 4096-byte raw input trims to pw and must verify")
+	}
+	raw := "pw" + strings.Repeat(" ", 5000)
+	if f, _ := LegacyForm(raw); f != "pw" {
+		t.Fatalf("precondition: LegacyForm = %q", f)
+	}
+	start := time.Now()
+	ok := VerifyLegacy(raw, string(bc))
+	elapsed := time.Since(start)
+	if ok {
+		t.Error("raw input over 4096 bytes verified after the trim")
+	}
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("took %v, want under 50ms: bcrypt must not run", elapsed)
+	}
+
+	huge := strings.Repeat("a", 3<<20)
+	start = time.Now()
+	ok = VerifyLegacy(huge, string(bc))
+	elapsed = time.Since(start)
+	if ok {
+		t.Error("3 MB input verified")
+	}
+	if elapsed > 5*time.Millisecond {
+		t.Errorf("3 MB input took %v, want under 5ms", elapsed)
+	}
+}
