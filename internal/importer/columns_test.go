@@ -119,9 +119,9 @@ func TestImportKeepsEveryColumn(t *testing.T) {
 				t.Errorf("user %d = owner %v, verified %v, %s", c.id, owner, verified, state)
 			}
 		}
-		var notifyBob bool
-		if err := pool.QueryRow(ctx, `select notify_on_post from users where id = 1`).Scan(&notifyBob); err != nil || !notifyBob {
-			t.Errorf("notify_on_post of user 1 = %v, %v; want true", notifyBob, err)
+		var notifyAlice bool
+		if err := pool.QueryRow(ctx, `select notify_on_post from users where id = 1`).Scan(&notifyAlice); err != nil || !notifyAlice {
+			t.Errorf("notify_on_post of user 1 = %v, %v; want true", notifyAlice, err)
 		}
 	})
 

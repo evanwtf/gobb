@@ -77,6 +77,8 @@ func (b *bulk) flush(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("%s.jsonl:%d-%d: insert into %s: %w", b.file, b.first, b.last, b.table, err)
 	}
+	// clear drops the sent rows, so a large row does not outlive its batch.
+	clear(b.rows)
 	b.rows = b.rows[:0]
 	b.bytes = 0
 	b.sent++
