@@ -23,8 +23,10 @@ Why:
   With its own code, the board can put spam defenses where they help and reopen sign-up.
   **(owner)**
 
-Scope: built for the first board's needs. **(owner)** The repo is public under the MIT
-license. **(owner)**
+Scope: built first for the first board's needs, and usable by any board: a new board,
+or one that moves from other software through a bundle. Numbers that suit the first
+board are defaults that another board can change, not fixed values. **(owner)** The
+repo is public under the MIT license. **(owner)**
 
 **Clean room. (owner)** gobb is written from this document, its plans and its own tests.
 It contains no code, templates, stylesheets or images from any other forum software, and
@@ -88,6 +90,8 @@ Sizes from a dump taken 2026-10-23. The import and the pages must handle them.
   each is unused or nearly so on the first board.)
 - A JSON API, real-time updates, a mobile app.
 - Converters for other forum software in this repo. Any converter can write a bundle.
+- Several gobb processes on one database. Sign-in counts, Defensive Mode and the
+  guest page cache live in the memory of one process. **(designer's call)**
 
 ## 6. Anti-goals
 
@@ -159,7 +163,8 @@ write it.
 - One JSON Lines file per entity: users, gone users, groups, group members, roles,
   grants, forums, topics, posts, polls, poll votes, attachments, private messages,
   watches, bookmarks, read marks, bans, ranks, smilies, legacy routes,
-  legacy file paths, static pages. Board settings are in `settings.json`.
+  legacy file paths, static pages, member addresses (section 10, "Trusted
+  addresses"). Board settings are in `settings.json`.
 - `files/`: attachments, avatars, smilies, rank images, the header image. Every row that
   names a file gives its path under `files/`, its size and its SHA-256.
 
@@ -280,10 +285,86 @@ Two schemes:
 - A password change, a password reset, a ban or the Spammer action ends all of that
   user's sessions.
 - A CSRF token on every state-changing request.
-- Rate limits on login per IP and per account.
+- Sign-in limits: see "Load protection" below.
 - "Last visit" updates when a new session starts.
-- Store each session's IP and user agent. Keep login IPs for 90 days; the Spammer
-  action uses them.
+- Store each session's IP and user agent. Record each address that a member uses while
+  signed in, at sign-in and on later visits, and keep it for one year after its last
+  use. A "remember me" session slides on each visit, so a monthly member may never
+  sign in again; recording visits keeps their current address known. These addresses
+  are the member's *trusted addresses* (below), and the Spammer action uses them.
+
+**Load protection** (owner: the sign-in schedule, Defensive Mode's trigger and
+penalties, and the import of old addresses; the rest are designer's calls)
+
+The rule: gobb never holds a scarce resource (a database connection, a password
+check, memory) while a request waits for it. A request that cannot get one soon gets
+an immediate 429 or 503 with `Retry-After`.
+
+- **Sign-in schedule.**
+  - Each failed sign-in counts against the client's address: an IPv4 address, or an
+    IPv6 /64. It also counts against the account name, unless the address is one of
+    that member's trusted addresses. An attacker who hammers a name therefore cannot
+    lock the member out of their own address.
+  - Two failures are free. After that, the next try must wait 15 s, 15 s, 60 s, 60 s
+    and 60 s, then 900 s before every later try.
+  - A try made before its wait ends gets an immediate 429 with "Try again in N
+    seconds". gobb does not check the password, and the count does not advance.
+  - A good sign-in clears the name's count. It does not clear the address's count,
+    so one account of one's own cannot reset an address that guesses at other names.
+    A count clears after 24 hours with no failure.
+  - This schedule replaces any fixed per-address or per-name window. The equal-time
+    floor (a failed sign-in takes the same time for every name) and the memory gate
+    on password checks stay.
+- **Settings.** Every number in this block is a setting with a default, and so is
+  the time that gobb keeps an address. The guest page cache and its start-up render
+  can each be turned off. The defaults suit a small board on a 1 GB host. Settings
+  come from the environment (section 15), which Docker Compose reads from `.env`.
+- **Trusted addresses.** The addresses a member used while signed in (above). An
+  address is trusted only through a member in good standing: active, not banned, and
+  out of the holding area. A ban or the Spammer action removes that member's
+  addresses. So a spam account cannot make its own addresses trusted. A bundle may
+  carry each member's past addresses. The file is optional, and a new board starts
+  with none. The first board's import loads all of its members' addresses, whatever their
+  age, and keeps each one for one year after the import. **(owner)**
+- **Defensive Mode.**
+  - It turns on when the board counts more than 100 failed sign-ins in 60 s, from
+    all addresses together. **(owner)** The builder may also turn it on when requests
+    wait too long for a database connection.
+  - It turns off after 10 minutes below that rate.
+  - While it is on, an address that is no member's trusted address gets no free
+    tries, and waits at least 5 s between tries. **(owner)** A trusted address keeps
+    the normal schedule.
+  - While it is on, guests cannot search, and each untrusted address has a tighter
+    request budget for every page.
+  - It writes one log line when it turns on and one when it turns off, with counts
+    and no addresses.
+- **Database connections.**
+  - The pool size is a setting, with a default that suits the 1 GB host.
+  - A request waits at most about 1 s for a connection, then gets 503 with
+    `Retry-After`.
+  - Search runs a limited number of queries at once, and each address has a search
+    budget. A search over either limit gets an immediate 429 or 503.
+- **Guest page cache.**
+  - A page that a guest can see is rendered once and served from memory.
+  - At start, a background worker renders the pages most likely to be asked for, in
+    this order, until the cache's memory limit: the index, the first page of each
+    forum, then topic pages by latest activity. On a small board that is every guest
+    page. (The first board's guests can see about 160 pages.)
+  - A change that alters a page drops it, together with the pages that list it (its
+    forum's pages and the index). The worker then renders it again. A change to guest
+    permissions drops the whole cache.
+  - The cache key is the canonical path and the query parameters that the page
+    accepts. A request with any other parameter does not reach the cache, so a
+    random query string cannot force a render.
+  - When several requests miss the same page at once, one renders it and the others
+    wait for that render.
+  - The per-visitor CSRF token is filled in when the page is served. It is never
+    stored in the cache.
+  - The cache has a memory limit. Over the limit, the least recently used pages go.
+  - Members always get live pages.
+- **Batched writes.** View counts, last-visit times and the addresses of signed-in
+  visits collect in memory. They go to the database in one batch about every 30 s, so
+  a page view does not write. A crash loses at most that window.
 
 **Email** (designer's calls, except the sending account — see the private deployment
 notes)
@@ -588,7 +669,12 @@ Host-specific steps live with the deployment, outside this repo.
 - Schema details, package layout, router, template structure, CSS approach.
 - The exact new URL shapes (within section 14).
 - Search ranking.
-- Whether to cache rendered HTML or render on read.
+- Whether to cache anything beyond the guest page cache (section 10, "Load
+  protection").
+- The numbers that "Load protection" leaves open: the pool size, the request budgets,
+  the search limits and the cache's memory limit. Prove them with a load test against
+  the image under the memory cap. Under the test, the server must answer 429 or 503
+  quickly, stay under the cap, and recover without a restart.
 - Default numbers: holding-area size, rate limits, upload limits, argon2id cost. The
   production host has 1 GB of RAM; size argon2id memory for that (for example 19 MiB,
   t=2, p=1) and test the server under a memory cap.
