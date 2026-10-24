@@ -137,7 +137,7 @@ func TestImportPeopleAndPermissions(t *testing.T) {
 	sameIDs(t, "roles", ids(t, pool, "select id from acl_roles order by id"), 1, 2)
 	sameIDs(t, "forums", ids(t, pool, "select id from forums order by id"), 1, 2, 3)
 	for table, want := range map[string]int{
-		"group_members": 8, "acl_role_settings": 19, "acl_group_grants": 16,
+		"group_members": 8, "acl_role_settings": 19, "acl_group_grants": 17,
 		"acl_user_grants": 1, "bans": 3, "smilies": 2, "legacy_routes": 3,
 		"legacy_files": 1, "static_pages": 2, "settings": 7,
 	} {

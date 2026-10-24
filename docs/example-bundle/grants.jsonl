@@ -15,3 +15,4 @@
 {"group_id":5,"user_id":null,"forum_id":3,"role_id":null,"option":"forum.read","setting":"yes"}
 {"group_id":5,"user_id":null,"forum_id":3,"role_id":null,"option":"topic.reply","setting":"yes"}
 {"group_id":null,"user_id":4,"forum_id":2,"role_id":null,"option":"forum.read","setting":"never"}
+{"group_id":2,"user_id":null,"forum_id":2,"role_id":null,"option":"forum.search","setting":"yes"}

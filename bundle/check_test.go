@@ -230,10 +230,10 @@ func TestCheckRefuses(t *testing.T) {
 		}, "static_pages.jsonl:3: slug: slug \"about\" appears already, on line 1"},
 		{"forum role on the board", func(b *bundletest.Board) {
 			b.Grants = append(b.Grants, bundle.Grant{GroupID: p(int64(2)), ForumID: 0, RoleID: p(int64(1))})
-		}, "grants.jsonl:18: forum_id: role 1 is a forum role; set forum_id to a forum"},
+		}, "grants.jsonl:19: forum_id: role 1 is a forum role; set forum_id to a forum"},
 		{"board role on a forum", func(b *bundletest.Board) {
 			b.Grants = append(b.Grants, bundle.Grant{GroupID: p(int64(2)), ForumID: 2, RoleID: p(int64(2))})
-		}, "grants.jsonl:18: forum_id: role 2 is a board role; set forum_id to 0"},
+		}, "grants.jsonl:19: forum_id: role 2 is a board role; set forum_id to 0"},
 		{"mod role fits a forum and the board", func(b *bundletest.Board) {
 			b.Roles = append(b.Roles, bundle.Role{ID: 3, Name: "Tools", Kind: "mod", Settings: []bundle.RoleSetting{{Option: "mod.edit", Setting: bundle.Yes}}})
 			b.Grants = append(b.Grants,
@@ -242,7 +242,7 @@ func TestCheckRefuses(t *testing.T) {
 		}, ""},
 		{"grant to a missing role", func(b *bundletest.Board) {
 			b.Grants = append(b.Grants, bundle.Grant{GroupID: p(int64(2)), ForumID: 2, RoleID: p(int64(9))})
-		}, "grants.jsonl:18: role_id: no row in roles.jsonl has id 9"},
+		}, "grants.jsonl:19: role_id: no row in roles.jsonl has id 9"},
 		{"grant to a missing group", func(b *bundletest.Board) {
 			b.Grants[0].GroupID = p(int64(99))
 		}, "grants.jsonl:1: group_id: no row in groups.jsonl has id 99"},

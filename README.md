@@ -178,7 +178,9 @@ a permission, and the board decides who holds it.
 
 To check a sign-in from a shell, run the smoke script against a running server that holds
 `docs/example-bundle/`. It fetches the pages, signs in as the made-up member `alice`,
-and exits at the first failure:
+and exits at the first failure. It talks plain http, so the server must run with
+`GOBB_COOKIE_SECURE=false` (see "Sign in over plain HTTP"); with `true`, the sign-in
+check fails because curl does not send the `Secure` cookie back:
 
 ```sh
 export BASE=http://127.0.0.1:8180

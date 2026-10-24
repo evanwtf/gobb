@@ -160,6 +160,17 @@ jobs:
           port=$(docker compose port gobb 8080)
           curl -fsS "http://$port/healthz"
 
+      # The negative case: on a database with no board, the script must fail at the
+      # first URL. A script that passes here checks nothing.
+      - name: Smoke script fails on an empty board
+        run: |
+          port=$(docker compose port gobb 8080)
+          status=0
+          sh scripts/smoke-serve.sh "http://$port" > "$RUNNER_TEMP/smoke-empty.txt" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/smoke-empty.txt"
+          rm -f "$RUNNER_TEMP/smoke-empty.txt"
+          [ "$status" = 1 ] || { echo "want exit status 1 on an empty board, got $status"; exit 1; }
+
       # gobb reads the legacy routes once at start, so it stops for the import
       # and starts again on the loaded board.
       - name: Import the example bundle
@@ -175,13 +186,33 @@ jobs:
           cid=$(docker compose ps -q gobb)
           docker inspect -f 'limit={{.HostConfig.Memory}} swap={{.HostConfig.MemorySwap}}' "$cid"
           [ "$(docker inspect -f '{{.HostConfig.Memory}}' "$cid")" = 268435456 ]
-          docker stats --no-stream --format 'memory: {{.MemUsage}} ({{.MemPerc}})' "$cid"
           state=$(docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}}' "$cid")
           echo "restarts and OOM kill: $state"
           [ "$state" = "0 false" ]
+          docker stats --no-stream --format 'docker stats now: {{.MemUsage}} ({{.MemPerc}})' "$cid"
+          # The peak of the container, from its cgroup (v2), before the stop. The
+          # path depends on the cgroup driver of Docker: systemd or cgroupfs.
+          id=$(docker inspect -f '{{.Id}}' "$cid")
+          dir=
+          for d in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
+            if [ -r "$d/memory.peak" ] && [ -r "$d/memory.events" ]; then
+              dir=$d
+              break
+            fi
+          done
+          if [ -n "$dir" ]; then
+            peak=$(cat "$dir/memory.peak")
+            oom=$(awk '$1 == "oom_kill" { print $2 }' "$dir/memory.events")
+            echo "cgroup path used: $dir"
+            echo "memory.peak: $peak bytes ($((peak / 1048576)) MiB)"
+            echo "memory.events oom_kill: $oom"
+            [ "$oom" = 0 ] || { echo "the kernel killed a process in the container"; exit 1; }
+          else
+            echo "cgroup memory.peak is not readable on this runner (tried the systemd and cgroupfs paths); the docker stats line above is the only memory figure"
+          fi
 
-      # Compose gives gobb a 30 s grace period. A clean stop must end first,
-      # with exit code 0 (137 means Docker sent SIGKILL).
+      # Compose gives gobb a 30 s grace period. A clean stop must end well inside
+      # it, with exit code 0 (137 means Docker sent SIGKILL).
       - name: Stop gobb cleanly
         run: |
           cid=$(docker compose ps -q gobb)
@@ -191,7 +222,8 @@ jobs:
           code=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
           took=$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.1f", e - s }')
           echo "stop took $took s, exit code $code"
-          [ "$code" = 0 ]
+          [ "$code" = 0 ] || { echo "want exit code 0"; exit 1; }
+          awk -v t="$took" 'BEGIN { exit !(t < 25) }' || { echo "the stop took 25 s or more"; exit 1; }
 
       - name: Show the logs after a failure
         if: failure()

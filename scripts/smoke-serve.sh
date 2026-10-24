@@ -16,11 +16,20 @@ fi
 base=${1%/}
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/smoke-serve.XXXXXX") || exit 2
-trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"; exit 1' HUP INT TERM
 
 fail() {
 	echo "FAIL $*" >&2
 	exit 1
+}
+
+# location <want>
+# Checks that the last response had exactly this Location header (whole line,
+# so /t/1 does not match /t/10 or /t/1?page=2).
+location() {
+	tr -d '\r' < "$tmp/head" | grep -i -x -e "location: $1" > /dev/null ||
+		fail "$path: want Location $1"
 }
 
 # get <path> <want-status> <want-csp: csp|-> [jar]
@@ -52,9 +61,9 @@ get /u/8 410 -
 get '/search?q=example' 403 -
 # Legacy routes: the old URLs of the example bundle.
 get '/old/thread.cgi?view=full&id=1' 301 -
-grep -qi '^location: /t/1' "$tmp/head" || fail "/old/thread.cgi: no redirect to /t/1"
+location /t/1
 get /old/about.cgi 301 -
-grep -qi '^location: /pages/about' "$tmp/head" || fail "/old/about.cgi: no redirect to /pages/about"
+location /pages/about
 
 # Sign in as alice with a cookie jar.
 : > "$tmp/jar"
@@ -69,10 +78,11 @@ echo "$got POST /login"
 [ "$got" = 303 ] || fail "POST /login: want status 303, got $got"
 get / 200 csp
 grep -q 'Signed in as' "$tmp/body" || fail "/: no 'Signed in as' after sign-in"
-# Search runs under the cap too, for the member: a page of results with the word "example".
+# Search runs under the cap too, for the member.
 get '/search?q=example' 200 csp
-grep -q 'Example\|example' "$tmp/body" || fail "/search?q=example: no match in the page"
+# The page echoes the query, so look for a hit: a link to a post.
+grep -q -e 'href="/p/' "$tmp/body" || fail "/search?q=example: no hit (no link to a post)"
 # A member who may read the marker's forum gets the 301 to its target.
 get /t/3 301 -
-grep -qi '^location: /t/1' "$tmp/head" || fail "/t/3: no redirect to /t/1"
+location /t/1
 echo "ok: every check passed"

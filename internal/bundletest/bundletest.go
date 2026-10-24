@@ -367,6 +367,8 @@ func Small() *Board {
 		opt(5, 3, "forum.read", bundle.Yes),
 		opt(5, 3, "topic.reply", bundle.Yes),
 		{UserID: ptr(int64(4)), ForumID: 2, Option: ptr("forum.read"), Setting: &never},
+		// Last, so that tests which index the grants by position keep their numbers.
+		opt(2, 2, "forum.search", bundle.Yes),
 	}
 
 	b.Forums = []bundle.Forum{
