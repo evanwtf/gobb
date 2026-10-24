@@ -178,6 +178,7 @@ func TestLoadPassesUnknownOptionsThrough(t *testing.T) {
 func TestLoadRolesWithNoSettings(t *testing.T) {
 	pool := imported(t)
 	ctx := context.Background()
+	before := len(mustLoad(t, pool, 3).Grants)
 	if _, err := pool.Exec(ctx, `insert into acl_roles (name, kind) values ('Empty', 'forum')`); err != nil {
 		t.Fatal(err)
 	}
@@ -186,9 +187,9 @@ func TestLoadRolesWithNoSettings(t *testing.T) {
 		 select 3, 2, id from acl_roles where name = 'Empty'`); err != nil {
 		t.Fatal(err)
 	}
-	before := len(mustLoad(t, pool, 2).Grants)
-	if got := len(mustLoad(t, pool, 3).Grants); got == 0 || before == 0 {
-		t.Errorf("grant counts = %d and %d", got, before)
+	after := len(mustLoad(t, pool, 3).Grants)
+	if before == 0 || after != before {
+		t.Errorf("carol has %d grants before the empty role and %d after; want the same, and more than 0", before, after)
 	}
 	for _, g := range mustLoad(t, pool, 3).Grants {
 		if g.Option == "" {
@@ -319,9 +320,9 @@ func TestExportOpensTheListsOnce(t *testing.T) {
 	pool := imported(t)
 	c := &counter{Querier: pool}
 	exportBytes(t, c)
-	// Two lists, then at most three queries for each of the five subjects.
-	if c.n > 2+3*5 {
-		t.Errorf("Export ran %d queries", c.n)
+	// Two lists, then the queries for each of the five subjects.
+	if c.n != 11 {
+		t.Errorf("Export ran %d queries, want 11", c.n)
 	}
 }
 

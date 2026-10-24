@@ -153,9 +153,19 @@ func TestImportCommandUsage(t *testing.T) {
 		{"import", "--replace"},
 		{"import", "a", "b"},
 		{"import", "--bogus", "a"},
+		// The flag must come before the path: the flag package stops at "a".
+		{"import", "a", "--replace"},
 	} {
-		if code := run(ctx, args); code != 2 {
+		var got bytes.Buffer
+		old := stdout
+		stdout = &got
+		code := run(ctx, args)
+		stdout = old
+		if code != 2 {
 			t.Errorf("run(%v) = %d, want 2", args, code)
+		}
+		if got.Len() != 0 {
+			t.Errorf("run(%v) wrote %q to stdout", args, got.String())
 		}
 	}
 }
