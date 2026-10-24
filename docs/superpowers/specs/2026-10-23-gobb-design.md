@@ -344,10 +344,9 @@ an immediate 429 or 503 with `Retry-After`.
     `Retry-After`.
   - Search has its own limits, apart from every other page. The whole board runs at
     most 5 searches per second, from all addresses together, a setting with that
-    default. **(owner)** Each address also has a smaller share, so one address cannot
-    use the board's whole allowance. A search over either limit gets an immediate 429,
-    and does not touch the database. Under a flood, search stops for everyone, but the
-    pages stay up.
+    default. There is no limit per address or per member. **(owner)** A search over the
+    limit gets an immediate 429, and does not touch the database. Under a flood,
+    search stops for everyone, but the pages stay up.
 - **Guest page cache.**
   - A page that a guest can see is rendered once and served from memory.
   - At start, a background worker renders the pages most likely to be asked for, in
