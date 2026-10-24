@@ -70,3 +70,11 @@ that the pages stand on.
   option grant, file path shape, IP addresses and ban prefixes). Every error names the
   file, the line and the field. A test keeps `docs/bundle.md` in step with the types:
   each field appears in its section, and each example line decodes and passes its checks.
+- The bundle reader, writer and archives: `bundle.Open` checks the layout, `manifest.json`
+  and `settings.json`. `bundle.Each` streams one data file a line at a time and refuses
+  a long line, bad UTF-8, U+0000, an unknown, repeated or missing key at any depth, a
+  `null` on a field that is not nullable, a failed field check and a count that
+  differs from the manifest. `bundle.Create`, `Add` and `AddFile` write a bundle and
+  check each row first. `bundle.Pack` and `bundle.Extract` handle `.tar.gz` files and
+  refuse paths that escape, links and devices. Integer fields now stop at 2,147,483,647,
+  and an email ban needs an address.

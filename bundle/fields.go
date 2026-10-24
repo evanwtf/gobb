@@ -24,6 +24,13 @@ import (
 // maxName is the longest name or label, in bytes.
 const maxName = 255
 
+// maxInt32 is the largest value of an integer that lands in a 32-bit database
+// column.
+const maxInt32 = 1<<31 - 1
+
+// minInt32 is the smallest value of a 32-bit database column.
+const minInt32 = -1 << 31
+
 var (
 	slugRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	paramRE  = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
@@ -157,9 +164,41 @@ func (v *vet) optID(field string, n *int64) {
 	}
 }
 
+// count checks a count: 0 to 2,147,483,647.
 func (v *vet) count(field string, n int) {
-	if n < 0 {
+	switch {
+	case n < 0:
 		v.add(field, "is %d; it must be 0 or more", n)
+	case n > maxInt32:
+		v.add(field, "is %d; the limit is %d", n, maxInt32)
+	}
+}
+
+// position checks a position: any value that fits a 32-bit column.
+func (v *vet) position(field string, n int) {
+	if n < minInt32 || n > maxInt32 {
+		v.add(field, "is %d; it must be from %d to %d", n, minInt32, maxInt32)
+	}
+}
+
+// optSize checks an optional pixel size: 1 to 2,147,483,647.
+func (v *vet) optSize(field string, n *int) {
+	switch {
+	case n == nil:
+	case *n < 1:
+		v.add(field, "is %d; it must be 1 or more", *n)
+	case *n > maxInt32:
+		v.add(field, "is %d; the limit is %d", *n, maxInt32)
+	}
+}
+
+// optionID checks the ID of a poll option: 1 to 2,147,483,647.
+func (v *vet) optionID(field string, n int) {
+	switch {
+	case n < 1:
+		v.add(field, "is %d; an option ID is 1 or more", n)
+	case n > maxInt32:
+		v.add(field, "is %d; the limit is %d", n, maxInt32)
 	}
 }
 
@@ -384,6 +423,7 @@ func (r Role) check() []*Error {
 	v.name("name", r.Name)
 	kindOK := v.enum("kind", r.Kind, roleKinds)
 	v.text("description", r.Description)
+	v.position("position", r.Position)
 	var want acl.Scope
 	switch r.Kind {
 	case "forum":
@@ -468,6 +508,7 @@ func (f Forum) check() []*Error {
 	v.name("name", f.Name)
 	v.text("description", f.Description)
 	v.text("rules", f.Rules)
+	v.position("position", f.Position)
 	switch {
 	case f.Kind == "link" && f.LinkURL == nil:
 		v.add("link_url", "is required when kind is link")
@@ -525,16 +566,16 @@ func (p Poll) check() []*Error {
 	switch {
 	case p.MaxOptions < 1:
 		v.add("max_options", "is %d; it must be 1 or more", p.MaxOptions)
+	case p.MaxOptions > maxInt32:
+		v.add("max_options", "is %d; the limit is %d", p.MaxOptions, maxInt32)
 	case n > 0 && p.MaxOptions > n:
 		v.add("max_options", "is %d; the poll has %d options", p.MaxOptions, n)
 	}
 	seen := map[int]bool{}
 	for i, o := range p.Options {
 		at := "options[" + strconv.Itoa(i) + "]."
-		switch {
-		case o.ID < 1:
-			v.add(at+"id", "is %d; an option ID is 1 or more", o.ID)
-		case seen[o.ID]:
+		v.optionID(at+"id", o.ID)
+		if seen[o.ID] {
 			v.add(at+"id", "%d appears twice in the poll", o.ID)
 		}
 		seen[o.ID] = true
@@ -547,9 +588,7 @@ func (p Poll) check() []*Error {
 func (p PollVote) check() []*Error {
 	var v vet
 	v.id("topic_id", p.TopicID)
-	if p.OptionID < 1 {
-		v.add("option_id", "is %d; an option ID is 1 or more", p.OptionID)
-	}
+	v.optionID("option_id", p.OptionID)
 	v.id("user_id", p.UserID)
 	v.ip("voter_ip", p.VoterIP)
 	return v.errs
@@ -564,12 +603,8 @@ func (a Attachment) check() []*Error {
 	v.label("name", a.Name)
 	v.file("file", a.File, "attachments")
 	v.enum("mime", a.Mime, mimeTypes)
-	if a.Width != nil && *a.Width < 1 {
-		v.add("width", "is %d; it must be 1 or more", *a.Width)
-	}
-	if a.Height != nil && *a.Height < 1 {
-		v.add("height", "is %d; it must be 1 or more", *a.Height)
-	}
+	v.optSize("width", a.Width)
+	v.optSize("height", a.Height)
 	v.count("download_count", a.DownloadCount)
 	v.text("comment", a.Comment)
 	return v.errs
@@ -649,6 +684,9 @@ func (b Ban) check() []*Error {
 	}
 	v.optID("user_id", b.UserID)
 	v.optLabel("email", b.Email)
+	if b.Kind == "email" && b.Email != nil && *b.Email == "" {
+		v.add("email", "is empty; an email ban needs an address")
+	}
 	if b.IP != nil {
 		v.prefix("ip", *b.IP)
 	}
@@ -662,11 +700,13 @@ func (s Smiley) check() []*Error {
 	v.smileyCode("code", s.Code)
 	v.file("image", s.Image, "smilies")
 	v.label("description", s.Description)
+	v.position("position", s.Position)
 	return v.errs
 }
 
 func (r LegacyRoute) check() []*Error {
 	var v vet
+	v.position("position", r.Position)
 	if v.text("path", r.Path) {
 		switch {
 		case r.Path == "" || len(r.Path) > maxName:

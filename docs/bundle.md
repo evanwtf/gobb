@@ -10,8 +10,13 @@ references and a count that disagrees with the manifest all stop the import.
 
 ## Layout
 
-A bundle is a directory, or a gzip-compressed tar archive of that directory. It holds
-these entries, and nothing else may appear at the top level:
+A bundle is a directory, or a gzip-compressed tar archive of that directory. An
+archive holds the entries of the directory at its top level. gobb strips one leading
+`./` from an entry name and ignores the bare `./` entry, so `tar -C dir -czf
+bundle.tar.gz .` works. An archive holds regular files and directories only: gobb
+refuses an absolute path, a `..` element, a symlink, a hard link and a device, and it
+stops at 8 GiB. A bundle holds these entries, and nothing else may appear at the top
+level (an AppleDouble `._` file is an extra entry):
 
 - `manifest.json`
 - `settings.json`
@@ -52,11 +57,20 @@ The data files, in load order:
 
 Field names are the JSON names. A field with a `?` after its name in a table may be
 `null`. Every other field is required. A missing field and an unknown field are both
-errors.
+errors. This holds for every JSON object in a row, not only the top level: the keys
+of `password`, `body`, `signature`, `file`, and each item of `settings`, `options` and
+`recipients` are required too. A key appears once, in lower case. `null` is allowed
+only on a field with a `?`. A list or an object that the tables name (`settings`,
+`options`, `recipients`, `match`) is never `null`; write `[]` or `{}`.
 
 - **id**: a positive integer (1 to 9,223,372,036,854,775,807).
-- **count**: an integer of 0 or more.
-- **int**: any integer. A `position` is an int. It sets the order of rows.
+- **count**: an integer from 0 to 2,147,483,647.
+- **int**: an integer from -2,147,483,648 to 2,147,483,647. A `position` is an int. It
+  sets the order of rows.
+
+Every integer that is not an ID fits a 32-bit database column, so the limit is
+2,147,483,647: `post_count`, `view_count`, `edit_count`, `download_count`, `votes`,
+`min_posts`, `max_options`, `position`, `width`, `height` and an option `id`.
 - **time**: an RFC 3339 string with an offset, for example `2020-03-04T05:06:07Z` or
   `2020-03-04T00:06:07-05:00`. `Z` counts as an offset.
 - **string**: valid UTF-8, with no U+0000, and at most 100,000 bytes unless the table
@@ -394,7 +408,7 @@ is not itself a marker. Every other topic has at least one post.
 | `can_change_vote` | bool | |
 | `options` | list | 1 to 100 items. Each has `id`, `text` and `votes`. |
 
-An option `id` is 1 or more and is unique in its poll. `text` is a label. `votes` is a
+An option `id` is 1 to 2,147,483,647 and is unique in its poll. `text` is a label. `votes` is a
 count: the number of votes the option has.
 
 ```json
@@ -428,8 +442,8 @@ rows than its `votes`. A user has no more vote rows in a poll than its `max_opti
 | `name` | label | The file name that members see. |
 | `file` | file | A file under `attachments/`. It holds `path`, `size` and `sha256`. |
 | `mime` | string | `image/png`, `image/jpeg`, `image/gif` or `image/webp`. |
-| `width`? | int | 1 or more. |
-| `height`? | int | 1 or more. |
+| `width`? | int | 1 to 2,147,483,647. |
+| `height`? | int | 1 to 2,147,483,647. |
 | `download_count` | count | |
 | `comment` | string | |
 | `created_at` | time | |
@@ -526,7 +540,7 @@ The pair (`user_id`, `forum_id`) is unique.
 |---|---|---|
 | `kind` | string | `user`, `email` or `ip`. |
 | `user_id`? | id | A row of `users.jsonl`. Set when `kind` is `user`. |
-| `email`? | label | Set when `kind` is `email`. |
+| `email`? | label | Set when `kind` is `email`. It is not empty then. |
 | `ip`? | string | Set when `kind` is `ip`. A CIDR prefix with no host bits set, for example `10.0.0.0/8` or `2001:db8::/32`. |
 | `reason` | label | The reason that staff see. |
 | `reason_shown` | label | The reason that the banned person sees. |

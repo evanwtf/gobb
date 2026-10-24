@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -606,6 +607,7 @@ func TestCheckFields(t *testing.T) {
 		{"topic mark ids", TopicMark{UserID: 1, TopicID: 0, MarkedAt: testTime}, "topic_id"},
 		{"forum mark ids", ForumMark{UserID: 0, ForumID: 1, MarkedAt: testTime}, "user_id"},
 		{"topic watch ids", TopicWatch{UserID: 1, TopicID: -1}, "topic_id"},
+		{"ban email kind, empty email", Ban{Kind: "email", Email: ptr(""), CreatedAt: testTime}, "email"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -680,5 +682,68 @@ func TestCheckReportsEveryFault(t *testing.T) {
 func TestSettingConstants(t *testing.T) {
 	if Yes != "yes" || No != "no" || Never != "never" {
 		t.Error("Setting constants have the wrong values")
+	}
+}
+
+func TestCheckEmailBan(t *testing.T) {
+	ok := Ban{Kind: "email", Email: ptr("spam@example.com"), CreatedAt: testTime}
+	if errs := ok.check(); len(errs) != 0 {
+		t.Errorf("valid email ban: %v", errs[0])
+	}
+}
+
+// TestCheckInt32Bounds pins the limit of every integer that lands in a 32-bit
+// database column: the value 2,147,483,647 passes and the next value fails.
+func TestCheckInt32Bounds(t *testing.T) {
+	max := int(math.MaxInt32)
+	over := max + 1
+	tests := []struct {
+		name  string
+		field string
+		row   func(n int) Row
+		// atMax is false when another rule makes the maximum itself invalid.
+		skipMax bool
+	}{
+		{"post_count", "post_count", func(n int) Row { u := validUser(); u.PostCount = n; return u }, false},
+		{"view_count", "view_count", func(n int) Row { x := validTopic(); x.ViewCount = n; return x }, false},
+		{"edit_count", "edit_count", func(n int) Row { x := validPost(); x.EditCount = n; return x }, false},
+		{"download_count", "download_count", func(n int) Row { a := validAttachment(); a.DownloadCount = n; return a }, false},
+		{"votes", "options[1].votes", func(n int) Row { p := validPoll(); p.Options[1].Votes = n; return p }, false},
+		{"min_posts", "min_posts", func(n int) Row { return Rank{ID: 1, Title: "t", MinPosts: n} }, false},
+		{"max_options", "max_options", func(n int) Row { p := validPoll(); p.MaxOptions = n; return p }, true},
+		{"option id", "options[1].id", func(n int) Row { p := validPoll(); p.Options[1].ID = n; return p }, false},
+		{"vote option_id", "option_id", func(n int) Row { return PollVote{TopicID: 1, OptionID: n, UserID: 1} }, false},
+		{"attachment position", "position", func(n int) Row { a := validAttachment(); a.Position = n; return a }, false},
+		{"role position", "position", func(n int) Row { r := validRole(); r.Position = n; return r }, false},
+		{"forum position", "position", func(n int) Row { f := validForum(); f.Position = n; return f }, false},
+		{"smiley position", "position", func(n int) Row { s := validSmiley(); s.Position = n; return s }, false},
+		{"route position", "position", func(n int) Row { r := validRoute(); r.Position = n; return r }, false},
+		{"width", "width", func(n int) Row { a := validAttachment(); a.Width = &n; return a }, false},
+		{"height", "height", func(n int) Row { a := validAttachment(); a.Height = &n; return a }, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.skipMax {
+				for _, e := range checkRow(t, tt.row(max)) {
+					t.Errorf("value %d: %v", max, e)
+				}
+			}
+			for _, e := range checkRow(t, tt.row(over)) {
+				if e.Field == tt.field {
+					return
+				}
+			}
+			t.Errorf("value %d: no error for field %q", over, tt.field)
+		})
+	}
+	// A position may be negative, down to the 32-bit minimum.
+	r := validRole()
+	r.Position = math.MinInt32
+	if errs := r.check(); len(errs) != 0 {
+		t.Errorf("minimum position: %v", errs[0])
+	}
+	r.Position = math.MinInt32 - 1
+	if errs := r.check(); len(errs) == 0 {
+		t.Error("position below the 32-bit minimum passes")
 	}
 }

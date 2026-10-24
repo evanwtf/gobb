@@ -11,8 +11,11 @@
 // docs/bundle.md in the gobb repository is the format reference. It lists every
 // file and every field, and it gives one example line for each data file.
 //
-// A converter writes a bundle with Writer and proves its output with Check
-// before it ships the bundle. Both come from later changes to this package.
+// A converter writes a bundle with [Create], [Add], [Writer.AddFile] and
+// [Writer.Close], and packs it with [Pack]. gobb reads a bundle with [Open] and
+// [Each], and unpacks an archive with [Extract]. Each checks one row at a time
+// and never holds a whole file in memory. The checks that span files come from a
+// later change to this package.
 //
 // The package does not use a database, so a converter can use it on its own.
 package bundle
