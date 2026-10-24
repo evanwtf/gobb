@@ -83,8 +83,12 @@ func TestIndexLinkForumAndLooseForum(t *testing.T) {
 	if !strings.Contains(body, "Loose Talk") || !strings.Contains(body, "Elsewhere") {
 		t.Fatal("a loose forum or a link forum is missing")
 	}
-	if !strings.Contains(body, `href="https://example.com/out"`) {
-		t.Error("the link forum does not link to its URL")
+	// The name and the link go through /f/5, which redirects to the URL.
+	if !strings.Contains(body, `href="/f/5"`) || strings.Contains(body, `href="https://example.com/out"`) {
+		t.Error("the link forum does not link through /f/5")
+	}
+	if !strings.Contains(body, "https://example.com/out") {
+		t.Error("the link forum does not show its URL")
 	}
 	// A link forum shows no counts, and a loose forum sits under a bar with no title.
 	link := regexp.MustCompile(`(?s)Elsewhere.*?</tr>`).FindString(body)

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	// The timezone database is compiled in, so that timezone checks work in the
@@ -36,6 +37,10 @@ import (
 // open requests and the close of the database pool. It stays under the 30 s
 // stop grace period in compose.yaml. The tests shorten it.
 var shutdownTimeout = 25 * time.Second
+
+// poolGrace is how long closePool gets after a shutdown that ran out of time.
+// The tests shorten it.
+var poolGrace = 5 * time.Second
 
 const (
 	// healthcheckTimeout bounds the request that the healthcheck command sends.
@@ -179,27 +184,61 @@ func newHTTPServer(h http.Handler) *http.Server {
 }
 
 // serve migrates the schema, then serves HTTP until SIGTERM or SIGINT.
-// If a migration fails, it returns before the server listens.
+// If a migration fails, it returns before the server listens. The signal
+// handler is set up first, so a signal during the connect or the migrations
+// stops the command too.
 func serve(ctx context.Context, _ []string) error {
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigs)
+	return serveWith(ctx, sigs, os.Exit)
+}
+
+// serveWith is serve with its signal channel and its exit function given. A
+// signal that arrives before the server listens cancels the setup and makes
+// serveWith return nil; a second one calls exit(1).
+func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error {
 	cfg, err := config.FromEnv(os.Getenv)
 	if err != nil {
 		return err
 	}
-	pool, err := db.Open(ctx, cfg.DSN)
-	if err != nil {
-		return err
+	setupCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var interrupted atomic.Bool
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		select {
+		case <-sigs:
+			interrupted.Store(true)
+			cancel()
+			// A second signal during the setup ends the process.
+			select {
+			case <-sigs:
+				exit(1)
+			case <-done:
+			}
+		case <-done:
+			// A signal that came with the end of the setup still counts.
+			select {
+			case <-sigs:
+				interrupted.Store(true)
+			default:
+			}
+		}
+	}()
+	pool, h, err := setup(setupCtx, cfg)
+	close(done)
+	<-exited
+	if interrupted.Load() {
+		slog.Info("signal received during startup; stopping")
+		if pool != nil {
+			pool.Close()
+		}
+		return nil
 	}
-	if err := applyMigrations(ctx, pool); err != nil {
-		pool.Close()
-		return err
-	}
-	h, err := web.New(ctx, pool, web.Options{
-		BasePath:       cfg.BasePath,
-		DataDir:        cfg.DataDir,
-		TrustedProxies: cfg.TrustedProxies,
-	})
 	if err != nil {
-		pool.Close()
 		return err
 	}
 	ln, err := net.Listen("tcp", cfg.Listen)
@@ -208,18 +247,42 @@ func serve(ctx context.Context, _ []string) error {
 		return err
 	}
 	slog.Info("listening", "addr", ln.Addr().String(), "base_path", cfg.BasePath)
+	return serveUntil(ctx, newHTTPServer(h), ln, pool.Close, sigs, exit)
+}
 
-	sigs := make(chan os.Signal, 2)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(sigs)
-	return serveUntil(ctx, newHTTPServer(h), ln, pool.Close, sigs, os.Exit)
+// setup opens the pool, applies the migrations and builds the handler. On an
+// error it closes the pool and returns it as nil.
+func setup(ctx context.Context, cfg config.Config) (*pgxpool.Pool, http.Handler, error) {
+	pool, err := db.Open(ctx, cfg.DSN)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := applyMigrations(ctx, pool); err != nil {
+		pool.Close()
+		return nil, nil, err
+	}
+	h, err := web.New(ctx, pool, web.Options{
+		BasePath:       cfg.BasePath,
+		DataDir:        cfg.DataDir,
+		TrustedProxies: cfg.TrustedProxies,
+	})
+	if err != nil {
+		pool.Close()
+		return nil, nil, err
+	}
+	return pool, h, nil
 }
 
 // serveUntil serves srv on ln until ctx ends, a signal arrives on sigs, or the
 // server fails. It then stops the server and calls closePool, all inside the
-// shutdownTimeout window. When closePool has not returned at the end of the
-// window, it returns an error that says so. A second signal during the stop
-// calls exit(1) at once.
+// shutdownTimeout window. A second signal during the stop calls exit(1) at
+// once.
+//
+// When the server does not stop inside the window, serveUntil closes its
+// connections, gives closePool the short poolGrace, and returns the shutdown
+// error. It adds the pool error only when the pool also fails to close. When
+// the server stops in time but closePool does not return by the end of the
+// window, the error names the pool.
 func serveUntil(ctx context.Context, srv *http.Server, ln net.Listener, closePool func(), sigs <-chan os.Signal, exit func(int)) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -248,10 +311,15 @@ func serveUntil(ctx context.Context, srv *http.Server, ln net.Listener, closePoo
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	shutErr := srv.Shutdown(shutCtx)
+	poolCtx := shutCtx
 	if shutErr != nil {
-		// Drop the connections that stayed open, so the pool can close.
+		// Drop the connections that stayed open, so the pool can close. The
+		// window is spent, so the pool gets a short grace of its own.
 		_ = srv.Close()
 		shutErr = fmt.Errorf("shutdown: %w", shutErr)
+		var cancelPool context.CancelFunc
+		poolCtx, cancelPool = context.WithTimeout(context.Background(), poolGrace)
+		defer cancelPool()
 	}
 	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -264,10 +332,14 @@ func serveUntil(ctx context.Context, srv *http.Server, ln net.Listener, closePoo
 	}()
 	select {
 	case <-closed:
-	case <-shutCtx.Done():
-		return fmt.Errorf("closing the database pool did not finish within %s", shutdownTimeout)
+		return shutErr
+	case <-poolCtx.Done():
+		poolErr := fmt.Errorf("closing the database pool did not finish within %s", shutdownTimeout)
+		if shutErr != nil {
+			poolErr = fmt.Errorf("closing the database pool did not finish within %s", poolGrace)
+		}
+		return errors.Join(shutErr, poolErr)
 	}
-	return shutErr
 }
 
 // healthcheck requests /healthz on the local listen address. It exits 0 on

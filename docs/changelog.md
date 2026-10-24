@@ -183,3 +183,13 @@ Plan 3, the read side, one slice at a time.
 - `/p/{id}` answers 302 to the page of the topic that holds the post, as the viewer sees that page; `/t/{id}` of a moved-topic marker answers 301 to its target. Both check the permission first, so a hidden post or topic answers 404. `/a/{id}` serves an attachment with its stored type, `nosniff` and a private one-hour cache: 404 when the post or its forum is hidden, or an attachment with no post and the viewer is neither the uploader nor an admin; 403 without `account.download` or the forum's `attach.download`. It does not change the download count. A type that a browser would run on the site (anything but PNG, JPEG, GIF and WebP) goes out as a download, inside a sandbox.
 - A bad `?page=` (`0`, `-1`, `abc`, more than 1,000,000) answers 400; a page after the last answers 404. One SQL clause holds the rule for who sees which posts, and a topic page runs the same number of queries for any number of posts.
 - `markup.RenderContext.BasePath`: the renderer puts the base path in front of every site path it writes (a `url` href, an `img` src, a smiley image). `Rendered.Text` does not change.
+- Fixes from the Task 1 review. A link forum links through `/f/{id}`, which answers 302
+  to its target: a site path gets the base path in front, an `https:` or `mailto:` URL
+  goes as it is, and any other value gives 404. `serveUntil` returns the shutdown error
+  when a slow request outlasts the window, and gives the pool its own 5 s grace.
+  `/files/` refuses a symlink even when it points inside its directory. A database with
+  no imported board answers 503 with the layout and "Run `gobb import`", logs one WARN
+  line, and keeps `/healthz` at 200. `serve` sets up its signal handler before it
+  connects and migrates. Each request has a 10 s database deadline. A static file
+  asked for with the current `?v=` is `immutable` for a year. Topic, post and view
+  counts have thousands separators.

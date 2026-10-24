@@ -44,7 +44,14 @@ func (s *site) files(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = root.Close() }()
-	f, err := root.Open(filepath.FromSlash(name))
+	// A symlink is not a regular file, even when it points inside the directory.
+	// Lstat does not follow the last element.
+	local := filepath.FromSlash(name)
+	if li, err := root.Lstat(local); err != nil || !li.Mode().IsRegular() {
+		s.notFound(w, r)
+		return
+	}
+	f, err := root.Open(local)
 	if err != nil {
 		s.notFound(w, r)
 		return
@@ -108,6 +115,12 @@ func (s *site) static(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", ctype)
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Cache-Control", "public, max-age=86400")
+	// A request that carries the current version names these exact bytes, so a
+	// browser may keep them for a year.
+	if r.URL.Query().Get("v") == s.assetVersion {
+		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		h.Set("Cache-Control", "public, max-age=86400")
+	}
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 }

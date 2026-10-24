@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"html/template"
 	"net/http"
 	"strconv"
@@ -30,6 +31,7 @@ func (s *site) parseTemplates() error {
 		"initial": initial,
 		"plural":  plural,
 		"size":    size,
+		"num":     num,
 	}
 	s.pages = map[string]*template.Template{}
 	for _, name := range pageFiles {
@@ -111,12 +113,38 @@ type forumRows struct {
 	Loc  *time.Location
 }
 
-// plural returns "1 thing" or "2 things".
+// plural returns "1 thing" or "2 things". A count over 999 has separators.
 func plural(n int, one, many string) string {
 	if n == 1 {
 		return "1 " + one
 	}
-	return strconv.Itoa(n) + " " + many
+	return num(n) + " " + many
+}
+
+// num writes an integer with a comma between each group of three digits:
+// 1076250 becomes "1,076,250". It takes any integer type, so a template needs no
+// conversion.
+func num(v any) string {
+	var n int64
+	switch x := v.(type) {
+	case int:
+		n = int64(x)
+	case int32:
+		n = int64(x)
+	case int64:
+		n = x
+	default:
+		return fmt.Sprint(v)
+	}
+	digits := strconv.FormatInt(n, 10)
+	sign := ""
+	if n < 0 {
+		sign, digits = "-", digits[1:]
+	}
+	for i := len(digits) - 3; i > 0; i -= 3 {
+		digits = digits[:i] + "," + digits[i:]
+	}
+	return sign + digits
 }
 
 // size writes a byte count in the unit that fits: "512 B", "1.5 KB", "3.2 MB".

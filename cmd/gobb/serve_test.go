@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/evanwtf/gobb/internal/dbtest"
 )
 
 func TestServerLimits(t *testing.T) {
@@ -183,5 +185,101 @@ func TestDocsNameEveryServeVariable(t *testing.T) {
 				t.Errorf("%s does not name %s", file, v)
 			}
 		}
+	}
+}
+
+// A request that outlasts the window gives the shutdown error. A pool that
+// closes at once must not take the blame.
+func TestServeUntilSlowRequestFastPool(t *testing.T) {
+	setWindow(t, 100*time.Millisecond)
+	ln := listen(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	srv := newHTTPServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
+		<-release
+	}))
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- serveUntil(ctx, srv, ln, func() {}, nil, func(int) {}) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the handler")
+	}
+	cancel()
+	select {
+	case err := <-errc:
+		if err == nil || !strings.Contains(err.Error(), "shutdown") || strings.Contains(err.Error(), "pool") {
+			t.Fatalf("serveUntil = %v, want the shutdown error and no pool error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveUntil did not return")
+	}
+}
+
+// A stuck pool after a slow request gets its own short grace, and both errors
+// show.
+func TestServeUntilSlowRequestStuckPool(t *testing.T) {
+	setWindow(t, 100*time.Millisecond)
+	old := poolGrace
+	poolGrace = 100 * time.Millisecond
+	t.Cleanup(func() { poolGrace = old })
+	ln := listen(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	srv := newHTTPServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
+		<-release
+	}))
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- serveUntil(ctx, srv, ln, func() { <-release }, nil, func(int) {}) }()
+	<-entered
+	cancel()
+	select {
+	case err := <-errc:
+		if err == nil || !strings.Contains(err.Error(), "shutdown") || !strings.Contains(err.Error(), "pool") {
+			t.Fatalf("serveUntil = %v, want both errors", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveUntil did not return")
+	}
+}
+
+// A signal that arrives while serve connects and migrates stops it before it
+// listens. The address is taken, so a serve that went on would fail to bind.
+func TestServeStopsOnSignalDuringSetup(t *testing.T) {
+	pool := dbtest.NewEmpty(t)
+	taken := listen(t)
+	defer func() { _ = taken.Close() }()
+	t.Setenv("GOBB_DSN", dsnOf(t, pool))
+	t.Setenv("GOBB_LISTEN", taken.Addr().String())
+	t.Setenv("GOBB_DATA_DIR", t.TempDir())
+	sigs := make(chan os.Signal, 2)
+	sigs <- os.Interrupt
+	errc := make(chan error, 1)
+	go func() { errc <- serveWith(context.Background(), sigs, func(int) {}) }()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("serveWith = %v, want nil after a signal during setup", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveWith did not return")
 	}
 }

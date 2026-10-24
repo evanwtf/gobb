@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/evanwtf/gobb/internal/board"
@@ -82,7 +83,12 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 	var link board.LinkError
 	switch {
 	case errors.As(err, &link):
-		http.Redirect(w, r, link.URL, http.StatusFound)
+		target, ok := s.linkTarget(link.URL)
+		if !ok {
+			s.notFound(w, r)
+			return
+		}
+		http.Redirect(w, r, target, http.StatusFound)
 		return
 	case errors.Is(err, board.ErrNotFound):
 		s.notFound(w, r)
@@ -103,4 +109,18 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		IsCategory: fp.Forum.Kind == "category",
 	}
 	s.render(w, http.StatusOK, "forum.html", p)
+}
+
+// linkTarget turns the link_url of a link forum into a URL that is safe to send
+// a visitor to. A site path gets the base path in front. An https or mailto URL
+// goes as it is. Any other value, such as an http URL, a relative path or a
+// scheme-relative "//host", gives false, because the board links nowhere else.
+func (s *site) linkTarget(raw string) (string, bool) {
+	switch {
+	case strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") && !strings.Contains(raw, `\`):
+		return s.base + raw[1:], true
+	case strings.HasPrefix(raw, "https://"), strings.HasPrefix(raw, "mailto:"):
+		return raw, true
+	}
+	return "", false
 }

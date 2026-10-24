@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -49,6 +51,9 @@ type site struct {
 	base string
 	// pages maps a page template name to its parsed set, which holds the layout.
 	pages map[string]*template.Template
+	// noDataLogged is set once the WARN line for a board with no data is
+	// written, and cleared when a request finds the board again.
+	noDataLogged atomic.Bool
 	// assetVersion changes when the stylesheet or the script changes. Page links
 	// carry it, so a browser fetches the new file.
 	assetVersion string
@@ -103,7 +108,12 @@ func normalizeBase(p string) string {
 	return p + "/"
 }
 
-// guard answers 404 at once for a path that is not in its clean form, such as
+// requestTimeout is the deadline of the database work of one request. The tests
+// shorten it.
+var requestTimeout = 10 * time.Second
+
+// guard gives the request a deadline of requestTimeout, so that a slow query
+// cannot hold a connection for long. It answers 404 at once for a path that is not in its clean form, such as
 // one with a ".." element or an empty element. The mux would redirect such a
 // path to the clean one, and a redirect must not tell a visitor what a hidden
 // path would have been.
@@ -117,7 +127,9 @@ func (s *site) guard(next http.Handler) http.Handler {
 			s.notFound(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -181,6 +193,7 @@ func (s *site) begin(r *http.Request, title string, nav string) (*page, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.noDataLogged.Store(false)
 	v, err := board.Guest(ctx, s.pool, settings)
 	if err != nil {
 		return nil, err
@@ -238,7 +251,9 @@ type errorData struct {
 // read, it falls back to plain text.
 func (s *site) fail(w http.ResponseWriter, r *http.Request, status int, heading, message string) {
 	p, err := s.begin(r, heading, "")
-	if err != nil {
+	if errors.Is(err, board.ErrNoSettings) {
+		p = s.emptyPage(r, heading)
+	} else if err != nil {
 		slog.Error("error page", "err", err)
 		http.Error(w, heading, status)
 		return
@@ -252,8 +267,35 @@ func (s *site) notFound(w http.ResponseWriter, r *http.Request) {
 	s.fail(w, r, http.StatusNotFound, "Page not found", "There is no page at this address.")
 }
 
-// serverError logs err and answers 500 with the layout.
+// emptyPage returns the page frame for a database with no board in it: the
+// name gobb, the guest zone UTC and the first scheme.
+func (s *site) emptyPage(r *http.Request, title string) *page {
+	scheme := board.Schemes[0]
+	if q := r.URL.Query().Get("scheme"); board.ValidScheme(q) {
+		scheme = q
+	}
+	return &page{
+		Title:    title,
+		Scheme:   scheme,
+		Settings: board.Settings{BoardName: "gobb"},
+		Viewer:   board.Viewer{Loc: time.UTC, Scheme: scheme},
+		CSS:      s.path("static", "gobb.css") + "?v=" + s.assetVersion,
+		JS:       s.path("static", "gobb.js") + "?v=" + s.assetVersion,
+		Home:     s.path(),
+		Nav:      []navLink{{Label: "Index", Href: s.path()}},
+	}
+}
+
+// serverError logs err and answers 500 with the layout. A database with no
+// board in it gets 503 and a hint, and one WARN line until a board appears.
 func (s *site) serverError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, board.ErrNoSettings) {
+		if s.noDataLogged.CompareAndSwap(false, true) {
+			slog.Warn("the database holds no board; run gobb import")
+		}
+		s.fail(w, r, http.StatusServiceUnavailable, "No data yet", "This board has no data yet. Run `gobb import`.")
+		return
+	}
 	slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
 	s.fail(w, r, http.StatusInternalServerError, "Something went wrong", "The server could not build this page. Try again in a moment.")
 }

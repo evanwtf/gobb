@@ -28,7 +28,7 @@ func checkBasePath(t *testing.T, where, body, base string) {
 // TestBasePathEverywhere checks that every link and source on every page is
 // under the base path. Later tasks add their pages to the list.
 func TestBasePathEverywhere(t *testing.T) {
-	b := richBoard()
+	b := linkBoard()
 	h, _ := newTestSite(t, b, Options{BasePath: "/forum/"})
 	pages := []string{"/forum/", "/forum/f/1", "/forum/f/2", "/forum/t/1", "/forum/t/5", "/forum/t/6"}
 	for _, p := range pages {
@@ -54,6 +54,8 @@ func TestBasePathEverywhere(t *testing.T) {
 	for _, c := range []struct{ from, to string }{
 		{"/forum/p/4", "/forum/t/1#p4"},
 		{"/forum/t/3", "/forum/t/1"},
+		// A link forum with a site path as its target.
+		{"/forum/f/4", "/forum/pages/rules?x=1#top"},
 	} {
 		rec := get(t, h, c.from)
 		if loc := rec.Header().Get("Location"); loc != c.to {

@@ -45,7 +45,7 @@
     <p class="author-rank">{{if .Card.RankImage}}<img class="rank-img" src="{{path "files" .Card.RankImage}}" alt="">{{end}}{{if .Card.RankTitle}}<span>{{.Card.RankTitle}}</span>{{end}}</p>
     {{- end}}
     <p class="author-stat">Joined: {{date .Card.Joined $.Viewer.Loc}}</p>
-    <p class="author-stat">Posts: <b>{{.Card.PostCount}}</b></p>
+    <p class="author-stat">Posts: <b>{{num .Card.PostCount}}</b></p>
     {{- else}}
     <div class="author-avatar"><span class="avatar avatar-none" aria-hidden="true">{{initial .Author.Name}}</span></div>
     <p class="author-name">{{template "author" .Author}}</p>

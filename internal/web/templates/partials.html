@@ -42,7 +42,7 @@
     <tr class="forum-row">
       <td class="forum-main">
         {{- if eq .Kind "link"}}
-        <a class="forum-name" href="{{.LinkURL}}">{{.Name}}</a>
+        <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>
         {{- else if .Readable}}
         <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>
         {{- else}}
@@ -58,12 +58,12 @@
         {{- end}}
       </td>
       {{- if eq .Kind "link"}}
-      <td class="link-target" colspan="3"><span class="muted">Link:</span> <a href="{{.LinkURL}}">{{.LinkURL}}</a></td>
+      <td class="link-target" colspan="3"><span class="muted">Link:</span> <a href="{{path "f" (printf "%d" .ID)}}">{{.LinkURL}}</a></td>
       {{- else if not .Readable}}
       <td class="members-only" colspan="3">{{template "lock"}} Members only</td>
       {{- else}}
-      <td class="num" data-label="Topics"><span class="forum-count">{{.Topics}}</span></td>
-      <td class="num" data-label="Posts"><span class="forum-count">{{.Posts}}</span></td>
+      <td class="num" data-label="Topics"><span class="forum-count">{{num .Topics}}</span></td>
+      <td class="num" data-label="Posts"><span class="forum-count">{{num .Posts}}</span></td>
       <td class="last" data-label="Last post">
         {{- with .Last}}
         <a class="last-title" href="{{path "p" (printf "%d" .ID)}}">{{.TopicTitle}}</a>
@@ -99,8 +99,8 @@
   {{- if .MovedTo}}
   <td class="num moved-gap" colspan="3"><span class="muted">This topic moved.</span></td>
   {{- else}}
-  <td class="num" data-label="Replies"><span class="forum-count">{{.Replies}}</span></td>
-  <td class="num" data-label="Views"><span class="forum-count">{{.Views}}</span></td>
+  <td class="num" data-label="Replies"><span class="forum-count">{{num .Replies}}</span></td>
+  <td class="num" data-label="Views"><span class="forum-count">{{num .Views}}</span></td>
   <td class="last" data-label="Last post">
     {{- if .Last.ID}}
     <a class="last-title" href="{{path "p" (printf "%d" .Last.ID)}}">{{time .Last.At $.Loc}}</a>

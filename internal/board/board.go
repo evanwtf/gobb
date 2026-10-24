@@ -27,6 +27,10 @@ var (
 	ErrGone = errors.New("board: gone")
 )
 
+// ErrNoSettings means the settings table holds none of the board keys. That is
+// a database that no board was imported into.
+var ErrNoSettings = errors.New("board: no board settings; run gobb import")
+
 // Schemes lists the color schemes that gobb has built in. The first is the
 // fallback.
 var Schemes = []string{"slate", "slate-deep", "slate-light"}
@@ -77,6 +81,9 @@ func LoadSettings(ctx context.Context, q db.Querier) (Settings, error) {
 		return Settings{}, fmt.Errorf("board: load settings: %w", err)
 	}
 
+	if len(raw) == 0 {
+		return Settings{}, ErrNoSettings
+	}
 	var s Settings
 	var header *string
 	for _, f := range []struct {
