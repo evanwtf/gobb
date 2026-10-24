@@ -1,0 +1,61 @@
+{{define "content"}}
+<header class="page-head">
+  <h1>Search</h1>
+  <p class="page-sub">Find posts by their words, by their forum or by their author.</p>
+</header>
+
+<form class="search-form" method="get" action="{{path "search"}}" role="search" aria-label="Search posts">
+  <div class="search-fields">
+    <div class="field search-q">
+      <label for="s-q">Words</label>
+      <input type="search" id="s-q" name="q" value="{{.Data.Text}}" maxlength="256" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="s-forum">Forum</label>
+      <select id="s-forum" name="forum">
+        <option value="">All forums</option>
+        {{- range .Data.Forums}}
+        <option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{- end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="s-author">Author</label>
+      <input type="text" id="s-author" name="author" value="{{.Data.Author}}" maxlength="256" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="s-sort">Sort</label>
+      <select id="s-sort" name="sort">
+        <option value="new"{{if ne .Data.Sort "best"}} selected{{end}}>Newest first</option>
+        <option value="best"{{if eq .Data.Sort "best"}} selected{{end}}>Best match</option>
+      </select>
+    </div>
+  </div>
+  <button type="submit" class="button search-go">Search</button>
+</form>
+
+{{- if .Data.Searched}}
+{{- if .Data.Hits}}
+<p class="search-count">
+  {{- if .Data.Capped}}{{num .Data.Total}} or more posts match. The list ends at page {{.Data.Pager.Pages}}.
+  {{- else}}{{plural .Data.Total "post matches" "posts match"}}.{{end -}}
+</p>
+{{template "pager" pagerAt .Data.Pager "Pages, top"}}
+<ol class="search-hits">
+  {{- range .Data.Hits}}
+  <li class="search-hit">
+    <h2 class="search-title"><a href="{{path "p" (printf "%d" .Post.ID)}}">{{.Post.TopicTitle}}</a></h2>
+    <p class="search-snippet">{{.Snippet}}</p>
+    <p class="search-meta">
+      {{- template "author" .Post.Author}} &middot; {{time .Post.At $.Viewer.Loc}}
+      {{- with .Forum}} &middot; in <a href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>{{end -}}
+    </p>
+  </li>
+  {{- end}}
+</ol>
+{{template "pager" pagerAt .Data.Pager "Pages, bottom"}}
+{{- else}}
+<p class="empty standalone">No posts match this search.</p>
+{{- end}}
+{{- end}}
+{{end}}

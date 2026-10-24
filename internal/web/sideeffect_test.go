@@ -37,6 +37,8 @@ var getPaths = []string{
 	"/team",
 	"/pages/about",
 	"/account",
+	"/search?q=example",
+	"/search?author=alice",
 	"/login",
 	"/static/gobb.css",
 	"/files/avatars/1.png",

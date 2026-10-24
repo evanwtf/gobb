@@ -26,6 +26,16 @@
       {{- range .Nav}}
       <li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a></li>
       {{- end}}
+      {{- if .SearchHref}}
+      <li class="nav-search">
+        <form method="get" action="{{.SearchHref}}" role="search" aria-label="Quick search">
+          <label class="visually-hidden" for="nav-q">Search the board</label>
+          <input type="search" id="nav-q" name="q" maxlength="256" placeholder="Search" autocomplete="off">
+          <button type="submit" class="nav-button">Search</button>
+        </form>
+        <a href="{{.SearchHref}}"{{if .SearchCurrent}} aria-current="page"{{end}}>Advanced</a>
+      </li>
+      {{- end}}
       {{- if .Viewer.UserID}}
       <li class="nav-end"><span class="nav-who">Signed in as <bdi>{{.Viewer.Name}}</bdi></span></li>
       <li class="nav-out">

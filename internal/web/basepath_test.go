@@ -30,8 +30,12 @@ func checkBasePath(t *testing.T, where, body, base string) {
 // under the base path. Later tasks add their pages to the list.
 func TestBasePathEverywhere(t *testing.T) {
 	b := linkBoard()
+	for _, g := range []int64{1, 2} {
+		allowGroup(b, g, 0, "account.search")
+		allowGroup(b, g, 2, "forum.search")
+	}
 	h, pool := siteWithPool(t, b, Options{BasePath: "/forum/"})
-	pages := []string{"/forum/", "/forum/f/1", "/forum/f/2", "/forum/t/1", "/forum/t/5", "/forum/t/6", "/forum/login", "/forum/team", "/forum/pages/about", "/forum/pages/rules"}
+	pages := []string{"/forum/", "/forum/f/1", "/forum/f/2", "/forum/t/1", "/forum/t/5", "/forum/t/6", "/forum/login", "/forum/team", "/forum/pages/about", "/forum/pages/rules", "/forum/search", "/forum/search?q=example", "/forum/search?author=alice"}
 	for _, p := range pages {
 		rec := get(t, h, p)
 		if rec.Code != http.StatusOK {
@@ -50,7 +54,7 @@ func TestBasePathEverywhere(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `update users set last_visit_at = '2019-06-01T00:00:00Z', last_mark_at = null where id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"/forum/", "/forum/f/2", "/forum/f/1", "/forum/new", "/forum/t/1", "/forum/u/1", "/forum/members", "/forum/team"} {
+	for _, p := range []string{"/forum/", "/forum/f/2", "/forum/f/1", "/forum/new", "/forum/t/1", "/forum/u/1", "/forum/members", "/forum/team", "/forum/search?q=example"} {
 		rec := getAs(t, h, p, alice)
 		if rec.Code != http.StatusOK {
 			t.Errorf("member %s: status %d", p, rec.Code)
@@ -122,7 +126,7 @@ func TestBasePathEverywhere(t *testing.T) {
 			t.Errorf("%s: Location %q, want %q (status %d)", c.from, loc, c.to, rec.Code)
 		}
 	}
-	for _, p := range []string{"/t/1", "/f/2", "/p/4", "/a/1"} {
+	for _, p := range []string{"/t/1", "/f/2", "/p/4", "/a/1", "/search"} {
 		if rec := get(t, h, p); rec.Code != http.StatusNotFound {
 			t.Errorf("%s without the prefix: status %d, want 404", p, rec.Code)
 		}

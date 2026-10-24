@@ -71,7 +71,7 @@ type site struct {
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "profile.html", "members.html", "team.html", "page.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "profile.html", "members.html", "team.html", "page.html", "search.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -106,6 +106,7 @@ func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, erro
 	inner.HandleFunc("GET /team", s.team)
 	inner.HandleFunc("GET /pages/{slug}", s.staticPage)
 	inner.HandleFunc("GET /account", s.account)
+	inner.HandleFunc("GET /search", s.search)
 	inner.HandleFunc("GET /login", s.loginPage)
 	inner.Handle("POST /login", s.protect(s.loginSubmit))
 	inner.Handle("POST /logout", s.protect(s.logout))
@@ -214,6 +215,10 @@ type page struct {
 	// csrfSecret is the secret of the csrf token: the session token of a member,
 	// and the gobb_csrf cookie of a guest, which is empty for a guest who has none.
 	csrfSecret string
+	// SearchHref is the site path of the search page, or empty for a viewer
+	// without account.search. The nav then holds a search box.
+	SearchHref    string
+	SearchCurrent bool
 	// Pages are the static pages that the footer lists. render fills them in.
 	Pages []board.StaticPage
 	// Data holds the data of the page template.
@@ -347,6 +352,9 @@ func (s *site) addNav(p *page) {
 		p.Nav = append(p.Nav, navLink{Label: "Members", Href: s.path("members"), Current: p.navKey == "members"})
 	}
 	p.Nav = append(p.Nav, navLink{Label: "Team", Href: s.path("team"), Current: p.navKey == "team"})
+	if p.Viewer.Perms.Has("account.search", 0) {
+		p.SearchHref, p.SearchCurrent = s.path("search"), p.navKey == "search"
+	}
 }
 
 // addPageLinks reads the static pages for the footer. A failure is logged and the

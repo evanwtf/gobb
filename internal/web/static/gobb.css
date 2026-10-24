@@ -2,10 +2,10 @@
    the page frame and the board index. */
 
 /* ---- Color schemes -------------------------------------------------------
-   Each scheme sets the same twelve tokens. The page uses the tokens and no
+   Each scheme sets the same tokens. The page uses the tokens and no
    other color. The pairs text and muted on page and row, link on page and row,
    bar-text on bar, header-text on header, on-accent on accent, and on-badge on
-   badge all reach WCAG AA (4.5:1); a test holds them to it. --new is a signal
+   badge, and on-mark on mark all reach WCAG AA (4.5:1); a test holds them to it. --new is a signal
    color for borders and bars; the "New" pill has text, so it uses --badge. */
 
 :root[data-scheme="slate"] {
@@ -24,6 +24,8 @@
   --new: #ff0000;
   --badge: #d40000;
   --on-badge: #ffffff;
+  --mark: #ffd84d;
+  --on-mark: #1a1400;
 }
 
 :root[data-scheme="slate-deep"] {
@@ -42,6 +44,8 @@
   --new: #ff0000;
   --badge: #d40000;
   --on-badge: #ffffff;
+  --mark: #ffd84d;
+  --on-mark: #1a1400;
 }
 
 :root[data-scheme="slate-light"] {
@@ -60,6 +64,8 @@
   --new: #d90000;
   --badge: #c40000;
   --on-badge: #ffffff;
+  --mark: #ffd84d;
+  --on-mark: #1a1400;
 }
 
 /* Colors that follow from the tokens. */
@@ -336,7 +342,7 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
 
 .field { margin-bottom: 1.1rem; }
 .field label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
-.field input {
+.field input, .field select {
   display: block;
   width: 100%;
   padding: 0.65rem 0.75rem;
@@ -347,7 +353,7 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
   border: 1px solid var(--muted);
   border-radius: 6px;
 }
-.field input:focus-visible, .field-check input:focus-visible {
+.field input:focus-visible, .field select:focus-visible, .field-check input:focus-visible {
   outline: 3px solid var(--link);
   outline-offset: 1px;
   border-color: var(--link);
@@ -974,6 +980,76 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 
   .static-page { padding: 0.9rem 1rem 1rem; }
   .team-list { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- Search -------------------------------------------------------------- */
+
+/* The box in the nav. The input sits on the header color; the button is a nav
+   button. On a narrow screen the item takes a row of its own. */
+.site-nav .nav-search { align-items: center; gap: 0.25rem; }
+.site-nav .nav-search form { align-items: stretch; }
+.nav-search input[type="search"] {
+  width: 11rem;
+  margin: 0.35rem 0;
+  padding: 0.3rem 0.6rem;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--text);
+  background: var(--page);
+  border: 1px solid rgb(255 255 255 / 0.4);
+  border-radius: 6px 0 0 6px;
+}
+.nav-search input[type="search"]:focus-visible { outline: 3px solid var(--header-text); outline-offset: 1px; }
+.nav-search .nav-button { border: 1px solid rgb(255 255 255 / 0.4); border-left: 0; border-radius: 0 6px 6px 0; margin: 0.35rem 0; padding: 0.3rem 0.8rem; }
+.site-nav .nav-search > a { padding-left: 0.6rem; padding-right: 0.6rem; font-weight: 500; font-size: 0.88rem; }
+
+.search-form {
+  margin: 0 0 1.25rem;
+  padding: 1rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+}
+.search-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0 1rem;
+}
+.search-fields .search-q { grid-column: 1 / -1; }
+.search-form .field { margin-bottom: 0.85rem; }
+.search-form .search-go { width: auto; min-width: 8rem; }
+
+.search-count { margin: 0 0 0.75rem; color: var(--muted); }
+
+.search-hits { margin: 0 0 1rem; padding: 0; list-style: none; }
+.search-hit {
+  margin: 0 0 0.75rem;
+  padding: 0.85rem 1rem 0.85rem 1.1rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+}
+.search-title { font-size: 1.05rem; overflow-wrap: anywhere; }
+.search-snippet { margin-top: 0.3rem; overflow-wrap: anywhere; }
+.search-meta { margin-top: 0.4rem; color: var(--muted); font-size: 0.85rem; }
+
+/* A matched word. The pair has its own tokens, held to AA in every scheme. */
+mark {
+  padding: 0 0.15em;
+  color: var(--on-mark);
+  background: var(--mark);
+  border-radius: 3px;
+}
+
+@media (max-width: 699px) {
+  .site-nav .nav-search { flex: 1 0 100%; }
+  .site-nav .nav-search form { flex: 1 1 auto; }
+  .nav-search input[type="search"] { flex: 1 1 auto; width: 100%; min-width: 0; padding: 0.55rem 0.7rem; }
+  .nav-search .nav-button { padding: 0.55rem 0.9rem; }
+  .search-form { padding: 0.85rem; }
+  .search-form .search-go { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
