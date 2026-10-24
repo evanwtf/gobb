@@ -608,7 +608,13 @@ of `id_param` and `target_id`. The kind `page` needs `target_slug`, which names 
 `target_id`. Only `forum` and `topic` may set `offset_param`. A fixed `target_id`
 names a row that exists: a forum, a topic, a post, a user or an attachment, by kind. For
 `avatar` it names a user. A fixed `user` route target may also name a gone user: a row of
-`gone_users.jsonl`. The pair (`path`, `match`) is unique.
+`gone_users.jsonl`. The triple (`path`, `match`, `id_param`) is unique.
+
+A route applies to a request when the request's path is `path`, every `match` pair
+equals a query parameter of the request, and the request has the `id_param` parameter
+(when the route sets one). When several routes apply, gobb takes the one with the lowest
+`position`. So one old path can send an ID in one parameter to a topic and an ID in
+another parameter to a post.
 
 ```json
 {"path":"old/thread.cgi","match":{"view":"full"},"id_param":"id","target_kind":"topic","target_id":null,"target_slug":null,"offset_param":"page","position":1}

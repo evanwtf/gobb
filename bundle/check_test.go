@@ -221,7 +221,7 @@ func TestCheckRefuses(t *testing.T) {
 			r := b.LegacyRoutes[0]
 			r.Position = 9
 			b.LegacyRoutes = append(b.LegacyRoutes, r)
-		}, "legacy_routes.jsonl:4: path: the pair (path, match) appears already, on line 1"},
+		}, "legacy_routes.jsonl:4: path: the triple (path, match, id_param) appears already, on line 1"},
 		{"legacy file prefix twice", func(b *bundletest.Board) {
 			b.LegacyFiles = append(b.LegacyFiles, bundle.LegacyFile{Prefix: "old/images/smilies/", Dir: "ranks"})
 		}, "legacy_files.jsonl:2: prefix: prefix \"old/images/smilies/\" appears already, on line 1"},
@@ -300,6 +300,18 @@ func TestCheckRefuses(t *testing.T) {
 				t.Fatalf("Check = %v\nwant one error that starts with %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// One old path can carry a topic ID in one parameter and a post ID in another.
+// The two routes differ only by id_param, so both are allowed.
+func TestCheckRoutesDifferByIDParam(t *testing.T) {
+	b := bundletest.Small()
+	r := b.LegacyRoutes[0]
+	r.IDParam, r.TargetKind, r.OffsetParam, r.Position = p("post"), "post", nil, 9
+	b.LegacyRoutes = append(b.LegacyRoutes, r)
+	if err := checkBoard(t, b); err != nil {
+		t.Fatalf("Check = %v; want nil", err)
 	}
 }
 

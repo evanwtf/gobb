@@ -737,7 +737,9 @@ func (w *whole) smiley(line int, s Smiley) {
 	w.nameFile(file, line, "image", s.Image)
 }
 
-// routeKey returns the key of a route: its path and its match pairs.
+// routeKey returns the key of a route: its path, its match pairs and its
+// id_param. Values never hold control characters, so the NUL and SOH separators
+// keep the key unambiguous.
 func routeKey(r LegacyRoute) string {
 	var b strings.Builder
 	b.WriteString(r.Path)
@@ -747,13 +749,17 @@ func routeKey(r LegacyRoute) string {
 		b.WriteByte(0)
 		b.WriteString(r.Match[k])
 	}
+	if r.IDParam != nil {
+		b.WriteByte(1)
+		b.WriteString(*r.IDParam)
+	}
 	return b.String()
 }
 
 func (w *whole) route(line int, r LegacyRoute) {
 	const file = "legacy_routes.jsonl"
 	if first, dup := w.routes[routeKey(r)]; dup {
-		w.bad(file, line, "path", "the pair (path, match) appears already, on line %d", first)
+		w.bad(file, line, "path", "the triple (path, match, id_param) appears already, on line %d", first)
 	} else {
 		w.routes[routeKey(r)] = line
 	}
