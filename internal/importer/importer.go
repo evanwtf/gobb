@@ -44,11 +44,13 @@ type Options struct {
 var parseBody = markup.Parse
 
 // source is what a loader reads: the bundle and the smiley list that parses
-// every body. Task by task, the loaders for the other data files take the same
-// value.
+// every body. Every loader takes it.
 type source struct {
 	*bundle.Reader
 	smilies []markup.Smiley
+	// topicForum maps a topic ID to its forum ID. The topics loader fills it,
+	// and the posts loader reads it. It holds IDs only.
+	topicForum map[int64]int64
 }
 
 // loader loads one data file inside the import transaction and returns the
@@ -58,8 +60,7 @@ type loader struct {
 	load func(ctx context.Context, tx pgx.Tx, r *source) (int, error)
 }
 
-// loaders lists the loaders in bundle.Files order. A data file without an entry
-// is not loaded yet.
+// loaders lists the loaders in bundle.Files order. Every data file has one.
 var loaders = []loader{
 	{"ranks", loadRanks},
 	{"users", loadUsers},
@@ -69,6 +70,16 @@ var loaders = []loader{
 	{"roles", loadRoles},
 	{"grants", loadGrants},
 	{"forums", loadForums},
+	{"topics", loadTopics},
+	{"posts", loadPosts},
+	{"polls", loadPolls},
+	{"poll_votes", loadPollVotes},
+	{"attachments", loadAttachments},
+	{"pms", loadPMs},
+	{"topic_watches", loadTopicWatches},
+	{"bookmarks", loadBookmarks},
+	{"topic_marks", loadTopicMarks},
+	{"forum_marks", loadForumMarks},
 	{"bans", loadBans},
 	{"smilies", loadSmilies},
 	{"legacy_routes", loadLegacyRoutes},
@@ -235,6 +246,9 @@ func load(ctx context.Context, conn *pgxpool.Conn, tables []string, r *source, r
 		}
 		counts[l.file] = n
 		slog.Info("loaded", "file", l.file, "rows", n)
+	}
+	if err := computeCounters(ctx, tx); err != nil {
+		return nil, err
 	}
 	if err := db.ResetSequences(ctx, tx); err != nil {
 		return nil, err

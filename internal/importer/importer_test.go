@@ -21,11 +21,8 @@ import (
 	"github.com/evanwtf/gobb/markup"
 )
 
-// loaded lists the data files that the loaders in this package cover so far.
-var loaded = []string{
-	"ranks", "users", "gone_users", "groups", "group_members", "roles", "grants",
-	"forums", "bans", "smilies", "legacy_routes", "legacy_files", "static_pages",
-}
+// loaded lists the data files that the loaders in this package cover: all 23.
+var loaded = bundle.Files
 
 // writeBoard writes a board to disk. It applies edit first, when edit is set.
 func writeBoard(t *testing.T, edit func(b *bundletest.Board)) string {
@@ -133,18 +130,6 @@ func TestImportPeopleAndPermissions(t *testing.T) {
 	if counts["files"] != 7 {
 		t.Errorf("counts[files] = %d, want 7", counts["files"])
 	}
-	for _, f := range []string{"topics", "posts", "polls", "attachments", "pms"} {
-		if _, ok := counts[f]; ok {
-			t.Errorf("counts has %s, which this task does not load", f)
-		}
-		if n := count(t, pool, map[string]string{
-			"topics": "topics", "posts": "posts", "polls": "polls",
-			"attachments": "attachments", "pms": "pms",
-		}[f]); n != 0 {
-			t.Errorf("%s has %d rows, want 0", f, n)
-		}
-	}
-
 	sameIDs(t, "ranks", ids(t, pool, "select id from ranks order by id"), 1)
 	sameIDs(t, "users", ids(t, pool, "select id from users order by id"), 1, 2, 3, 4)
 	sameIDs(t, "gone_users", ids(t, pool, "select id from gone_users"), 8)

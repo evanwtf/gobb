@@ -28,15 +28,24 @@ func idErr(file string, line int, id int64, field string, err error) error {
 	return rowErr(file, line, fmt.Sprintf("id %d", id), field, err)
 }
 
-// treeJSON parses a body with its own flags and the bundle's smiley list,
-// validates the tree and returns its JSON.
-func treeJSON(b bundle.Body, smilies []markup.Smiley) (string, error) {
+// parseTree parses a body with its own flags and the bundle's smiley list, and
+// validates the tree.
+func parseTree(b bundle.Body, smilies []markup.Smiley) (*markup.Node, error) {
 	opt := markup.Options{Markdown: b.Markdown, Smilies: b.Smilies, Autolink: b.Autolink}
 	if b.Smilies {
 		opt.SmileyList = smilies
 	}
 	tree := parseBody(b.Source, opt)
 	if err := markup.Validate(tree); err != nil {
+		return nil, err
+	}
+	return tree, nil
+}
+
+// treeJSON parses a body (see parseTree) and returns the JSON of its tree.
+func treeJSON(b bundle.Body, smilies []markup.Smiley) (string, error) {
+	tree, err := parseTree(b, smilies)
+	if err != nil {
 		return "", err
 	}
 	data, err := json.Marshal(tree)

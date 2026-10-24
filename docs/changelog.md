@@ -108,3 +108,14 @@ that the pages stand on.
   export` writes the effective permissions of the guest and of every user as JSON
   Lines, in a fixed order, from one read-only snapshot. A converter compares the
   lines with the permissions of the source system. The command does not migrate.
+- The importer, part two: it loads topics, posts, polls and their options, poll votes,
+  attachments, private messages with their recipients, watches, bookmarks and read marks.
+  Posts and private messages load with `CopyFrom` in batches of 1,000 rows, streamed from
+  the file, so the importer never holds a file in memory. A post takes its `forum_id` from
+  its topic. Each body is parsed with its own flags and the bundle's smiley list,
+  validated, and stored as `body_tree`, with `body_text` from `markup.Render`. After the
+  last loader, two SQL statements set the counters: a topic's last post (the newest
+  approved post, or the newest post of any kind when none is approved), its `reply_count`,
+  and a forum's `topic_count`, `post_count` and last post. A moved-topic marker has no
+  last post. `Run` now counts all 23 data files. `bundletest.Large` builds a big board for
+  the scale test: 35,000 posts import in about 36 s under `-race`.

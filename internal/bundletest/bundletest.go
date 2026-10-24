@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -489,4 +490,69 @@ func Small() *Board {
 		{Slug: "rules", Title: "Rules", Body: body("1. Be kind.\n2. Stay on topic."), UpdatedAt: at(2025, 6, 2, 12, 0)},
 	}
 	return b
+}
+
+// Large returns a valid board with the given number of topics and the given
+// number of posts in each topic, for scale tests. It keeps the users, forums,
+// groups, grants and settings of [Small], and it replaces everything that hangs
+// on topics and posts: the topics, posts, polls, votes, attachments, private
+// messages, watches, bookmarks and marks. It drops the attachment files too.
+//
+// Topic t (counted from 1) lives in forum 2 when t is odd, and in forum 3 when
+// t is even. Its posts are numbered in order across the board, so the post IDs
+// run from 1 to topics*postsPerTopic. Each topic has a first post and
+// postsPerTopic-1 replies, all approved. Authors rotate through users 1 to 3.
+// Each body holds about 600 bytes of Markdown with emphasis, a link and a list.
+// Both counts must be at least 1.
+func Large(topics, postsPerTopic int) *Board {
+	b := Small()
+	b.Topics, b.Posts, b.Polls, b.PollVotes = nil, nil, nil, nil
+	b.Attachments, b.PMs = nil, nil
+	b.TopicWatches, b.Bookmarks, b.TopicMarks, b.ForumMarks = nil, nil, nil, nil
+	delete(b.Files, "attachments/1.png")
+	delete(b.Files, "attachments/2.gif")
+
+	b.Topics = make([]bundle.Topic, 0, topics)
+	b.Posts = make([]bundle.Post, 0, topics*postsPerTopic)
+	names := []string{"alice", "bob", "carol"}
+	start := at(2021, 1, 1, 0, 0)
+	postID := int64(0)
+	for t := 1; t <= topics; t++ {
+		forum := int64(2)
+		if t%2 == 0 {
+			forum = 3
+		}
+		author := int64(t%3) + 1
+		created := start.Add(time.Duration(t) * time.Hour)
+		b.Topics = append(b.Topics, bundle.Topic{
+			ID: int64(t), ForumID: forum, Title: "Topic " + strconv.Itoa(t),
+			AuthorID: ptr(author), AuthorName: names[author-1], CreatedAt: created,
+			ViewCount: t % 100, Kind: "normal", Visibility: "approved",
+		})
+		for p := 0; p < postsPerTopic; p++ {
+			postID++
+			who := int64((t+p)%3) + 1
+			b.Posts = append(b.Posts, bundle.Post{
+				ID: postID, TopicID: int64(t), AuthorID: ptr(who), AuthorName: names[who-1],
+				AuthorIP:   ptr("10.0.0." + strconv.Itoa(int(who))),
+				CreatedAt:  created.Add(time.Duration(p) * time.Minute),
+				Subject:    "Topic " + strconv.Itoa(t),
+				Body:       body(largeBody(t, p)),
+				Visibility: "approved",
+			})
+		}
+	}
+	return b
+}
+
+// largeBody returns about 600 bytes of Markdown for post p of topic t.
+func largeBody(t, p int) string {
+	var sb strings.Builder
+	sb.WriteString("Post " + strconv.Itoa(p+1) + " in topic " + strconv.Itoa(t) + ": this is *emphasized* text ")
+	sb.WriteString("and this is **strong** text, with a [link](https://example.com/page/" + strconv.Itoa(t) + ").\n\n")
+	sb.WriteString("- the first point has a few words in it\n- the second point has a few more words\n- the third point ends the list\n\n")
+	for sb.Len() < 600 {
+		sb.WriteString("The quick brown fox jumps over the lazy dog near the river bank. ")
+	}
+	return sb.String()
 }
