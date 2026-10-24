@@ -28,7 +28,7 @@
 - **Every moderator and admin action writes one `mod_log` row:** `actor_id` is the moderator, or null for a command-line action. `action` is one of `post.delete`, `post.restore`, `post.approve`, `post.edit`, `topic.lock`, `topic.unlock`, `user.ban`, `user.unban` and `user.reset_password`. `details` holds `{"via":"cli"}` for a command-line action, and the edit reason for `post.edit`. A member who edits or deletes their own post writes no row.
 - **Counters stay exact.** After any write, the counters of every topic and forum, and the last-post columns, equal what the importer's full recompute would give. A test proves it (Task 2).
 - **No inline script, no `style` attributes and no `<style>` elements** in templates (Plan 3, Task 9). New pages keep the CSP of Plan 3.
-- **Limits.** A title is 1–120 characters after trimming. A post body is 1–60,000 bytes. A signature is 0–2,000 bytes. An edit reason is 0–255 characters. A new password is at least 10 characters and at most 1,024 bytes, and must differ from the username. The POST body cap for the posting forms is 128 KiB.
+- **Limits.** A title is 1–120 characters after trimming. A post body is 1–60,000 bytes. A signature is 0–2,000 bytes. An edit reason is 0–255 characters. A new password is at least 10 characters and at most 1,024 bytes, and must differ from the username. The POST body cap for the posting forms is 256 KiB, since a 60,000-byte body percent-encodes to at most 180,000 bytes.
 - **Checkpoints.** Each task ends with a `Checkpoint:` line. The controller runs it on its private copy before the next task starts.
 
 ## Review Focus
@@ -252,7 +252,7 @@ Rules:
 
 **Files:**
 - Create: `internal/web/post.go`, `internal/web/post_test.go`, `internal/web/templates/postform.html`
-- Modify: `internal/web/site.go` (routes), `internal/web/templates/topic.html` and `forum.html` (buttons), `internal/web/csrf.go` (`maxPostingBody = 128 << 10`), `internal/web/sideeffect_test.go`, `internal/web/basepath_test.go`, `internal/web/static/` (CSS for the form), `docs/changelog.md`
+- Modify: `internal/web/site.go` (routes), `internal/web/templates/topic.html` and `forum.html` (buttons), `internal/web/csrf.go` (`maxPostingBody = 256 << 10`), `internal/web/sideeffect_test.go`, `internal/web/basepath_test.go`, `internal/web/static/` (CSS for the form), `docs/changelog.md`
 
 **Interfaces:**
 - Consumes: Task 2's functions and `board.InputError`; Task 1's `htmlcheck.Check`.
