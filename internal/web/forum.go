@@ -99,6 +99,9 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Redirect(w, r, target, http.StatusFound)
 		return
+	case errors.Is(err, board.ErrForbidden):
+		s.denied(w, p, "this forum")
+		return
 	case errors.Is(err, board.ErrNotFound):
 		s.notFound(w, r)
 		return

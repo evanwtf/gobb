@@ -300,8 +300,14 @@ func TestPostBodyCaps(t *testing.T) {
 			}
 			under := url.Values{"junk": {strings.Repeat("x", tc.limit-100)}}
 			rec = request(t, h, http.MethodPost, tc.route, nil, under)
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("body of %d bytes = %d, want 403 from the csrf check", len(under.Encode()), rec.Code)
+			// Sign-out with no live session has nothing to protect: past the
+			// cap, it answers 303 to the index instead of the 403.
+			want := http.StatusForbidden
+			if tc.route == "/logout" {
+				want = http.StatusSeeOther
+			}
+			if rec.Code != want {
+				t.Errorf("body of %d bytes = %d, want %d after the csrf check", len(under.Encode()), rec.Code, want)
 			}
 		})
 	}

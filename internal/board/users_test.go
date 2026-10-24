@@ -403,3 +403,38 @@ func TestAvatarPath(t *testing.T) {
 		}
 	}
 }
+
+// "Last visit" on a profile is the last time the member was on the board:
+// last_active_at, or the imported last_visit_at when the member has not been
+// seen since the import. last_visit_at alone marks the start of the "new
+// since" window, which is the visit before.
+func TestProfileLastVisitIsTheLatest(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	bob := memberOn(t, pool, 2, "bob")
+	seen := time.Date(2026, 10, 24, 15, 23, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `update users set last_active_at = $1 where id = 1`, seen); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		id   int64
+		want *time.Time
+	}{
+		{1, &seen}, // seen since the import
+		{2, ptrTime(time.Date(2026, 9, 30, 19, 15, 0, 0, time.UTC))}, // not seen since: the imported visit
+		{3, nil}, // never
+	} {
+		p, err := board.Profile(ctx, pool, bob, c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case c.want == nil && p.LastVisit != nil:
+			t.Errorf("user %d: LastVisit = %v, want none", c.id, p.LastVisit)
+		case c.want != nil && (p.LastVisit == nil || !p.LastVisit.Equal(*c.want)):
+			t.Errorf("user %d: LastVisit = %v, want %v", c.id, p.LastVisit, *c.want)
+		}
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

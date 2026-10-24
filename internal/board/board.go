@@ -210,3 +210,17 @@ select username, timezone, color_scheme, state,
 		Loc: loc, Scheme: scheme, LastVisit: lastVisit, MarkFloor: markFloor,
 	}, nil
 }
+
+// SetScheme stores scheme as the color scheme of member userID. It reports
+// false, and changes nothing, when no active member has that ID. A scheme that
+// is not one of [Schemes] is an error.
+func SetScheme(ctx context.Context, q db.Querier, userID int64, scheme string) (bool, error) {
+	if !ValidScheme(scheme) {
+		return false, fmt.Errorf("board: no color scheme %q", scheme)
+	}
+	tag, err := q.Exec(ctx, `update users set color_scheme = $2 where id = $1 and state = 'active'`, userID, scheme)
+	if err != nil {
+		return false, fmt.Errorf("board: set the scheme of %d: %w", userID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}

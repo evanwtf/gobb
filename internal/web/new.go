@@ -21,6 +21,11 @@ import (
 // A browser sends Sec-Fetch-Dest, and "document" means a top-level navigation.
 // A client that sends none counts when it asks for HTML. A prefetch does not
 // count: the person has not opened the page yet.
+//
+// Any other GET writes nothing, with one accepted exception that is not
+// bookkeeping: a GET whose cookie names a dead session (expired, or of a user
+// who is not active) deletes that session's row ([site.identify]). The row is
+// worth nothing, and the delete changes no data that a page shows.
 func isNavigation(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false

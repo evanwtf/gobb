@@ -150,7 +150,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /search", s.search)
 	inner.HandleFunc("GET /login", s.loginPage)
 	inner.Handle("POST /login", s.protect(maxLoginBody, s.loginSubmit))
-	inner.Handle("POST /logout", s.protect(maxPostBody, s.logout))
+	inner.Handle("POST /logout", s.protectOr(maxPostBody, s.logout, s.toIndex))
 	inner.Handle("POST /scheme", s.protect(maxPostBody, s.setScheme))
 	inner.HandleFunc("GET /static/{name}", s.static)
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
@@ -162,6 +162,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 
 	root := http.NewServeMux()
 	root.Handle("/healthz", Health(pool))
+	root.HandleFunc("GET /favicon.ico", s.favicon)
 	if s.base == "/" {
 		root.Handle("/", inner)
 	} else {
@@ -223,10 +224,10 @@ func (s *site) path(parts ...string) string {
 	return s.base + strings.Join(elems, "/")
 }
 
-// assetVersion returns a short hash of the stylesheet and the script.
+// assetVersion returns a short hash of the stylesheet, the script and the icon.
 func assetVersion() string {
 	h := sha256.New()
-	for _, name := range []string{"static/gobb.css", "static/gobb.js"} {
+	for _, name := range []string{"static/gobb.css", "static/gobb.js", "static/icon.svg"} {
 		b, err := staticFS.ReadFile(name)
 		if err != nil {
 			continue
@@ -244,8 +245,9 @@ type page struct {
 	Viewer   board.Viewer
 	// Nav lists the links of the bar under the header.
 	Nav []navLink
-	// CSS and JS are the site paths of the stylesheet and the script.
-	CSS, JS string
+	// CSS, JS and Icon are the site paths of the stylesheet, the script and the
+	// site icon.
+	CSS, JS, Icon string
 	// Home is the site path of the board index.
 	Home string
 	// HeaderSrc is the site path of the header image, or empty.
@@ -366,6 +368,7 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 		Viewer:     v,
 		CSS:        s.path("static", "gobb.css") + "?v=" + s.assetVersion,
 		JS:         s.path("static", "gobb.js") + "?v=" + s.assetVersion,
+		Icon:       s.path("static", "icon.svg") + "?v=" + s.assetVersion,
 		Home:       s.path(),
 		Nav:        []navLink{{Label: "Index", Href: s.path(), Current: nav == "index"}},
 		Controls:   true,
@@ -579,6 +582,7 @@ func (s *site) emptyPage(r *http.Request, title string) *page {
 		Viewer:   board.Viewer{Loc: time.UTC, Scheme: scheme},
 		CSS:      s.path("static", "gobb.css") + "?v=" + s.assetVersion,
 		JS:       s.path("static", "gobb.js") + "?v=" + s.assetVersion,
+		Icon:     s.path("static", "icon.svg") + "?v=" + s.assetVersion,
 		Home:     s.path(),
 		Nav:      []navLink{{Label: "Index", Href: s.path()}},
 	}

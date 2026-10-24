@@ -132,7 +132,11 @@ func TestForumPageHead(t *testing.T) {
 }
 
 // A forum that the guest may list but not read is on the index with a lock and
-// no numbers, and opening it looks like a missing forum.
+// no numbers. Opening it answers 403 with a way to sign in that returns to the
+// forum: the index already shows its name, so the 403 tells nothing new. A
+// forum that the guest may not list, and every topic, post and attachment in a
+// forum that the guest may not read, still answer the 404 of a missing one
+// (spec 14).
 func TestListedNotReadable(t *testing.T) {
 	b := bundletest.Small()
 	b.Grants = append(b.Grants, guestGrant(3, "forum.list"))
@@ -157,6 +161,10 @@ func TestListedNotReadable(t *testing.T) {
 	b2 := bundletest.Small()
 	b2.Forums = append(b2.Forums, bundleForum(4, 0, "forum", "Staff Room", 5))
 	b2.Grants = append(b2.Grants, guestGrant(4, "forum.list"))
+	// Attachment 1 moves to a post of topic 2, in forum 3, which the guest may
+	// neither list nor read on this board.
+	b2.Attachments[0].PostID = ptr(int64(5))
+	b2.LegacyRoutes = append(b2.LegacyRoutes, legacyRoute("old/forum", "forum", ptr("id"), nil, 0))
 	h2, _ := newTestSite(t, b2, Options{})
 	idx := bodyOf(t, get(t, h2, "/"))
 	row = rowOf(idx, "forum-row", "Staff Room")
@@ -164,14 +172,47 @@ func TestListedNotReadable(t *testing.T) {
 		t.Errorf("the index row of the locked forum is wrong:\n%s", row)
 	}
 
-	// Opening it gives the page of a missing forum, byte for byte.
-	locked := get(t, h2, "/f/4")
-	missing := get(t, h2, "/f/99")
-	if locked.Code != http.StatusNotFound || missing.Code != http.StatusNotFound {
-		t.Fatalf("status %d and %d, want 404 and 404", locked.Code, missing.Code)
+	// Opening it, by its page or by an old link: 403 and a sign-in link that
+	// comes back.
+	for _, c := range []struct{ target, next string }{
+		{"/f/4", "%2Ff%2F4"},
+		{"/f/4?page=2", "%2Ff%2F4%3Fpage%3D2"},
+		{"/old/forum?id=4", "%2Fold%2Fforum%3Fid%3D4"},
+	} {
+		rec := get(t, h2, c.target)
+		body := bodyOf(t, rec)
+		if rec.Code != http.StatusForbidden || !strings.Contains(body, `href="/login?next=`+c.next+`"`) || !strings.Contains(body, "Sign in to see this forum.") {
+			t.Errorf("%s: status %d, want 403 with a sign-in link to %s:\n%s", c.target, rec.Code, c.next, body)
+		}
 	}
-	if shape(bodyOf(t, locked), "/f/4") != shape(bodyOf(t, missing), "/f/99") {
-		t.Error("the page of a locked forum differs from the page of a missing forum")
+	// A member who may list it and not read it gets 403 with no sign-in link.
+	group, list, yes := int64(2), "forum.list", bundle.Yes
+	b3 := bundletest.Small()
+	b3.Forums = append(b3.Forums, bundleForum(4, 0, "forum", "Staff Room", 5))
+	b3.Grants = append(b3.Grants, bundle.Grant{GroupID: &group, ForumID: 4, Option: &list, Setting: &yes})
+	h3, _ := newTestSite(t, b3, Options{})
+	rec := getAs(t, h3, "/f/4", signIn(t, h3, "bob", testPassword))
+	if body := bodyOf(t, rec); rec.Code != http.StatusForbidden || !strings.Contains(body, "You do not have the right to see this forum.") || strings.Contains(body, "/login?next=") {
+		t.Errorf("member /f/4: status %d, want 403 with no sign-in link:\n%s", rec.Code, body)
+	}
+
+	// Not listed, or inside a forum the guest may not read: the 404 of a
+	// missing one, byte for byte.
+	for _, c := range []struct{ hidden, missing string }{
+		{"/f/3", "/f/99"},
+		{"/t/2", "/t/99"},
+		{"/p/5", "/p/99"},
+		{"/a/1", "/a/99"},
+		{"/old/forum?id=3", "/old/forum?id=99"},
+	} {
+		hid, mis := get(t, h2, c.hidden), get(t, h2, c.missing)
+		if hid.Code != http.StatusNotFound || mis.Code != http.StatusNotFound {
+			t.Errorf("%s and %s: status %d and %d, want 404 and 404", c.hidden, c.missing, hid.Code, mis.Code)
+			continue
+		}
+		if shape(bodyOf(t, hid), c.hidden) != shape(bodyOf(t, mis), c.missing) {
+			t.Errorf("the page of %s differs from the page of the missing %s", c.hidden, c.missing)
+		}
 	}
 }
 

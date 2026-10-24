@@ -92,6 +92,10 @@ func diffTables(a, b map[string]string) []string {
 // TestGetHasNoSideEffects is Review Focus 2. A post can hold an image whose
 // address is a path of the site, and the browser then sends a GET with the
 // cookies of every reader. That GET, marked as an image load, changes no data.
+//
+// The rule has one accepted exception: a GET whose cookie names a dead session
+// deletes that session's row (see isNavigation). carol's session is live, so
+// the exception does not arise here.
 func TestGetHasNoSideEffects(t *testing.T) {
 	h, pool := siteWithPool(t, pagedBoard(), Options{})
 	carol := signIn(t, h, "carol", "example-password")

@@ -271,10 +271,13 @@ func TestPostNeedsCSRF(t *testing.T) {
 		t.Errorf("%d sessions after the cases, want 1 (only the good post)", n)
 	}
 
-	// The other POST routes need the token too.
-	for _, target := range []string{"/logout", "/scheme"} {
+	// The other POST routes need the token too. Sign-out needs it from a member
+	// with a live session; for anyone else it has nothing to protect
+	// (TestFormsAfterTheSessionEnded).
+	member := signIn(t, h, "bob", testPassword)
+	for target, who := range map[string][]*http.Cookie{"/logout": member, "/scheme": guest} {
 		for name, f := range map[string]url.Values{"none": {"scheme": {"slate-light"}}, "wrong": {"scheme": {"slate-light"}, "csrf": {"AAAA"}}} {
-			rec := request(t, h, http.MethodPost, target, guest, f)
+			rec := request(t, h, http.MethodPost, target, who, f)
 			if rec.Code != http.StatusForbidden {
 				t.Errorf("POST %s with %s csrf = %d, want 403", target, name, rec.Code)
 			}
@@ -699,9 +702,88 @@ func TestInactiveMemberIsAGuestEverywhere(t *testing.T) {
 				token = session.CSRFToken(c.Value)
 			}
 		}
-		rec := request(t, h, http.MethodPost, "/logout", cookies, url.Values{"csrf": {token}})
+		rec := request(t, h, http.MethodPost, "/scheme", cookies, url.Values{"csrf": {token}, "scheme": {"slate-light"}})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("a token made from the dead session = %d, want 403", rec.Code)
 		}
+		var scheme string
+		if err := pool.QueryRow(ctx, `select color_scheme from users where id = 2`).Scan(&scheme); err != nil || scheme != "slate-deep" {
+			t.Errorf("bob's scheme = %q (%v), want slate-deep", scheme, err)
+		}
+		// Sign-out has nothing to protect once the session is dead: 303.
+		rec = request(t, h, http.MethodPost, "/logout", cookies, url.Values{"csrf": {token}})
+		if rec.Code != http.StatusSeeOther {
+			t.Errorf("sign-out with a dead session = %d, want 303", rec.Code)
+		}
 	})
+}
+
+// A form of a member's page sent after the session ended. "Sign out" has
+// nothing left to protect: it answers 303 to the index and clears the cookie.
+// Any other form answers 403 and says that the session ended, not "reload and
+// try again". A live member's form with a wrong token, and a guest's, still get
+// the plain refusal.
+func TestFormsAfterTheSessionEnded(t *testing.T) {
+	h, pool := siteAndPool(t, bundletest.Small(), Options{})
+	ctx := t.Context()
+	// ended signs alice in, reads the token of her page, then ends the session.
+	ended := func(t *testing.T) ([]*http.Cookie, string) {
+		t.Helper()
+		cookies := signIn(t, h, "alice", testPassword)
+		m := csrfField.FindStringSubmatch(bodyOf(t, getAs(t, h, "/", cookies)))
+		if m == nil {
+			t.Fatal("the member page has no csrf field")
+		}
+		if _, err := pool.Exec(ctx, `update sessions set expires_at = now() - interval '1 minute' where user_id = 1`); err != nil {
+			t.Fatal(err)
+		}
+		return cookies, m[1]
+	}
+	const endedText = "Your session ended. You are signed out."
+
+	cookies, token := ended(t)
+	rec := request(t, h, http.MethodPost, "/logout", cookies, url.Values{"csrf": {token}})
+	if rec.Code != http.StatusSeeOther || location(rec) != "/" {
+		t.Errorf("POST /logout after the end: %d %q, want 303 to /", rec.Code, location(rec))
+	}
+	if c := cookieNamed(rec, "gobb_session"); c == nil || c.MaxAge >= 0 {
+		t.Errorf("the session cookie was not cleared: %+v", c)
+	}
+
+	for _, c := range []struct {
+		target string
+		form   url.Values
+	}{
+		{"/scheme", url.Values{"scheme": {"slate-light"}}},
+		{"/read", url.Values{}},
+		{"/f/2/read", url.Values{}},
+	} {
+		cookies, token := ended(t)
+		c.form.Set("csrf", token)
+		rec := request(t, h, http.MethodPost, c.target, cookies, c.form)
+		if body := bodyOf(t, rec); rec.Code != http.StatusForbidden || !strings.Contains(body, endedText) {
+			t.Errorf("POST %s after the end: %d, want 403 with %q:\n%s", c.target, rec.Code, endedText, body)
+		}
+	}
+	var scheme string
+	if err := pool.QueryRow(ctx, `select color_scheme from users where id = 1`).Scan(&scheme); err != nil || scheme != "slate" {
+		t.Errorf("alice's scheme = %q (%v), want slate: a dead session changed it", scheme, err)
+	}
+
+	// A live member with a wrong token: the plain refusal, and still signed in.
+	live := signIn(t, h, "bob", testPassword)
+	for _, target := range []string{"/logout", "/scheme"} {
+		rec := request(t, h, http.MethodPost, target, live, url.Values{"csrf": {"wrong"}, "scheme": {"slate-light"}})
+		if body := bodyOf(t, rec); rec.Code != http.StatusForbidden || strings.Contains(body, endedText) || !strings.Contains(body, "reload the page") {
+			t.Errorf("POST %s by a live member with a wrong token: %d, want the plain 403:\n%s", target, rec.Code, body)
+		}
+	}
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/", live)), "Signed in as") {
+		t.Error("a refused sign-out signed bob out")
+	}
+	// A guest with a wrong token: the plain refusal.
+	rec = request(t, h, http.MethodPost, "/scheme", nil, url.Values{"csrf": {"wrong"}, "scheme": {"slate-light"}})
+	if body := bodyOf(t, rec); rec.Code != http.StatusForbidden || strings.Contains(body, endedText) {
+		t.Errorf("POST /scheme by a guest with a wrong token: %d, want the plain 403", rec.Code)
+	}
 }

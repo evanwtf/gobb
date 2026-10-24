@@ -48,6 +48,9 @@ type identity struct {
 	sess  session.Session
 	// guestSecret is the value of the gobb_csrf cookie, or empty.
 	guestSecret string
+	// ended is true when the request carried a session cookie that names no
+	// live session: the member's session ended, and the member is a guest now.
+	ended bool
 }
 
 // identityKey is the context key under which protect keeps the identity of a
@@ -87,6 +90,7 @@ func (s *site) identify(w http.ResponseWriter, r *http.Request) (identity, error
 	switch {
 	case errors.Is(err, session.ErrNone):
 		s.dropSession(w, r, c.Value)
+		id.ended = true
 	case err != nil:
 		return id, err
 	default:
@@ -359,6 +363,13 @@ func waitText(d time.Duration) string {
 	return strconv.Itoa(n) + " minutes"
 }
 
+// toIndex answers 303 to the board index. It is the answer of "Sign out" for a
+// visitor with no live session: there is nothing to sign out of, and nothing
+// for the csrf token to protect.
+func (s *site) toIndex(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, s.path(), http.StatusSeeOther)
+}
+
 // logout serves POST /logout.
 func (s *site) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
@@ -386,12 +397,10 @@ func (s *site) setScheme(w http.ResponseWriter, r *http.Request) {
 	}
 	saved := false
 	if id.token != "" {
-		tag, err := s.pool.Exec(r.Context(), `update users set color_scheme = $2 where id = $1 and state = 'active'`, id.sess.UserID, scheme)
-		if err != nil {
+		if saved, err = board.SetScheme(r.Context(), s.pool, id.sess.UserID, scheme); err != nil {
 			s.serverError(w, r, err)
 			return
 		}
-		saved = tag.RowsAffected() == 1
 	}
 	if !saved {
 		s.setCookie(w, s.cookie(schemeCookie, scheme, rememberSeconds))

@@ -333,3 +333,50 @@ func TestProfilePagesUnderBasePath(t *testing.T) {
 		t.Errorf("alice /forum/account: %q", rec.Header().Get("Location"))
 	}
 }
+
+// "Find posts by this user" leads to search, so it shows only to a viewer who
+// may search (account.search). Without it, the link would lead to a 403.
+func TestFindPostsNeedsSearch(t *testing.T) {
+	b := bundletest.Small()
+	settings := b.Roles[1].Settings[:0]
+	for _, rs := range b.Roles[1].Settings {
+		if rs.Option != "account.search" {
+			settings = append(settings, rs)
+		}
+	}
+	b.Roles[1].Settings = settings
+	h, _ := newTestSite(t, b, Options{})
+	bob := signIn(t, h, "bob", "example-password")
+	rec := getAs(t, h, "/u/1", bob)
+	body := bodyOf(t, rec)
+	if rec.Code != http.StatusOK || !strings.Contains(body, "<bdi>alice</bdi>") {
+		t.Fatalf("/u/1 as bob without account.search: status %d", rec.Code)
+	}
+	if strings.Contains(body, "Find posts by this user") || strings.Contains(body, "/search?author=") {
+		t.Error("a viewer without account.search sees the link to the member's posts")
+	}
+	// The control: with account.search the link is there.
+	h2, _ := smallSite(t)
+	if body := bodyOf(t, getAs(t, h2, "/u/1", signIn(t, h2, "bob", "example-password"))); !strings.Contains(body, "Find posts by this user") {
+		t.Error("a viewer with account.search does not see the link")
+	}
+}
+
+// "Last visit" on a profile is the last time the member was on the board. A
+// member who signs in today shows today, not the visit before.
+func TestProfileShowsTheLatestVisit(t *testing.T) {
+	h, _ := smallSite(t)
+	signIn(t, h, "alice", "example-password")
+	bob := signIn(t, h, "bob", "example-password")
+	body := bodyOf(t, getAs(t, h, "/u/1", bob))
+	london, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		t.Fatal(err)
+	}
+	today := time.Now().In(london).Format("Jan 2, 2006")
+	fact := body[strings.Index(body, "<dt>Last visit</dt>"):]
+	fact = fact[:strings.Index(fact, "</div>")]
+	if !strings.Contains(fact, today) {
+		t.Errorf("Last visit = %q, want today (%s): alice signed in just now", fact, today)
+	}
+}

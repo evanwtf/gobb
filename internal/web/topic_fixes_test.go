@@ -84,7 +84,8 @@ func TestNonCanonicalIDs(t *testing.T) {
 
 // A topic, a post and an attachment in a forum that the viewer may list but not
 // read look the same as the ones that do not exist: the same status, the same
-// bytes, no 403, no redirect.
+// bytes, no 403, no redirect. (The forum itself answers 403 with a sign-in
+// link, because the index shows its name: TestListedNotReadable.)
 func TestListedNotReadableLooksMissing(t *testing.T) {
 	b := bundletest.Small()
 	b.Grants = append(b.Grants, guestGrant(3, "forum.list"))
@@ -104,7 +105,6 @@ func TestListedNotReadableLooksMissing(t *testing.T) {
 		{"/p/5", "/p/99"},
 		{"/p/6", "/p/99"},
 		{"/a/1", "/a/99"},
-		{"/f/3", "/f/99"},
 	} {
 		hid, mis := get(t, h, c.hidden), get(t, h, c.missing)
 		if hid.Code != http.StatusNotFound || mis.Code != http.StatusNotFound {

@@ -76,11 +76,13 @@ const maxDepth = 32
 // For a member, Index also sets New. One more query finds the forums that hold
 // unread topics, however many topics there are.
 func Index(ctx context.Context, q db.Querier, v Viewer) ([]*Forum, error) {
-	return index(ctx, q, v, true)
+	return index(ctx, q, v, true, true)
 }
 
-// index is [Index]. The withNew flag skips the query for the New flags.
-func index(ctx context.Context, q db.Querier, v Viewer, withNew bool) ([]*Forum, error) {
+// index is [Index]. A false withNew skips the query for the New flags, and a
+// false withLast skips the query for the last posts: a topic page shows
+// neither. The numbers of the forums do not need either query.
+func index(ctx context.Context, q db.Querier, v Viewer, withNew, withLast bool) ([]*Forum, error) {
 	rows, err := q.Query(ctx, `
 select id, parent_id, kind, name, description, rules, coalesce(link_url, ''),
        locked, topic_count, post_count, coalesce(last_post_id, 0)
@@ -141,7 +143,7 @@ select id, parent_id, kind, name, description, rules, coalesce(link_url, ''),
 	// The last posts of the forums that count toward a listed forum.
 	var postIDs []int64
 	for _, n := range all {
-		if listed[n.ID] && n.lastPostID != 0 && n.Kind != "link" && v.Perms.Has("forum.read", n.ID) {
+		if withLast && listed[n.ID] && n.lastPostID != 0 && n.Kind != "link" && v.Perms.Has("forum.read", n.ID) {
 			postIDs = append(postIDs, n.lastPostID)
 		}
 	}

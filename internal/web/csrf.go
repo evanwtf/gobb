@@ -35,7 +35,18 @@ func newCSRFSecret() (string, error) {
 //
 // The body is capped at limit bytes before anything reads it, so a large body
 // never reaches the csrf check: it gets 413 in the layout.
+//
+// A form of a member's page that comes after the session ended carries the
+// member's token, which no longer matches. It gets 403 with "Your session
+// ended. You are signed out.", not the advice to reload.
 func (s *site) protect(limit int64, h http.HandlerFunc) http.Handler {
+	return s.protectOr(limit, h, nil)
+}
+
+// protectOr is [site.protect] with one more case: when the token fails and the
+// visitor has no live session, signedOut answers instead of the 403. Sign-out
+// uses it, because a visitor who is signed out has nothing to protect.
+func (s *site) protectOr(limit int64, h, signedOut http.HandlerFunc) http.Handler {
 	return s.crossOrigin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if err := r.ParseForm(); err != nil {
@@ -58,8 +69,15 @@ func (s *site) protect(limit int64, h http.HandlerFunc) http.Handler {
 		// Read the token from the body only. A token in the address would show up
 		// in logs and in the Referer header.
 		if !session.CheckCSRF(id.secret(), r.PostForm.Get("csrf")) {
-			s.fail(w, r, http.StatusForbidden, "Form not accepted",
-				"The form could not be checked. Go back, reload the page and send the form again.")
+			switch {
+			case id.token == "" && signedOut != nil:
+				signedOut(w, r)
+			case id.ended:
+				s.fail(w, r, http.StatusForbidden, "Signed out", "Your session ended. You are signed out.")
+			default:
+				s.fail(w, r, http.StatusForbidden, "Form not accepted",
+					"The form could not be checked. Go back, reload the page and send the form again.")
+			}
 			return
 		}
 		h(w, r)

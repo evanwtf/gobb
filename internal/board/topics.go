@@ -74,9 +74,10 @@ func (e MovedError) Error() string { return fmt.Sprintf("board: topic moved to %
 // ancestors. Any other forum gives [ErrNotFound]; the caller applies the rule
 // for the kind.
 //
-// withNew asks for the New flags of the tree; a topic page does not need them.
-func locateForum(ctx context.Context, q db.Querier, v Viewer, id int64, withNew bool) (f *Forum, listed bool, crumbs []*Forum, err error) {
-	tree, err := index(ctx, q, v, withNew)
+// withTree asks for the New flags and the last posts of the tree, which a
+// forum page shows for its subforums. A topic page shows neither.
+func locateForum(ctx context.Context, q db.Querier, v Viewer, id int64, withTree bool) (f *Forum, listed bool, crumbs []*Forum, err error) {
+	tree, err := index(ctx, q, v, withTree, withTree)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -122,9 +123,10 @@ select parent_id, kind, name, description, rules, coalesce(link_url, ''), locked
 //
 //   - A category needs forum.list. It shows its children and no topics.
 //   - A link forum needs forum.list and gives a [LinkError].
-//   - A forum needs forum.read. A forum that v may list but not read looks like a
-//     missing forum: [ErrNotFound], so the page does not tell whether the forum
-//     exists.
+//   - A forum needs forum.read. A forum that v may list but not read gives
+//     [ErrForbidden]: v already sees its name on the index, so the refusal
+//     tells nothing new, and the page can offer a sign-in. A forum that v may
+//     neither list nor read gives [ErrNotFound], like a missing one (spec 14).
 //   - A page after the last gives [ErrNotFound]. An empty forum has one page.
 func ForumView(ctx context.Context, q db.Querier, v Viewer, forumID int64, page int) (ForumPage, error) {
 	f, listed, crumbs, err := locateForum(ctx, q, v, forumID, true)
@@ -144,7 +146,8 @@ func ForumView(ctx context.Context, q db.Querier, v Viewer, forumID int64, page 
 		return ForumPage{Forum: f, Crumbs: crumbs, Subforums: f.Children, Page: 1, Pages: 1}, nil
 	}
 	if !v.Perms.Has("forum.read", forumID) {
-		return ForumPage{}, ErrNotFound
+		// locateForum found the forum and v may not read it, so v may list it.
+		return ForumPage{}, ErrForbidden
 	}
 	out := ForumPage{Forum: f, Crumbs: crumbs, Subforums: f.Children, Page: page}
 

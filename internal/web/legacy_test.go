@@ -537,6 +537,7 @@ func TestLegacyUnreachableWarns(t *testing.T) {
 		legacyRoute("old/./y.cgi", "home", nil, nil, 0),
 		legacyRoute("old/a/../y.cgi", "home", nil, nil, 0),
 		legacyRoute("healthz", "home", nil, nil, 0),
+		legacyRoute("favicon.ico", "home", nil, nil, 0),
 		legacyRoute("old/z/", "home", nil, nil, 0),
 		legacyRoute("healthz/", "home", nil, nil, 0),
 	)
@@ -558,10 +559,10 @@ func TestLegacyUnreachableWarns(t *testing.T) {
 		}
 		return out
 	}
-	// At the root, the root mux owns /healthz, and the guard refuses the three
-	// unclean paths and the unclean prefix.
+	// At the root, the root mux owns /healthz and /favicon.ico, and the guard
+	// refuses the three unclean paths and the unclean prefix.
 	got := warned("/")
-	for _, want := range []string{"path=old//x.cgi", "path=old/./y.cgi", "path=old/a/../y.cgi", "path=healthz ", "prefix=old//img/"} {
+	for _, want := range []string{"path=old//x.cgi", "path=old/./y.cgi", "path=old/a/../y.cgi", "path=healthz ", "path=favicon.ico ", "prefix=old//img/"} {
 		n := 0
 		for _, l := range got {
 			if strings.Contains(l+" ", want) {
@@ -572,17 +573,18 @@ func TestLegacyUnreachableWarns(t *testing.T) {
 			t.Errorf("%d warnings for %q, want 1:\n%s", n, want, strings.Join(got, "\n"))
 		}
 	}
-	if len(got) != 5 {
-		t.Errorf("%d warnings at base /, want 5:\n%s", len(got), strings.Join(got, "\n"))
+	if len(got) != 6 {
+		t.Errorf("%d warnings at base /, want 6:\n%s", len(got), strings.Join(got, "\n"))
 	}
-	// Under a base path, /healthz is at the host root and does not hide a route.
+	// Under a base path, /healthz and /favicon.ico are at the host root and do
+	// not hide a route.
 	got = warned("/forum/")
 	if len(got) != 4 {
 		t.Errorf("%d warnings at base /forum/, want 4:\n%s", len(got), strings.Join(got, "\n"))
 	}
 	for _, l := range got {
-		if strings.Contains(l+" ", "path=healthz ") {
-			t.Errorf("healthz warned under a base path: %s", l)
+		if strings.Contains(l+" ", "path=healthz ") || strings.Contains(l+" ", "path=favicon.ico ") {
+			t.Errorf("a host-root route warned under a base path: %s", l)
 		}
 	}
 	// A route with a trailing slash applies.

@@ -174,6 +174,10 @@ func (s *site) legacyTarget(w http.ResponseWriter, r *http.Request, rt legacy.Ro
 				return
 			}
 			s.moved(w, r, s.path("f", idText))
+		case errors.Is(err, board.ErrForbidden):
+			// The page's own refusal: a forum that the viewer may list and not
+			// read.
+			s.denied(w, p, "this forum")
 		case errors.Is(err, board.ErrNotFound):
 			s.notFound(w, r)
 		default:
@@ -274,8 +278,8 @@ func (s *site) warnHidden(mux *http.ServeMux) {
 		switch {
 		case !isCleanPath("/" + rt.Path):
 			slog.Warn("legacy route has a path that is not clean and never applies", "path", rt.Path, "kind", rt.Kind)
-		case rt.Path == "healthz" && s.base == "/":
-			slog.Warn("legacy route is hidden by /healthz and never applies", "path", rt.Path, "kind", rt.Kind)
+		case (rt.Path == "healthz" || rt.Path == "favicon.ico") && s.base == "/":
+			slog.Warn("legacy route is hidden by a route at the host root and never applies", "path", rt.Path, "kind", rt.Kind)
 		default:
 			if pat := owner(rt.Path); pat != "" {
 				slog.Warn("legacy route is hidden by a route of the site and never applies", "path", rt.Path, "kind", rt.Kind, "site_route", pat)

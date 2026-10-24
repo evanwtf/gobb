@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/boardtest"
@@ -425,4 +427,48 @@ func TestTopicViewCanDownload(t *testing.T) {
 	if tp, _ = board.TopicView(ctx, pool, guestOn(t, pool), 1, 1); !tp.CanDownload {
 		t.Error("a guest with both rights cannot download")
 	}
+}
+
+// A topic page shows no last-post column, so it does not read the last posts of
+// the forum tree (the forum page does, for its subforums).
+func TestTopicViewReadsNoLastPosts(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	alice := memberOn(t, pool, 1, "alice")
+	lastPosts := func(run func(q *lastPostSpy)) int {
+		spy := &lastPostSpy{counting: counting{pool: pool}}
+		run(spy)
+		return spy.lastPosts
+	}
+	// The control: the forum page of forum 2 reads the last post of forum 3.
+	if n := lastPosts(func(q *lastPostSpy) {
+		if _, err := board.ForumView(ctx, q, alice, 2, 1); err != nil {
+			t.Fatal(err)
+		}
+	}); n != 1 {
+		t.Fatalf("the forum page ran the last-post query %d times, want 1", n)
+	}
+	for _, id := range []int64{1, 2} {
+		if n := lastPosts(func(q *lastPostSpy) {
+			if _, err := board.TopicView(ctx, q, alice, id, 1); err != nil {
+				t.Fatal(err)
+			}
+		}); n != 0 {
+			t.Errorf("topic %d ran the last-post query %d times, want 0", id, n)
+		}
+	}
+}
+
+// lastPostSpy counts the statements, and the runs of the last-post query of
+// the forum tree.
+type lastPostSpy struct {
+	counting
+	lastPosts int
+}
+
+func (s *lastPostSpy) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if strings.Contains(sql, "where p.id = any($1)") {
+		s.lastPosts++
+	}
+	return s.counting.Query(ctx, sql, args...)
 }

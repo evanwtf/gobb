@@ -109,16 +109,36 @@ func detectImage(head []byte) string {
 	return ""
 }
 
+// staticTypes maps each file under /static/ to its Content-Type. No other name
+// is served.
+var staticTypes = map[string]string{
+	"gobb.css": "text/css; charset=utf-8",
+	"gobb.js":  "text/javascript; charset=utf-8",
+	"icon.svg": "image/svg+xml",
+}
+
+// favicon serves GET /favicon.ico at the host root: the site icon, which the
+// layout also links from /static/. A browser asks for this path by itself, on
+// every site, so the answer reads no settings and no session, and does no
+// database work.
+func (s *site) favicon(w http.ResponseWriter, r *http.Request) {
+	data, err := fs.ReadFile(staticFS, "static/icon.svg")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", staticTypes["icon.svg"])
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "public, max-age=86400")
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+}
+
 // static serves GET /static/{name}: the stylesheet and the script.
 func (s *site) static(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	var ctype string
-	switch name {
-	case "gobb.css":
-		ctype = "text/css; charset=utf-8"
-	case "gobb.js":
-		ctype = "text/javascript; charset=utf-8"
-	default:
+	ctype, ok := staticTypes[name]
+	if !ok {
 		s.notFound(w, r)
 		return
 	}

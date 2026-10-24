@@ -53,9 +53,10 @@ func TestAttachmentsQueryUsesIndex(t *testing.T) {
 	}
 }
 
-// The global topics come from a partial index. The index has the order of the
-// query, so a large table gives an ordered scan with no sort. The query reads
-// the four scope arguments and no forum.
+// The global topics come from a partial index. The query reads the four scope
+// arguments and no forum. The test checks only that the plan uses the index.
+// The index has the order of the query, so the planner may read it in order on
+// a large table, but the test does not check that the plan has no sort.
 func TestGlobalTopicsQueryUsesIndex(t *testing.T) {
 	sc := scope{read: []int64{2}, approve: []int64{}, del: []int64{}}
 	plan := explain(t, topicSQL(`where `+globalTopics, globalOrder, ``), sc.args()...)

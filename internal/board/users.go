@@ -41,7 +41,9 @@ func scanCard(row rowScanner, c *UserCard, extra ...any) error {
 // address and no hidden group.
 type ProfilePage struct {
 	Card UserCard
-	// LastVisit is nil when the member has no recorded visit.
+	// LastVisit is the last time the member was on the board: last_active_at,
+	// or the imported last_visit_at when the member has not been seen since. It
+	// is nil when the member has no recorded visit.
 	LastVisit *time.Time
 	// Signature is nil when the member has none.
 	Signature *markup.Node
@@ -85,7 +87,9 @@ func Profile(ctx context.Context, q db.Querier, v Viewer, userID int64) (Profile
 		out ProfilePage
 		sig []byte
 	)
-	err := scanCard(q.QueryRow(ctx, `select `+cardColumns+`, u.last_visit_at, u.signature_tree
+	// The last visit is the last time the member was on the board. last_visit_at
+	// alone is the start of the "new since" window: the visit before.
+	err := scanCard(q.QueryRow(ctx, `select `+cardColumns+`, coalesce(u.last_active_at, u.last_visit_at), u.signature_tree
   from users u`+cardJoins+`
  where u.id = $1`, userID), &out.Card, &out.LastVisit, &sig)
 	if errors.Is(err, pgx.ErrNoRows) {

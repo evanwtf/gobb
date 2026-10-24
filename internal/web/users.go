@@ -18,12 +18,15 @@ type profileData struct {
 	board.ProfilePage
 	// SigHTML comes from markup.Render, which escapes everything.
 	SigHTML template.HTML
-	// FindHref is the link to the posts of the member.
+	// FindHref is the link to the posts of the member, or empty for a viewer
+	// without account.search, whom search would refuse.
 	FindHref string
 }
 
-// denied answers 403 for a page that needs account.view_profiles. A guest gets a
-// link to sign in that comes back to the page; a member gets the plain refusal.
+// denied answers 403 for a page that the viewer may not see: a page that needs
+// account.view_profiles, or a forum that the viewer may list but not read. A
+// guest gets a link to sign in that comes back to the page; a member gets the
+// plain refusal.
 func (s *site) denied(w http.ResponseWriter, p *page, what string) {
 	p.Title = "No access"
 	d := errorData{Status: http.StatusForbidden, Heading: "No access"}
@@ -72,9 +75,9 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 	if s.profileFailed(w, r, p, err) {
 		return
 	}
-	d := profileData{
-		ProfilePage: pp,
-		FindHref:    s.path("search") + "?" + url.Values{"author": {pp.Card.Name}}.Encode(),
+	d := profileData{ProfilePage: pp}
+	if p.Viewer.Perms.Has("account.search", 0) {
+		d.FindHref = s.path("search") + "?" + url.Values{"author": {pp.Card.Name}}.Encode()
 	}
 	if pp.Signature != nil {
 		html, err := s.renderTree(r, p, pp.Signature)

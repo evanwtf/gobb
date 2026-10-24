@@ -3,10 +3,15 @@ package web
 import (
 	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
 )
 
@@ -148,6 +153,69 @@ func TestStaticFiles(t *testing.T) {
 		}
 		if rec.Body.Len() == 0 {
 			t.Errorf("%s is empty", target)
+		}
+	}
+}
+
+// The site icon is a small SVG under /static/, and the layout links it under
+// the base path. /favicon.ico at the host root answers with the same icon and
+// does no database work: it answers while the pool is closed.
+func TestSiteIcon(t *testing.T) {
+	for _, base := range []string{"/", "/forum/"} {
+		pool, dataDir := boardtest.Load(t, bundletest.Small())
+		h, err := New(t.Context(), pool, Options{DataDir: dataDir, BasePath: base, LoginFloor: time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := bodyOf(t, get(t, h, base))
+		link := regexp.MustCompile(`<link rel="icon" type="image/svg\+xml" href="([^"]+)">`).FindStringSubmatch(page)
+		if link == nil {
+			t.Fatalf("base %s: the layout links no SVG icon", base)
+		}
+		if !strings.HasPrefix(link[1], base+"static/icon.svg?v=") {
+			t.Errorf("base %s: icon link %q, want %sstatic/icon.svg?v=…", base, link[1], base)
+		}
+		icon := get(t, h, link[1])
+		svg := icon.Body.String()
+		if icon.Code != http.StatusOK || icon.Header().Get("Content-Type") != "image/svg+xml" ||
+			icon.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.HasPrefix(svg, "<svg ") {
+			t.Errorf("base %s: icon = %d %q, body %.40q", base, icon.Code, icon.Header().Get("Content-Type"), svg)
+		}
+		if strings.Contains(strings.ToLower(svg), "script") || strings.Contains(svg, "href") {
+			t.Errorf("base %s: the icon holds a script or a link", base)
+		}
+		pool.Close()
+		rec := get(t, h, "/favicon.ico")
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/svg+xml" || rec.Body.String() != svg {
+			t.Errorf("base %s: /favicon.ico with the pool closed = %d %q, want 200 and the icon", base, rec.Code, rec.Header().Get("Content-Type"))
+		}
+	}
+}
+
+// A browser that asks again with If-Modified-Since never learns from a 304 that
+// a file exists, or how old it is: a viewer without the right to download gets
+// 403, and a viewer who cannot read the forum gets 404, whatever the date.
+func TestAttachmentRevalidationNeedsTheRight(t *testing.T) {
+	h, _ := smallSite(t)
+	// On the second board, attachment 1 sits on post 5, in forum 3.
+	b := bundletest.Small()
+	b.Attachments[0].PostID = ptr(int64(5))
+	hidden, _ := newTestSite(t, b, Options{})
+	for _, c := range []struct {
+		h    http.Handler
+		want int
+	}{
+		{h, http.StatusForbidden},     // forum 2: the guest reads it, and may not download
+		{hidden, http.StatusNotFound}, // forum 3: the guest cannot read it
+	} {
+		for _, since := range []string{"Mon, 01 Jan 2035 00:00:00 GMT", "Sat, 01 Jan 2000 00:00:00 GMT"} {
+			req := httptest.NewRequest(http.MethodGet, "/a/1", nil)
+			req.Header.Set("If-Modified-Since", since)
+			rec := httptest.NewRecorder()
+			c.h.ServeHTTP(rec, req)
+			if rec.Code != c.want || rec.Header().Get("Last-Modified") != "" {
+				t.Errorf("/a/1 since %s: %d, Last-Modified %q; want %d and none", since, rec.Code, rec.Header().Get("Last-Modified"), c.want)
+			}
 		}
 	}
 }

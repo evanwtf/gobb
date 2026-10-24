@@ -81,3 +81,30 @@ func TestGuest(t *testing.T) {
 		t.Error("guest read rights are wrong")
 	}
 }
+
+// SetScheme stores the color scheme of an active member, and reports false for
+// a member who is not active or does not exist. It refuses a scheme that does
+// not exist.
+func TestSetScheme(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	scheme := func(id int64) string {
+		var s string
+		if err := pool.QueryRow(ctx, `select color_scheme from users where id = $1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if ok, err := board.SetScheme(ctx, pool, 1, "slate-light"); err != nil || !ok || scheme(1) != "slate-light" {
+		t.Errorf("alice: ok %v, err %v, scheme %q; want true, nil, slate-light", ok, err, scheme(1))
+	}
+	if ok, err := board.SetScheme(ctx, pool, 4, "slate-light"); err != nil || ok || scheme(4) != "slate" {
+		t.Errorf("dave (inactive): ok %v, err %v, scheme %q; want false, nil, slate", ok, err, scheme(4))
+	}
+	if ok, err := board.SetScheme(ctx, pool, 99, "slate-light"); err != nil || ok {
+		t.Errorf("no such user: ok %v, err %v; want false, nil", ok, err)
+	}
+	if ok, err := board.SetScheme(ctx, pool, 1, "neon"); err == nil || ok || scheme(1) != "slate-light" {
+		t.Errorf("unknown scheme: ok %v, err %v, scheme %q; want an error and no change", ok, err, scheme(1))
+	}
+}

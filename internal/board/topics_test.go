@@ -185,7 +185,8 @@ func TestForumViewGlobalHidden(t *testing.T) {
 }
 
 // A forum that the viewer may list but not read is listed with a lock, and
-// opening it looks the same as a missing forum.
+// opening it gives ErrForbidden: the viewer already sees its name. A forum that
+// the viewer may neither list nor read gives ErrNotFound, like a missing one.
 func TestForumViewListedNotReadable(t *testing.T) {
 	ctx := context.Background()
 	b := bundletest.Small()
@@ -193,8 +194,14 @@ func TestForumViewListedNotReadable(t *testing.T) {
 	pool, _ := boardtest.Load(t, b)
 	v := guestOn(t, pool)
 
-	if _, err := board.ForumView(ctx, pool, v, 3, 1); !errors.Is(err, board.ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
+	for _, page := range []int{1, 2} {
+		if _, err := board.ForumView(ctx, pool, v, 3, page); !errors.Is(err, board.ErrForbidden) {
+			t.Fatalf("page %d: err = %v, want ErrForbidden", page, err)
+		}
+	}
+	plain, _ := boardtest.Load(t, bundletest.Small())
+	if _, err := board.ForumView(ctx, plain, guestOn(t, plain), 3, 1); !errors.Is(err, board.ErrNotFound) {
+		t.Fatalf("not listed: err = %v, want ErrNotFound", err)
 	}
 	// Forum 2 lists forum 3 as a subforum that the guest cannot read.
 	f2, err := board.ForumView(ctx, pool, v, 2, 1)

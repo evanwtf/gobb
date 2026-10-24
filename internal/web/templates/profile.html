@@ -25,7 +25,9 @@
     <div class="post-body">{{.SigHTML}}</div>
   </section>
   {{- end}}
+  {{- if .FindHref}}
   <p class="profile-actions"><a class="button-quiet button-link" href="{{.FindHref}}">Find posts by this user</a></p>
+  {{- end}}
 </article>
 {{- end}}
 {{end}}
