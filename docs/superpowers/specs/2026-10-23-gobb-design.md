@@ -342,8 +342,10 @@ an immediate 429 or 503 with `Retry-After`.
   - The pool size is a setting, with a default that suits the 1 GB host.
   - A request waits at most about 1 s for a connection, then gets 503 with
     `Retry-After`.
-  - Search runs a limited number of queries at once, and each address has a search
-    budget. A search over either limit gets an immediate 429 or 503.
+  - Search has its own limits, apart from every other page. Each address may search
+    at most 5 times per second, a setting with that default. **(owner)** Search also
+    runs a limited number of queries at once, for the whole board. A search over
+    either limit gets an immediate 429 or 503.
 - **Guest page cache.**
   - A page that a guest can see is rendered once and served from memory.
   - At start, a background worker renders the pages most likely to be asked for, in
