@@ -313,8 +313,15 @@ Plan 1, the foundation, is built. It ships the repo guards and CI, the configura
 the database pool and migrations, the release-1 schema, legacy and gobb passwords, the
 permission registry, the public `markup` package (Markdown parser, renderer, embeds and
 tree comparison), and the container image with Compose and a health check. Plan 2 adds
-the bundle format and the importer. Plan 3 is under way: `gobb serve` shows the board
-index, and the other forum pages follow one slice at a time. The design is in
+the bundle format and the importer.
+
+Plan 3, the read side, is built. `gobb serve` shows an imported board, read-only: the
+board index, forums, topics and single posts, profiles, the member list, the team page,
+"New since your last visit" with read marks, search, static pages, attachments and the
+other data files. Members sign in and out and pick a color scheme. Old addresses
+redirect to the new ones, and a gone member's profile answers 410. Every page carries
+the security headers and a Content-Security-Policy, and every error page uses the
+board's layout. Nobody can post yet: Plan 4, the write side, comes next. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in
 [docs/superpowers/plans/2026-10-23-gobb-roadmap.md](docs/superpowers/plans/2026-10-23-gobb-roadmap.md).

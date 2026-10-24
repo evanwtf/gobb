@@ -79,3 +79,31 @@ Decisions and limits that Plan 2 found and later plans must honor:
   - The rehearsal checks that the owner can log in, and times the import on the production host.
   - Bundle length limits count bytes of UTF-8, so a converter truncates long labels in scripts with wide characters.
 - **Plan 7 (open sign-up).** Registration refuses invalid UTF-8, confusable names, doubled inner spaces, unassigned code points, and U+2028 or U+2029 at a name's end.
+
+## Carried from Plan 3
+
+Decisions and limits that Plan 3 found and later plans must honor:
+
+- **Before the write side, or beside it.** Three issues hold work that the read side
+  showed is needed:
+  - [#2](https://github.com/evanwtf/gobb/issues/2): load protection (sign-in backoff, a
+    defensive mode, connection limits and a guest page cache).
+  - [#3](https://github.com/evanwtf/gobb/issues/3): crawler readiness (a sitemap,
+    canonical URLs, page metadata and a policy for AI crawlers).
+  - [#4](https://github.com/evanwtf/gobb/issues/4): start a new board without an import.
+- **Plan 4 (write side).**
+  - **Must fix before posting ships:** the Markdown parse is quadratic on a repeated
+    `[a](`: about 30 ms at 2,500 repeats and 480 ms at 10,000. Today the parse runs only
+    at import, never on a page view. Posting would run it on every save and preview.
+  - `TestParseNestingScales` rests mostly on an absolute 100 ms bound, and catches
+    cubic growth or worse only. Raise n until the small run takes at least 10 ms, or drop
+    the additive term, so the test catches the quadratic case when it is fixed.
+  - Text that appears only inside angle brackets (`<like this>`) is not in the search
+    column (migration `0001`). Posting writes that column too: fix both at once.
+- **Plan 5 (moderation and admin).**
+  - The static-page editor applies the slug pattern that the bundle check applies. The
+    page handler does not check the slug's shape.
+  - A ban deletes the banned member's sessions. Today a ban stops new sign-ins only.
+- **When the board reaches about 10 times today's posts.** Bound the cost of the "best"
+  sort: it ranks every match before it takes the first 1,000, and the page statement
+  sorts every match. Both cost a few milliseconds today.
