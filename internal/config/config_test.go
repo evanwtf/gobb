@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -81,5 +82,44 @@ func TestFromEnvTrustedProxies(t *testing.T) {
 	_, err = config.FromEnv(env(map[string]string{"GOBB_DSN": "x", "GOBB_TRUSTED_PROXIES": "not-a-cidr"}))
 	if err == nil || !strings.Contains(err.Error(), "GOBB_TRUSTED_PROXIES") {
 		t.Fatalf("want an error that names GOBB_TRUSTED_PROXIES, got %v", err)
+	}
+}
+
+// A list with no entries after trimming is an error, not an empty list. An empty
+// list would trust no proxy, and a typo would then pass without a word.
+func TestFromEnvTrustedProxiesNoEntries(t *testing.T) {
+	for _, in := range []string{",", " , ", ",,", ", ,\t,"} {
+		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "x", "GOBB_TRUSTED_PROXIES": in}))
+		if err == nil || !strings.Contains(err.Error(), "GOBB_TRUSTED_PROXIES") ||
+			!strings.Contains(err.Error(), "no entries") {
+			t.Errorf("%q: want an error that names GOBB_TRUSTED_PROXIES and says no entries, got %v", in, err)
+		}
+	}
+	// An unset, empty or blank variable still takes the default.
+	for _, in := range []string{"", "   "} {
+		c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "x", "GOBB_TRUSTED_PROXIES": in}))
+		if err != nil || len(c.TrustedProxies) != 2 {
+			t.Errorf("%q: want the 2 default proxies, got %v, %v", in, c.TrustedProxies, err)
+		}
+	}
+	// Empty items beside real ones are fine.
+	c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "x", "GOBB_TRUSTED_PROXIES": ",10.0.0.0/8,"}))
+	if err != nil || len(c.TrustedProxies) != 1 {
+		t.Errorf("want 1 proxy, got %v, %v", c.TrustedProxies, err)
+	}
+}
+
+// The error for a bad entry wraps the parse error from net/netip.
+func TestFromEnvTrustedProxiesWrapsParseError(t *testing.T) {
+	_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "x", "GOBB_TRUSTED_PROXIES": "10.0.0.0/8,300.1.1.1/8"}))
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	inner := errors.Unwrap(errors.Unwrap(err))
+	if inner == nil {
+		t.Fatalf("the chain ends too early: %v", err)
+	}
+	if _, perr := netip.ParsePrefix("300.1.1.1/8"); perr == nil || inner.Error() != perr.Error() {
+		t.Errorf("innermost error = %q, want the netip error %q", inner, perr)
 	}
 }

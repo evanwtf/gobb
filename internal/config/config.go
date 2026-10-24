@@ -31,7 +31,8 @@ const (
 )
 
 // FromEnv builds a Config from getenv. An unset or empty variable takes its
-// default, except GOBB_DSN, which is required.
+// default, except GOBB_DSN, which is required. A GOBB_TRUSTED_PROXIES that is set
+// but holds no entry after trimming, such as ",", is an error.
 func FromEnv(getenv func(string) string) (Config, error) {
 	or := func(key, def string) string {
 		if v := strings.TrimSpace(getenv(key)); v != "" {
@@ -76,9 +77,12 @@ func parsePrefixes(list string) ([]netip.Prefix, error) {
 		}
 		p, err := netip.ParsePrefix(item)
 		if err != nil {
-			return nil, fmt.Errorf("%q is not a CIDR prefix", item)
+			return nil, fmt.Errorf("%q is not a CIDR prefix: %w", item, err)
 		}
 		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("the list has no entries")
 	}
 	return out, nil
 }

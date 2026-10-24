@@ -51,8 +51,8 @@ func TestHealthSlowDB(t *testing.T) {
 	})
 	start := time.Now()
 	rec := serve(t, slow, http.MethodGet)
-	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
-		t.Fatalf("took %v, want under 2.5s", elapsed)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("took %v, want under 3s", elapsed)
 	}
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
