@@ -496,13 +496,14 @@ These steps run on the production host, from the owner's private deployment note
 1. **Converter.** Close the converter's open items in the private repo, and build a bundle from a fresh dump.
 2. **Release.** Set the changelog's `## 0.1.0` date, push, tag `v0.1.0`, and watch the release workflow.
 3. **Rehearsal (spec 18, steps 1–2).** Under Docker Compose on the production host, with the published image and the board's current base path:
-   - import the bundle, and time the import;
+   - import the bundle, time the import, and restart gobb; check that its start-up lines give the expected charge and floor;
    - check the forwarded headers and the CSP through an SSH tunnel;
    - check all three password conditions: every imported hash is recognized (a count); the legacy test vectors pass in CI; and the owner signs in with a real account.
 
    The public proxy stays on the old board.
 4. **Cutover (spec 18, steps 3–6).**
    - Put the old board in maintenance mode, take the final dump, build the bundle and import it.
+   - Restart gobb after the import. It reads the stored hashes' cost and times the sign-in floor at start, so a server that started on an empty database charges too little and floors too short.
    - Back up the new database (Task 7).
    - Point the proxy at gobb.
    - Smoke-test reading, sign-in, posting and an old URL.
