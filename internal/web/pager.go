@@ -33,15 +33,21 @@ func pageHref(base string, n int) string {
 // returns nil when there is one page or none. It links the first and last
 // pages, and two pages on each side of the current one.
 func newPager(base string, page, pages int) *pager {
+	return newPagerWith(func(n int) string { return pageHref(base, n) }, page, pages)
+}
+
+// newPagerWith is [newPager] for a list whose links carry more than the page: href
+// gives the link to page n.
+func newPagerWith(href func(n int) string, page, pages int) *pager {
 	if pages <= 1 {
 		return nil
 	}
 	p := &pager{Page: page, Pages: pages}
 	if page > 1 {
-		p.Prev = pageHref(base, page-1)
+		p.Prev = href(page - 1)
 	}
 	if page < pages {
-		p.Next = pageHref(base, page+1)
+		p.Next = href(page + 1)
 	}
 	last := 0
 	for n := 1; n <= pages; n++ {
@@ -51,7 +57,7 @@ func newPager(base string, page, pages int) *pager {
 		if last != 0 && n != last+1 {
 			p.Items = append(p.Items, pageItem{Gap: true})
 		}
-		p.Items = append(p.Items, pageItem{Num: n, Href: pageHref(base, n), Current: n == page})
+		p.Items = append(p.Items, pageItem{Num: n, Href: href(n), Current: n == page})
 		last = n
 	}
 	return p

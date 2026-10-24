@@ -11,8 +11,9 @@ import (
 
 // Page sizes of the lists.
 const (
-	topicsPerPage = 50
-	postsPerPage  = 25
+	topicsPerPage  = 50
+	postsPerPage   = 25
+	membersPerPage = 50
 )
 
 // maxPage is the highest page number that [ParsePage] accepts.

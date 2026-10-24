@@ -837,6 +837,145 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
   .col-num { width: 5rem; }
 }
 
+/* ---- Profiles, the member list, the team and static pages ---------------- */
+
+.avatar-lg { width: 128px; height: 128px; margin: 0; border-radius: 12px; flex: none; }
+.avatar-lg.avatar-none { font-size: 3.2rem; }
+.avatar-sm { width: 2.75rem; height: 2.75rem; margin: 0; border-radius: 8px; flex: none; }
+.avatar-sm.avatar-none { font-size: 1.25rem; }
+
+.profile {
+  max-width: 44rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+}
+.profile-head { display: flex; align-items: center; gap: 1.25rem; padding: 1.5rem 1.5rem 1.25rem; }
+.profile-who { min-width: 0; }
+.profile-who h1 { font-size: 1.75rem; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.profile-rank { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.3rem; color: var(--muted); }
+.profile-rank .rank-img { display: inline; margin: 0; }
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  border-top: 1px solid var(--line-soft);
+}
+.facts > div { padding: 0.8rem 1.5rem; border-bottom: 1px solid var(--line-soft); min-width: 0; }
+.facts > div:nth-child(odd) { border-right: 1px solid var(--line-soft); }
+.facts dt { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.facts dd { margin: 0.1rem 0 0; font-size: 1.05rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.group-list { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.15rem 0 0; padding: 0; list-style: none; }
+.group-list li {
+  padding: 0 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+.profile-sig { padding: 1rem 1.5rem; border-bottom: 1px solid var(--line-soft); }
+.profile-sig h2 { margin-bottom: 0.4rem; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.profile-actions { padding: 1rem 1.5rem 1.25rem; }
+.button-link { display: inline-block; text-decoration: none; }
+.button-link:hover { text-decoration: none; }
+
+.member-table { width: 100%; border-collapse: collapse; }
+.member-table th {
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+.member-table th a { color: var(--muted); }
+.member-table th[aria-sort] a { color: var(--text); }
+.member-table th[aria-sort="ascending"] a::after { content: " \2191"; }
+.member-table th[aria-sort="descending"] a::after { content: " \2193"; }
+.member-table th:nth-child(2), .member-table td.num { width: 7rem; text-align: center; }
+.member-table th:nth-child(3), .member-table td.member-joined { width: 11rem; }
+.member-table td { padding: 0.65rem 1rem; vertical-align: middle; border-top: 1px solid var(--line-soft); }
+.member-table tbody tr:first-child td { border-top: 0; }
+.member-table tbody tr:hover td { background: var(--hover); }
+.member-table td.num { padding-top: 0.65rem; }
+.member-main, .team-card { display: flex; align-items: center; gap: 0.8rem; min-width: 0; }
+.member-name { display: flex; flex-direction: column; min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.member-rank { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--muted); font-size: 0.82rem; font-weight: 400; }
+.member-rank .rank-img { display: inline; margin: 0; max-height: 1.1rem; }
+
+.team-group { margin: 0 0 1.5rem; }
+.team-group h2 { margin-bottom: 0.6rem; font-size: 1.15rem; }
+.team-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.team-card {
+  padding: 0.75rem 1rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+}
+
+/* A static page reads at the width of the text of a post: the post box less its
+   author column. */
+.static-page {
+  max-width: 55.5rem;
+  padding: 1.1rem 1.25rem 1.25rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+}
+.static-page .page-head { padding-bottom: 0.7rem; border-bottom: 1px solid var(--line-soft); }
+
+.notice-action { font-weight: 600; }
+
+.footer-pages ul { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0 0 0.6rem; padding: 0; list-style: none; }
+.footer-pages a { font-weight: 600; }
+
+@media (max-width: 699px) {
+  .profile-head { padding: 1.1rem 1rem; gap: 0.9rem; }
+  .avatar-lg { width: 5rem; height: 5rem; }
+  .avatar-lg.avatar-none { font-size: 2rem; }
+  .profile-who h1 { font-size: 1.4rem; }
+  .facts > div { padding: 0.7rem 1rem; }
+  .profile-sig, .profile-actions { padding-left: 1rem; padding-right: 1rem; }
+
+  /* The rows stack. The column heads stay as one line of sort links. */
+  .member-table, .member-table tbody { display: block; }
+  .member-table thead { display: block; }
+  .member-table thead tr { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; padding: 0.5rem 1rem; border-bottom: 1px solid var(--line); }
+  .member-table th { padding: 0; border: 0; width: auto !important; }
+  .member-table th a { display: inline-block; padding: 0.35rem 0; }
+  .member-table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: 1.25rem;
+    padding: 0.7rem 1rem;
+    border-top: 1px solid var(--line-soft);
+  }
+  .member-table tbody tr:first-child { border-top: 0; }
+  .member-table td, .member-table tbody tr:first-child td { display: block; padding: 0; border: 0; width: auto !important; }
+  .member-table tbody tr:hover td { background: none; }
+  .member-table tbody tr td.member-main { display: flex; flex: 0 0 100%; }
+  .member-table td.num, .member-table td.member-joined { padding: 0; margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); text-align: left; }
+  .member-table td.num::before, .member-table td.member-joined::before { content: attr(data-label) ": "; }
+  .member-table .forum-count { font-size: 0.9rem; color: var(--text); }
+
+  .static-page { padding: 0.9rem 1rem 1rem; }
+  .team-list { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }

@@ -71,7 +71,7 @@ type site struct {
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "profile.html", "members.html", "team.html", "page.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -101,6 +101,11 @@ func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, erro
 	inner.Handle("POST /f/{id}/read", s.protect(s.markForumRead))
 	inner.HandleFunc("GET /p/{id}", s.post)
 	inner.HandleFunc("GET /a/{id}", s.attachment)
+	inner.HandleFunc("GET /u/{id}", s.profile)
+	inner.HandleFunc("GET /members", s.members)
+	inner.HandleFunc("GET /team", s.team)
+	inner.HandleFunc("GET /pages/{slug}", s.staticPage)
+	inner.HandleFunc("GET /account", s.account)
 	inner.HandleFunc("GET /login", s.loginPage)
 	inner.Handle("POST /login", s.protect(s.loginSubmit))
 	inner.Handle("POST /logout", s.protect(s.logout))
@@ -209,6 +214,8 @@ type page struct {
 	// csrfSecret is the secret of the csrf token: the session token of a member,
 	// and the gobb_csrf cookie of a guest, which is empty for a guest who has none.
 	csrfSecret string
+	// Pages are the static pages that the footer lists. render fills them in.
+	Pages []board.StaticPage
 	// Data holds the data of the page template.
 	Data any
 	// ctx and navKey let render add the "new since your last visit" link to the
@@ -327,11 +334,40 @@ func (s *site) touch(w http.ResponseWriter, r *http.Request, sess session.Sessio
 	}
 }
 
+// addNav adds the links that depend on the viewer to the nav: for a member "New
+// since your last visit", then Members for a viewer who may see profiles, then
+// Team. A page with no request context (the frame of an empty database) keeps the
+// nav it has.
+func (s *site) addNav(p *page) {
+	if p.ctx == nil {
+		return
+	}
+	s.addNewLink(p)
+	if p.Viewer.Perms.Has("account.view_profiles", 0) {
+		p.Nav = append(p.Nav, navLink{Label: "Members", Href: s.path("members"), Current: p.navKey == "members"})
+	}
+	p.Nav = append(p.Nav, navLink{Label: "Team", Href: s.path("team"), Current: p.navKey == "team"})
+}
+
+// addPageLinks reads the static pages for the footer. A failure is logged and the
+// footer shows none.
+func (s *site) addPageLinks(p *page) {
+	if p.ctx == nil {
+		return
+	}
+	links, err := board.PageLinks(p.ctx, s.pool)
+	if err != nil {
+		slog.Warn("cannot list the static pages", "err", err)
+		return
+	}
+	p.Pages = links
+}
+
 // addNewLink adds "New since your last visit (N)" to the nav of a member, where N
 // is the number of unread topics of the list. The item hides when N is 0. When
 // the count cannot be read, the link stays and shows no number.
 func (s *site) addNewLink(p *page) {
-	if p.ctx == nil || p.Viewer.UserID == 0 {
+	if p.Viewer.UserID == 0 {
 		return
 	}
 	label := "New since your last visit"
@@ -384,7 +420,8 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		}
 		p.CSRF = session.CSRFToken(secret)
 	}
-	s.addNewLink(p)
+	s.addNav(p)
+	s.addPageLinks(p)
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
 		slog.Error("render", "template", name, "err", err)
@@ -406,11 +443,19 @@ type errorData struct {
 	Status  int
 	Heading string
 	Message string
+	// Href and HrefLabel add one link under the message, such as "Sign in". Both
+	// are empty for no link.
+	Href, HrefLabel string
 }
 
 // fail writes the error page with the given status. When the settings cannot be
 // read, it falls back to plain text.
 func (s *site) fail(w http.ResponseWriter, r *http.Request, status int, heading, message string) {
+	s.failLink(w, r, status, heading, message, "", "")
+}
+
+// failLink is [site.fail] with a link under the message.
+func (s *site) failLink(w http.ResponseWriter, r *http.Request, status int, heading, message, href, label string) {
 	p, err := s.begin(w, r, heading, "")
 	if errors.Is(err, board.ErrNoSettings) {
 		p = s.emptyPage(r, heading)
@@ -419,7 +464,7 @@ func (s *site) fail(w http.ResponseWriter, r *http.Request, status int, heading,
 		http.Error(w, heading, status)
 		return
 	}
-	p.Data = errorData{Status: status, Heading: heading, Message: message}
+	p.Data = errorData{Status: status, Heading: heading, Message: message, Href: href, HrefLabel: label}
 	s.render(w, status, "error.html", p)
 }
 

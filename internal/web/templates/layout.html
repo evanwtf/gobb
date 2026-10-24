@@ -45,6 +45,15 @@
 </main>
 <footer class="site-footer">
   <div class="wrap">
+    {{- if .Pages}}
+    <nav class="footer-pages" aria-label="Pages">
+      <ul>
+        {{- range .Pages}}
+        <li><a href="{{path "pages" .Slug}}">{{or .Title .Slug}}</a></li>
+        {{- end}}
+      </ul>
+    </nav>
+    {{- end}}
     <p>Times are shown in {{.Viewer.Loc}}.</p>
     {{- if .Controls}}
     <form class="scheme-picker" method="post" action="{{path "scheme"}}" aria-label="Color scheme">

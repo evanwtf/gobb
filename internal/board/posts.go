@@ -261,16 +261,9 @@ func fillCards(ctx context.Context, q db.Querier, posts []Post) error {
 	sigs := map[int64]*markup.Node{}
 	if len(ids) > 0 {
 		rows, err := q.Query(ctx, `
-select u.id, u.username, coalesce(u.avatar_path, ''), u.post_count, u.registered_at,
-       coalesce(r.title, ar.title, ''), coalesce(r.image_path, ar.image_path, ''),
+select `+cardColumns+`,
        u.signature_tree
-  from users u
-  left join ranks r on r.id = u.rank_id
-  left join lateral (
-        select title, image_path from ranks
-         where special = false and min_posts <= u.post_count
-         order by min_posts desc, id
-         limit 1) ar on u.rank_id is null
+  from users u`+cardJoins+`
  where u.id = any($1)`, ids)
 		if err != nil {
 			return fmt.Errorf("board: read author cards: %w", err)
@@ -279,8 +272,7 @@ select u.id, u.username, coalesce(u.avatar_path, ''), u.post_count, u.registered
 		for rows.Next() {
 			c := &UserCard{}
 			var sig []byte
-			if err := rows.Scan(&c.ID, &c.Name, &c.AvatarPath, &c.PostCount, &c.Joined,
-				&c.RankTitle, &c.RankImage, &sig); err != nil {
+			if err := scanCard(rows, c, &sig); err != nil {
 				return fmt.Errorf("board: read author cards: %w", err)
 			}
 			cards[c.ID] = c

@@ -31,7 +31,7 @@ func checkBasePath(t *testing.T, where, body, base string) {
 func TestBasePathEverywhere(t *testing.T) {
 	b := linkBoard()
 	h, pool := siteWithPool(t, b, Options{BasePath: "/forum/"})
-	pages := []string{"/forum/", "/forum/f/1", "/forum/f/2", "/forum/t/1", "/forum/t/5", "/forum/t/6", "/forum/login"}
+	pages := []string{"/forum/", "/forum/f/1", "/forum/f/2", "/forum/t/1", "/forum/t/5", "/forum/t/6", "/forum/login", "/forum/team", "/forum/pages/about", "/forum/pages/rules"}
 	for _, p := range pages {
 		rec := get(t, h, p)
 		if rec.Code != http.StatusOK {
@@ -50,7 +50,7 @@ func TestBasePathEverywhere(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `update users set last_visit_at = '2019-06-01T00:00:00Z', last_mark_at = null where id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"/forum/", "/forum/f/2", "/forum/f/1", "/forum/new", "/forum/t/1"} {
+	for _, p := range []string{"/forum/", "/forum/f/2", "/forum/f/1", "/forum/new", "/forum/t/1", "/forum/u/1", "/forum/members", "/forum/team"} {
 		rec := getAs(t, h, p, alice)
 		if rec.Code != http.StatusOK {
 			t.Errorf("member %s: status %d", p, rec.Code)
@@ -83,6 +83,24 @@ func TestBasePathEverywhere(t *testing.T) {
 	}
 	if rec := get(t, h, "/forum/new"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/forum/login?next=%2Fforum%2Fnew" {
 		t.Errorf("guest /forum/new = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// The pages that refuse a guest, and the account redirect, keep the prefix too.
+	for _, c := range []struct {
+		path string
+		code int
+	}{{"/forum/u/1", 403}, {"/forum/u/8", 410}, {"/forum/members", 403}} {
+		rec := get(t, h, c.path)
+		if rec.Code != c.code {
+			t.Errorf("guest %s: status %d, want %d", c.path, rec.Code, c.code)
+		}
+		checkBasePath(t, "guest "+c.path, bodyOf(t, rec), "/forum/")
+	}
+	if rec := get(t, h, "/forum/account"); rec.Header().Get("Location") != "/forum/login?next=%2Fforum%2Faccount" {
+		t.Errorf("guest /forum/account = %q", rec.Header().Get("Location"))
+	}
+	if rec := getAs(t, h, "/forum/account", alice); rec.Header().Get("Location") != "/forum/u/1" {
+		t.Errorf("alice /forum/account = %q", rec.Header().Get("Location"))
 	}
 
 	// The rich post holds links and images that the author wrote as site paths.

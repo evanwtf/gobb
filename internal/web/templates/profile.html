@@ -1,0 +1,31 @@
+{{define "content"}}
+{{- with .Data}}
+<article class="profile" aria-labelledby="profile-name">
+  <header class="profile-head">
+    {{- if .Card.AvatarPath}}<img class="avatar avatar-lg" src="{{path "files" .Card.AvatarPath}}" alt="" width="128" height="128">
+    {{- else}}<span class="avatar avatar-lg avatar-none" aria-hidden="true">{{initial .Card.Name}}</span>{{end}}
+    <div class="profile-who">
+      <h1 id="profile-name"><bdi>{{.Card.Name}}</bdi></h1>
+      {{- if or .Card.RankTitle .Card.RankImage}}
+      <p class="profile-rank">{{if .Card.RankImage}}<img class="rank-img" src="{{path "files" .Card.RankImage}}" alt="">{{end}}{{if .Card.RankTitle}}<span>{{.Card.RankTitle}}</span>{{end}}</p>
+      {{- end}}
+    </div>
+  </header>
+  <dl class="facts">
+    <div><dt>Posts</dt><dd>{{num .Card.PostCount}}</dd></div>
+    <div><dt>Joined</dt><dd>{{date .Card.Joined $.Viewer.Loc}}</dd></div>
+    <div><dt>Last visit</dt><dd>{{with .LastVisit}}{{date . $.Viewer.Loc}}{{else}}<span class="muted">No visit recorded</span>{{end}}</dd></div>
+    <div><dt>Groups</dt><dd>
+      {{- if .Groups}}<ul class="group-list">{{range .Groups}}<li>{{.}}</li>{{end}}</ul>{{else}}<span class="muted">None</span>{{end -}}
+    </dd></div>
+  </dl>
+  {{- if .SigHTML}}
+  <section class="profile-sig" aria-label="Signature">
+    <h2>Signature</h2>
+    <div class="post-body">{{.SigHTML}}</div>
+  </section>
+  {{- end}}
+  <p class="profile-actions"><a class="button-quiet button-link" href="{{.FindHref}}">Find posts by this user</a></p>
+</article>
+{{- end}}
+{{end}}
