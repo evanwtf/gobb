@@ -244,7 +244,8 @@ func TestCostShape(t *testing.T) {
 	if a, b := CostShape("gobb", gobbHash), CostShape("gobb", mustHash(t, "y")); a != b {
 		t.Errorf("two gobb hashes have the keys %q and %q", a, b)
 	}
-	// Every vector kind has a key, and the same kind gives the same key.
+	// Every vector kind has a key. (The loop keeps one hash of each kind, so it
+	// does not compare two hashes of one kind; the gobb pair above does that.)
 	for kind, h := range other {
 		if CostShape("legacy", h) == "" {
 			t.Errorf("the %s vectors have no key", kind)

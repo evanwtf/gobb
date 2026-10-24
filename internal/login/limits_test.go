@@ -72,8 +72,11 @@ func argonHash(memory int) string {
 		enc.EncodeToString([]byte("0123456789abcdef")), enc.EncodeToString(make([]byte, 32)))
 }
 
-// Twenty sign-ins at once on a 128 MiB gate, against a hash that needs 64 MiB,
-// run two at a time at most, and every one returns.
+// Twenty sign-ins at once on a 128 MiB gate, against a hash that asks for
+// 64 MiB, run two checks at a time at most, and every one returns. The test
+// counts the calls of a fake Verify that allocates nothing, so it shows the
+// concurrency that the gate allows, not the memory that the checks use. The CI
+// burst step under the 256 MiB cap tests the memory (.github/workflows/ci.yml).
 func TestLoginMemoryBudget(t *testing.T) {
 	_, pool := newService(t)
 	exec(t, pool, `update users set password_hash = $1, password_scheme = 'gobb' where id = 1`, argonHash(65536))

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -85,11 +87,39 @@ const (
 	DefaultNameWindow = time.Hour
 	// DefaultMaxKeys is the most keys that each limiter holds.
 	DefaultMaxKeys = 10000
-	// DefaultBudgetKiB is the memory that password checks may use together: 128 MiB.
+	// DefaultBudgetKiB is the most memory that password checks may use
+	// together: 128 MiB. [BudgetKiB] gives less under a lower memory limit.
 	DefaultBudgetKiB = 128 * 1024
 	// DefaultGateWait is how long a check waits for the gate before ErrBusy.
 	DefaultGateWait = 5 * time.Second
 )
+
+// gateHeadroomKiB is the memory that the gate leaves to the rest of the server
+// under a memory limit: 48 MiB for the pages, the pool and the runtime.
+const gateHeadroomKiB = 48 * 1024
+
+// minBudgetKiB is the least gate budget. Any budget runs at least one check,
+// because Acquire clamps a larger cost to the budget.
+const minBudgetKiB = 1024
+
+// BudgetKiB returns the gate budget, in KiB, for a process whose Go memory
+// limit is limit bytes: min(DefaultBudgetKiB, limit − 48 MiB), and at least
+// 1 MiB. A limit of 0 or less means no limit, and gives DefaultBudgetKiB.
+//
+// The Go runtime lets the heap grow to about twice the live heap before it
+// collects, unless a memory limit makes it collect sooner. So the memory
+// limit, not the gate alone, keeps a burst of checks under a container's cap.
+// The gate keeps the live heap of the checks under the limit.
+func BudgetKiB(limit int64) uint64 {
+	if limit <= 0 {
+		return DefaultBudgetKiB
+	}
+	kib := uint64(limit) / 1024
+	if kib <= gateHeadroomKiB+minBudgetKiB {
+		return minBudgetKiB
+	}
+	return min(DefaultBudgetKiB, kib-gateHeadroomKiB)
+}
 
 // Options sets up a [Service]. A nil field turns that part off: a nil limiter
 // does not limit, and a nil Gate does not hold checks back. A nil Verify is
@@ -111,7 +141,9 @@ type Service struct {
 	q   db.Querier
 	opt Options
 	// Floor is the least time that a failed [Service.Check] takes, counted from
-	// its start. A failure is any return except a good password and a
+	// the later of its start and the moment the gate lets it in. A gate wait
+	// then adds the same delay to every name, and the floor still hides the
+	// hash work after it. A failure is any return except a good password and a
 	// [*LimitedError]: a wrong password, an ambiguous address, a busy gate, an
 	// inactive account, a ban and an error. The hashes of the imported
 	// board differ a lot in cost, and an unknown name costs one fast check, so
@@ -140,6 +172,17 @@ type Service struct {
 	// timeVerify, when set, replaces the timing of one check at start
 	// (LoadFloor). A test sets it, to control T without real hashes.
 	timeVerify func(stored, scheme string) time.Duration
+}
+
+// clock is the time that the floor of one sign-in counts from: the start of
+// the sign-in, moved to the moment the gate lets the sign-in in.
+type clock struct{ from time.Time }
+
+// granted moves the clock to now when now is later.
+func (c *clock) granted() {
+	if now := time.Now(); now.After(c.from) {
+		c.from = now
+	}
 }
 
 // DefaultOptions returns new limiters and a new gate with the default numbers,
@@ -224,19 +267,20 @@ type candidate struct {
 // context or a database error. A good password also clears the name.
 //
 // Every return after the reservation, except a good password, comes no sooner
-// than Floor after the call began, whatever happens to ctx: a wrong password, an
-// ambiguous address, [ErrBusy], a gate wait that ctx ended, [ErrInactive], a ban,
-// and a lookup or database error. Otherwise the time to answer would tell a
-// stranger which check ran. The wait comes after the gate is released. A
-// [*LimitedError] and a good password return at once.
+// than Floor after the call began, or after the gate let it in when that is
+// later, whatever happens to ctx: a wrong password, an ambiguous address,
+// [ErrBusy], a gate wait that ctx ended, [ErrInactive], a ban, and a lookup or
+// database error. Otherwise the time to answer would tell a stranger which check
+// ran. The wait comes after the gate is released. A [*LimitedError] and a good
+// password return at once.
 func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
-	start := time.Now()
+	c := &clock{from: time.Now()}
 	k := s.keys(name, ip)
 	held, err := s.reserve(ctx, name, k, now)
 	if err != nil {
 		return 0, err
 	}
-	id, err := s.check(ctx, name, pw, ip, now)
+	id, err := s.check(ctx, c, name, pw, ip, now)
 	if err == nil {
 		s.refund(held, k, now, false)
 		if s.opt.NameLimit != nil && k.nameOK {
@@ -249,7 +293,7 @@ func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now
 	if !errors.Is(err, ErrWrong) && !errors.Is(err, ErrAmbiguous) {
 		s.refund(held, k, now, true)
 	}
-	s.wait(start)
+	s.wait(c.from)
 	return id, err
 }
 
@@ -373,13 +417,13 @@ select 1 from user_ips where user_id = any($1) and ip <<= $2::inet)`, ids, prefi
 	return known, nil
 }
 
-// wait sleeps until Floor has passed since start. It does not watch the context
+// wait sleeps until Floor has passed since from. It does not watch the context
 // of the request: net/http cancels that context when the client half-closes its
 // connection, and the client can still read the answer, so a wait that ended with
 // the context would let a client time the answer to the hash alone. The hold is
 // at most Floor.
-func (s *Service) wait(start time.Time) {
-	left := s.Floor - time.Since(start)
+func (s *Service) wait(from time.Time) {
+	left := s.Floor - time.Since(from)
 	if left <= 0 {
 		return
 	}
@@ -392,6 +436,12 @@ func (s *Service) wait(start time.Time) {
 // parser that sizes a check, gives the cost of each. LoadCharge then logs the
 // charge and how many checks fit in the gate at once, with no name and no hash.
 //
+// A stored hash whose cost is above the gate budget gets one WARN line, with the
+// number of such accounts and no name. A check of such a hash still runs:
+// Acquire clamps its cost to the budget, so it runs alone. But it may need more
+// memory than the server has; the README says to raise the memory cap of such a
+// board.
+//
 // Call it once, before the service serves. The value does not change at run
 // time: a rehash stores a gobb hash, which never costs more.
 func (s *Service) LoadCharge(ctx context.Context) error {
@@ -401,13 +451,17 @@ func (s *Service) LoadCharge(ctx context.Context) error {
 		return fmt.Errorf("login: read the stored hashes: %w", err)
 	}
 	defer rows.Close()
-	var most uint64
+	var most, over uint64
 	for rows.Next() {
 		var scheme, hash string
 		if err := rows.Scan(&scheme, &hash); err != nil {
 			return fmt.Errorf("login: read the stored hashes: %w", err)
 		}
-		most = max(most, password.MemoryKiB(scheme, hash))
+		cost := password.MemoryKiB(scheme, hash)
+		most = max(most, cost)
+		if s.opt.Gate != nil && cost > s.opt.Gate.budget {
+			over++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("login: read the stored hashes: %w", err)
@@ -419,6 +473,10 @@ func (s *Service) LoadCharge(ctx context.Context) error {
 		return nil
 	}
 	slog.Info("login: password check charge", "kib", charge, "checks_at_once", s.opt.Gate.fits(charge))
+	if over > 0 {
+		slog.Warn("login: stored password hashes cost more than the gate budget; each check of one runs alone and may pass the memory cap",
+			"accounts", over, "budget_kib", s.opt.Gate.budget)
+	}
 	return nil
 }
 
@@ -426,7 +484,10 @@ func (s *Service) LoadCharge(ctx context.Context) error {
 const floorStep = 50 * time.Millisecond
 
 // probePassword is the wrong password that LoadFloor checks. It is no one's.
-const probePassword = "gobb floor probe"
+// It is 4,096 bytes long, the longest that Verify reads, and its legacy form
+// has the same length: a chain check grows with the length of the password,
+// and a stranger chooses the length.
+var probePassword = strings.Repeat("gobb-floor-probe", 4096/len("gobb-floor-probe"))
 
 // LoadFloor times the password checks of this host and sets [Service.Floor] to
 // max(DefaultFloor, 2 × K × T), rounded up to a whole 50 ms.
@@ -437,9 +498,15 @@ const probePassword = "gobb floor probe"
 //     parameters. LoadFloor times one check against one hash of each shape,
 //     and of the dummy check (the shape of a new gobb hash too).
 //
+// Each check runs with a wrong password of 4,096 bytes, the longest that
+// Verify reads, and holds the gate with the charge of a check of that hash
+// (chargeKiB), as a sign-in does. After the last check, LoadFloor runs a
+// garbage collection, so the memory of the checks (and of the dummy hash) does
+// not sit under the first sign-ins.
+//
 // It logs one INFO line with the floor in ms, T in ms and K, with no name and
 // no hash. Call it once, after [Service.LoadCharge] and before the service
-// serves. The checks run one at a time, outside the gate.
+// serves.
 func (s *Service) LoadFloor(ctx context.Context) error {
 	var k int64
 	err := s.q.QueryRow(ctx, `select coalesce(max(n), 1) from (
@@ -474,8 +541,15 @@ select count(*) as n from users where email_clean <> '' group by email_clean) sh
 	}
 	var slowest time.Duration
 	for _, sm := range shapes {
-		slowest = max(slowest, s.timeOne(sm.stored, sm.scheme))
+		release, err := s.acquire(ctx, s.chargeKiB(sm.scheme, sm.stored))
+		if err != nil {
+			return fmt.Errorf("login: time a password check: %w", err)
+		}
+		took := s.timeOne(sm.stored, sm.scheme)
+		release()
+		slowest = max(slowest, took)
 	}
+	runtime.GC()
 	floor := max(DefaultFloor, 2*time.Duration(k)*slowest)
 	floor = (floor + floorStep - 1) / floorStep * floorStep
 	s.Floor = floor
@@ -539,9 +613,10 @@ func dummyJob() hashJob {
 
 // runJobs checks pw against every job in one hold of the gate. The hold is the
 // largest charge among the jobs (chargeKiB), taken once before the first hash
-// and given back after the last. A dummy job with no dummy hash (password.Hash
+// and given back after the last. When the gate lets the sign-in in, the floor
+// clock c moves to that moment. A dummy job with no dummy hash (password.Hash
 // failed at its first use) does no work.
-func (s *Service) runJobs(ctx context.Context, pw string, jobs []hashJob) error {
+func (s *Service) runJobs(ctx context.Context, c *clock, pw string, jobs []hashJob) error {
 	var kib uint64
 	for _, j := range jobs {
 		kib = max(kib, s.chargeKiB(j.scheme, j.stored))
@@ -551,6 +626,7 @@ func (s *Service) runJobs(ctx context.Context, pw string, jobs []hashJob) error 
 		return err
 	}
 	defer release()
+	c.granted()
 	for i := range jobs {
 		j := &jobs[i]
 		if j.stored == "" {
@@ -565,6 +641,15 @@ func (s *Service) runJobs(ctx context.Context, pw string, jobs []hashJob) error 
 }
 
 // acquire takes kib from the gate. With no gate, it takes nothing.
+//
+// The release runs a garbage collection first, then gives the share back. The
+// memory of a check is garbage when the check ends, and the runtime collects
+// it only after a later allocation, even under a memory limit. Without the
+// collection, the next holder's memory comes on top of that garbage: with
+// 64 MiB hashes, the heap held three 64 MiB blocks where the gate allows two,
+// and the kernel killed a container under a 256 MiB cap. The collection is
+// cheap, because the memory of a hash holds no pointers: well under 1 ms with
+// two 64 MiB checks live. It runs inside the floor.
 func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	if s.onAcquire != nil {
 		s.onAcquire(kib)
@@ -572,12 +657,22 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	if s.opt.Gate == nil {
 		return func() {}, nil
 	}
-	return s.opt.Gate.Acquire(ctx, kib, s.GateWait)
+	release, err := s.opt.Gate.Acquire(ctx, kib, s.GateWait)
+	if err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			runtime.GC()
+			release()
+		})
+	}, nil
 }
 
-func (s *Service) check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
+func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
 	if !utf8.ValidString(name) || len(name) > maxName {
-		if err := s.runJobs(ctx, pw, []hashJob{dummyJob()}); err != nil {
+		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {
 			return 0, err
 		}
 		return 0, ErrWrong
@@ -587,7 +682,7 @@ func (s *Service) check(ctx context.Context, name, pw string, ip netip.Addr, now
 		return 0, err
 	}
 	if len(users) == 0 {
-		if err := s.runJobs(ctx, pw, []hashJob{dummyJob()}); err != nil {
+		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {
 			return 0, err
 		}
 		return 0, ErrWrong
@@ -602,7 +697,7 @@ func (s *Service) check(ctx context.Context, name, pw string, ip netip.Addr, now
 			jobs[i] = dummyJob()
 		}
 	}
-	if err := s.runJobs(ctx, pw, jobs); err != nil {
+	if err := s.runJobs(ctx, c, pw, jobs); err != nil {
 		return 0, err
 	}
 	matches := 0

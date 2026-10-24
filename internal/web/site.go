@@ -51,8 +51,9 @@ type Options struct {
 	// floor that New times at start (login.Service.LoadFloor): at least 400 ms.
 	// Tests set it, and skip the timing.
 	LoginFloor time.Duration
-	// LoginGate replaces the memory gate of password checks. Nil means a gate
-	// with the default budget. Tests use it to fill the gate.
+	// LoginGate is the memory gate of the password checks. Nil means a gate
+	// with the default budget. cmd/gobb sizes it to the memory limit of the
+	// process (login.BudgetKiB). Tests use it to fill the gate.
 	LoginGate *login.Gate
 	// LoginGateWait is how long a password check waits for the gate. Zero means
 	// the default of 5 seconds. Tests set it small.

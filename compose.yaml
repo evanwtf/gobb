@@ -40,6 +40,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    # The memory cap that CI tests, with no swap on top. gobb sets its Go memory
+    # limit to 70% of it, and sizes the gate of the password checks from that.
+    # A board with stored hashes above m=65536 needs a higher cap (README,
+    # "Memory").
+    mem_limit: ${GOBB_MEM_LIMIT:-256m}
+    memswap_limit: ${GOBB_MEM_LIMIT:-256m}
     stop_grace_period: 30s
     restart: unless-stopped
 

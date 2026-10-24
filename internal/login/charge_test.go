@@ -58,31 +58,42 @@ func TestChargeHashesAreRecognized(t *testing.T) {
 // password.MemoryKiB decides the cost of each hash.
 func TestLoadCharge(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
+	// A chain at the caps: the highest count (G, 2^18 rounds) over bcrypt at
+	// cost 14. The inner layer of a chain that VerifyLegacy accepts is always a
+	// bcrypt hash, so no accepted chain holds an argon2id layer.
+	capChain := "$chain$phpass,G12345678$2y$14$" + strings.Repeat("a", 53)
 	for _, c := range []struct {
 		name   string
 		hashes [4][2]string
 		want   uint64
+		// refused is true for a row whose hash VerifyLegacy refuses on purpose.
+		refused bool
 	}{
 		{"bcrypt, chain and argon2id at 64 MiB",
 			[4][2]string{{"legacy", bcryptHash}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", argonAt(65536)}},
-			65536},
+			65536, false},
 		{"no argon2id part",
 			[4][2]string{{"legacy", bcryptHash}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", ""}},
-			password.HashMemoryKiB},
+			password.HashMemoryKiB, false},
 		{"gobb hashes at the current parameters",
 			[4][2]string{{"gobb", argonAt(password.HashMemoryKiB)}, {"legacy", bcryptHash}, {"gobb", argonAt(password.HashMemoryKiB)}, {"legacy", ""}},
-			password.HashMemoryKiB},
+			password.HashMemoryKiB, false},
 		{"a gobb hash above the current parameters",
 			[4][2]string{{"gobb", argonAt(32768)}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", ""}},
-			32768},
-		{"an argon2id layer in a chain",
-			[4][2]string{{"legacy", bcryptHash}, {"legacy", "$chain$phpass,B12345678" + argonAt(40960)}, {"legacy", chainHash}, {"legacy", ""}},
-			40960},
+			32768, false},
+		{"a chain at its caps costs its bcrypt layer",
+			[4][2]string{{"legacy", bcryptHash}, {"legacy", capChain}, {"legacy", chainHash}, {"legacy", ""}},
+			password.HashMemoryKiB, false},
 		{"argon2id over the cap, which Verify refuses before any work",
 			[4][2]string{{"legacy", argonAt(524288)}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", ""}},
-			password.HashMemoryKiB},
+			password.HashMemoryKiB, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			for _, sh := range c.hashes {
+				if !c.refused && !password.Recognized(sh[0], sh[1]) {
+					t.Fatalf("VerifyLegacy refuses the test hash %.24s…", sh[1])
+				}
+			}
 			setHashes(t, pool, c.hashes)
 			s := NewWith(pool, Options{Gate: NewGate(DefaultBudgetKiB)})
 			if err := s.LoadCharge(t.Context()); err != nil {
@@ -96,7 +107,8 @@ func TestLoadCharge(t *testing.T) {
 }
 
 // The start-up step logs one INFO line: the charge in KiB and how many checks
-// fit in the gate at once. It logs no name and no hash.
+// fit in the gate at once. It logs no name and no hash. A hash above the gate
+// budget adds one WARN line (TestLoadChargeWarnsAboveTheBudget).
 func TestLoadChargeLogs(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	var buf bytes.Buffer
@@ -104,12 +116,13 @@ func TestLoadChargeLogs(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	for _, c := range []struct {
-		m    int
-		want string
+		m     int
+		want  string
+		lines int
 	}{
-		{0, fmt.Sprintf("kib=%d checks_at_once=6", password.HashMemoryKiB)},
-		{65536, "kib=65536 checks_at_once=2"},
-		{262144, "kib=262144 checks_at_once=1"},
+		{0, fmt.Sprintf("kib=%d checks_at_once=6", password.HashMemoryKiB), 1},
+		{65536, "kib=65536 checks_at_once=2", 1},
+		{262144, "kib=262144 checks_at_once=1", 2},
 	} {
 		h := ""
 		if c.m > 0 {
@@ -123,8 +136,8 @@ func TestLoadChargeLogs(t *testing.T) {
 		}
 		out := buf.String()
 		lines := strings.Split(strings.TrimSpace(out), "\n")
-		if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], c.want) {
-			t.Errorf("m=%d: log = %q, want one INFO line with %q", c.m, out, c.want)
+		if len(lines) != c.lines || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], c.want) {
+			t.Errorf("m=%d: log = %q, want %d lines, the first an INFO line with %q", c.m, out, c.lines, c.want)
 		}
 		for _, secret := range []string{"alice", "bob", "carol", "dave", "$argon2id$", "$2y$", "$chain$"} {
 			if strings.Contains(out, secret) {

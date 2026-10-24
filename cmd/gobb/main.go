@@ -27,6 +27,8 @@ import (
 	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/importer"
+	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/memlimit"
 	"github.com/evanwtf/gobb/internal/session"
 	"github.com/evanwtf/gobb/internal/version"
 	"github.com/evanwtf/gobb/internal/web"
@@ -186,7 +188,8 @@ func newHTTPServer(h http.Handler) *http.Server {
 	}
 }
 
-// serve migrates the schema, then serves HTTP until SIGTERM or SIGINT.
+// serve sets the Go memory limit, migrates the schema, then serves HTTP until
+// SIGTERM or SIGINT.
 // If a migration fails, it returns before the server listens. The signal
 // handler is set up first, so a signal during the connect or the migrations
 // stops the command too.
@@ -205,6 +208,7 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 	if err != nil {
 		return err
 	}
+	gate := gateFor(memlimit.Apply())
 	setupCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var interrupted atomic.Bool
@@ -231,7 +235,7 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 			}
 		}
 	}()
-	pool, h, err := setup(setupCtx, cfg)
+	pool, h, err := setup(setupCtx, cfg, gate)
 	close(done)
 	<-exited
 	if interrupted.Load() {
@@ -299,9 +303,19 @@ func cleanup(ctx context.Context, q db.Querier, now func() time.Time) {
 	slog.Info("session cleanup", "sessions", sessions, "ips", ips)
 }
 
-// setup opens the pool, applies the migrations and builds the handler. On an
-// error it closes the pool and returns it as nil.
-func setup(ctx context.Context, cfg config.Config) (*pgxpool.Pool, http.Handler, error) {
+// gateFor logs the Go memory limit of the process (see [memlimit.Apply]), its
+// source and the gate budget that follows from it ([login.BudgetKiB]), in one
+// INFO line. It returns the gate of the password checks, with that budget.
+func gateFor(m memlimit.Result) *login.Gate {
+	budget := login.BudgetKiB(m.Limit)
+	slog.Info("memory limit", "limit_bytes", m.Limit, "source", m.Source, "gate_budget_kib", budget)
+	return login.NewGate(budget)
+}
+
+// setup opens the pool, applies the migrations and builds the handler, with
+// gate as the memory gate of the password checks. On an error it closes the
+// pool and returns it as nil.
+func setup(ctx context.Context, cfg config.Config, gate *login.Gate) (*pgxpool.Pool, http.Handler, error) {
 	pool, err := db.Open(ctx, cfg.DSN)
 	if err != nil {
 		return nil, nil, err
@@ -315,6 +329,7 @@ func setup(ctx context.Context, cfg config.Config) (*pgxpool.Pool, http.Handler,
 		DataDir:        cfg.DataDir,
 		TrustedProxies: cfg.TrustedProxies,
 		CookieSecure:   cfg.CookieSecure,
+		LoginGate:      gate,
 	})
 	if err != nil {
 		pool.Close()

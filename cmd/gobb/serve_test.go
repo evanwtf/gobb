@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/evanwtf/gobb/internal/dbtest"
+	"github.com/evanwtf/gobb/internal/memlimit"
 )
 
 func TestServerLimits(t *testing.T) {
@@ -281,5 +284,54 @@ func TestServeStopsOnSignalDuringSetup(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serveWith did not return")
+	}
+}
+
+// At start, serve logs one INFO line with the Go memory limit, its source and
+// the gate budget of the password checks that follows from it.
+func TestGateForLogsTheMemoryLimit(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	for _, c := range []struct {
+		in   memlimit.Result
+		want string
+	}{
+		{memlimit.Result{Limit: 187904819, Source: memlimit.SourceCgroup}, "limit_bytes=187904819 source=cgroup gate_budget_kib=131072"},
+		{memlimit.Result{Limit: 100 << 20, Source: memlimit.SourceEnv}, "limit_bytes=104857600 source=GOMEMLIMIT gate_budget_kib=53248"},
+		{memlimit.Result{Source: memlimit.SourceNone}, "limit_bytes=0 source=none gate_budget_kib=131072"},
+	} {
+		buf.Reset()
+		if g := gateFor(c.in); g == nil {
+			t.Fatalf("%+v: no gate", c.in)
+		}
+		out := strings.TrimSpace(buf.String())
+		if strings.Count(out, "\n") != 0 || !strings.Contains(out, "level=INFO") || !strings.Contains(out, c.want) {
+			t.Errorf("%+v: log = %q, want one INFO line with %q", c.in, out, c.want)
+		}
+	}
+}
+
+// compose.yaml runs gobb under the memory cap that CI tests, with no swap on
+// top, and the docs name the variable that changes it.
+func TestComposeCapsMemory(t *testing.T) {
+	b, err := os.ReadFile("../../compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"mem_limit: ${GOBB_MEM_LIMIT:-256m}", "memswap_limit: ${GOBB_MEM_LIMIT:-256m}"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("compose.yaml lacks %q", want)
+		}
+	}
+	for _, file := range []string{"../../README.md", "../../.env.example"} {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "GOBB_MEM_LIMIT") {
+			t.Errorf("%s does not name GOBB_MEM_LIMIT", file)
+		}
 	}
 }

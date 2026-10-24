@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/password"
 )
 
 // sharedEmail is the email address that bob, carol and dave share on the
@@ -165,6 +167,118 @@ func TestSharedEmailCancelLooksUnique(t *testing.T) {
 		}
 		if took < 300*time.Millisecond {
 			t.Errorf("%s: answered after %v, before the floor", c.name, took)
+		}
+	}
+}
+
+// The floor counts from the later of the start of the sign-in and the moment
+// the gate lets it in. Another check holds the whole gate for longer than the
+// floor. Then a wrong sign-in for an unknown name, a gobb account and a legacy
+// account each answers no sooner than the grant plus the floor, and the three
+// agree. If the floor counted from the start, each would answer when its own
+// hash ends, and the hash time (here 0, 40 and 120 ms) would show.
+func TestFloorCountsFromTheGrant(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	setHashes(t, pool, [4][2]string{{"gobb", argonAt(19456)}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", ""}})
+	const (
+		floor = 300 * time.Millisecond
+		hold  = 500 * time.Millisecond
+		slack = 60 * time.Millisecond
+	)
+	gate := NewGate(password.HashMemoryKiB)
+	s := NewWith(pool, Options{Gate: gate, Verify: func(_, stored, scheme string) (bool, bool) {
+		switch {
+		case stored == dummyHash():
+		case scheme == "gobb":
+			time.Sleep(40 * time.Millisecond)
+		default:
+			time.Sleep(120 * time.Millisecond)
+		}
+		return false, false
+	}})
+	if err := s.LoadCharge(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	s.Floor = floor
+	s.GateWait = 5 * time.Second
+	after := map[string]time.Duration{}
+	for _, name := range []string{"nobody", "alice", "bob"} {
+		release, err := gate.Acquire(t.Context(), gate.budget, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.Check(t.Context(), name, "wrong", netip.MustParseAddr("10.1.2.3"), time.Now())
+			done <- err
+		}()
+		// Wait until the sign-in is in the queue, then hold the gate on.
+		for {
+			gate.mu.Lock()
+			n := gate.waiters.Len()
+			gate.mu.Unlock()
+			if n > 0 {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(hold)
+		granted := time.Now()
+		release()
+		if err := <-done; !errors.Is(err, ErrWrong) {
+			t.Fatalf("%s: err = %v, want ErrWrong", name, err)
+		}
+		after[name] = time.Since(granted)
+	}
+	lo, hi := after["nobody"], after["nobody"]
+	for name, d := range after {
+		if d < floor {
+			t.Errorf("%s: answered %v after the grant, before the floor of %v", name, d, floor)
+		}
+		lo, hi = min(lo, d), max(hi, d)
+	}
+	if hi-lo > slack {
+		t.Errorf("times after the grant %v differ by %v, want within %v", after, hi-lo, slack)
+	}
+}
+
+// forcedGCs returns how many collections runtime.GC has run in this process.
+func forcedGCs() uint32 {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.NumForcedGC
+}
+
+// A check gives its share of the gate back only after a garbage collection.
+// The memory of a check is garbage once the check ends, and the runtime
+// collects it later, after the next allocation. Without the collection, the
+// next holder's memory comes on top of that garbage, and the heap holds one
+// check more than the gate allows: under a 256 MiB cap, three 64 MiB blocks and
+// sometimes four. So a check that waits for the gate must see a forced
+// collection that ran after the check before it.
+func TestHoldEndsWithACollection(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	gate := NewGate(password.HashMemoryKiB)
+	var during atomic.Uint32
+	s := NewWith(pool, Options{Gate: gate, Verify: func(string, string, string) (bool, bool) {
+		during.Store(forcedGCs())
+		return false, false
+	}})
+	s.Floor = 0
+	for _, c := range []struct{ name, pw string }{{"alice", "wrong"}, {"nobody", "wrong"}} {
+		during.Store(0)
+		if _, err := s.Check(t.Context(), c.name, c.pw, netip.MustParseAddr("10.1.2.3"), time.Now()); !errors.Is(err, ErrWrong) {
+			t.Fatalf("%s: err = %v, want ErrWrong", c.name, err)
+		}
+		release, err := gate.Acquire(t.Context(), gate.budget, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := forcedGCs()
+		release()
+		if after <= during.Load() {
+			t.Errorf("%s: forced collections %d while the check ran, %d when the gate was free again; want a collection before the release",
+				c.name, during.Load(), after)
 		}
 	}
 }

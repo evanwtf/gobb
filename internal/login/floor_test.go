@@ -3,6 +3,7 @@ package login
 import (
 	"bytes"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -130,5 +131,159 @@ func TestLoadFloorLogs(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Errorf("the log holds %q: %q", secret, out)
 		}
+	}
+}
+
+// The start-up step times each check with a wrong password of 4,096 bytes, the
+// longest that Verify reads. A chain check grows with the length of the
+// password, and a stranger chooses the length. The probe has a legacy form of
+// the same length, so VerifyLegacy runs the whole check.
+func TestLoadFloorProbeIsLong(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	setHashes(t, pool, [4][2]string{{"legacy", chainHash}, {"legacy", bcryptHash}, {"legacy", argonAt(65536)}, {"legacy", ""}})
+	var probes []string
+	s := NewWith(pool, Options{Gate: NewGate(DefaultBudgetKiB), Verify: func(raw, _, _ string) (bool, bool) {
+		probes = append(probes, raw)
+		return false, false
+	}})
+	if err := s.LoadFloor(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(probes) == 0 {
+		t.Fatal("LoadFloor timed no check")
+	}
+	for _, raw := range probes {
+		form, ok := password.LegacyForm(raw)
+		if len(raw) != 4096 || !ok || len(form) != 4096 {
+			t.Errorf("probe: %d bytes, legacy form %d bytes (ok %v), want 4096 and 4096", len(raw), len(form), ok)
+		}
+	}
+}
+
+// Each timing check at start holds the gate, with the charge of a check of
+// that hash (chargeKiB), and gives it back before the next one. After the last
+// check, the step runs a garbage collection, so the memory of the checks does
+// not sit under the first sign-ins.
+func TestLoadFloorHoldsTheGate(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	gobb := strings.Replace(argonAt(19456), "t=4,p=2", "t=2,p=1", 1)
+	setHashes(t, pool, [4][2]string{{"gobb", gobb}, {"legacy", bcryptHash}, {"legacy", argonAt(65536)}, {"legacy", ""}})
+	gate := NewGate(DefaultBudgetKiB)
+	s := NewWith(pool, Options{Gate: gate})
+	if err := s.LoadCharge(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var holds []uint64
+	s.onAcquire = func(kib uint64) { holds = append(holds, kib) }
+	var held []uint64
+	s.timeVerify = func(string, string) time.Duration {
+		gate.mu.Lock()
+		held = append(held, gate.used)
+		gate.mu.Unlock()
+		return time.Millisecond
+	}
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if err := s.LoadFloor(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	// Three shapes: the dummy check (alice's hash shares it), bcrypt and argon2id.
+	want := []uint64{65536, 65536, 65536}
+	if !slices.Equal(holds, want) {
+		t.Errorf("gate holds = %v, want %v (one per timed shape, at the charge)", holds, want)
+	}
+	if !slices.Equal(held, want) {
+		t.Errorf("the gate held %v KiB while each check ran, want %v", held, want)
+	}
+	gate.mu.Lock()
+	used := gate.used
+	gate.mu.Unlock()
+	if used != 0 {
+		t.Errorf("the gate holds %d KiB after the step", used)
+	}
+	if after.NumForcedGC <= before.NumForcedGC {
+		t.Errorf("forced collections: %d before, %d after; want a runtime.GC after the checks", before.NumForcedGC, after.NumForcedGC)
+	}
+}
+
+// The gate budget at start follows the memory limit of the process: 128 MiB,
+// or the limit less 48 MiB for the rest of the server when that is less. A
+// budget never falls below 1 MiB, so the gate always runs at least one check.
+func TestBudgetKiB(t *testing.T) {
+	const mib = 1 << 20
+	for _, c := range []struct {
+		limit int64
+		want  uint64
+	}{
+		{0, DefaultBudgetKiB},
+		{-1, DefaultBudgetKiB},
+		{1 << 40, DefaultBudgetKiB},
+		{176 * mib, 128 * 1024},
+		{179 * mib, 128 * 1024},   // 70% of a 256 MiB cap is 179.2 MiB
+		{150 * mib, 102 * 1024},   // 150 − 48
+		{100 * mib, 52 * 1024},    // 100 − 48
+		{48 * mib, 1024},          // nothing left: the least budget
+		{10 * mib, 1024},          // below the headroom
+		{49*mib + 512*1024, 1536}, // 1.5 MiB left
+	} {
+		if got := BudgetKiB(c.limit); got != c.want {
+			t.Errorf("BudgetKiB(%d) = %d, want %d", c.limit, got, c.want)
+		}
+	}
+}
+
+// A stored hash that costs more than the gate budget gets one WARN line at
+// start, with the number of such accounts and no name. Such a check still runs:
+// Acquire clamps its cost to the budget, so it runs alone.
+func TestLoadChargeWarnsAboveTheBudget(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	for _, c := range []struct {
+		name   string
+		budget uint64
+		hashes [4][2]string
+		want   string // "" for no WARN line
+	}{
+		{"two accounts above a 64 MiB budget", 65536,
+			[4][2]string{{"legacy", argonAt(131072)}, {"legacy", bcryptHash}, {"legacy", argonAt(262144)}, {"legacy", argonAt(65536)}},
+			"accounts=2 budget_kib=65536"},
+		{"one account above the default budget", DefaultBudgetKiB,
+			[4][2]string{{"legacy", argonAt(262144)}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", ""}},
+			"accounts=1 budget_kib=131072"},
+		{"a hash equal to the budget", 65536,
+			[4][2]string{{"legacy", argonAt(65536)}, {"legacy", bcryptHash}, {"legacy", chainHash}, {"legacy", ""}},
+			""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			setHashes(t, pool, c.hashes)
+			buf.Reset()
+			s := NewWith(pool, Options{Gate: NewGate(c.budget)})
+			if err := s.LoadCharge(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			out := buf.String()
+			var warns []string
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				if strings.Contains(line, "level=WARN") {
+					warns = append(warns, line)
+				}
+			}
+			switch {
+			case c.want == "" && len(warns) != 0:
+				t.Errorf("WARN lines %q, want none", warns)
+			case c.want != "" && (len(warns) != 1 || !strings.Contains(warns[0], c.want)):
+				t.Errorf("WARN lines %q, want one with %q", warns, c.want)
+			}
+			for _, secret := range []string{"alice", "bob", "carol", "dave", "$argon2id$", "$2y$", "$chain$"} {
+				if strings.Contains(out, secret) {
+					t.Errorf("the log holds %q: %q", secret, out)
+				}
+			}
+		})
 	}
 }

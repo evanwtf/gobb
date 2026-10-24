@@ -142,7 +142,7 @@ holds no board: `gobb import` loads one (see "Import a bundle"). Until then ever
 answers 503 and says to run `gobb import`, and `/healthz` answers 200. The server reads
 the legacy route table once at start, so restart it after an import.
 
-The server reads these variables:
+The server reads these variables. Docker Compose reads the last one:
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -152,6 +152,8 @@ The server reads these variables:
 | `GOBB_BASE_PATH` | URL path prefix, such as `/forum/`. | `/` |
 | `GOBB_TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies to trust. | `127.0.0.1/32,::1/128` |
 | `GOBB_COOKIE_SECURE` | `true` or `false`. Mark the cookies Secure. | `true` |
+| `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
+| `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
 
 Run it from a clone, against a local database. The import uses the same variables:
 
@@ -241,17 +243,22 @@ the operator:
   address is then the address of the proxy.
 - A failed sign-in takes at least the floor, even when the client closes its end of
   the connection early. This holds for every failure after the limits pass: a wrong
-  password, a busy server, an inactive account and a ban. The server sets the floor
-  at start: 2 × K × T, but at least 400 ms, rounded up to a whole 50 ms. T is the
-  slowest single password check, which the server times once for each kind and cost
-  of stored hash. K is the most accounts that share one email address, because a
-  sign-in by that address checks each of them. The start-up log line
-  `login: sign-in floor` gives the floor, T and K. The floor hides the time of the
-  hash while the host runs a check within twice its start-up time. Heavier CPU load
-  can still show the time.
+  password, a busy server, an inactive account and a ban. The floor counts from the
+  start of the sign-in, or from the moment the memory gate lets it in when that is
+  later. So a wait for the gate adds the same delay to every name, and the floor
+  still hides the hash after it. The server sets the floor at start: 2 × K × T, but
+  at least 400 ms, rounded up to a whole 50 ms. T is the slowest single password
+  check, which the server times once for each kind and cost of stored hash, with a
+  wrong password of 4,096 bytes (the longest that a check reads; a chain check takes
+  longer for a longer password). K is the most accounts that share one email
+  address, because a sign-in by that address checks each of them. The start-up log
+  line `login: sign-in floor` gives the floor, T and K. The floor hides the time of
+  the hash while the host runs a check within twice its start-up time. Heavier CPU
+  load can still show the time.
 - A sign-in holds the memory gate once, for all of its checks. So a busy server
   answers alike for a shared email address, a unique one and an unknown name.
-- Password checks share 128 MiB of memory. Every check holds the same share,
+- Password checks share a memory gate of 128 MiB, or less under a low memory limit
+  (see "Memory"). Every check holds the same share,
   whatever the kind of hash, so neither the wait nor the answer tells a stranger
   which names have accounts or which accounts have old hashes. The share follows the
   most costly stored hash, which the server reads at start. With no hash above the
@@ -261,6 +268,35 @@ the operator:
   once. A sign-in replaces an old hash with a gobb hash, so the share falls at a
   later start, when no costly hash is left. A check that finds no room for 5
   seconds answers 503.
+
+### Memory
+
+At start, gobb sets the memory limit of the Go runtime. When `GOMEMLIMIT` is set,
+that value wins. Otherwise, when the process runs under a cgroup memory limit (a
+container cap, such as `mem_limit` in Compose), gobb sets the limit to 70% of the cap.
+Otherwise it sets none. Without a limit, the Go runtime lets the heap grow to about
+twice the memory in use before it collects. Under a container cap, a burst of failed
+sign-ins then passes the cap, the kernel kills gobb, and the restart clears the
+sign-in limits.
+
+The password checks share a memory gate of min(128 MiB, the limit − 48 MiB). The
+start-up log line `memory limit` gives the limit in bytes, its source (`GOMEMLIMIT`,
+`cgroup` or `none`) and the gate budget in KiB. A check gives its share of the gate
+back only after a garbage collection, so the memory of a finished check is free
+before the next check starts. At start, gobb also times one check of each kind of
+stored hash, inside the gate, and then frees the memory of those checks.
+
+Compose runs gobb under a cap of 256 MiB with no swap. `GOBB_MEM_LIMIT` in `.env`
+changes it. Under that cap the Go limit is 179 MiB and the gate is 128 MiB, so two
+checks of a 64 MiB argon2id hash run at once. CI sends a burst of 40 wrong passwords,
+20 at a time, against such hashes under this cap, and fails on any restart or kill.
+
+A stored argon2id hash may ask for up to 256 MiB. A hash that asks for more than the
+gate budget gets one WARN line at start, with the number of such accounts. A check of
+such a hash runs alone, but it still needs its own memory and the rest of the server's.
+For such a board, raise `GOBB_MEM_LIMIT` to at least (m + 48 MiB) / 0.7, where m is the
+largest memory cost of a stored hash: `512m` covers m = 256 MiB. Above m = 128 MiB the
+WARN line stays, because the gate never holds more than 128 MiB.
 
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 20 seconds. A second signal exits at once.
