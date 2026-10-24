@@ -1,16 +1,17 @@
 package markup
 
 import (
+	"context"
 	"html"
 	"html/template"
 	"net/url"
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/evanwtf/gobb/internal/dbtest"
 )
 
 // renderSmileys is the smiley table that the render tests use.
@@ -721,45 +722,6 @@ func checkRendered(t *testing.T, r Rendered) {
 	checkOutputURLs(t, r)
 }
 
-// FuzzRender feeds the renderer two ways. Input that is a JSON tree goes
-// through Decode, which can build a tree that Validate rejects. Every input
-// also goes through Parse as Markdown source, with every flag on. In both,
-// Render must not panic, must write no script tag, and must write only hrefs
-// and srcs that pass the URL checks.
-func FuzzRender(f *testing.F) {
-	seeds := []string{
-		`{"k":0,"c":[{"k":2,"n":"p","c":[{"k":1,"t":"hi"}]}]}`,
-		`{"k":0,"c":[{"k":2,"n":"p","c":[{"k":2,"n":"url","a":{"href":"javascript:x"},"c":[{"k":1,"t":"x"}]}]}]}`,
-		`{"k":0,"c":[{"k":2,"n":"youtube","a":{"id":"\"><script>"}}]}`,
-		`{"k":0,"c":[{"k":2,"n":"email","a":{"address":"a@b?c#d"}}]}`,
-		`{"k":9,"c":[{"k":2,"n":"img","a":{"src":"&#106;avascript:x"}}]}`,
-		`{"k":0,"c":[{"k":2,"n":"url","a":{"href":"mailto:a%40b@c.d&e=f"},"c":[{"k":1,"t":"x"}]}]}`,
-		"[x](mailto:a@b.c) <a@b.c> a@b.c",
-		"![a](/p.png) ![b](https://example.com/i.png?a=1&b=2) :) :D",
-		"<https://example.com/?a=1&copy=2> [x](https://example.com/&amp;)",
-		"[x](javascript:alert(1)) [y](JaVaScRiPt&colon;x) ![z](data:text/html,<script>)",
-		"https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nhttps://x.com/a/status/1\n\nhttps://open.spotify.com/track/abc",
-		"<script>alert(1)</script> <SCRIPT src=x>",
-		"> **A** [wrote](/p/1):\n>\n> ||spoiler|| \\*x\\*\n\n```go\n<script>\n```",
-	}
-	for _, s := range seeds {
-		f.Add([]byte(s))
-	}
-	fixtures, _ := filepath.Glob(filepath.Join("testdata", "roundtrip", "*.md"))
-	for _, name := range fixtures {
-		if data, err := os.ReadFile(name); err == nil {
-			f.Add(data)
-		}
-	}
-	opt := Options{Markdown: true, Smilies: true, Autolink: true, SmileyList: smileyList}
-	f.Fuzz(func(t *testing.T, data []byte) {
-		if n, err := Decode(data); err == nil {
-			checkRendered(t, Render(n, renderSmileys()))
-		}
-		checkRendered(t, Render(Parse(string(data), opt), renderSmileys()))
-	})
-}
-
 // A link with a display text shows a shortened form of its address. The search
 // text keeps the full address, so a search finds the middle of a long URL.
 func TestRenderTextKeepsFullHrefBehindDisplay(t *testing.T) {
@@ -958,5 +920,52 @@ func TestRenderRedditIsAPlainLink(t *testing.T) {
 	}
 	if !strings.Contains(out, ">View post on Reddit</a>") {
 		t.Errorf("no link text: %s", out)
+	}
+}
+
+// TestTextKeepsAngleBracketText covers text that stands only inside angle
+// brackets. The PostgreSQL parser of the search column reads "<like this>" as a
+// markup tag and drops it, so the plain text must not carry the brackets.
+func TestTextKeepsAngleBracketText(t *testing.T) {
+	for _, md := range []bool{true, false} {
+		src := "see <like this> here"
+		got := Render(Parse(src, Options{Markdown: md}), RenderContext{}).Text
+		if !strings.Contains(got, "like this") {
+			t.Errorf("markdown=%v: Text = %q, want it to contain %q", md, got, "like this")
+		}
+		if strings.ContainsAny(got, "<>") {
+			t.Errorf("markdown=%v: Text = %q, want no angle bracket: the search parser reads it as a tag", md, got)
+		}
+		// The HTML keeps the brackets, escaped.
+		out := string(Render(Parse(src, Options{Markdown: md}), RenderContext{}).HTML)
+		if want := "<p>see &lt;like this&gt; here</p>"; out != want {
+			t.Errorf("markdown=%v: HTML = %q, want %q", md, out, want)
+		}
+	}
+	// Brackets in code, in a link address and in a display text count too.
+	for _, src := range []string{"`<code words>`", "```\n<fenced words>\n```", "[<in label>](https://example.com/?a=<b>)", "<tag>"} {
+		got := Render(Parse(src, allOn), RenderContext{}).Text
+		if strings.ContainsAny(got, "<>") {
+			t.Errorf("Text of %q = %q, want no angle bracket", src, got)
+		}
+	}
+}
+
+// TestTextAngleBracketSearch asks PostgreSQL itself: the search column must
+// find a word that stood only inside angle brackets in the post.
+func TestTextAngleBracketSearch(t *testing.T) {
+	pool := dbtest.New(t)
+	text := Render(Parse("see <like this> here, and <b>bold words</b> too", Options{Markdown: true}), RenderContext{}).Text
+	for _, word := range []string{"like", "bold", "words", "see"} {
+		var found bool
+		err := pool.QueryRow(context.Background(),
+			`select to_tsvector('english'::regconfig, $1::text) @@ plainto_tsquery('english'::regconfig, $2::text)`,
+			text, word).Scan(&found)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found {
+			t.Errorf("search for %q does not find it in Text %q", word, text)
+		}
 	}
 }

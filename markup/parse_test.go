@@ -560,14 +560,51 @@ func TestParseNestingCaps(t *testing.T) {
 	}
 }
 
-// TestParseNestingScales guards what the time limits above cannot guard on a slow
-// or busy machine: that the parse time grows in step with the input. For each
-// shape it parses n and 4n units and compares the best of three runs of each. A
-// linear parser takes about 4 times as long for 4n, a quadratic one 16 times, a
-// cubic one 64 times. Several shapes are quadratic today, and the caps on size
-// and depth bound them, so the test allows 40 times plus a fixed allowance. It
-// fails for growth beyond quadratic, and it does not depend on the speed of the
-// machine.
+// bestOf returns the fastest of runs parses of src.
+func bestOf(runs int, src string) time.Duration {
+	fastest := time.Duration(1 << 62)
+	for i := 0; i < runs; i++ {
+		start := time.Now()
+		Parse(src, allOn)
+		if d := time.Since(start); d < fastest {
+			fastest = d
+		}
+	}
+	return fastest
+}
+
+// TestParseLinkRunLinear covers the quadratic parse of a repeated "[a](": goldmark
+// scanned to the end of the line for the destination at every "](", so 10,000
+// repeats took about half a second. The growth ratio is the gate and it always
+// runs: twice the input must take less than three times as long (a linear parse
+// takes about twice as long, a quadratic one four times). The absolute bound
+// guards the slow machine: 50 ms for 10,000 repeats, ten times that under the
+// race detector.
+func TestParseLinkRunLinear(t *testing.T) {
+	for _, unit := range []string{"[a](", "![a](", "[a](<", "[a](b \"", "[a][", "[a]: "} {
+		t.Run(unit, func(t *testing.T) {
+			small := bestOf(7, strings.Repeat(unit, 10000))
+			large := bestOf(7, strings.Repeat(unit, 20000))
+			t.Logf("10,000 repeats: %v, 20,000 repeats: %v", small, large)
+			if large >= 3*small {
+				t.Errorf("20,000 repeats took %v and 10,000 took %v: three times as long or more", large, small)
+			}
+			if limit := 50 * time.Millisecond * raceSlowdown; small > limit {
+				t.Errorf("10,000 repeats took %v, want under %v", small, limit)
+			}
+		})
+	}
+}
+
+// TestParseNestingScales guards what the time limits cannot guard on a slow or
+// busy machine: that the parse time grows in step with the input. For each shape
+// it raises n until the best of three runs takes 10 ms or more (or n reaches a
+// cap), then compares that run with the best run of 4n units. A linear parser
+// takes about 4 times as long for 4n and a quadratic one 16 times, so the test
+// allows 8 times, the middle between them. The time of the small run has a
+// floor of 2 ms, so the noise of a tiny run cannot fail a shape that is cheap.
+// There is no additive term, so a quadratic shape fails. It does not depend on
+// the speed of the machine.
 func TestParseNestingScales(t *testing.T) {
 	shapes := map[string]func(n int) string{
 		"nested quotes":       func(n int) string { return strings.Repeat(">", n) + " deep" },
@@ -584,24 +621,23 @@ func TestParseNestingScales(t *testing.T) {
 		"open links":          func(n int) string { return strings.Repeat("[a ", n) },
 		"brackets and parens": func(n int) string { return strings.Repeat("[a](", n) },
 	}
-	best := func(src string) time.Duration {
-		fastest := time.Duration(1 << 62)
-		for i := 0; i < 3; i++ {
-			start := time.Now()
-			Parse(src, allOn)
-			if d := time.Since(start); d < fastest {
-				fastest = d
-			}
-		}
-		return fastest
-	}
-	const n = 2500
+	const (
+		startN = 1250
+		capN   = 40000
+		floor  = 2 * time.Millisecond
+	)
 	for name, gen := range shapes {
 		t.Run(name, func(t *testing.T) {
-			small, large := best(gen(n)), best(gen(4*n))
+			n := startN
+			small := bestOf(3, gen(n))
+			for small < 10*time.Millisecond && n < capN {
+				n *= 2
+				small = bestOf(3, gen(n))
+			}
+			large := bestOf(3, gen(4*n))
 			t.Logf("n=%d: %v, 4n: %v", n, small, large)
-			if allowed := 40*small + 100*time.Millisecond*raceSlowdown; large > allowed {
-				t.Errorf("4n took %v and n took %v: more than 40 times plus the allowance (%v)", large, small, allowed)
+			if allowed := 8 * max(small, floor); large > allowed {
+				t.Errorf("4n took %v and n took %v: more than 8 times (%v)", large, small, allowed)
 			}
 		})
 	}
@@ -893,44 +929,6 @@ func TestParseNeverEmitsBlankLiText(t *testing.T) {
 			t.Errorf("%q: %v", src, err)
 		}
 	}
-}
-
-// oddSmilies holds smiley codes that Validate would reject if they matched.
-var oddSmilies = Options{Markdown: true, Smilies: true, Autolink: true, SmileyList: []Smiley{
-	{Code: ":\t)"}, {Code: "\xc3"}, {Code: ":\x01)"}, {Code: ":\u0085)"}, {Code: "\t"}, {Code: " "}, {Code: ":)"}, {Code: "x"},
-}}
-
-func FuzzParse(f *testing.F) {
-	seeds := []string{
-		"", "a", "a\nb", "a\n\nb", "**b** *i* `c` ~~s~~", "# h\n---\n> q\n- l\n1. n",
-		"||x||", "||a **b** [c](/d)||", "||a\n\nb||", "||||x||||", "|||a||",
-		"[t](https://example.com)", "![a](/b.png)", "<https://example.com>", "<a@example.com>",
-		"https://youtu.be/dQw4w9WgXcQ", "x\nhttps://x.com/a/status/1\ny", "www.example.com a@example.com",
-		":) :( :D ;) :lol:", "a:)b :):)", "```go\nx\n```", "    code", "<script>x</script>",
-		"[x](javascript:alert(1))", "![a](data:image/png;base64,x)", "\\*sigh\\*", "&amp; &#35; &bogus;",
-		"a\xffb", "a\x00b", "a\r\nb\rc", "> > > > > > > > > > > > > > x", "- - - - - - - - - - - - - - - - - - - x",
-		strings.Repeat("> ", 12) + "x", strings.Repeat("- ", 20) + "x", strings.Repeat("*a ", 40) + strings.Repeat("a* ", 40),
-		"[a]: /b\n[a]", "\\\n", "  \n", "`` ` ``", "[[[[", "![![![", "<<<>>>", "||[x||](y)",
-		"[https://example.com](https://example.org)", "<a&b@example.com>", "![a\fb](https://a.example/x.png)", "[x](https://a.example/\u200d)", "<https://a.example/\u200d>", "a&b@example.com", "[x](mailto:a?b@example.com)",
-		"> " + strings.Repeat("- ", 16) + "x\n>" + strings.Repeat(" ", 33) + "y",
-		"> " + strings.Repeat("1. ", 16) + "x\n>" + strings.Repeat(" ", 49) + "y",
-		strings.Repeat("> - ", 11) + "x\n" + strings.Repeat(">   ", 11) + "  y",
-		strings.Repeat("> 1. ", 14) + "x\n" + strings.Repeat(">    ", 14) + "    y",
-		strings.Repeat("- > ", 12) + "x\n" + strings.Repeat("  ", 24) + "y\n\n" + strings.Repeat("> ", 30) + "z",
-		"[x](/a?x=1&copy=2)", "![a](/a.png?x&times=1)", "https://example.com/?x=1&shy=1", "<https://example.com/?a=1&amp;b>",
-		"<x\u202e@c.example>", "<x\\y@c.example>", ":\t)", "a\xffb", "[<https://a.b>](/c)", "![[a](/b)](/c)",
-	}
-	for _, s := range seeds {
-		f.Add(s)
-	}
-	f.Fuzz(func(t *testing.T, s string) {
-		for _, opt := range []Options{allOn, mdOnly, {}, {Autolink: true, Smilies: true, SmileyList: smileyList}, oddSmilies} {
-			got := Parse(s, opt)
-			if err := Validate(got); err != nil {
-				t.Fatalf("invalid tree for %q with %+v: %v\n%s", s, opt, err, js(got))
-			}
-		}
-	})
 }
 
 // cappedBlockParsers finds the quote parser and the list parser by value

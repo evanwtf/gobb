@@ -127,6 +127,63 @@ jobs:
           chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
           rm -rf "$GOMODCACHE" "$GOCACHE"
 
+  # Each fuzz target runs for 60 s on every push. It runs after check, so a plain
+  # test failure shows first. A failing input is written to testdata/fuzz in the
+  # package of the target, and the job uploads that folder. Add the input to the
+  # repo and fix the cause before you land.
+  fuzz:
+    needs: check
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Scope the Go caches to this run
+        run: |
+          {
+            echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # One run reports every target: a failure in one does not skip the rest.
+      # -run '^$' skips the unit tests, which the check job ran.
+      - name: Fuzz each target for 60 seconds
+        run: |
+          status=0
+          for target in "./markup/ FuzzParse" "./markup/ FuzzRender" "./internal/password/ FuzzVerifyLegacy"; do
+            pkg=${target% *}
+            name=${target#* }
+            echo "::group::$name in $pkg"
+            go test -run '^$' -fuzz "^$name\$" -fuzztime 60s -parallel 4 "$pkg" || status=$?
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+      - name: Upload the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-failing-inputs
+          path: |
+            markup/testdata/fuzz
+            internal/password/testdata/fuzz
+          if-no-files-found: ignore
+
+      # The module cache is read-only; make it writable so rm can remove it.
+      - name: Clean up
+        if: always()
+        run: |
+          chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
+          rm -rf "$GOMODCACHE" "$GOCACHE"
+
   image:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64]

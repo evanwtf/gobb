@@ -14,6 +14,7 @@ import (
 	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // newTestSite imports b into a test database and returns the handler of a site
@@ -21,6 +22,12 @@ import (
 func newTestSite(t *testing.T, b *bundletest.Board, opt Options) (http.Handler, string) {
 	t.Helper()
 	pool, dataDir := boardtest.Load(t, b)
+	return siteOnPool(t, pool, dataDir, opt), dataDir
+}
+
+// siteOnPool returns the handler of a site on a loaded test database.
+func siteOnPool(t *testing.T, pool *pgxpool.Pool, dataDir string, opt Options) http.Handler {
+	t.Helper()
 	opt.DataDir = dataDir
 	if opt.LoginFloor == 0 {
 		opt.LoginFloor = time.Millisecond
@@ -29,7 +36,7 @@ func newTestSite(t *testing.T, b *bundletest.Board, opt Options) (http.Handler, 
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
-	return h, dataDir
+	return h
 }
 
 // smallSite is a site on bundletest.Small with the default options.

@@ -67,16 +67,26 @@ var engines = [4]goldmark.Markdown{
 	newEngine(true, false), newEngine(true, true),
 }
 
-// newEngine builds the goldmark parser for one mix of flags. With Markdown on
+// newEngine builds the engine for one mix of flags, with the bounded link
+// parser.
+func newEngine(markdown, autolink bool) goldmark.Markdown {
+	return newEngineWith(markdown, autolink, true)
+}
+
+// newEngineWith builds the goldmark parser for one mix of flags. With Markdown on
 // it is CommonMark plus spoilers. With Markdown off it has the paragraph block
 // parser and no inline parser, so the text stays as written. Linkify finds the
 // bare links in both.
-func newEngine(markdown, autolink bool) goldmark.Markdown {
+func newEngineWith(markdown, autolink, bounded bool) goldmark.Markdown {
+	inline := parser.DefaultInlineParsers()
+	if bounded {
+		inline = boundedInlineParsers()
+	}
 	var opts []goldmark.Option
 	if markdown {
 		opts = append(opts, goldmark.WithParser(parser.NewParser(
 			parser.WithBlockParsers(cappedBlockParsers()...),
-			parser.WithInlineParsers(parser.DefaultInlineParsers()...),
+			parser.WithInlineParsers(inline...),
 			parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...),
 		)))
 	} else {
@@ -209,6 +219,8 @@ type builder struct {
 
 	smileys map[byte][]Smiley // smilies by first byte of code, longest code first
 
+	joined map[*Node]*strings.Builder // the text of the nodes that addText has grown
+
 	buf bytes.Buffer // scratch for decode
 	w   *bufio.Writer
 }
@@ -229,12 +241,28 @@ func newEl(name string, attrs map[string]string, children []*Node) *Node {
 func newText(s string) *Node { return &Node{Kind: Text, Text: s} }
 
 // addText appends text to out. It joins the text to a text node at the end.
-func addText(out *[]*Node, s string) {
+// The join is amortized: a node that grows keeps a strings.Builder in b.joined,
+// so a run of n small pieces costs time in proportion to n, where a string
+// concatenation per piece costs time in proportion to n squared.
+func (b *builder) addText(out *[]*Node, s string) {
 	if s == "" {
 		return
 	}
 	if n := len(*out); n > 0 && (*out)[n-1].Kind == Text {
-		(*out)[n-1].Text += s
+		last := (*out)[n-1]
+		sb := b.joined[last]
+		if sb == nil {
+			sb = new(strings.Builder)
+			sb.WriteString(last.Text)
+			if b.joined == nil {
+				b.joined = map[*Node]*strings.Builder{}
+			}
+			b.joined[last] = sb
+		}
+		sb.WriteString(s)
+		// String returns the bytes written so far without a copy. Later writes
+		// never change them, so an earlier value of last.Text stays valid.
+		last.Text = sb.String()
 		return
 	}
 	*out = append(*out, newText(s))
@@ -242,21 +270,21 @@ func addText(out *[]*Node, s string) {
 
 // addBreak appends a br, or a space when a br would be too deep. depth is the
 // depth of the element that holds out.
-func addBreak(out *[]*Node, depth int) {
+func (b *builder) addBreak(out *[]*Node, depth int) {
 	if depth >= MaxDepth {
-		addText(out, " ")
+		b.addText(out, " ")
 		return
 	}
 	*out = append(*out, newEl("br", nil, nil))
 }
 
 // addMultiline appends s with a br at each line feed.
-func addMultiline(out *[]*Node, s string, depth int) {
+func (b *builder) addMultiline(out *[]*Node, s string, depth int) {
 	for i, line := range strings.Split(s, "\n") {
 		if i > 0 {
-			addBreak(out, depth)
+			b.addBreak(out, depth)
 		}
-		addText(out, line)
+		b.addText(out, line)
 	}
 }
 
@@ -327,7 +355,7 @@ func (b *builder) blocks(out *[]*Node, parent ast.Node, depth, quotes int) {
 				sb.Write(v.ClosureLine.Value(b.src))
 			}
 			var kids []*Node
-			addMultiline(&kids, strings.TrimRight(sb.String(), "\n"), depth+1)
+			b.addMultiline(&kids, strings.TrimRight(sb.String(), "\n"), depth+1)
 			if len(kids) > 0 {
 				*out = append(*out, newEl("p", nil, kids))
 			}
@@ -378,7 +406,7 @@ func (b *builder) pre(out *[]*Node, attrs map[string]string, lines *text.Segment
 // at depth+1.
 func (b *builder) plainBlock(out *[]*Node, n ast.Node, depth int) {
 	var kids []*Node
-	addMultiline(&kids, b.plainString(n), depth+1)
+	b.addMultiline(&kids, b.plainString(n), depth+1)
 	if len(kids) > 0 {
 		*out = append(*out, newEl("p", nil, kids))
 	}
@@ -500,18 +528,18 @@ func (b *builder) inline(out *[]*Node, n ast.Node, ctx inCtx) {
 		} else {
 			s = string(v.Value(b.src))
 		}
-		addText(out, s)
+		b.addText(out, s)
 		if !b.md && v.HardLineBreak() {
 			// Goldmark drops the backslash of a hard break. Plain text keeps it.
 			if stop := v.Segment.Stop; stop < len(b.src) && b.src[stop] == '\\' {
-				addText(out, "\\")
+				b.addText(out, "\\")
 			}
 		}
 		if v.SoftLineBreak() || v.HardLineBreak() {
-			addBreak(out, ctx.depth)
+			b.addBreak(out, ctx.depth)
 		}
 	case *ast.String:
-		addText(out, string(v.Value))
+		b.addText(out, string(v.Value))
 	case *ast.CodeSpan:
 		var sb strings.Builder
 		for c := v.FirstChild(); c != nil; c = c.NextSibling() {
@@ -523,7 +551,7 @@ func (b *builder) inline(out *[]*Node, n ast.Node, ctx inCtx) {
 		switch {
 		case s == "":
 		case ctx.depth >= MaxDepth:
-			addText(out, s)
+			b.addText(out, s)
 		default:
 			*out = append(*out, newEl("code", nil, []*Node{newText(s)}))
 		}
@@ -560,7 +588,7 @@ func (b *builder) inline(out *[]*Node, n ast.Node, ctx inCtx) {
 		alt := cleanAlt(b.plainString(n))
 		src, ok := destination(v.Destination, true)
 		if !ok || ctx.depth >= MaxDepth || !CheckImageURL(src) {
-			addText(out, alt)
+			b.addText(out, alt)
 			return
 		}
 		attrs := map[string]string{"src": src}
@@ -576,9 +604,9 @@ func (b *builder) inline(out *[]*Node, n ast.Node, ctx inCtx) {
 			seg := v.Segments.At(i)
 			sb.Write(seg.Value(b.src))
 		}
-		addMultiline(out, sb.String(), ctx.depth)
+		b.addMultiline(out, sb.String(), ctx.depth)
 	default:
-		addMultiline(out, b.plainString(n), ctx.depth)
+		b.addMultiline(out, b.plainString(n), ctx.depth)
 	}
 }
 
@@ -586,12 +614,12 @@ func (b *builder) inline(out *[]*Node, n ast.Node, ctx inCtx) {
 func (b *builder) autoLink(out *[]*Node, v *ast.AutoLink, ctx inCtx) {
 	label := string(v.Label(b.src))
 	if ctx.inLink || ctx.depth >= MaxDepth {
-		addText(out, label)
+		b.addText(out, label)
 		return
 	}
 	if v.AutoLinkType == ast.AutoLinkEmail {
 		if !isEmail(label) {
-			addText(out, label)
+			b.addText(out, label)
 			return
 		}
 		*out = append(*out, newEl("email", map[string]string{"address": label}, []*Node{newText(label)}))
@@ -599,7 +627,7 @@ func (b *builder) autoLink(out *[]*Node, v *ast.AutoLink, ctx inCtx) {
 	}
 	href, ok := destination(v.URL(b.src), false)
 	if !ok || !CheckLinkURL(href) {
-		addText(out, label)
+		b.addText(out, label)
 		return
 	}
 	attrs := map[string]string{"href": href}

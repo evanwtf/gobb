@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/evanwtf/gobb/bundle"
+	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
 )
 
@@ -215,7 +216,16 @@ func TestSearchAuthorLinks(t *testing.T) {
 func TestSearchNoXSS(t *testing.T) {
 	b := searchSiteBoard()
 	b.Posts[5].Body = bundle.Body{Source: "<script>alert(1)</script> needle", Markdown: true}
-	h, _ := newTestSite(t, b, Options{})
+	pool, dataDir := boardtest.Load(t, b)
+	// The import no longer keeps angle brackets in body_text (see
+	// TestSearchFindsAngleBracketText), but a post stored before that change keeps
+	// them until the next import, and the snippet must escape them. Put the old
+	// text back to test that path.
+	if _, err := pool.Exec(t.Context(), `update posts set body_text = $1 where id = $2`,
+		"<script>alert(1)</script> needle", b.Posts[5].ID); err != nil {
+		t.Fatal(err)
+	}
+	h := siteOnPool(t, pool, dataDir, Options{})
 	alice := signIn(t, h, "alice", "example-password")
 	body := bodyOf(t, getAs(t, h, "/search?q=needle", alice))
 	if strings.Contains(body, "<script>alert") || !strings.Contains(body, "&lt;script&gt;") {
@@ -226,6 +236,20 @@ func TestSearchNoXSS(t *testing.T) {
 	body = bodyOf(t, getAs(t, h, "/search?"+url.Values{"q": {q}, "author": {q}}.Encode(), alice))
 	if strings.Contains(body, "<script>alert(2)") {
 		t.Error("the query is not escaped")
+	}
+}
+
+// TestSearchFindsAngleBracketText covers a word that stands only inside angle
+// brackets in a post. The text search of PostgreSQL reads "<like this>" as a tag
+// and drops it, so the stored plain text must not carry the brackets.
+func TestSearchFindsAngleBracketText(t *testing.T) {
+	b := searchSiteBoard()
+	b.Posts[5].Body = bundle.Body{Source: "see <zebrafish words> here", Markdown: true}
+	h, _ := newTestSite(t, b, Options{})
+	alice := signIn(t, h, "alice", "example-password")
+	body := bodyOf(t, getAs(t, h, "/search?q=zebrafish", alice))
+	if !strings.Contains(body, "zebrafish") || strings.Contains(body, "No posts match this search.") {
+		t.Errorf("a search for a word inside angle brackets finds nothing:\n%s", body)
 	}
 }
 

