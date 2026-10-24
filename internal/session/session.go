@@ -170,6 +170,17 @@ func Delete(ctx context.Context, q db.Querier, token string) error {
 	return nil
 }
 
+// DeleteUser ends every session of the member userID and returns how many it
+// deleted. A password change calls it, and so does a password reset. A member
+// with no session is not an error.
+func DeleteUser(ctx context.Context, q db.Querier, userID int64) (int64, error) {
+	tag, err := q.Exec(ctx, `delete from sessions where user_id = $1`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("session: delete sessions of user %d: %w", userID, err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // csrfLabel is the text that the CSRF HMAC covers. A change of version here
 // makes every old token fail.
 const csrfLabel = "gobb csrf v1"

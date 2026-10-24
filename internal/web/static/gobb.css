@@ -1102,3 +1102,9 @@ mark {
 @media (max-width: 40rem) {
   .button-inline, .form-actions .button-quiet, .post-actions .button-quiet { min-height: 2.5rem; }
 }
+
+/* ---- Account page --------------------------------------------------------- */
+
+.account-section { max-width: 52rem; margin-bottom: 2rem; }
+.account-section h2 { margin-bottom: 0.75rem; font-size: 1.2rem; }
+.account-section .field input[type="password"], .account-section .field input[type="email"] { max-width: 26rem; }

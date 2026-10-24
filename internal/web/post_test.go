@@ -672,6 +672,14 @@ var tokenRows = []tokenRow{
 	{"/t/1/unlock", "bob", url.Values{}, `update topics set locked = true where id = 1`},
 	{"/f/2/post", "", url.Values{"title": {"x"}, "body": {"No token."}, "guest_name": {"Visitor 9"}}, ""},
 	{"/t/1/reply", "", url.Values{"body": {"No token."}, "guest_name": {"Visitor 9"}}, ""},
+	{"/account/password", "alice", url.Values{"current": {testPassword}, "next": {"a new pass phrase"}, "confirm": {"a new pass phrase"}}, ""},
+	{"/account/email", "alice", url.Values{"email": {"alice.new@example.org"}, "current": {testPassword}}, ""},
+	{"/account/signature", "alice", url.Values{"signature": {"No token."}}, ""},
+	{"/login", "", url.Values{"name": {"alice"}, "password": {testPassword}}, ""},
+	{"/logout", "alice", url.Values{}, ""},
+	{"/scheme", "alice", url.Values{"scheme": {"slate-deep"}}, ""},
+	{"/read", "alice", url.Values{}, ""},
+	{"/f/2/read", "alice", url.Values{}, ""},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post
@@ -689,6 +697,58 @@ func tokenSite(t *testing.T, row tokenRow) (http.Handler, *pgxpool.Pool) {
 		exec(t, pool, row.setup)
 	}
 	return h, pool
+}
+
+// routePatterns returns the patterns of the POST routes in site.go.
+func routePatterns(t *testing.T) []string {
+	t.Helper()
+	src, err := os.ReadFile("site.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, m := range regexp.MustCompile(`Handle(?:Func)?\("POST ([^"]+)"`).FindAllStringSubmatch(string(src), -1) {
+		out = append(out, m[1])
+	}
+	if len(out) == 0 {
+		t.Fatal("found no POST route in site.go")
+	}
+	return out
+}
+
+// patternRegexp turns a route pattern such as /p/{id}/edit into an expression
+// that matches an address of that route.
+func patternRegexp(pattern string) *regexp.Regexp {
+	return regexp.MustCompile(`^` + regexp.MustCompile(`\\\{[a-z]+\\\}`).ReplaceAllString(regexp.QuoteMeta(pattern), `[^/]+`) + `$`)
+}
+
+// TestPostRoutesHaveTokenRows: every POST route on the mux has a row in
+// tokenRows, and every row names a route that exists, the way TestPostRoutesHaveCaps
+// forces a row in bodyCaps. A new route then cannot skip the token test.
+func TestPostRoutesHaveTokenRows(t *testing.T) {
+	patterns := routePatterns(t)
+	for _, p := range patterns {
+		re := patternRegexp(p)
+		found := false
+		for _, row := range tokenRows {
+			found = found || re.MatchString(row.target)
+		}
+		if !found {
+			t.Errorf("POST %s has no row in tokenRows", p)
+		}
+	}
+	for _, row := range tokenRows {
+		found := false
+		for _, p := range patterns {
+			found = found || patternRegexp(p).MatchString(row.target)
+		}
+		if !found {
+			t.Errorf("tokenRows has %s, which no POST route matches", row.target)
+		}
+	}
+	if !patternRegexp("/p/{id}/edit").MatchString("/p/1/edit") || patternRegexp("/p/{id}/edit").MatchString("/p/1/delete") {
+		t.Error("patternRegexp does not match as it should")
+	}
 }
 
 // TestPostingNeedsToken: every POST route that changes data refuses a request with
@@ -735,18 +795,31 @@ func TestPostingNeedsToken(t *testing.T) {
 					t.Errorf("POST %s with a guest's token: status %d, want 403", row.target, rec.Code)
 				}
 			}
-			// A request from another site is refused before the token is read.
-			f := cloneForm(row.form)
-			r := httptest.NewRequest(http.MethodPost, row.target, strings.NewReader(f.Encode()))
-			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			r.Header.Set("Sec-Fetch-Site", "cross-site")
-			for _, c := range cookies {
-				r.AddCookie(c)
-			}
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, r)
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("cross-site POST %s: status %d, want 403", row.target, rec.Code)
+			// A request from another site is refused on the origin alone: it carries
+			// a good token for the visitor, and the control above showed that the
+			// same request from the same site gets 303.
+			page := getAs(t, h, "/", cookies)
+			withToken := jar(cookies, page)
+			good := cloneForm(row.form)
+			good.Set("csrf", formToken(t, bodyOf(t, page)))
+			for what, hdr := range map[string]map[string]string{
+				"Sec-Fetch-Site cross-site": {"Sec-Fetch-Site": "cross-site"},
+				"a foreign Origin":          {"Origin": "https://attacker.example"},
+				"Sec-Fetch-Site same-site":  {"Sec-Fetch-Site": "same-site"},
+			} {
+				r := httptest.NewRequest(http.MethodPost, row.target, strings.NewReader(good.Encode()))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				for k, v := range hdr {
+					r.Header.Set(k, v)
+				}
+				for _, c := range withToken {
+					r.AddCookie(c)
+				}
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, r)
+				if rec.Code != http.StatusForbidden {
+					t.Errorf("POST %s with a good token and %s: status %d, want 403", row.target, what, rec.Code)
+				}
 			}
 			if diff := diffTables(before, dumpData(t, pool)); len(diff) != 0 {
 				t.Errorf("a refused POST changed %v", diff)

@@ -106,7 +106,7 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -196,6 +196,9 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.Handle("POST /login", s.protect(maxLoginBody, s.loginSubmit))
 	inner.Handle("POST /logout", s.protectOr(maxPostBody, s.logout, s.toIndex))
 	inner.Handle("POST /scheme", s.protect(maxPostBody, s.setScheme))
+	inner.Handle("POST /account/password", s.protect(maxAccountBody, s.changePassword))
+	inner.Handle("POST /account/email", s.protect(maxAccountBody, s.changeEmail))
+	inner.Handle("POST /account/signature", s.protectPosting(maxPostingBody, s.changeSignature))
 	inner.HandleFunc("GET /static/{name}", s.static)
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
 	// Without this, the mux would redirect /files/avatars to /files/avatars/.

@@ -309,3 +309,42 @@ func TestCreateSkipsUnspecifiedAddress(t *testing.T) {
 		t.Errorf("sessions = %d (%v), want 3", sessions, err)
 	}
 }
+
+// DeleteUser ends every session of one member and no session of anyone else. It
+// reports how many rows it deleted, and a member with none is not an error.
+func TestDeleteUser(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	ip := netip.MustParseAddr("10.1.2.3")
+	var aliceTokens []string
+	for _, remember := range []bool{false, true, false} {
+		token, _, err := session.Create(ctx, pool, 1, remember, ip, "a", t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aliceTokens = append(aliceTokens, token)
+	}
+	bobToken, _, err := session.Create(ctx, pool, 2, false, ip, "b", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := session.DeleteUser(ctx, pool, 1)
+	if err != nil || n != 3 {
+		t.Fatalf("DeleteUser(1) = %d, %v, want 3, nil", n, err)
+	}
+	for _, token := range aliceTokens {
+		if _, err := session.Lookup(ctx, pool, token, t0); !errors.Is(err, session.ErrNone) {
+			t.Errorf("a session of user 1 survived: %v", err)
+		}
+	}
+	if _, err := session.Lookup(ctx, pool, bobToken, t0); err != nil {
+		t.Errorf("the session of user 2 was deleted: %v", err)
+	}
+	if n, err := session.DeleteUser(ctx, pool, 1); err != nil || n != 0 {
+		t.Errorf("DeleteUser of a member with no session = %d, %v, want 0, nil", n, err)
+	}
+	if n, err := session.DeleteUser(ctx, pool, 9999); err != nil || n != 0 {
+		t.Errorf("DeleteUser of an unknown member = %d, %v, want 0, nil", n, err)
+	}
+}

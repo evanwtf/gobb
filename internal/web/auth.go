@@ -289,7 +289,7 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.As(err, &limited):
 		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(limited.RetryAfter)))
-		d.Error = "Too many sign-in attempts. Try again in " + waitText(limited.RetryAfter) + "."
+		d.Error = limitMessage(limited)
 		s.renderLogin(w, p, http.StatusTooManyRequests, d)
 		return
 	case errors.Is(err, login.ErrBusy):

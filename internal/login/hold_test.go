@@ -462,3 +462,32 @@ func TestFloorCoversTheLookupWhenBusy(t *testing.T) {
 		t.Errorf("busy answer times differ by %v (alice %v, nobody %v), want within %v", diff, least["alice"], least["nobody"], floorTolerance)
 	}
 }
+
+// Hold takes the share of one new hash from the gate, so a password change
+// costs the memory of a check and no more. A full gate gives ErrBusy, and a
+// released hold gives the share back.
+func TestHoldTakesTheGate(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	s := NewWith(pool, Options{Gate: NewGate(password.HashMemoryKiB)})
+	s.GateWait = 20 * time.Millisecond
+	var holds []uint64
+	s.onAcquire = func(kib uint64) { holds = append(holds, kib) }
+
+	release, err := s.Hold(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(holds) != 1 || holds[0] != password.HashMemoryKiB {
+		t.Errorf("holds = %v, want one of %d KiB", holds, password.HashMemoryKiB)
+	}
+	if _, err := s.Hold(t.Context()); !errors.Is(err, ErrBusy) {
+		t.Errorf("a second hold on a full gate = %v, want ErrBusy", err)
+	}
+	release()
+	release() // a second release is harmless
+	again, err := s.Hold(t.Context())
+	if err != nil {
+		t.Fatalf("hold after the release: %v", err)
+	}
+	again()
+}

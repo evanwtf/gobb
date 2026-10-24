@@ -352,7 +352,7 @@ func TestRedirectsCacheControl(t *testing.T) {
 		{"/old/about.cgi", http.StatusMovedPermanently, http.StatusMovedPermanently},
 		{"/p/1", http.StatusFound, http.StatusFound},
 		{"/t/1/new", http.StatusFound, 0},
-		{"/account", http.StatusFound, http.StatusFound},
+		{"/account", http.StatusOK, http.StatusFound},
 	} {
 		guest := get(t, h, tc.path)
 		if tc.guest != 0 {

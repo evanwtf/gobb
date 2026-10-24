@@ -249,6 +249,8 @@ func TestStaticPages(t *testing.T) {
 	}
 }
 
+// A guest goes to sign in; a member gets the account page (Plan 4 replaced the
+// redirect to the profile).
 func TestAccountRedirect(t *testing.T) {
 	h, _ := smallSite(t)
 	rec := get(t, h, "/account")
@@ -257,7 +259,7 @@ func TestAccountRedirect(t *testing.T) {
 	}
 	bob := signIn(t, h, "bob", "example-password")
 	rec = getAs(t, h, "/account", bob)
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/u/2" {
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
 		t.Errorf("bob: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
@@ -329,8 +331,8 @@ func TestProfilePagesUnderBasePath(t *testing.T) {
 	if rec := get(t, h, "/forum/account"); rec.Header().Get("Location") != "/forum/login?next=%2Fforum%2Faccount" {
 		t.Errorf("guest /forum/account: %q", rec.Header().Get("Location"))
 	}
-	if rec := getAs(t, h, "/forum/account", alice); rec.Header().Get("Location") != "/forum/u/1" {
-		t.Errorf("alice /forum/account: %q", rec.Header().Get("Location"))
+	if rec := getAs(t, h, "/forum/account", alice); rec.Code != http.StatusOK {
+		t.Errorf("alice /forum/account: %d", rec.Code)
 	}
 }
 

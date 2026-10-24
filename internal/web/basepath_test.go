@@ -198,8 +198,24 @@ func TestBasePathEverywhere(t *testing.T) {
 	if rec := get(t, h, "/forum/account"); rec.Header().Get("Location") != "/forum/login?next=%2Fforum%2Faccount" {
 		t.Errorf("guest /forum/account = %q", rec.Header().Get("Location"))
 	}
-	if rec := getAs(t, h, "/forum/account", alice); rec.Header().Get("Location") != "/forum/u/1" {
-		t.Errorf("alice /forum/account = %q", rec.Header().Get("Location"))
+	// The account page: 200, every link, source and form action under the prefix,
+	// and the three forms post to the prefixed routes.
+	rec = getAs(t, h, "/forum/account", alice)
+	if rec.Code != http.StatusOK {
+		t.Errorf("alice /forum/account = %d", rec.Code)
+	}
+	account := bodyOf(t, rec)
+	checkBasePath(t, "alice /forum/account", account, "/forum/")
+	for _, want := range []string{`action="/forum/account/password"`, `action="/forum/account/email"`, `action="/forum/account/signature"`} {
+		if !strings.Contains(account, want) {
+			t.Errorf("/forum/account lacks %s", want)
+		}
+	}
+	// The three POST routes exist only under the prefix.
+	for _, p := range []string{"/account/password", "/account/email", "/account/signature"} {
+		if rec := request(t, h, http.MethodPost, p, alice, url.Values{}); rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s without the prefix: status %d, want 404", p, rec.Code)
+		}
 	}
 
 	// The rich post holds links and images that the author wrote as site paths.

@@ -854,6 +854,15 @@ update users set password_hash = $2, password_scheme = 'gobb'
 	}
 }
 
+// Hold takes the share of the gate that one new gobb hash needs, for the code
+// that hashes a new password (the account page, the command line). The caller
+// calls the returned release when the hash is done. When the gate stays full
+// for GateWait, Hold returns [ErrBusy]. It checks no password and counts for
+// no limit.
+func (s *Service) Hold(ctx context.Context) (release func(), err error) {
+	return s.acquire(ctx, s.chargeKiB("gobb", ""))
+}
+
 var (
 	dummyOnce sync.Once
 	dummy     string

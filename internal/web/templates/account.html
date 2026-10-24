@@ -1,0 +1,99 @@
+{{define "content"}}
+<header class="page-head">
+  <h1>Your account</h1>
+  <p class="page-sub">Signed in as {{.Viewer.Name}}.</p>
+</header>
+
+{{- with .Data.Done}}
+<p class="notice-inline" role="status">{{.}}</p>
+{{- end}}
+
+{{- if .Data.CanPassword}}
+<section class="account-section" aria-labelledby="account-password-title">
+  <h2 id="account-password-title">Change your password</h2>
+  <form class="post-form" method="post" action="{{path "account" "password"}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{- if .Data.Pass.Notice}}
+    <div class="form-error" role="alert"><p class="form-error-text">{{.Data.Pass.Notice}}</p></div>
+    {{- end}}
+    <div class="field">
+      <label for="pw-current">Current password</label>
+      <input id="pw-current" name="current" type="password" required autocomplete="current-password"
+        {{- if .Data.Pass.Current}} aria-invalid="true" aria-describedby="pw-current-error"{{end}}>
+      {{- if .Data.Pass.Current}}<p class="field-error" id="pw-current-error" role="alert">{{.Data.Pass.Current}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="pw-next">New password</label>
+      <input id="pw-next" name="next" type="password" required autocomplete="new-password"
+        aria-describedby="pw-next-hint{{if .Data.Pass.Next}} pw-next-error{{end}}"
+        {{- if .Data.Pass.Next}} aria-invalid="true"{{end}}>
+      {{- if .Data.Pass.Next}}<p class="field-error" id="pw-next-error" role="alert">{{.Data.Pass.Next}}</p>{{end}}
+      <p class="hint" id="pw-next-hint">At least 10 characters. It must differ from your username. Changing it signs you out everywhere else.</p>
+    </div>
+    <div class="field">
+      <label for="pw-confirm">New password again</label>
+      <input id="pw-confirm" name="confirm" type="password" required autocomplete="new-password"
+        {{- if .Data.Pass.Confirm}} aria-invalid="true" aria-describedby="pw-confirm-error"{{end}}>
+      {{- if .Data.Pass.Confirm}}<p class="field-error" id="pw-confirm-error" role="alert">{{.Data.Pass.Confirm}}</p>{{end}}
+    </div>
+    <div class="form-actions">
+      <button class="button button-inline" type="submit">Change password</button>
+    </div>
+  </form>
+</section>
+{{- end}}
+
+{{- if .Data.CanEmail}}
+<section class="account-section" aria-labelledby="account-email-title">
+  <h2 id="account-email-title">Change your email address</h2>
+  <form class="post-form" method="post" action="{{path "account" "email"}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{- if .Data.Mail.Notice}}
+    <div class="form-error" role="alert"><p class="form-error-text">{{.Data.Mail.Notice}}</p></div>
+    {{- end}}
+    <div class="field">
+      <label for="mail-email">Email address</label>
+      <input id="mail-email" name="email" type="email" value="{{.Data.Email}}" required autocomplete="email"
+        {{- if .Data.Mail.Email}} aria-invalid="true" aria-describedby="mail-email-error"{{end}}>
+      {{- if .Data.Mail.Email}}<p class="field-error" id="mail-email-error" role="alert">{{.Data.Mail.Email}}</p>{{end}}
+      <p class="hint">Nobody sees it on the board. A new address counts as not verified.</p>
+    </div>
+    <div class="field">
+      <label for="mail-current">Current password</label>
+      <input id="mail-current" name="current" type="password" required autocomplete="current-password"
+        {{- if .Data.Mail.Current}} aria-invalid="true" aria-describedby="mail-current-error"{{end}}>
+      {{- if .Data.Mail.Current}}<p class="field-error" id="mail-current-error" role="alert">{{.Data.Mail.Current}}</p>{{end}}
+    </div>
+    <div class="form-actions">
+      <button class="button button-inline" type="submit">Change email address</button>
+    </div>
+  </form>
+</section>
+{{- end}}
+
+{{- if .Data.CanSignature}}
+<section class="account-section" aria-labelledby="account-signature-title">
+  <h2 id="account-signature-title">Your signature</h2>
+  <form class="post-form" method="post" action="{{path "account" "signature"}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{- if .Data.Sig.Notice}}
+    <div class="form-error" role="alert"><p class="form-error-text">{{.Data.Sig.Notice}}</p></div>
+    {{- end}}
+    <div class="field">
+      <label for="sig-text">Signature</label>
+      <textarea id="sig-text" name="signature" rows="6" aria-describedby="sig-hint{{if .Data.Sig.Text}} sig-error{{end}}"
+        {{- if .Data.Sig.Text}} aria-invalid="true"{{end}}>{{textareaValue .Data.Signature}}</textarea>
+      {{- if .Data.Sig.Text}}<p class="field-error" id="sig-error" role="alert">{{.Data.Sig.Text}}</p>{{end}}
+      <p class="hint" id="sig-hint">At most 2,000 bytes. Markdown works here: **bold**, *italic*, [link](https://example.com). Leave it empty for no signature.</p>
+    </div>
+    <div class="form-actions">
+      <button class="button button-inline" type="submit">Save signature</button>
+    </div>
+  </form>
+</section>
+{{- end}}
+
+{{- if not (or .Data.CanPassword .Data.CanEmail .Data.CanSignature)}}
+<p>You have no rights to change your account here.</p>
+{{- end}}
+{{end}}

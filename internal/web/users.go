@@ -223,18 +223,3 @@ func (s *site) staticPage(w http.ResponseWriter, r *http.Request) {
 	p.Data = pageData{StaticPage: sp, HTML: html}
 	s.render(w, http.StatusOK, "page.html", p)
 }
-
-// account serves GET /account: a guest goes to sign in and comes back here, a
-// member goes to their own profile. Plan 4 builds the account page itself.
-func (s *site) account(w http.ResponseWriter, r *http.Request) {
-	p, err := s.begin(w, r, "", "")
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
-	if p.Viewer.UserID == 0 {
-		http.Redirect(w, r, s.loginHref(s.path("account")), http.StatusFound)
-		return
-	}
-	http.Redirect(w, r, s.path("u", strconv.FormatInt(p.Viewer.UserID, 10)), http.StatusFound)
-}
