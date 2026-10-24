@@ -1,0 +1,7 @@
+{"k":0,"c":[
+ {"k":2,"n":"p","c":[
+  {"k":1,"t":"Read "},
+  {"k":2,"n":"url","a":{"href":"https://x.com/someone/status/1234567890"},"c":[{"k":1,"t":"https://x.com/someone/status/1234567890"}]},
+  {"k":1,"t":" today."}
+ ]}
+]}

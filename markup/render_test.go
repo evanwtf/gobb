@@ -1,8 +1,13 @@
 package markup
 
 import (
+	"html"
 	"html/template"
+	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -604,6 +609,86 @@ func TestRenderHTMLType(t *testing.T) {
 	var _ template.HTML = Render(tree(), RenderContext{}).HTML
 }
 
+// outputTag matches an opening tag in rendered HTML, and outputAttr matches an
+// href or src attribute in the attributes of one. The renderer escapes ">" and
+// the quote in every value, so neither pattern can match inside a value.
+var (
+	outputTag  = regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9]*)((?:\s[^>]*)?)>`)
+	outputAttr = regexp.MustCompile(`\s(href|src)="([^"]*)"`)
+)
+
+// checkOutputURLs reports every href and src in r.HTML that the URL checks do
+// not accept. It unescapes each value once, as a browser does. A mailto: href
+// holds a percent-encoded address, so the check decodes the address first. An
+// iframe src is one of the fixed provider origins, which CheckImageURL does not
+// cover, so it must start with an origin that r.FrameSrc lists.
+func checkOutputURLs(t *testing.T, r Rendered) {
+	t.Helper()
+	for _, tag := range outputTag.FindAllStringSubmatch(string(r.HTML), -1) {
+		for _, a := range outputAttr.FindAllStringSubmatch(tag[2], -1) {
+			name, val := a[1], html.UnescapeString(a[2])
+			switch {
+			case name == "src" && tag[1] == "iframe":
+				ok := false
+				for _, origin := range r.FrameSrc {
+					ok = ok || strings.HasPrefix(val, origin+"/")
+				}
+				if !ok {
+					t.Fatalf("iframe src %q is not under FrameSrc %q in: %s", val, r.FrameSrc, r.HTML)
+				}
+			case name == "src":
+				if !CheckImageURL(val) {
+					t.Fatalf("src %q fails CheckImageURL in: %s", val, r.HTML)
+				}
+			case len(val) >= len("mailto:") && strings.EqualFold(val[:len("mailto:")], "mailto:"):
+				addr, err := url.PathUnescape(val[len("mailto:"):])
+				if err != nil || !CheckLinkURL("mailto:"+addr) {
+					t.Fatalf("href %q fails CheckLinkURL in: %s", val, r.HTML)
+				}
+			default:
+				if !CheckLinkURL(val) {
+					t.Fatalf("href %q fails CheckLinkURL in: %s", val, r.HTML)
+				}
+			}
+		}
+	}
+}
+
+// The fuzz checks are only as good as their patterns. This pins that they find
+// the values in real output, and that they skip data attributes.
+func TestOutputURLPatterns(t *testing.T) {
+	r := Render(Parse("[m](mailto:a@b.c) ![i](/p.png?a=1&b=2)\n\nhttps://youtu.be/dQw4w9WgXcQ", allOn), renderSmileys())
+	var got []string
+	for _, tag := range outputTag.FindAllStringSubmatch(string(r.HTML), -1) {
+		for _, a := range outputAttr.FindAllStringSubmatch(tag[2], -1) {
+			got = append(got, tag[1]+" "+a[1]+" "+html.UnescapeString(a[2]))
+		}
+	}
+	want := []string{
+		"a href mailto:a@b.c",
+		"img src /p.png?a=1&b=2",
+		"iframe src https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("found %q, want %q in: %s", got, want, r.HTML)
+	}
+	checkRendered(t, r)
+}
+
+// checkRendered applies the output checks of FuzzRender to r.
+func checkRendered(t *testing.T, r Rendered) {
+	t.Helper()
+	if strings.Contains(strings.ToLower(string(r.HTML)), "<script") {
+		t.Fatalf("raw script tag in output: %s", r.HTML)
+	}
+	checkOutputURLs(t, r)
+}
+
+// FuzzRender feeds the renderer two ways. Input that is a JSON tree goes
+// through Decode, which can build a tree that Validate rejects. Every input
+// also goes through Parse as Markdown source, with every flag on. In both,
+// Render must not panic, must write no script tag, and must write only hrefs
+// and srcs that pass the URL checks.
 func FuzzRender(f *testing.F) {
 	seeds := []string{
 		`{"k":0,"c":[{"k":2,"n":"p","c":[{"k":1,"t":"hi"}]}]}`,
@@ -611,18 +696,29 @@ func FuzzRender(f *testing.F) {
 		`{"k":0,"c":[{"k":2,"n":"youtube","a":{"id":"\"><script>"}}]}`,
 		`{"k":0,"c":[{"k":2,"n":"email","a":{"address":"a@b?c#d"}}]}`,
 		`{"k":9,"c":[{"k":2,"n":"img","a":{"src":"&#106;avascript:x"}}]}`,
+		`{"k":0,"c":[{"k":2,"n":"url","a":{"href":"mailto:a%40b@c.d&e=f"},"c":[{"k":1,"t":"x"}]}]}`,
+		"[x](mailto:a@b.c) <a@b.c> a@b.c",
+		"![a](/p.png) ![b](https://example.com/i.png?a=1&b=2) :) :D",
+		"<https://example.com/?a=1&copy=2> [x](https://example.com/&amp;)",
+		"[x](javascript:alert(1)) [y](JaVaScRiPt&colon;x) ![z](data:text/html,<script>)",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nhttps://x.com/a/status/1\n\nhttps://open.spotify.com/track/abc",
+		"<script>alert(1)</script> <SCRIPT src=x>",
+		"> **A** [wrote](/p/1):\n>\n> ||spoiler|| \\*x\\*\n\n```go\n<script>\n```",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
+	fixtures, _ := filepath.Glob(filepath.Join("testdata", "roundtrip", "*.md"))
+	for _, name := range fixtures {
+		if data, err := os.ReadFile(name); err == nil {
+			f.Add(data)
+		}
+	}
+	opt := Options{Markdown: true, Smilies: true, Autolink: true, SmileyList: smileyList}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		n, err := Decode(data)
-		if err != nil {
-			return
+		if n, err := Decode(data); err == nil {
+			checkRendered(t, Render(n, renderSmileys()))
 		}
-		r := Render(n, renderSmileys())
-		if strings.Contains(string(r.HTML), "<script") {
-			t.Fatalf("raw script tag in output: %s", r.HTML)
-		}
+		checkRendered(t, Render(Parse(string(data), opt), renderSmileys()))
 	})
 }
