@@ -33,8 +33,8 @@ const (
 // in a Unicode private-use block; [Search] removes them from the text first, so
 // no post can place one.
 const (
-	markStart = ""
-	markStop  = ""
+	markStart = "\ue000"
+	markStop  = "\ue001"
 )
 
 // ts_headline drops the text of an HTML-like tag from its output. A post that

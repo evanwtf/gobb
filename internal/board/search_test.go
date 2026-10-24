@@ -202,7 +202,7 @@ func TestSearchAuthor(t *testing.T) {
 		t.Errorf("color by bob = %v, want [5]", got)
 	}
 	// An unknown author, and a name that cleans to nothing, give no hits.
-	for _, name := range []string{"nobody", "​"} {
+	for _, name := range []string{"nobody", "\u200b"} {
 		if got := hitIDs(search(t, pool, alice, board.SearchQuery{Author: name})); len(got) != 0 {
 			t.Errorf("author %q = %v, want none", name, got)
 		}
@@ -295,7 +295,7 @@ func TestSearchSnippetEscapes(t *testing.T) {
 // The marker runes in the text of a post cannot make a mark or break the page.
 func TestSearchSnippetMarkerRunes(t *testing.T) {
 	b := searchBoard()
-	b.Posts[5].Body = bundle.Body{Source: "a fake needle <b>x</b> & \"q\"", Markdown: true}
+	b.Posts[5].Body = bundle.Body{Source: "a \ue000fake\ue001 needle <b>x</b> & \"q\"", Markdown: true}
 	pool, _ := boardtest.Load(t, b)
 	setBodyText(t, pool, 6, "a \ue000fake\ue001 needle <b>x</b> & \"q\"")
 	p := search(t, pool, memberFor(t, pool, 1), board.SearchQuery{Text: "needle"})
@@ -303,7 +303,7 @@ func TestSearchSnippetMarkerRunes(t *testing.T) {
 		t.Fatalf("needle = %v", hitIDs(p))
 	}
 	s := string(p.Hits[0].Snippet)
-	if strings.Contains(s, "<mark>fake") || strings.ContainsAny(s, "") || strings.Contains(s, "<b>") {
+	if strings.Contains(s, "<mark>fake") || strings.ContainsAny(s, "\ue000\ue001") || strings.Contains(s, "<b>") {
 		t.Errorf("snippet = %q", s)
 	}
 	if strings.Count(s, "<mark>") != 1 || strings.Count(s, "</mark>") != 1 {
@@ -312,7 +312,7 @@ func TestSearchSnippetMarkerRunes(t *testing.T) {
 	// The same text found by author alone has no mark at all.
 	p = search(t, pool, memberFor(t, pool, 1), board.SearchQuery{Author: "alice", ForumID: 3})
 	s = string(p.Hits[0].Snippet)
-	if strings.Contains(s, "<mark>") || strings.ContainsAny(s, "") || strings.Contains(s, "<b>") {
+	if strings.Contains(s, "<mark>") || strings.ContainsAny(s, "\ue000\ue001") || strings.Contains(s, "<b>") {
 		t.Errorf("author-only snippet = %q", s)
 	}
 }
@@ -333,7 +333,7 @@ func TestSearchBounds(t *testing.T) {
 		t.Errorf("author of 257 bytes = %v, want ErrBadSearch", err)
 	}
 	// A multi-byte text counts bytes, not runes.
-	if _, err := board.Search(ctx, pool, g, board.SearchQuery{Text: strings.Repeat("é", 129)}); !errors.Is(err, board.ErrBadSearch) {
+	if _, err := board.Search(ctx, pool, g, board.SearchQuery{Text: strings.Repeat("\u00e9", 129)}); !errors.Is(err, board.ErrBadSearch) {
 		t.Errorf("129 two-byte runes = %v, want ErrBadSearch", err)
 	}
 	if _, err := board.Search(ctx, pool, g, board.SearchQuery{Text: "example", Page: 41}); !errors.Is(err, board.ErrNotFound) {

@@ -125,7 +125,7 @@ func (s *site) search(w http.ResponseWriter, r *http.Request) {
 	for _, f := range forums {
 		d.Forums = append(d.Forums, forumOption{
 			ID: f.ID, Selected: f.ID == forumID,
-			Label: strings.Repeat("  ", f.Depth) + f.Name,
+			Label: strings.Repeat("\u00a0\u00a0", f.Depth) + f.Name,
 		})
 	}
 	d.Searched = strings.TrimSpace(d.Text) != "" || strings.TrimSpace(d.Author) != ""
