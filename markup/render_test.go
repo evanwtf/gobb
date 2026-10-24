@@ -156,16 +156,19 @@ func TestRenderEscapes(t *testing.T) {
 	}
 }
 
-// TestRenderEmitsWhatItChecked pins the rule that the attribute holds the
-// decoded value that passed the check, escaped once.
-func TestRenderEmitsWhatItChecked(t *testing.T) {
+// TestRenderEmitsLiteralURL pins the literal-URL contract: the attribute holds
+// the stored value, trimmed, and nothing decodes entities in it. The renderer
+// escapes the value once on output.
+func TestRenderEmitsLiteralURL(t *testing.T) {
 	cases := []struct{ name, href, want string }{
-		{"entity quote is decoded then escaped", `https://example.com/?a=&quot;onmouseover=x`,
-			`href="https://example.com/?a=&#34;onmouseover=x"`},
-		{"amp entity", `https://example.com/?a=1&amp;b=2`, `href="https://example.com/?a=1&amp;b=2"`},
+		{"quote entity stays literal", `https://example.com/?a=&quot;onmouseover=x`,
+			`href="https://example.com/?a=&amp;quot;onmouseover=x"`},
+		{"amp entity stays literal", `https://example.com/?a=1&amp;b=2`, `href="https://example.com/?a=1&amp;amp;b=2"`},
+		{"ampersand is escaped", `https://example.com/?a=1&b=2`, `href="https://example.com/?a=1&amp;b=2"`},
 		{"padding trimmed", "  https://example.com/x \n", `href="https://example.com/x"`},
-		{"entity padding trimmed", "&#32;https://example.com/x", `href="https://example.com/x"`},
-		{"entity colon", `https&#58;//example.com/x`, `href="https://example.com/x"`},
+		{"legacy entity names stay literal", `https://example.com/?a=1&not=3&para=2&reg=1&copy=4&times=5&shy=6`,
+			`href="https://example.com/?a=1&amp;not=3&amp;para=2&amp;reg=1&amp;copy=4&amp;times=5&amp;shy=6"`},
+		{"entity slash is a site path", `/&#47;x`, `href="/&amp;#47;x"`},
 	}
 	for _, tc := range cases {
 		out := renderHTML(tree(para(el("url", at("href", tc.href), txt("l")))))
@@ -173,9 +176,18 @@ func TestRenderEmitsWhatItChecked(t *testing.T) {
 			t.Errorf("%s: got %s, want it to contain %s", tc.name, out, tc.want)
 		}
 	}
-	out := renderHTML(tree(para(el("img", at("src", "&#32;http&#58;//example.com/a.png"), el("b", nil)))))
-	if !strings.Contains(out, `src="https://example.com/a.png"`) {
+	for _, href := range []string{"&#32;https://example.com/x", `https&#58;//example.com/x`, `&#47;&#47;evil.example`} {
+		if out := renderHTML(tree(para(el("url", at("href", href), txt("l"))))); strings.Contains(out, "<a ") {
+			t.Errorf("href %q became a link: %s", href, out)
+		}
+	}
+	out := renderHTML(tree(para(el("img", at("src", "/a.png?x&times=1")))))
+	if !strings.Contains(out, `src="/a.png?x&amp;times=1"`) {
 		t.Errorf("img src: got %s", out)
+	}
+	out = renderHTML(tree(para(el("img", at("src", "&#32;http&#58;//example.com/a.png"), el("b", nil)))))
+	if strings.Contains(out, "<img") {
+		t.Errorf("an entity-encoded img src became an image: %s", out)
 	}
 }
 
@@ -271,7 +283,6 @@ func TestRenderHTTPImageUpgraded(t *testing.T) {
 	cases := []struct{ src, want string }{
 		{"http://img.example/a.png", `src="https://img.example/a.png"`},
 		{"HTTP://img.example/a.png", `src="https://img.example/a.png"`},
-		{"http&#58;//img.example/a.png", `src="https://img.example/a.png"`},
 		{"https://img.example/a.png", `src="https://img.example/a.png"`},
 		{"/f/a.png", `src="/f/a.png"`},
 		{"/f/http://x.png", `src="/f/http://x.png"`},

@@ -635,6 +635,82 @@ func TestParseContainerCap(t *testing.T) {
 	}
 }
 
+// mustNotPanic parses src and requires a valid tree.
+func mustNotPanic(t *testing.T, name, src string, opt Options) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("%s: Parse panicked: %v", name, r)
+		}
+	}()
+	if err := Validate(Parse(src, opt)); err != nil {
+		t.Errorf("%s: invalid tree: %v", name, err)
+	}
+}
+
+// deepMixed builds a first line of n container markers, then a second line.
+func deepMixed(marks []string, n int, second func(n int) string) string {
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		sb.WriteString(marks[i%len(marks)])
+	}
+	return sb.String() + "x\n" + second(n)
+}
+
+// The container cap once refused a list item but not its list. Goldmark then
+// held a paragraph directly in a list and panicked on the next indented line.
+func TestParseContainerCapKeepsListsWhole(t *testing.T) {
+	cases := map[string]string{
+		"bullets after quote":  "> " + strings.Repeat("- ", 16) + "x\n>" + strings.Repeat(" ", 33) + "y",
+		"numbers after quote":  "> " + strings.Repeat("1. ", 16) + "x\n>" + strings.Repeat(" ", 49) + "y",
+		"quote and bullets":    strings.Repeat("> - ", 11) + "x\n" + strings.Repeat(">   ", 11) + "  y",
+		"bullets then indent":  "> " + strings.Repeat("- ", 16) + "x\n" + strings.Repeat("  ", 17) + "y",
+		"bullets then quoted":  "> " + strings.Repeat("- ", 16) + "x\n> " + strings.Repeat("  ", 16) + "y",
+		"bullets then tabs":    "> " + strings.Repeat("-\t", 16) + "x\n>\t\t\t\ty",
+		"bullets then blank":   "> " + strings.Repeat("- ", 16) + "x\n\n>" + strings.Repeat(" ", 33) + "y",
+		"bullets then bullet":  "> " + strings.Repeat("- ", 16) + "x\n> - y",
+		"numbers then number":  "> " + strings.Repeat("1. ", 16) + "x\n> 1. y",
+		"lists only":           strings.Repeat("- ", 40) + "x\n" + strings.Repeat("  ", 40) + "y",
+		"numbers only":         strings.Repeat("1. ", 40) + "x\n" + strings.Repeat("   ", 40) + "y",
+		"quote list alternate": strings.Repeat("> 1. ", 14) + "x\n" + strings.Repeat(">    ", 14) + "    y",
+	}
+	for name, src := range cases {
+		mustNotPanic(t, name, src, allOn)
+		mustNotPanic(t, name+" md only", src, mdOnly)
+	}
+	// Every mix of quote and list markers up to 44 containers, with a second
+	// line of each kind.
+	markSets := [][]string{{"> ", "- "}, {"- ", "> "}, {"> ", "1. "}, {"> ", "> ", "- "}, {"- ", "1. ", "> "}, {"> "}, {"- "}, {"1. "}}
+	seconds := []func(n int) string{
+		func(n int) string { return strings.Repeat(" ", 2*n) + "y" },
+		func(n int) string { return strings.Repeat(" ", 3*n) + "y" },
+		func(n int) string { return strings.Repeat(">", n) + strings.Repeat(" ", 2*n) + "y" },
+		func(n int) string { return strings.Repeat("> ", n) + strings.Repeat("  ", n) + "y" },
+		func(n int) string { return strings.Repeat(">   ", n/2) + "  y" },
+		func(n int) string { return "y" },
+		func(n int) string { return "\ny" },
+	}
+	for _, marks := range markSets {
+		for n := 20; n <= 44; n++ {
+			for i, second := range seconds {
+				mustNotPanic(t, "mixed", deepMixed(marks, n, second), allOn)
+				_ = i
+			}
+		}
+	}
+}
+
+func TestParseSmileyCodesMatchValidate(t *testing.T) {
+	odd := Options{Markdown: true, Smilies: true, SmileyList: []Smiley{
+		{Code: ":\t)"}, {Code: "\xc3"}, {Code: "a\xffb"}, {Code: ":\x01)"}, {Code: ":\u0085)"}, {Code: ":)"},
+	}}
+	check(t, ":\t)", odd, tree(p(txt(":\t)"))))
+	check(t, ":\x01)", odd, tree(p(txt(":\x01)"))))
+	check(t, "a\xffb \xc3 :)", odd, tree(p(txt("a\uFFFDb \uFFFD "), el("smiley", at("code", ":)")))))
+	check(t, ":\u0085)", odd, tree(p(txt(":\u0085)"))))
+	check(t, ":\t)", Options{Smilies: true, SmileyList: odd.SmileyList}, tree(p(txt(":\t)"))))
+}
+
 func TestParseImageAlt(t *testing.T) {
 	// Newlines and controls never reach the alt attribute.
 	check(t, "![a\nb](/x.png)", mdOnly, tree(p(el("img", at("src", "/x.png", "alt", "a b")))))
@@ -687,6 +763,66 @@ func TestParseStrictValidate(t *testing.T) {
 	}
 }
 
+func TestParseEmailRuleMatchesValidate(t *testing.T) {
+	check(t, "<x\u202e@c.example>", allOn, tree(p(txt("<x\u202e@c.example>"))))
+	check(t, "<x\\y@c.example>", allOn, tree(p(txt("<x\\y@c.example>"))))
+	check(t, "[m](mailto:x\u202e@c.example)", allOn, tree(p(txt("m"))))
+	for _, s := range []string{"x\u202e@c.example", "x\u200b@c.example", "x\\y@c.example"} {
+		if got := Parse("see "+s+" now", allOn); has(got, "email") {
+			t.Errorf("Parse(%q) has an email: %s", s, js(got))
+		}
+	}
+}
+
+// TestRenderParseURLRoundTrip holds the parser and the renderer to one rule for
+// URLs: a stored address is literal, nothing decodes entities in it, and the
+// renderer escapes it once.
+func TestRenderParseURLRoundTrip(t *testing.T) {
+	cases := []struct {
+		name, md, attr, want, html string
+	}{
+		{"bare link with entity-like names", "https://example.com/?a=1&not=3&para=2&reg=1", "href",
+			"https://example.com/?a=1&not=3&para=2&reg=1", `href="https://example.com/?a=1&amp;not=3&amp;para=2&amp;reg=1"`},
+		{"md link copy", "[x](/a?x=1&copy=2)", "href", "/a?x=1&copy=2", `href="/a?x=1&amp;copy=2"`},
+		{"image times", "![a](/a.png?x&times=1)", "src", "/a.png?x&times=1", `src="/a.png?x&amp;times=1"`},
+		{"shy stays a link", "https://example.com/?x=1&shy=1", "href", "https://example.com/?x=1&shy=1", `href="https://example.com/?x=1&amp;shy=1"`},
+		{"md link shy", "[x](https://example.com/?x=1&shy=1)", "href", "https://example.com/?x=1&shy=1", `href="https://example.com/?x=1&amp;shy=1"`},
+		{"md link with a semicolon entity", "[x](/a?b=1&amp;c=2)", "href", "/a?b=1&c=2", `href="/a?b=1&amp;c=2"`},
+		{"angle autolink is literal", "<https://example.com/?a=1&amp;b>", "href", "https://example.com/?a=1&amp;b",
+			`href="https://example.com/?a=1&amp;amp;b"`},
+		{"image para", "![a](https://example.com/a.png?x&para=1)", "src", "https://example.com/a.png?x&para=1",
+			`src="https://example.com/a.png?x&amp;para=1"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tr := Parse(c.md, allOn)
+			if err := Validate(tr); err != nil {
+				t.Fatal(err)
+			}
+			var found *Node
+			var walk func(*Node)
+			walk = func(n *Node) {
+				if n.Kind == Element && (n.Name == "url" || n.Name == "img") && found == nil {
+					found = n
+				}
+				for _, ch := range n.Children {
+					walk(ch)
+				}
+			}
+			walk(tr)
+			if found == nil {
+				t.Fatalf("no link or image in %s", js(tr))
+			}
+			if got := found.Attrs[c.attr]; got != c.want {
+				t.Errorf("stored %s = %q, want %q", c.attr, got, c.want)
+			}
+			if out := string(Render(tr, RenderContext{}).HTML); !strings.Contains(out, c.html) {
+				t.Errorf("html = %s, want it to contain %s", out, c.html)
+			}
+		})
+	}
+}
+
 func TestParseNeverEmitsBlankLiText(t *testing.T) {
 	for _, src := range []string{"- a\n\n  b\n- c", "1. a\n   - b\n\n2. c", "-\n- a\n-", "- a\n\n\n- b"} {
 		got := Parse(src, allOn)
@@ -695,6 +831,11 @@ func TestParseNeverEmitsBlankLiText(t *testing.T) {
 		}
 	}
 }
+
+// oddSmilies holds smiley codes that Validate would reject if they matched.
+var oddSmilies = Options{Markdown: true, Smilies: true, Autolink: true, SmileyList: []Smiley{
+	{Code: ":\t)"}, {Code: "\xc3"}, {Code: ":\x01)"}, {Code: ":\u0085)"}, {Code: "\t"}, {Code: " "}, {Code: ":)"}, {Code: "x"},
+}}
 
 func FuzzParse(f *testing.F) {
 	seeds := []string{
@@ -707,13 +848,20 @@ func FuzzParse(f *testing.F) {
 		"a\xffb", "a\x00b", "a\r\nb\rc", "> > > > > > > > > > > > > > x", "- - - - - - - - - - - - - - - - - - - x",
 		strings.Repeat("> ", 12) + "x", strings.Repeat("- ", 20) + "x", strings.Repeat("*a ", 40) + strings.Repeat("a* ", 40),
 		"[a]: /b\n[a]", "\\\n", "  \n", "`` ` ``", "[[[[", "![![![", "<<<>>>", "||[x||](y)",
-		"[https://example.com](https://example.org)", "<a&b@example.com>", "![a\fb](https://a.example/x.png)", "[x](https://a.example/\u200d)", "<https://a.example/\u200d>", "a&b@example.com", "[x](mailto:a?b@example.com)", "[<https://a.b>](/c)", "![[a](/b)](/c)",
+		"[https://example.com](https://example.org)", "<a&b@example.com>", "![a\fb](https://a.example/x.png)", "[x](https://a.example/\u200d)", "<https://a.example/\u200d>", "a&b@example.com", "[x](mailto:a?b@example.com)",
+		"> " + strings.Repeat("- ", 16) + "x\n>" + strings.Repeat(" ", 33) + "y",
+		"> " + strings.Repeat("1. ", 16) + "x\n>" + strings.Repeat(" ", 49) + "y",
+		strings.Repeat("> - ", 11) + "x\n" + strings.Repeat(">   ", 11) + "  y",
+		strings.Repeat("> 1. ", 14) + "x\n" + strings.Repeat(">    ", 14) + "    y",
+		strings.Repeat("- > ", 12) + "x\n" + strings.Repeat("  ", 24) + "y\n\n" + strings.Repeat("> ", 30) + "z",
+		"[x](/a?x=1&copy=2)", "![a](/a.png?x&times=1)", "https://example.com/?x=1&shy=1", "<https://example.com/?a=1&amp;b>",
+		"<x\u202e@c.example>", "<x\\y@c.example>", ":\t)", "a\xffb", "[<https://a.b>](/c)", "![[a](/b)](/c)",
 	}
 	for _, s := range seeds {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		for _, opt := range []Options{allOn, mdOnly, {}, {Autolink: true, Smilies: true, SmileyList: smileyList}} {
+		for _, opt := range []Options{allOn, mdOnly, {}, {Autolink: true, Smilies: true, SmileyList: smileyList}, oddSmilies} {
 			got := Parse(s, opt)
 			if err := Validate(got); err != nil {
 				t.Fatalf("invalid tree for %q with %+v: %v\n%s", s, opt, err, js(got))

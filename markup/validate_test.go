@@ -294,8 +294,8 @@ func TestValidateRejects(t *testing.T) {
 		{"url relative", tree(hrefCase("path")), "/p[0]/url[0]", noURL},
 		{"url scheme relative", tree(hrefCase("//a.example/")), "/p[0]/url[0]", noURL},
 		{"url slash backslash", tree(hrefCase(`/\evil.example`)), "/p[0]/url[0]", noURL},
-		{"url slash entity backslash", tree(hrefCase(`/&bsol;evil.example`)), "/p[0]/url[0]", noURL},
-		{"url slash entity slash", tree(hrefCase(`/&#47;evil.example`)), "/p[0]/url[0]", noURL},
+		{"url entity double slash", tree(hrefCase(`&#47;&#47;evil.example`)), "/p[0]/url[0]", noURL},
+		{"url entity colon literal", tree(hrefCase(`javascript&#58;x`)), "/p[0]/url[0]", noURL},
 		{"url path space", tree(hrefCase("/a b")), "/p[0]/url[0]", noURL},
 		{"url path tab", tree(hrefCase("/a\tb")), "/p[0]/url[0]", noURL},
 		{"url path control", tree(hrefCase("/a\x01")), "/p[0]/url[0]", noURL},
@@ -358,6 +358,11 @@ func TestValidateRejects(t *testing.T) {
 		{"email percent local", tree(mailCase("a%40c@b.example")), "/p[0]/email[0]", noMail},
 		{"email ampersand", tree(mailCase("a@b.example&cc=x")), "/p[0]/email[0]", noMail},
 		{"email slash", tree(mailCase("/a@b")), "/p[0]/email[0]", noMail},
+		{"email bidi override", tree(mailCase("x\u202e@c.example")), "/p[0]/email[0]", noMail},
+		{"email zero-width space", tree(mailCase("x\u200b@c.example")), "/p[0]/email[0]", noMail},
+		{"email backslash", tree(mailCase(`x\y@c.example`)), "/p[0]/email[0]", noMail},
+		{"url mailto bidi override", tree(hrefCase("mailto:x\u202e@c.example")), "/p[0]/url[0]", noURL},
+		{"url mailto backslash", tree(hrefCase(`mailto:x\y@c.example`)), "/p[0]/url[0]", noURL},
 		{"url mailto query", tree(hrefCase("mailto:a@b.example?subject=x")), "/p[0]/url[0]", noURL},
 		{"url mailto entity query", tree(hrefCase("mailto:a@b.example&#63;cc=x")), "/p[0]/url[0]", noURL},
 		{"url mailto percent", tree(hrefCase("mailto:a@b.example%0D%0ABcc%3Ax")), "/p[0]/url[0]", noURL},
@@ -585,11 +590,14 @@ func TestCheckURLs(t *testing.T) {
 		"/t/5", "/files/a.png", "/", "/a?b=c#d", " /t/5 ",
 		"mailto:a@b.example", "MAILTO:a@b.example", "mailto:a.b+c@example.com",
 		"/%5Cevil", "/%2F/evil", "/%5C%5Cevil",
+		// A value is literal: nothing decodes entities, so these are site paths
+		// and queries that hold an ampersand.
+		"/&#47;a", "/&bsol;a", "/a?x=1&copy=2", "https://a.example/?x=1&shy=1", "https://a.example/?a=1&not=3&para=2",
 	}
 	linkBad := []string{
 		"//a.example", "/\\a", "javascript:x", "mailto:", "mailto:a", "ftp://a.example",
 		"data:image/png;base64,x", "", " ", "a", "http://", "http:a.example", "//",
-		"/&#47;a", "/&bsol;a", "/a b", "/a\tb", "/a\x00", "https://a.example/a b",
+		"&#47;&#47;evil", "&#106;avascript:x", "javascript&#58;x", "&#32;https://a.example/", "https&#58;//a.example/", "/a b", "/a\tb", "/a\x00", "https://a.example/a b",
 		"mailto:a@b@c", "mailto:a b@c.example", "mailto:a@b.example\nx", "mailto:a<@b.example",
 		"mailto:\x01a@b.example", "http:/x", "https:evil", "https:/evil",
 		"mailto:a@b.example?subject=x", "mailto:a@b.example%0D%0ABcc%3Ax", "mailto:a%40c@b.example",
@@ -606,7 +614,7 @@ func TestCheckURLs(t *testing.T) {
 			t.Errorf("CheckLinkURL(%q) = true, want false", s)
 		}
 	}
-	imageOK := []string{"https://a.example/x", "http://a.example/x.png", "/t/5", "/files/a.png", "/"}
+	imageOK := []string{"https://a.example/x", "http://a.example/x.png", "/t/5", "/files/a.png", "/", "/a.png?x&times=1"}
 	imageBad := append([]string{}, linkBad...)
 	imageBad = append(imageBad, "mailto:a@b.example", "MAILTO:a@b.example", "mailto:a.b+c@example.com")
 	for _, s := range imageOK {

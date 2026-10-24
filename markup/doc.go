@@ -21,10 +21,12 @@
 // rule for embedded media: the parser uses [EmbedID] to turn a pasted URL into
 // an ID, and [Validate] requires that a stored ID is already in that form.
 //
-// Renderer contract: [CheckLinkURL] and [CheckImageURL] approve the entity-decoded,
-// trimmed form of a URL, not the stored string. The renderer emits that decoded,
-// trimmed string and nothing else, and it does not decode the stored value
-// again. It HTML-escapes every attribute value on output. It percent-encodes the
-// address in a mailto: link. It never builds a URL from an attribute that
-// [Validate] did not check.
+// Renderer contract: a stored href or src is a literal string. Nothing decodes
+// HTML entities or percent escapes in it, so "&copy=1" in a query is those
+// characters and no others. [CheckLinkURL] and [CheckImageURL] approve the
+// string with its outer ASCII white space trimmed. The renderer emits that
+// trimmed string and nothing else, and HTML-escapes it on output. It
+// HTML-escapes every other attribute value too. It percent-encodes the address
+// in a mailto: link. It never builds a URL from an attribute that [Validate] did
+// not check.
 package markup

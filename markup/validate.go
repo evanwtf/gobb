@@ -1,7 +1,6 @@
 package markup
 
 import (
-	"html"
 	"net/url"
 	"sort"
 	"strconv"
@@ -445,17 +444,18 @@ func isLang(v string) bool {
 	return true
 }
 
-// cleanURL prepares a link or image target for checking. It decodes HTML
-// entities once and trims ASCII whitespace at both ends. It then rejects an
-// empty value, an over-long value, and any whitespace, control character,
-// Unicode format character (such as U+200B, U+00AD or U+202E) or backslash. It
-// returns the cleaned value and whether it passed. The cleaned value is the
-// string that the renderer emits.
+// cleanURL prepares a link or image target for checking. The target is a
+// literal string: cleanURL does not decode HTML entities or percent escapes. It
+// trims ASCII whitespace at both ends. It then rejects an empty value, an
+// over-long value, and any whitespace, control character, Unicode format
+// character (such as U+200B, U+00AD or U+202E) or backslash. It returns the
+// cleaned value and whether it passed. The cleaned value is the string that the
+// renderer emits, HTML-escaped.
 func cleanURL(v string) (string, bool) {
 	if len(v) > 8192 {
 		return "", false
 	}
-	v = strings.Trim(html.UnescapeString(v), " \t\n\r\f\v")
+	v = strings.Trim(v, " \t\n\r\f\v")
 	if v == "" {
 		return "", false
 	}
@@ -491,17 +491,19 @@ func isHTTPURL(v string) bool {
 }
 
 // CheckLinkURL reports whether s is allowed as the target of a link. It is the
-// one rule that [Validate], the parser and the renderer share. It decodes HTML
-// entities once and trims ASCII whitespace at both ends. It then rejects any
-// whitespace, control character, format character or backslash. It accepts the
-// result only in one of these forms: an http or https URL with a host;
-// "mailto:" followed by an address that passes the email rule; or a site path,
-// which starts with "/" but not with "//" or "/\". Anything else fails,
-// including every obfuscated form of another scheme.
+// one rule that [Validate], the parser and the renderer share. A target is a
+// literal string: nothing decodes HTML entities in it, so "&copy=1" in a query
+// stays as written. The check trims ASCII whitespace at both ends. It then
+// rejects any whitespace, control character, format character or backslash. It
+// accepts the result only in one of these forms: an http or https URL with a
+// host; "mailto:" followed by an address that passes the email rule; or a site
+// path, which starts with "/" but not with "//" or "/\". Anything else fails,
+// including an entity-encoded form of another scheme, which has no allowed
+// scheme.
 //
-// The check approves the decoded, trimmed string, not s. The renderer emits
-// that same string: the value of cleanURL. It HTML-escapes the value, and it
-// percent-encodes a mailto: address. It must not decode s again.
+// The check approves the trimmed string, not s. The renderer emits that same
+// string: the value of cleanURL. It HTML-escapes the value, and it
+// percent-encodes a mailto: address. It does not decode s.
 func CheckLinkURL(s string) bool {
 	v, ok := cleanURL(s)
 	if !ok {
@@ -516,16 +518,17 @@ func CheckLinkURL(s string) bool {
 // CheckImageURL reports whether s is allowed as the source of an image. It
 // applies the same cleaning as [CheckLinkURL] and accepts an http or https URL
 // with a host, or a site path. It rejects every mailto: value. As with
-// [CheckLinkURL], the renderer emits the decoded, trimmed string that the
-// check approved.
+// [CheckLinkURL], the source is a literal string, and the renderer emits the
+// trimmed string that the check approved, HTML-escaped.
 func CheckImageURL(s string) bool {
 	v, ok := cleanURL(s)
 	return ok && (isSitePath(v) || isHTTPURL(v))
 }
 
 // isEmail accepts one "@" with text on both sides, and no whitespace, control
-// character, colon, angle bracket, quote, or any of "?#%&/". The last group
-// would change the meaning of a mailto: URL built from the address.
+// character, Unicode format character, backslash, colon, angle bracket, quote,
+// or any of "?#%&/". The last group would change the meaning of a mailto: URL
+// built from the address.
 func isEmail(v string) bool {
 	if len(v) > 1024 || strings.Count(v, "@") != 1 {
 		return false
@@ -535,7 +538,7 @@ func isEmail(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune(":<>\"'?#%&/", r) {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || strings.ContainsRune(":<>\"'?#%&/\\", r) {
 			return false
 		}
 	}

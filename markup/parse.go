@@ -94,22 +94,26 @@ func newEngine(markdown, autolink bool) goldmark.Markdown {
 	return goldmark.New(opts...)
 }
 
-// maxContainers is the deepest nesting of quotes, lists and list items that the
-// parser opens. The tree cannot hold more: it is at most [MaxDepth] elements
-// deep, and every container is one of them. goldmark takes time in proportion
-// to the square of the nesting on one line, so a line of 40,000 ">" costs
-// seconds. Past the cap, a marker stays in the text of the innermost container.
+// maxContainers is the deepest nesting of quotes and lists that the parser
+// opens. The tree cannot hold more: it is at most [MaxDepth] elements deep, and
+// every container is one of them. goldmark takes time in proportion to the
+// square of the nesting on one line, so a line of 40,000 ">" costs seconds. Past
+// the cap, a marker stays in the text of the innermost container.
 const maxContainers = MaxDepth
 
-// cappedParser opens a container block only while fewer than maxContainers
-// containers enclose it.
+// cappedParser opens a quote or a list only while the nesting allows it. It
+// wraps the quote parser and the list parser. It must not wrap the list item
+// parser: goldmark expects an item in every list, and a list without its item
+// holds a paragraph and panics on the next indented line. Instead, a list opens
+// only when the list and its item both fit.
 type cappedParser struct {
 	parser.BlockParser
+	extra int // containers that Open adds: 1 for a quote, 2 for a list and its item
 }
 
 // Open implements parser.BlockParser.
 func (c cappedParser) Open(parent ast.Node, reader text.Reader, pc parser.Context) (ast.Node, parser.State) {
-	n := 0
+	n := c.extra - 1
 	for p := parent; p != nil; p = p.Parent() {
 		if n++; n > maxContainers {
 			return nil, parser.NoChildren
@@ -118,15 +122,17 @@ func (c cappedParser) Open(parent ast.Node, reader text.Reader, pc parser.Contex
 	return c.BlockParser.Open(parent, reader, pc)
 }
 
-// cappedBlockParsers is goldmark's list of block parsers, with the quote, list
-// and list item parsers capped. The ancestors that the walk counts are quotes,
+// cappedBlockParsers is goldmark's list of block parsers, with the quote parser
+// and the list parser capped. The ancestors that the walk counts are quotes,
 // lists and list items, plus the document.
 func cappedBlockParsers() []util.PrioritizedValue {
 	list := parser.DefaultBlockParsers()
 	for i, v := range list {
 		switch v.Value {
-		case parser.NewBlockquoteParser(), parser.NewListParser(), parser.NewListItemParser():
-			list[i].Value = cappedParser{v.Value.(parser.BlockParser)}
+		case parser.NewBlockquoteParser():
+			list[i].Value = cappedParser{v.Value.(parser.BlockParser), 1}
+		case parser.NewListParser():
+			list[i].Value = cappedParser{v.Value.(parser.BlockParser), 2}
 		}
 	}
 	return list
@@ -720,7 +726,10 @@ func (b *builder) plainString(root ast.Node) string {
 // 32 characters, and sorts the rest by first byte, longest code first.
 func (b *builder) smileyIndex() {
 	for _, s := range b.opt.SmileyList {
-		if s.Code == "" || utf8.RuneCountInString(s.Code) > maxSmileyRunes {
+		// Hold a code to the rule of Validate: valid UTF-8, 1 to 32 characters,
+		// and no control character. A code that fails it would give a tree that
+		// Validate rejects.
+		if !utf8.ValidString(s.Code) || !tokenLen(1, maxSmileyRunes)(s.Code) {
 			continue
 		}
 		if b.smileys == nil {
