@@ -347,6 +347,9 @@ an immediate 429 or 503 with `Retry-After`.
     default. There is no limit per address or per member. **(owner)** A search over the
     limit gets an immediate 429, and does not touch the database. Under a flood,
     search stops for everyone, but the pages stay up.
+  - The 429 is a normal page of the board, in its layout, with a `Retry-After`
+    header, that says "Search functionality is currently disabled." **(owner)** A
+    guest who searches while Defensive Mode is on gets the same page.
 - **Guest page cache.**
   - A page that a guest can see is rendered once and served from memory.
   - At start, a background worker renders the pages most likely to be asked for, in
