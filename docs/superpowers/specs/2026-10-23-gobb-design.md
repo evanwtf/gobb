@@ -404,6 +404,48 @@ notes)
   back to the queue. After they leave it, edits are not re-checked. **(designer's
   call)**
 - The admin approves or rejects from a queue, or uses "Spammer" (section 11).
+- A member leaves the holding area only through approved posts, never through time.
+  **(owner)**
+
+**Trust** (owner: the premise, the sleeper-account rule and the gates; the rest are
+designer's calls)
+
+gobb assumes that a request with no signals comes from a malicious bot. **(owner)**
+Each request earns a *trust band* from signals that a bot cannot fake cheaply.
+
+- **Signals that raise trust:**
+  - signed in;
+  - a member in good standing: active, not banned, out of the holding area;
+  - earned history: approved posts spread over separate weeks, replies from
+    established members, and no posts removed by a moderator;
+  - one of that member's trusted addresses (section 10, "Load protection").
+- **Signals that lower trust:** failed sign-ins from the address, a high request rate,
+  and an address in a banned range.
+- **Time alone earns nothing. (owner)** An account that registers and waits earns no
+  trust, however long it waits. This stops sleeper accounts: many accounts registered
+  at once, left dormant, then used together for a flood.
+- Signals that cost a bot nothing, such as the browser name or the age of a cookie,
+  count for nothing.
+- The import's members start as established. The import drops the spam accounts, so
+  every imported member is a real person.
+- Points add up inside the server, and the result is one of a few bands. Each band
+  carries its own budgets (section 10, "Load protection") and its own rights. Bands
+  keep the answer to "why was I slowed down?" plain and testable.
+- Every signal comes from memory: the session, the trusted-address set, and counts
+  loaded at sign-in. Scoring a request makes no database query.
+
+**Gates.** Until a member earns trust: **(owner)**
+- no links or embeds in posts;
+- no private messages;
+- no website, signature links or avatar in the profile;
+- one new topic, so a returning member can say "I found you!" Otherwise the member
+  only replies. Every post still goes through the holding area.
+
+**Posting flood.** A burst of posts from the low bands sends every low-band post to the
+queue, and tells the admin by email. It is Defensive Mode for posting.
+
+**Wave cleanup.** The admin can remove, in one action, every account registered in a
+time window that has no approved posts.
 
 ## 11. Moderation and admin panel
 
