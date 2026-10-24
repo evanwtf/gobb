@@ -502,7 +502,7 @@ designer's call):
   **(owner:** single Go binary)
 - Two packages are public, for converters: `markup` (Markdown parser, tree,
   renderer, comparison) and `bundle` (the import format). Everything else is under `internal/`.
-- PostgreSQL 16 or later, in gobb's own schema. **(owner)** Numbered SQL migrations,
+- PostgreSQL 16 or later, in gobb's own schema (its own table design, in its own database). **(owner)** Numbered SQL migrations,
   embedded, never edited after release.
 - Attachments, avatars and the header image live on disk under a data directory.
 - Search uses PostgreSQL full-text search. **(designer's call)**
