@@ -147,7 +147,7 @@ A line is at most 1 MiB.
     - `gobb`: an argon2id PHC string that `parsePHC` accepts.
     - `legacy`: the empty string (it never matches, but it is a known value), or a bcrypt hash with an allowed cost, a legacy `$argon2id$` string, or a chain string with an allowed phpass index.
     - Any other scheme returns false.
-  - `account.CleanUsername(s string) string`: NFKC, then `cases.Fold()`, then trim Unicode spaces. Plan 3's login uses the same function.
+  - `account.CleanUsername(s string) string`: NFKC → `cases.Fold` → `strings.ToLower` → NFKC → remove invisibles (Cf, Variation_Selector, Other_Default_Ignorable_Code_Point) → NFKC → `TrimSpace`. Plan 3's login uses the same function.
   - `account.CleanEmail(s string) string`: trim spaces, then lowercase.
 
 - [ ] **Step 1: Write the failing tests**

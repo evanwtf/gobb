@@ -48,24 +48,6 @@ volume. The bundle is a directory or a `.tar.gz` file. Put the flag before the p
 The format is in [docs/bundle.md](docs/bundle.md), and
 [docs/example-bundle/](docs/example-bundle/) is a small example.
 
-Stop the server first. The import lock keeps two imports apart, but it does not stop
-the server from writing to the board during an import.
-
-```sh
-export BUNDLE=/path/to/bundle.tar.gz
-docker compose stop gobb
-docker compose run --rm -v "$BUNDLE:/import/bundle.tar.gz:ro" gobb import /import/bundle.tar.gz
-docker compose start gobb
-```
-
-The container runs as the `nonroot` user, so the bundle file must be readable by
-everyone (mode 0644). The command applies the pending migrations, then prints the
-number of rows it loaded from each data file, and the number of files it staged.
-
-The import refuses a database that holds data. `--replace` empties the database and
-moves the old files to `.replaced-<time>/` in the data volume. It deletes nothing on
-disk.
-
 A converter packs a bundle directory like this:
 
 ```sh
@@ -76,11 +58,73 @@ tar -C "$DIR" -czf bundle.tar.gz .
 On macOS, write `COPYFILE_DISABLE=1 tar -C "$DIR" -czf bundle.tar.gz .`. Without it,
 macOS `tar` adds `._` files, and the importer refuses them.
 
-To check the permissions after an import, write them as JSON Lines to a file. The
-`-T` flag keeps Compose from adding a terminal, which would change the line endings.
+Stop the server first. The import lock keeps two imports apart, but it does not stop
+the server from writing to the board during an import.
+
+This recipe takes a `.tar.gz` file. `$BUNDLE` must be the absolute path of a file that
+exists. A relative name makes Compose create a named volume, and a path that does not
+exist makes Compose create an empty directory. Both give a confusing error.
 
 ```sh
-docker compose run --rm -T gobb perms export > perms.jsonl
+export BUNDLE="$PWD/bundle.tar.gz"
+docker compose stop gobb
+docker compose run --rm -v "$BUNDLE:/import/bundle.tar.gz:ro" gobb import /import/bundle.tar.gz
+docker compose up -d --wait
+```
+
+Use `up -d --wait` to restart the server. `start` fails after a `docker compose down`.
+
+For a bundle that is a directory, mount the directory at `/import/bundle` and pass that
+path:
+
+```sh
+export DIR=/absolute/path/to/bundle-directory
+docker compose run --rm -v "$DIR:/import/bundle:ro" gobb import /import/bundle
+```
+
+The container runs as the `nonroot` user, so the bundle must be readable by everyone
+(mode 0644 for a file, 0755 for a directory). The command applies the pending
+migrations, then prints the number of rows it loaded from each data file, and the number
+of files it staged.
+
+The import refuses a database that holds data. `--replace` empties every table, and that
+includes sessions and logs. Take a dump first. The dump is a plain SQL file, and you
+keep it:
+
+```sh
+docker compose exec -T postgres pg_dump -U gobb -d gobb > gobb-before-replace.sql
+```
+
+Then add `--replace`. It moves the old files to `.replaced-<time>/` in the data volume.
+It deletes nothing on disk.
+
+```sh
+docker compose run --rm -v "$BUNDLE:/import/bundle.tar.gz:ro" gobb import --replace /import/bundle.tar.gz
+```
+
+If the import is killed after the commit, the rows are in the database and the files
+are not in place. A re-run then says that the database has rows. Run it again with
+`--replace`. The error that the import prints names the staging folder.
+
+The `.replaced-*` folders stay in the data volume until you delete them. A failed move
+of the files also leaves a `.import-*` folder. Check the new board first. The gobb image
+has no shell, so delete the folders with a container that has one:
+
+```sh
+docker run --rm -v gobb_gobb-data:/data --entrypoint sh postgres:16 \
+  -c 'rm -rf /data/.import-* /data/.replaced-*'
+```
+
+The data directories (`attachments`, `avatars`, `smilies`, `ranks` and `header`) must be
+real directories, not symlinks. The import replaces a symlink with a real directory.
+
+To check the permissions after an import, write them as JSON Lines to a file. The
+`-T` flag keeps Compose from adding a terminal, which would change the line endings.
+If the command fails, it writes its error into the file and exits with a code other than
+0. Check the exit code before you use the file.
+
+```sh
+docker compose run --rm -T gobb perms export > perms.jsonl || echo "perms export failed; do not use perms.jsonl"
 ```
 
 ## Status

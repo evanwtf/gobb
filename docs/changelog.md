@@ -123,3 +123,21 @@ that the pages stand on.
   with the data directory from `GOBB_DATA_DIR`, and prints the row count of each data
   file and the file count. `cmd/gobb` embeds the timezone database for the static image.
   The README has an "Import a bundle" section for Docker Compose.
+- A new member never gets the ID of a gone user. After an import, the `users` identity
+  starts above the largest ID in `users` and in `gone_users`, so a gone user's URL keeps
+  answering 410.
+- A private message or an attachment may come from a gone user. `pms.jsonl` has
+  `author_id?` and a required `author_name` label, and `attachments.jsonl` has
+  `uploader_id?`. A message with no `author_id` needs a recipient, so that somebody can see
+  it. The schema allows a NULL `pms.author_id` and `attachments.uploader_id`, and it has
+  `pms.author_name`.
+- `bundle.Check` needs an active owner whose `password.hash` is not empty, so that the
+  board does not lock its owner out at the cutover. A name is measured on the value as
+  written, not after trimming, so `bob` plus 300 spaces fails the 255-byte limit.
+- A static page keeps its three body flags: `enable_markdown`, `enable_smilies` and
+  `enable_autolink` in `static_pages`.
+- The README "Import a bundle" section was run against a real Compose stack and corrected:
+  an absolute `$BUNDLE` path, `up -d --wait` to restart, a `pg_dump` before `--replace`,
+  the `.import-*` and `.replaced-*` folders to delete, and a check of the exit code of
+  `perms export`. A COPY batch also flushes at 8 MiB of row text, and the "import done"
+  log line names the bundle's source and creation time.
