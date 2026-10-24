@@ -8,12 +8,42 @@ import (
 )
 
 var (
-	inlineScript  = regexp.MustCompile(`(?is)<script\b[^>]*>`)
-	scriptSrcAttr = regexp.MustCompile(`(?i)\bsrc\s*=`)
+	scriptElem = regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script\s*>`)
+	scriptOpen = regexp.MustCompile(`(?i)<script\b`)
+	// A src attribute has white space before it, so data-src does not count.
+	scriptSrcAttr = regexp.MustCompile(`(?i)\ssrc\s*=`)
 	styleAttr     = regexp.MustCompile(`(?i)\sstyle\s*=`)
 	styleElem     = regexp.MustCompile(`(?i)<style\b`)
 	eventAttr     = regexp.MustCompile(`(?i)\son[a-z]+\s*=`)
 )
+
+// cspProblems lists what in src the CSP would block: a script with no src or
+// with a body, a style attribute, a style element and an event handler.
+func cspProblems(src string) []string {
+	var out []string
+	scripts := scriptElem.FindAllStringSubmatch(src, -1)
+	if len(scripts) != len(scriptOpen.FindAllString(src, -1)) {
+		out = append(out, "a script element that the scan cannot parse")
+	}
+	for _, m := range scripts {
+		if !scriptSrcAttr.MatchString(m[1]) {
+			out = append(out, "inline script <script"+m[1]+">")
+		}
+		if strings.TrimSpace(m[2]) != "" {
+			out = append(out, "a script element with a body: "+m[2])
+		}
+	}
+	if styleAttr.MatchString(src) {
+		out = append(out, "a style attribute")
+	}
+	if styleElem.MatchString(src) {
+		out = append(out, "a style element")
+	}
+	if m := eventAttr.FindString(src); m != "" {
+		out = append(out, "an event handler attribute "+m)
+	}
+	return out
+}
 
 // The CSP forbids inline script and inline style, so no template may hold any.
 func TestTemplatesHaveNoInlineScriptOrStyle(t *testing.T) {
@@ -27,31 +57,8 @@ func TestTemplatesHaveNoInlineScriptOrStyle(t *testing.T) {
 			return err
 		}
 		n++
-		src := string(b)
-		for _, tag := range inlineScript.FindAllString(src, -1) {
-			if !scriptSrcAttr.MatchString(tag) {
-				t.Errorf("%s: inline script %s", path, tag)
-			}
-		}
-		// A script element with a src may still hold text; it must be empty.
-		if strings.Contains(strings.ToLower(src), "</script>") {
-			for _, part := range strings.Split(src, "</script>")[:strings.Count(strings.ToLower(src), "</script>")] {
-				i := strings.LastIndex(strings.ToLower(part), "<script")
-				if i >= 0 {
-					if _, after, ok := strings.Cut(part[i:], ">"); ok && strings.TrimSpace(after) != "" {
-						t.Errorf("%s: script element with a body: %q", path, after)
-					}
-				}
-			}
-		}
-		if styleAttr.MatchString(src) {
-			t.Errorf("%s: a style attribute", path)
-		}
-		if styleElem.MatchString(src) {
-			t.Errorf("%s: a style element", path)
-		}
-		if m := eventAttr.FindString(src); m != "" {
-			t.Errorf("%s: an event handler attribute %q", path, m)
+		for _, p := range cspProblems(string(b)) {
+			t.Errorf("%s: %s", path, p)
 		}
 		return nil
 	})
@@ -60,5 +67,28 @@ func TestTemplatesHaveNoInlineScriptOrStyle(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatal("no template scanned")
+	}
+}
+
+// The scan itself must catch what it claims to catch, in any letter case.
+func TestCSPScanFindsProblems(t *testing.T) {
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"clean", `<script src="/a.js" defer></script><p class="x">`, 0},
+		{"inline script", `<script>alert(1)</script>`, 2},
+		{"upper case close", `<SCRIPT src="/a.js"></SCRIPT>`, 0},
+		{"upper case inline", `<SCRIPT>x</SCRIPT>`, 2},
+		{"data-src is not src", `<script data-src="/a.js"></script>`, 1},
+		{"src with a body", `<script src="/a.js">x()</script>`, 1},
+		{"unclosed", `<script src="/a.js">`, 1},
+		{"style attribute", `<p STYLE="color:red">`, 1},
+		{"style element", `<STYLE>p{}</STYLE>`, 1},
+		{"event handler", `<a href="/" onClick="x()">`, 1},
+	} {
+		if got := cspProblems(tc.src); len(got) != tc.want {
+			t.Errorf("%s: %d problems %v, want %d", tc.name, len(got), got, tc.want)
+		}
 	}
 }

@@ -102,7 +102,7 @@ func TestRenderTable(t *testing.T) {
 		{"instagram", renderEmbed("instagram", "CxYz_12-ab"),
 			`<blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/CxYz_12-ab/"><a href="https://www.instagram.com/p/CxYz_12-ab/">View on Instagram</a></blockquote>`},
 		{"reddit", renderEmbed("reddit", "programming/abc123"),
-			`<blockquote class="reddit-embed-bq"><a href="https://www.reddit.com/r/programming/comments/abc123/">View post on Reddit</a></blockquote>`},
+			`<div class="embed-link"><a href="https://www.reddit.com/r/programming/comments/abc123/" rel="nofollow ugc noopener">View post on Reddit</a></div>`},
 		{"tiktok", renderEmbed("tiktok", "6718335390845095173"),
 			`<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/6718335390845095173" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`},
 		{"threads", renderEmbed("threads", "zuck/C04flh-M8ii"),
@@ -332,12 +332,12 @@ func TestRenderOriginsEveryEmbed(t *testing.T) {
 	}
 	r := Render(tree(kids...), RenderContext{})
 	wantFrame := []string{
-		"https://embed.reddit.com", "https://open.spotify.com", "https://platform.twitter.com",
+		"https://open.spotify.com", "https://platform.twitter.com",
 		"https://player.vimeo.com", "https://w.soundcloud.com", "https://www.instagram.com",
 		"https://www.threads.com", "https://www.tiktok.com", "https://www.youtube-nocookie.com",
 	}
 	wantScript := []string{
-		"https://embed.reddit.com", "https://platform.twitter.com", "https://platform.x.com",
+		"https://platform.twitter.com", "https://platform.x.com",
 		"https://www.instagram.com", "https://www.threads.com",
 	}
 	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
@@ -915,7 +915,6 @@ func TestRenderScriptsEveryEmbed(t *testing.T) {
 	want := map[string]string{
 		"tweet":     "https://platform.x.com/widgets.js",
 		"instagram": "https://www.instagram.com/embed.js",
-		"reddit":    "https://embed.reddit.com/widgets.js",
 		"threads":   "https://www.threads.com/embed.js",
 	}
 	ids := map[string]string{
@@ -942,5 +941,22 @@ func TestRenderScriptsEveryEmbed(t *testing.T) {
 				t.Errorf("%s: origin %s of %s is not in ScriptSrc %v", tag, origin, u, r.ScriptSrc)
 			}
 		}
+	}
+}
+
+// Reddit renders as a plain link: no script, no frame, no origin.
+func TestRenderRedditIsAPlainLink(t *testing.T) {
+	r := Render(renderEmbed("reddit", "programming/abc123"), RenderContext{})
+	if len(r.FrameSrc)+len(r.ScriptSrc)+len(r.ConnectSrc)+len(r.Scripts) != 0 {
+		t.Errorf("origins for a Reddit link: %v %v %v %v", r.FrameSrc, r.ScriptSrc, r.ConnectSrc, r.Scripts)
+	}
+	out := string(r.HTML)
+	for _, bad := range []string{"<iframe", "<script", "<blockquote", "embed.reddit.com"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("the Reddit link holds %q: %s", bad, out)
+		}
+	}
+	if !strings.Contains(out, ">View post on Reddit</a>") {
+		t.Errorf("no link text: %s", out)
 	}
 }

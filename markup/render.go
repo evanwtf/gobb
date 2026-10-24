@@ -446,7 +446,9 @@ func (r *renderer) embed(it renderItem) {
 		return
 	}
 	r.html.WriteString(e.html)
-	r.frames = addKey(r.frames, e.frame)
+	if e.frame != "" {
+		r.frames = addKey(r.frames, e.frame)
+	}
 	for _, o := range e.scriptSrc {
 		r.scripts = addKey(r.scripts, o)
 	}
@@ -489,7 +491,6 @@ const (
 	originXSyndication    = "https://syndication.twitter.com"
 	originXCDNSyndication = "https://cdn.syndication.twimg.com"
 	originInstagram       = "https://www.instagram.com"
-	originReddit          = "https://embed.reddit.com"
 	originTikTok          = "https://www.tiktok.com"
 	originThreads         = "https://www.threads.com"
 	originSpotify         = "https://open.spotify.com"
@@ -500,7 +501,8 @@ const (
 // that the page needs for it in its Content-Security-Policy.
 type embedOut struct {
 	html string
-	// frame is the origin that the embed loads in a frame.
+	// frame is the origin that the embed loads in a frame. It is empty for an
+	// embed that is a plain link.
 	frame string
 	// scripts are the full URLs of the provider scripts that the page loads.
 	scripts []string
@@ -572,21 +574,16 @@ func embedHTML(tag, id string) embedOut {
 			scriptSrc: []string{originInstagram},
 		}
 	case "reddit":
-		// Reddit's embed page (https://www.reddit.com/wiki/embeds) answers 403 to a
-		// script fetch, so this entry follows the script's own behavior: the widget
-		// script is https://embed.reddit.com/widgets.js. It selects
-		// blockquote.reddit-embed-bq and loads its frames from embed.reddit.com.
+		// A plain link, with no script and no frame. Reddit publishes no embed page
+		// that this project can read (https://www.reddit.com/wiki/embeds answers 403
+		// to a script fetch), and Reddit blocks some clients in its embed frame. A
+		// link needs no origin in the Content-Security-Policy.
 		sub, post, ok := strings.Cut(id, "/")
 		if !ok {
 			return embedOut{}
 		}
-		return embedOut{
-			html: `<blockquote class="reddit-embed-bq"><a href="https://www.reddit.com/r/` + pathEsc(sub) +
-				`/comments/` + pathEsc(post) + `/">View post on Reddit</a></blockquote>`,
-			frame:     originReddit,
-			scripts:   []string{originReddit + "/widgets.js"},
-			scriptSrc: []string{originReddit},
-		}
+		return embedOut{html: `<div class="embed-link"><a href="https://www.reddit.com/r/` + pathEsc(sub) +
+			`/comments/` + pathEsc(post) + `/" rel="nofollow ugc noopener">View post on Reddit</a></div>`}
 	case "tiktok":
 		// https://developers.tiktok.com/doc/embed-player : the player is
 		// www.tiktok.com/player/v1/{post_id}.

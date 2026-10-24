@@ -1,15 +1,19 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/login"
 )
 
 // wantBaseCSP is the policy of every response that has no embed. It is the exact
@@ -185,35 +189,59 @@ func TestSecurityHeaders(t *testing.T) {
 		rec := get(t, h, p)
 		checkFiveHeaders(t, p+" ("+http.StatusText(rec.Code)+")", rec.Header())
 	}
-	// A method the route does not take, a POST that the CSRF check refuses, and
-	// a body past the cap.
+	// A method the route does not take, and a POST that the CSRF check refuses.
 	for _, tc := range []struct {
 		method, target, body string
+		want                 int
 	}{
-		{"DELETE", "/", ""},
-		{"POST", "/login", "name=x"},
-		{"POST", "/healthz", ""},
-		{"POST", "/login", strings.Repeat("a", 1<<20)},
+		{"DELETE", "/healthz", "", http.StatusMethodNotAllowed},
+		{"POST", "/login", "name=x", http.StatusForbidden},
+		{"POST", "/healthz", "", http.StatusMethodNotAllowed},
 	} {
 		req, _ := http.NewRequest(tc.method, tc.target, strings.NewReader(tc.body))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		checkFiveHeaders(t, tc.method+" "+tc.target+" ("+http.StatusText(rec.Code)+")", rec.Header())
+		if rec.Code != tc.want {
+			t.Errorf("%s %s = %d, want %d", tc.method, tc.target, rec.Code, tc.want)
+		}
+		checkFiveHeaders(t, tc.method+" "+tc.target, rec.Header())
 	}
-	// The sign-in limit answers 429.
-	var last int
-	for i := range 40 {
-		rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {"wrong" + strings.Repeat("x", i)}})
-		last = rec.Code
-		checkFiveHeaders(t, "failed sign-in", rec.Header())
-		if last == http.StatusTooManyRequests {
-			break
+}
+
+// The 413, 429 and 503 answers of the sign-in carry the headers too.
+func TestSecurityHeadersOnLoginLimits(t *testing.T) {
+	h, _ := siteAndPool(t, bundletest.Small(), proxyOptions())
+	cookies, token := csrfFor(t, h)
+	big := proxied(t, h, "/login", "2001:db8::5", cookies, url.Values{"name": {"alice"}, "password": {strings.Repeat("x", 1<<20)}})
+	if big.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("1 MiB POST /login = %d, want 413", big.Code)
+	}
+	checkFiveHeaders(t, "413", big.Header())
+	form := url.Values{"name": {"alice"}, "password": {"wrong"}, "csrf": {token}}
+	for i := range 10 {
+		if rec := proxied(t, h, "/login", "2001:db8::5", cookies, form); rec.Code != http.StatusOK {
+			t.Fatalf("failure %d = %d, want 200", i+1, rec.Code)
 		}
 	}
-	if last != http.StatusTooManyRequests {
-		t.Logf("no 429 after 40 failed sign-ins (last status %d)", last)
+	limited := proxied(t, h, "/login", "2001:db8::5", cookies, form)
+	if limited.Code != http.StatusTooManyRequests {
+		t.Fatalf("11th try = %d, want 429", limited.Code)
 	}
+	checkFiveHeaders(t, "429", limited.Header())
+
+	gate := login.NewGate(1024)
+	hold, err := gate.Acquire(t.Context(), 1024, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold()
+	busy, _ := siteAndPool(t, bundletest.Small(), Options{LoginGate: gate, LoginGateWait: 20 * time.Millisecond})
+	rec, _ := postAs(t, busy, "/login", nil, url.Values{"name": {"alice"}, "password": {testPassword}})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("busy POST /login = %d, want 503", rec.Code)
+	}
+	checkFiveHeaders(t, "503", rec.Header())
 }
 
 // A non-image attachment keeps its sandbox. The page policy comes along, so
@@ -260,44 +288,177 @@ func TestAttachmentSandboxKept(t *testing.T) {
 
 func TestHTMLCaching(t *testing.T) {
 	h, _ := smallSite(t)
-	// Guests: private, no-cache on every HTML page, error pages included.
-	for _, p := range []string{"/", "/f/2", "/t/1", "/nope", "/members", "/team", "/search", "/pages/" + firstPageSlug(t)} {
-		rec := get(t, h, p)
-		ct := rec.Header().Get("Content-Type")
-		if !strings.HasPrefix(ct, "text/html") {
-			t.Errorf("%s: Content-Type %q", p, ct)
+	// A guest gets private, no-cache on a page and on an error page, and the
+	// pages that hold a form or a changing list get no-store.
+	for _, tc := range []struct{ path, want string }{
+		{"/", "private, no-cache"}, {"/f/2", "private, no-cache"}, {"/t/1", "private, no-cache"},
+		{"/nope", "private, no-cache"}, {"/members", "private, no-cache"}, {"/team", "private, no-cache"},
+		{"/search", "private, no-cache"}, {"/pages/" + firstPageSlug(t), "private, no-cache"},
+		{"/login", "no-store"},
+	} {
+		rec := get(t, h, tc.path)
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("%s: Content-Type %q", tc.path, ct)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != tc.want {
+			t.Errorf("guest %s (%d): Cache-Control = %q, want %q", tc.path, rec.Code, got, tc.want)
+		}
+	}
+	// A member gets private, no-store on every page.
+	cookies := signIn(t, h, "alice", testPassword)
+	for _, tc := range []struct{ path, want string }{
+		{"/", "private, no-store"}, {"/f/2", "private, no-store"}, {"/t/1", "private, no-store"},
+		{"/nope", "private, no-store"}, {"/members", "private, no-store"}, {"/u/1", "private, no-store"},
+		{"/new", "private, no-store"}, {"/login?next=/", "private, no-store"},
+	} {
+		rec := getAs(t, h, tc.path, cookies)
+		if rec.Code >= 300 && rec.Code < 400 {
+			if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+				t.Errorf("member %s redirect: Cache-Control = %q", tc.path, got)
+			}
 			continue
 		}
-		cc := rec.Header().Get("Cache-Control")
-		if cc != "private, no-cache" && cc != "private, no-store" {
-			t.Errorf("guest %s (%d): Cache-Control = %q", p, rec.Code, cc)
+		if got := rec.Header().Get("Cache-Control"); got != tc.want {
+			t.Errorf("member %s (%d): Cache-Control = %q, want %q", tc.path, rec.Code, got, tc.want)
 		}
 	}
-	if got := get(t, h, "/").Header().Get("Cache-Control"); got != "private, no-cache" {
-		t.Errorf("guest / Cache-Control = %q, want private, no-cache", got)
-	}
-	if got := get(t, h, "/nope").Header().Get("Cache-Control"); got != "private, no-cache" {
-		t.Errorf("guest 404 Cache-Control = %q, want private, no-cache", got)
-	}
-	// Members: private, no-store.
-	cookies := signIn(t, h, "alice", testPassword)
-	for _, p := range []string{"/", "/f/2", "/t/1", "/nope", "/members", "/u/1", "/login"} {
-		rec := getAs(t, h, p, cookies)
-		if rec.Code >= 300 && rec.Code < 400 {
-			continue // a redirect has no page to cache
-		}
-		if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
-			t.Errorf("member %s (%d): Cache-Control = %q, want private, no-store", p, rec.Code, got)
-		}
+	if got := getAs(t, h, "/new", cookies).Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Errorf("member /new: Cache-Control = %q", got)
 	}
 	// Assets and files keep their own.
-	if got := get(t, h, "/static/gobb.css").Header().Get("Cache-Control"); !strings.HasPrefix(got, "public, max-age=") {
+	if got := get(t, h, "/static/gobb.css").Header().Get("Cache-Control"); got != "public, max-age=86400" {
 		t.Errorf("/static Cache-Control = %q", got)
+	}
+	if got := getAs(t, h, "/static/gobb.css", cookies).Header().Get("Cache-Control"); got != "public, max-age=86400" {
+		t.Errorf("member /static Cache-Control = %q", got)
 	}
 	if got := get(t, h, "/files/avatars/1.png").Header().Get("Cache-Control"); got != "public, max-age=86400" {
 		t.Errorf("/files Cache-Control = %q", got)
 	}
 }
+
+// A redirect depends on the viewer, so no shared cache may keep one. It carries
+// the same Cache-Control as a page. A moved topic's 301 and a legacy 301 would
+// otherwise let a cache serve a member's redirect to a guest.
+func TestRedirectsCacheControl(t *testing.T) {
+	h, _ := smallSite(t)
+	cookies := signIn(t, h, "alice", testPassword)
+	for _, tc := range []struct {
+		path string
+		code int
+	}{
+		{"/t/3", http.StatusMovedPermanently},           // a moved-topic marker
+		{"/old/about.cgi", http.StatusMovedPermanently}, // a legacy route
+		{"/p/1", http.StatusFound},
+		{"/t/1/new", http.StatusFound},
+		{"/account", http.StatusFound},
+	} {
+		// The guest may get a redirect or a 404; a redirect must carry the header.
+		guest := get(t, h, tc.path)
+		if guest.Code >= 300 && guest.Code < 400 {
+			if got := guest.Header().Get("Cache-Control"); got != "private, no-cache" {
+				t.Errorf("guest %s (%d): Cache-Control = %q, want private, no-cache", tc.path, guest.Code, got)
+			}
+		}
+		member := getAs(t, h, tc.path, cookies)
+		if member.Code != tc.code {
+			t.Errorf("member %s = %d, want %d", tc.path, member.Code, tc.code)
+		}
+		if got := member.Header().Get("Cache-Control"); got != "private, no-store" {
+			t.Errorf("member %s (%d): Cache-Control = %q, want private, no-store", tc.path, member.Code, got)
+		}
+	}
+	// The legacy file prefix redirects too.
+	if rec := get(t, h, "/old/images/smilies/smile.gif"); rec.Code == http.StatusMovedPermanently {
+		if got := rec.Header().Get("Cache-Control"); got != "private, no-cache" {
+			t.Errorf("legacy file redirect: Cache-Control = %q", got)
+		}
+	}
+}
+
+// An attachment keeps its own Cache-Control, for a guest and for a member.
+func TestAttachmentKeepsCacheControl(t *testing.T) {
+	pool, dataDir := boardtest.Load(t, bundletest.Small())
+	h, err := New(t.Context(), pool, Options{DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(),
+		`insert into acl_group_grants (group_id, forum_id, option, setting) values (1, 0, 'account.download', 3), (1, 2, 'attach.download', 3)`); err != nil {
+		t.Fatal(err)
+	}
+	rec := get(t, h, "/a/1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/a/1 = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "private, max-age=3600" {
+		t.Errorf("/a/1 Cache-Control = %q", got)
+	}
+}
+
+// Two posts, or a post and a signature, that need the same provider load its
+// script once.
+func TestOneScriptTagPerProvider(t *testing.T) {
+	h := embedSite(t, func(b *bundletest.Board) {
+		b.Posts[0].Body.Source = "https://x.com/example/status/20"
+		b.Posts[1].Body.Source = "https://x.com/example/status/21"
+		b.Posts[2].Body.Source = "https://x.com/example/status/22"
+		b.Posts[3].Body.Source = "plain"
+		b.Users[0].Signature.Source = "https://x.com/example/status/23"
+		b.Users[1].Signature.Source = "https://x.com/example/status/24"
+	})
+	body := bodyOf(t, get(t, h, "/t/1"))
+	if n := strings.Count(body, `<script async src="https://platform.x.com/widgets.js"></script>`); n != 1 {
+		t.Errorf("%d X script tags, want 1", n)
+	}
+	if n := strings.Count(body, "<script async"); n != 1 {
+		t.Errorf("%d async scripts, want 1", n)
+	}
+	if n := strings.Count(body, `class="twitter-tweet"`); n < 2 {
+		t.Errorf("%d tweets on the page, want at least 2", n)
+	}
+}
+
+// A response that is not a page and that answers an error tells search engines
+// to skip it, as the robots meta does for a page.
+func TestNoindexHeaderOnPlainErrors(t *testing.T) {
+	h, _ := smallSite(t)
+	// The mux answers 405 in plain text.
+	rec := get(t, h, "/healthz")
+	if rec.Header().Get("X-Robots-Tag") != "" {
+		t.Errorf("a 200 has X-Robots-Tag %q", rec.Header().Get("X-Robots-Tag"))
+	}
+	rec = do(t, h, http.MethodDelete, "/healthz")
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("X-Robots-Tag") != "noindex" {
+		t.Errorf("healthz 405: %d, X-Robots-Tag %q", rec.Code, rec.Header().Get("X-Robots-Tag"))
+	}
+	// A failing database gives the 503 of /healthz.
+	rec = httptest.NewRecorder()
+	secure(Health(failingPinger{})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("X-Robots-Tag") != "noindex" {
+		t.Errorf("healthz 503: %d, X-Robots-Tag %q", rec.Code, rec.Header().Get("X-Robots-Tag"))
+	}
+	// A request that cannot read the settings gets the plain-text fallback of
+	// the error page.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/t/1", nil).WithContext(ctx))
+	if strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
+		t.Skipf("the cancelled request still built a page (%d)", rec.Code)
+	}
+	if rec.Code < 400 || rec.Header().Get("X-Robots-Tag") != "noindex" {
+		t.Errorf("plain-text fallback: %d, X-Robots-Tag %q", rec.Code, rec.Header().Get("X-Robots-Tag"))
+	}
+	// A page answer carries the meta element and no header.
+	if got := get(t, h, "/nope").Header().Get("X-Robots-Tag"); got != "" {
+		t.Errorf("an HTML 404 has X-Robots-Tag %q", got)
+	}
+}
+
+type failingPinger struct{}
+
+func (failingPinger) Ping(context.Context) error { return errors.New("down") }
 
 func TestNoindex(t *testing.T) {
 	h, _ := smallSite(t)

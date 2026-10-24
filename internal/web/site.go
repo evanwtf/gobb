@@ -505,7 +505,9 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Content-Security-Policy", p.policy.String())
-	if h.Get("Cache-Control") == "" {
+	// The value of the middleware is a default. A handler's own value, such as
+	// the no-store of the sign-in page, stays.
+	if cc := h.Get("Cache-Control"); cc == "" || cc == cacheGuest || cc == cacheMember {
 		h.Set("Cache-Control", cacheControl(p.Viewer.UserID != 0))
 	}
 	w.WriteHeader(status)

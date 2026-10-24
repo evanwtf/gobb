@@ -419,7 +419,7 @@ designer's call):
 | `vimeo` | a Vimeo video | Vimeo's player |
 | `tweet` | a post on X | the post, through X's embed script |
 | `instagram` | an Instagram post or reel | the post, through Instagram's embed script |
-| `reddit` | a Reddit post | the post, through Reddit's embed script |
+| `reddit` | a Reddit post | a plain link: "View post on Reddit" (no script, no frame) |
 | `tiktok` | a TikTok video | TikTok's player |
 | `threads` | a Threads post | the post, through Threads' embed script |
 | `spotify` | a Spotify track, album, playlist, episode or show | Spotify's player |

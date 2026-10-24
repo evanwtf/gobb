@@ -734,12 +734,14 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 /* Embeds that need a script from their provider show a plain link until it runs. */
 .post-body blockquote.twitter-tweet,
 .post-body blockquote.instagram-media,
-.post-body blockquote.reddit-embed-bq,
 .post-body blockquote.text-post-media { font-size: 0.95em; }
 .post-body blockquote.twitter-tweet::before,
 .post-body blockquote.instagram-media::before,
-.post-body blockquote.reddit-embed-bq::before,
 .post-body blockquote.text-post-media::before { content: "Embedded post"; }
+/* The Threads and Instagram scripts put their frame before the fallback and leave
+   the fallback in place. Hide it only once the frame is there. */
+.post-body iframe.text-post-media + blockquote,
+.post-body iframe.instagram-media + blockquote { display: none; }
 
 .attachments { margin-top: 1rem; padding-top: 0.6rem; border-top: 1px solid var(--line-soft); font-size: 0.9rem; }
 .attachments h3 { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.3rem; }
