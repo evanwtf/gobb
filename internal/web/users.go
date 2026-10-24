@@ -37,6 +37,25 @@ func (s *site) denied(w http.ResponseWriter, p *page, what string) {
 	s.render(w, http.StatusForbidden, "error.html", p)
 }
 
+// profileFailed answers the error of [board.Profile] and reports whether it
+// did: 410 for a gone user, 403 for a viewer who may not see profiles, 404 for a
+// missing user. The old links to a profile use it too, so the rule is the same.
+func (s *site) profileFailed(w http.ResponseWriter, r *http.Request, p *page, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, board.ErrGone):
+		s.failLink(w, r, http.StatusGone, "Gone", "This account no longer exists.", "", "")
+	case errors.Is(err, board.ErrForbidden):
+		s.denied(w, p, "member profiles")
+	case errors.Is(err, board.ErrNotFound):
+		s.notFound(w, r)
+	default:
+		s.serverError(w, r, err)
+	}
+	return true
+}
+
 // profile serves GET /u/{id}. A gone user answers 410.
 func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
@@ -50,18 +69,7 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pp, err := board.Profile(r.Context(), s.pool, p.Viewer, id)
-	switch {
-	case errors.Is(err, board.ErrGone):
-		s.failLink(w, r, http.StatusGone, "Gone", "This account no longer exists.", "", "")
-		return
-	case errors.Is(err, board.ErrForbidden):
-		s.denied(w, p, "member profiles")
-		return
-	case errors.Is(err, board.ErrNotFound):
-		s.notFound(w, r)
-		return
-	case err != nil:
-		s.serverError(w, r, err)
+	if s.profileFailed(w, r, p, err) {
 		return
 	}
 	d := profileData{

@@ -46,7 +46,11 @@ func rowViews(rows []board.TopicRow, loc *time.Location) []topicRowView {
 
 // pathID reads a positive integer path value. Anything else is not a page.
 func pathID(r *http.Request, name string) (int64, bool) {
-	raw := r.PathValue(name)
+	return parseID(r.PathValue(name))
+}
+
+// parseID reads a positive integer in its canonical spelling.
+func parseID(raw string) (int64, bool) {
 	id, err := strconv.ParseInt(raw, 10, 64)
 	// Only the canonical spelling is a page: "+5" and "05" are not.
 	return id, err == nil && id > 0 && strconv.FormatInt(id, 10) == raw
@@ -118,14 +122,17 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 
 // linkTarget turns the link_url of a link forum into a URL that is safe to send
 // a visitor to. A site path gets the base path in front. An https or mailto URL
-// goes as it is. Any other value, such as an http URL, a relative path or a
-// scheme-relative "//host", gives false, because the board links nowhere else.
+// goes as it is. An http URL becomes the https URL. Any other value, such as a
+// relative path or a scheme-relative "//host", gives false, because the board
+// links nowhere else. The upgrade is the one the renderer applies to an image.
 func (s *site) linkTarget(raw string) (string, bool) {
 	switch {
 	case strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") && !strings.Contains(raw, `\`):
 		return s.base + raw[1:], true
 	case strings.HasPrefix(raw, "https://"), strings.HasPrefix(raw, "mailto:"):
 		return raw, true
+	case len(raw) >= len("http://") && strings.EqualFold(raw[:len("http://")], "http://"):
+		return "https://" + raw[len("http://"):], true
 	}
 	return "", false
 }

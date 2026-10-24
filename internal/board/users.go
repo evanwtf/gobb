@@ -50,6 +50,21 @@ type ProfilePage struct {
 	Groups []string
 }
 
+// AvatarPath returns the stored path of the avatar of user userID, relative to
+// the files directory of the site ("avatars/1.png"). A user who does not exist
+// and a user with no avatar give [ErrNotFound].
+func AvatarPath(ctx context.Context, q db.Querier, userID int64) (string, error) {
+	var p string
+	err := q.QueryRow(ctx, `select coalesce(avatar_path, '') from users where id = $1`, userID).Scan(&p)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && p == "") {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("board: read avatar of %d: %w", userID, err)
+	}
+	return p, nil
+}
+
 // Profile returns the profile of member userID as v sees it.
 //
 // A user who was removed for good gives [ErrGone], before any permission check.

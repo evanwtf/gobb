@@ -42,6 +42,12 @@ var getPaths = []string{
 	"/login",
 	"/static/gobb.css",
 	"/files/avatars/1.png",
+	"/old/thread.cgi?view=full&id=1",
+	"/old/thread.cgi?view=full&id=2",
+	"/old/profile.cgi",
+	"/old/about.cgi",
+	"/old/images/smilies/smile.gif",
+	"/old/nothing.cgi",
 }
 
 // dumpData returns every row of every data table as text, in a stable order.

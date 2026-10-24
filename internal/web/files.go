@@ -21,62 +21,77 @@ var imageTypes = map[string]bool{
 	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true,
 }
 
-// files serves GET /files/{dir}/{name...}. It serves a regular file of an
-// allowed directory when the content is an image of an allowed type. Anything
-// else gets 404, and the answer does not say why.
-func (s *site) files(w http.ResponseWriter, r *http.Request) {
-	dir, name := r.PathValue("dir"), r.PathValue("name")
+// errNotServed means that /files/ would answer 404 for a file. The reason is
+// not told.
+var errNotServed = errors.New("web: file is not served")
+
+// openImage opens name below the data directory dir for /files/. It succeeds for
+// a regular file, inside an allowed directory, that holds an image of an allowed
+// type. Any other file gives [errNotServed]; a read error gives that error. The
+// caller closes the file, which is positioned at its start.
+func (s *site) openImage(dir, name string) (*os.File, fs.FileInfo, string, error) {
 	if !fileDirs[dir] || name == "" {
-		s.notFound(w, r)
-		return
+		return nil, nil, "", errNotServed
 	}
 	for _, elem := range strings.Split(name, "/") {
 		if elem == "" || strings.HasPrefix(elem, ".") || strings.ContainsAny(elem, `\`) || strings.ContainsRune(elem, 0) {
-			s.notFound(w, r)
-			return
+			return nil, nil, "", errNotServed
 		}
 	}
 	// The root keeps the open inside the directory: a ".." element or a symlink
 	// that leads out of it fails.
 	root, err := os.OpenRoot(filepath.Join(s.opt.DataDir, dir))
 	if err != nil {
-		s.notFound(w, r)
-		return
+		return nil, nil, "", errNotServed
 	}
 	defer func() { _ = root.Close() }()
 	// A symlink is not a regular file, even when it points inside the directory.
 	// Lstat does not follow the last element.
 	local := filepath.FromSlash(name)
 	if li, err := root.Lstat(local); err != nil || !li.Mode().IsRegular() {
-		s.notFound(w, r)
-		return
+		return nil, nil, "", errNotServed
 	}
 	f, err := root.Open(local)
 	if err != nil {
-		s.notFound(w, r)
-		return
+		return nil, nil, "", errNotServed
 	}
-	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		s.notFound(w, r)
-		return
+		_ = f.Close()
+		return nil, nil, "", errNotServed
 	}
 	head := make([]byte, 512)
 	n, err := io.ReadFull(f, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		s.serverError(w, r, err)
-		return
+		_ = f.Close()
+		return nil, nil, "", err
 	}
 	ctype := detectImage(head[:n])
 	if ctype == "" {
-		s.notFound(w, r)
-		return
+		_ = f.Close()
+		return nil, nil, "", errNotServed
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, nil, "", err
+	}
+	return f, info, ctype, nil
+}
+
+// files serves GET /files/{dir}/{name...}. It serves a regular file of an
+// allowed directory when the content is an image of an allowed type. Anything
+// else gets 404, and the answer does not say why.
+func (s *site) files(w http.ResponseWriter, r *http.Request) {
+	f, info, ctype, err := s.openImage(r.PathValue("dir"), r.PathValue("name"))
+	switch {
+	case errors.Is(err, errNotServed):
+		s.notFound(w, r)
+		return
+	case err != nil:
 		s.serverError(w, r, err)
 		return
 	}
+	defer func() { _ = f.Close() }()
 	h := w.Header()
 	h.Set("Content-Type", ctype)
 	h.Set("X-Content-Type-Options", "nosniff")

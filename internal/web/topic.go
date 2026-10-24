@@ -190,6 +190,23 @@ var inlineTypes = map[string]bool{
 	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true,
 }
 
+// attachmentFailed answers the error of [board.AttachmentFile] and reports
+// whether it did: 404 for a file that is missing or hidden, 403 for a viewer who
+// may not download it. The old links to an attachment use it too.
+func (s *site) attachmentFailed(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, board.ErrNotFound):
+		s.notFound(w, r)
+	case errors.Is(err, board.ErrForbidden):
+		s.fail(w, r, http.StatusForbidden, "No access", "You do not have the right to download this file.")
+	default:
+		s.serverError(w, r, err)
+	}
+	return true
+}
+
 // attachment serves GET /a/{id}. The check is in board.AttachmentFile. The
 // download count does not change.
 func (s *site) attachment(w http.ResponseWriter, r *http.Request) {
@@ -204,15 +221,7 @@ func (s *site) attachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta, err := board.AttachmentFile(r.Context(), s.pool, p.Viewer, id)
-	switch {
-	case errors.Is(err, board.ErrNotFound):
-		s.notFound(w, r)
-		return
-	case errors.Is(err, board.ErrForbidden):
-		s.fail(w, r, http.StatusForbidden, "No access", "You do not have the right to download this file.")
-		return
-	case err != nil:
-		s.serverError(w, r, err)
+	if s.attachmentFailed(w, r, err) {
 		return
 	}
 	root, err := os.OpenRoot(s.opt.DataDir)

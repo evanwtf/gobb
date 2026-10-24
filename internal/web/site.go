@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/board"
+	"github.com/evanwtf/gobb/internal/legacy"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/session"
 )
@@ -68,6 +69,9 @@ type site struct {
 	login *login.Service
 	// crossOrigin guards every POST route.
 	crossOrigin *http.CrossOriginProtection
+	// legacy holds the old routes and file prefixes of the board. It is read
+	// once, in New: the server stops for an import.
+	legacy *legacy.Table
 }
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
@@ -76,8 +80,9 @@ var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
-// templates once, so a broken template fails here and not on a request.
-func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
+// templates once, so a broken template fails here and not on a request. It reads
+// the legacy routes once too.
+func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
 	s := &site{pool: pool, opt: opt, login: login.New(pool), crossOrigin: http.NewCrossOriginProtection()}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	if opt.LoginFloor != 0 {
@@ -91,6 +96,11 @@ func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, erro
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}
+	tab, err := legacy.Load(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	s.legacy = tab
 
 	inner := http.NewServeMux()
 	inner.HandleFunc("GET /{$}", s.index)
@@ -116,7 +126,9 @@ func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, erro
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
 	// Without this, the mux would redirect /files/avatars to /files/avatars/.
 	inner.HandleFunc("GET /files/{dir}", s.notFound)
-	inner.HandleFunc("/", s.notFound)
+	// The legacy table runs last: a request that no route above matched.
+	inner.HandleFunc("/", s.fallback)
+	s.warnHidden(inner)
 
 	root := http.NewServeMux()
 	root.Handle("/healthz", Health(pool))

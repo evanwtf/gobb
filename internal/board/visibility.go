@@ -16,6 +16,13 @@ const (
 	membersPerPage = 50
 )
 
+// TopicsPerPage and PostsPerPage are the page sizes of a forum and of a topic.
+// A caller that turns an item offset into a page number uses them.
+const (
+	TopicsPerPage = topicsPerPage
+	PostsPerPage  = postsPerPage
+)
+
 // maxPage is the highest page number that [ParsePage] accepts.
 const maxPage = 1_000_000
 

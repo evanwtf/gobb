@@ -389,3 +389,17 @@ func TestPageLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestAvatarPath(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	got, err := board.AvatarPath(ctx, pool, 1)
+	if err != nil || got != "avatars/1.png" {
+		t.Errorf("alice: %q, %v", got, err)
+	}
+	for _, id := range []int64{2, 8, 99} {
+		if got, err := board.AvatarPath(ctx, pool, id); !errors.Is(err, board.ErrNotFound) {
+			t.Errorf("user %d: %q, %v; want ErrNotFound", id, got, err)
+		}
+	}
+}
