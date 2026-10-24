@@ -835,9 +835,11 @@ values ($1, $2, $3, $4, $5::jsonb, $6)`, nullID(v.UserID), action, targetType, t
 //     mod.edit in the forum, gets [ErrForbidden].
 //   - The stored flags of the post stay. The text is parsed with them.
 //   - edit_count grows by one; edited_at and edited_by are set.
-//   - A moderator's edit writes a mod_log row with the reason, and when the post
-//     belongs to another member the reason is stored with the post. An author's
-//     own edit writes no row and keeps edit_reason as it is.
+//   - A moderator's edit writes a mod_log row. When the post belongs to another
+//     member, the row holds the reason and the post stores it. A moderator who
+//     edits the own post by mod.edit alone gives no reason: it is not checked,
+//     stored or logged. An author's own edit writes no row and keeps edit_reason
+//     as it is.
 //
 // now is the time of the edit.
 func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d Draft, reason string, now time.Time) error {
@@ -850,11 +852,17 @@ func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d
 		if err != nil {
 			return err
 		}
+		// The reason belongs to an edit of another member's post. A moderator who
+		// edits the own post by mod.edit alone gives none: it is not asked for, so
+		// it is not checked, stored or logged, and the log row has an empty one.
 		moderated := !own
-		if moderated {
+		askReason := moderated && p.authorID != v.UserID
+		if askReason {
 			if reason, err = cleanReason(reason); err != nil {
 				return err
 			}
+		} else {
+			reason = ""
 		}
 		var title string
 		if p.first {
@@ -874,12 +882,11 @@ func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d
 		if err != nil {
 			return err
 		}
-		storeReason := moderated && p.authorID != v.UserID
 		_, err = tx.Exec(ctx, `
 update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
        edit_count = edit_count + 1, edited_at = $5, edited_by = $6,
        edit_reason = case when $7 then $8 else edit_reason end
- where id = $1`, postID, d.Source, string(body.JSON), body.Text, now, v.UserID, storeReason, reason)
+ where id = $1`, postID, d.Source, string(body.JSON), body.Text, now, v.UserID, askReason, reason)
 		if err != nil {
 			return fmt.Errorf("board: edit post %d: %w", postID, err)
 		}

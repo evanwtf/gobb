@@ -38,19 +38,20 @@ func (s *site) postAction(verb string, write postWrite) http.HandlerFunc {
 			return
 		}
 		// A post that the viewer cannot see is a missing one, whatever the action.
-		// The topic is also where the answer goes if the post is hidden afterwards.
-		topicID, _, err := board.PostLocation(ctx, s.pool, p.Viewer, id)
+		// Its topic and forum are where the answer goes if the post is hidden
+		// afterwards.
+		topicID, forumID, err := board.PostPlace(ctx, s.pool, p.Viewer, id)
 		if s.actionFailed(w, r, p, err, verb) {
 			return
 		}
 		if s.actionFailed(w, r, p, write(ctx, s.pool, p.Viewer, id, s.opt.Now()), verb) {
 			return
 		}
-		// The write is done. Whatever happens next, the answer is a 303: to the post,
-		// or to its topic when the post is not visible to the viewer any more (a
-		// restore that puts a post back as held, for a viewer who cannot see held
-		// posts).
-		target := s.path("t", strconv.FormatInt(topicID, 10))
+		// The write is done. Whatever happens next, the answer is a 303: to the post
+		// when the viewer still sees it. A restore can put a post back as held, for a
+		// restorer who cannot see held posts: the answer then falls back as the
+		// answer to a delete does, to the topic, the forum, the index.
+		target := s.fallbackTarget(ctx, p.Viewer, topicID, forumID)
 		switch _, _, err := board.PostLocation(ctx, s.pool, p.Viewer, id); {
 		case err == nil:
 			target = s.path("p", strconv.FormatInt(id, 10))

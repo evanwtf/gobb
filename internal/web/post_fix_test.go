@@ -491,8 +491,8 @@ func memberViewer(t *testing.T, pool *pgxpool.Pool, id int64) board.Viewer {
 	return v
 }
 
-// A delete that committed always answers 303: the topic, else the forum, else the
-// index.
+// A delete or a restore that committed always answers 303: the topic, else the
+// forum, else the index.
 func TestAfterDeleteTarget(t *testing.T) {
 	var s *site
 	onNew = func(got *site) { s = got }
@@ -502,19 +502,19 @@ func TestAfterDeleteTarget(t *testing.T) {
 	ctx := t.Context()
 	v := memberViewer(t, pool, 1)
 	dt := board.DeleteForm{PostID: 1, TopicID: 1, ForumID: 2}
-	if got := s.afterDeleteTarget(ctx, v, dt); got != "/t/1" {
+	if got := s.fallbackTarget(ctx, v, dt.TopicID, dt.ForumID); got != "/t/1" {
 		t.Errorf("topic readable: %q", got)
 	}
 	exec(t, pool, `update topics set visibility = 'deleted' where id = 1`)
-	if got := s.afterDeleteTarget(ctx, v, dt); got != "/f/2" {
+	if got := s.fallbackTarget(ctx, v, dt.TopicID, dt.ForumID); got != "/f/2" {
 		t.Errorf("topic gone: %q", got)
 	}
 	dead, cancel := context.WithCancel(ctx)
 	cancel()
-	if got := s.afterDeleteTarget(dead, v, dt); got != "/" {
+	if got := s.fallbackTarget(dead, v, dt.TopicID, dt.ForumID); got != "/" {
 		t.Errorf("database unreachable: %q", got)
 	}
-	if got := s.afterDeleteTarget(ctx, v, board.DeleteForm{PostID: 1, TopicID: 1}); got != "/" {
+	if got := s.fallbackTarget(ctx, v, 1, 0); got != "/" {
 		t.Errorf("no forum: %q", got)
 	}
 }

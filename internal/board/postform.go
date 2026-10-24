@@ -338,8 +338,9 @@ type EditForm struct {
 	// go to [ParseBodyKeeping], as [EditPost] passes them.
 	Flags  markup.Options
 	Stored *markup.Node
-	// Moderated is true when mod.edit alone lets v edit the post: the form then
-	// asks for a reason.
+	// Moderated is true when mod.edit alone lets v edit the post of another
+	// member: the form then asks for a reason. A moderator who edits the own post
+	// by mod.edit alone is not asked, since the reason would not show.
 	Moderated bool
 }
 
@@ -356,7 +357,7 @@ func LoadEdit(ctx context.Context, q db.Querier, v Viewer, postID int64) (EditFo
 	if err != nil {
 		return EditForm{}, err
 	}
-	out := EditForm{PostID: postID, TopicID: t.id, ForumID: p.forumID, First: p.first, Flags: p.flags, Moderated: !own}
+	out := EditForm{PostID: postID, TopicID: t.id, ForumID: p.forumID, First: p.first, Flags: p.flags, Moderated: !own && p.authorID != v.UserID}
 	var tree []byte
 	err = q.QueryRow(ctx, `
 select t.title, p.body_source, p.body_tree from posts p join topics t on t.id = p.topic_id where p.id = $1`, postID).

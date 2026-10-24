@@ -446,6 +446,30 @@ select p.topic_id,
 	return topicID, (before-1)/postsPerPage + 1, nil
 }
 
+// PostPlace returns the topic that holds post postID and the forum of the topic,
+// as v sees them. A post that v may not see, or whose topic v may not see, gives
+// [ErrNotFound]. A write that changes who may see a post asks it first, so that
+// the answer can fall back to the topic, the forum and the index.
+func PostPlace(ctx context.Context, q db.Querier, v Viewer, postID int64) (topicID, forumID int64, err error) {
+	sc, err := newScope(ctx, q, v)
+	if err != nil {
+		return 0, 0, err
+	}
+	err = q.QueryRow(ctx, `
+select p.topic_id, t.forum_id
+  from posts p
+  join topics t on t.id = p.topic_id
+ where p.id = $5 and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).
+		Scan(&topicID, &forumID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("board: locate post %d: %w", postID, err)
+	}
+	return topicID, forumID, nil
+}
+
 // AttachmentMeta describes a file that the viewer may download.
 type AttachmentMeta struct {
 	// Path is the path of the file under the data directory.

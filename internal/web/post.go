@@ -565,26 +565,26 @@ func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The delete is done. Whatever happens next, the answer is a 303.
-	http.Redirect(w, r, s.afterDeleteTarget(ctx, p.Viewer, dt), http.StatusSeeOther)
+	http.Redirect(w, r, s.fallbackTarget(ctx, p.Viewer, dt.TopicID, dt.ForumID), http.StatusSeeOther)
 }
 
-// afterDeleteTarget is where a viewer goes after a delete that committed: the
-// topic; when the topic is gone for the viewer (the first post held it) or cannot
+// fallbackTarget is where a viewer goes after a write that committed and may have
+// hidden its target (a confirmed delete, a restore): the topic; when the topic is gone for the viewer (the first post held it) or cannot
 // be read, the forum; when the forum cannot be read either, the index. It never
-// fails: the delete is done.
-func (s *site) afterDeleteTarget(ctx context.Context, v board.Viewer, dt board.DeleteForm) string {
-	_, _, _, err := board.TopicHead(ctx, s.pool, v, dt.TopicID)
+// fails: the write is done. A confirmed delete and a restore use it.
+func (s *site) fallbackTarget(ctx context.Context, v board.Viewer, topicID, forumID int64) string {
+	_, _, _, err := board.TopicHead(ctx, s.pool, v, topicID)
 	if err == nil {
-		return s.path("t", strconv.FormatInt(dt.TopicID, 10))
+		return s.path("t", strconv.FormatInt(topicID, 10))
 	}
 	if !errors.Is(err, board.ErrNotFound) {
-		slog.Warn("delete: locate the topic", "topic", dt.TopicID, "err", err)
+		slog.Warn("redirect: locate the topic", "topic", topicID, "err", err)
 	}
-	if dt.ForumID != 0 {
-		if _, _, err := board.ForumHead(ctx, s.pool, v, dt.ForumID); err == nil {
-			return s.path("f", strconv.FormatInt(dt.ForumID, 10))
+	if forumID != 0 {
+		if _, _, err := board.ForumHead(ctx, s.pool, v, forumID); err == nil {
+			return s.path("f", strconv.FormatInt(forumID, 10))
 		} else if !errors.Is(err, board.ErrNotFound) {
-			slog.Warn("delete: locate the forum", "forum", dt.ForumID, "err", err)
+			slog.Warn("redirect: locate the forum", "forum", forumID, "err", err)
 		}
 	}
 	return s.path()

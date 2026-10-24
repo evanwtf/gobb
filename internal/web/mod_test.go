@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/evanwtf/gobb/internal/counters"
 )
 
 // modSite is the posting board with bob a moderator of forum 2: the test gives him
@@ -72,6 +74,61 @@ func indexPosts(t *testing.T, h http.Handler, cookies []*http.Cookie) int {
 		t.Fatalf("the index row of forum 2 shows no post count:\n%s", row)
 	}
 	n, _ := strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
+	return n
+}
+
+// wantCountersExact fails when a full recompute (counters.All) would change a
+// counter. It runs the recompute in a transaction and rolls it back, so the test
+// never changes what it reads.
+func wantCountersExact(t *testing.T, pool *pgxpool.Pool, after string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	snapshot := func() string {
+		rows, err := tx.Query(ctx, `
+select 'topic ' || id || ' last=' || coalesce(last_post_id, 0) || ' at=' || last_post_at || ' replies=' || reply_count from topics
+union all
+select 'forum ' || id || ' topics=' || topic_count || ' posts=' || post_count || ' last=' || coalesce(last_post_id, 0) from forums
+order by 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var sb strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			sb.WriteString(line + "\n")
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return sb.String()
+	}
+	stored := snapshot()
+	if err := counters.All(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot(); got != stored {
+		t.Errorf("%s: counters.All changes a counter\n--- stored\n%s--- recomputed\n%s", after, stored, got)
+	}
+}
+
+// indexLast reads the post that the index shows as the last post of forum 2.
+func indexLast(t *testing.T, h http.Handler, cookies []*http.Cookie) int {
+	t.Helper()
+	row := rowOf(bodyOf(t, getAs(t, h, "/", cookies)), "forum-row", "Main Discussion")
+	m := regexp.MustCompile(`class="last-title" href="/p/(\d+)"`).FindStringSubmatch(row)
+	if m == nil {
+		t.Fatalf("the index row of forum 2 shows no last post:\n%s", row)
+	}
+	n, _ := strconv.Atoi(m[1])
 	return n
 }
 
@@ -150,14 +207,37 @@ func TestModeratorControls(t *testing.T) {
 			t.Fatalf("POST %s = %d %q, want 303 %q\n%s", target, rec.Code, rec.Header().Get("Location"), wantLoc, bodyOf(t, rec))
 		}
 	}
-	check := func(step string, replies, posts, logRows int) string {
+	// check compares what the pages show with the rows (the approved posts of
+	// topic 1 less the first, and of forums 2 and 3), the stored counters with a
+	// full recompute, and the index's last post with the rows.
+	check := func(step string, logRows int) string {
 		t.Helper()
+		wantCountersExact(t, pool, step)
+		var replies, posts, last int
+		if err := pool.QueryRow(t.Context(), `select count(*) - 1 from posts where topic_id = 1 and visibility = 'approved'`).Scan(&replies); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(t.Context(), `
+select count(*) from posts p join topics t on t.id = p.topic_id
+ where p.visibility = 'approved' and t.visibility = 'approved' and t.forum_id in (2, 3)`).Scan(&posts); err != nil {
+			t.Fatal(err)
+		}
+		// The index shows the newest approved post of the forum and its subforum.
+		if err := pool.QueryRow(t.Context(), `
+select p.id from posts p join topics t on t.id = p.topic_id
+ where p.visibility = 'approved' and t.visibility = 'approved' and t.forum_id in (2, 3)
+ order by p.created_at desc, p.id desc limit 1`).Scan(&last); err != nil {
+			t.Fatal(err)
+		}
+		if got := indexLast(t, h, b); got != last {
+			t.Errorf("%s: the index shows post %d as the last post of forum 2, the rows hold %d", step, got, last)
+		}
 		page := topic()
 		if got := topicReplies(t, page); got != replies {
-			t.Errorf("%s: the topic page shows %d replies, want %d", step, got, replies)
+			t.Errorf("%s: the topic page shows %d replies, the rows hold %d", step, got, replies)
 		}
 		if got := indexPosts(t, h, b); got != posts {
-			t.Errorf("%s: the index shows %d posts, want %d", step, got, posts)
+			t.Errorf("%s: the index shows %d posts, the rows hold %d", step, got, posts)
 		}
 		if got := len(modLog(t, pool)); got != logRows {
 			t.Errorf("%s: the log holds %d rows, want %d", step, got, logRows)
@@ -175,11 +255,14 @@ func TestModeratorControls(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(bodyOf(t, rec), "Delete this post?") {
 		t.Fatalf("the first POST of a delete = %d, want the confirm page", rec.Code)
 	}
-	check("after the confirm page", 2, 5, 0)
+	check("after the confirm page", 0)
 	do("/p/4/delete", url.Values{"confirm": {"1"}}, "/t/1")
-	page = check("after the delete", 1, 4, 1)
+	page = check("after the delete", 1)
 	if l := lastLog(); l != (logRow{2, "post.delete", "post", 4}) {
 		t.Errorf("delete log = %+v", l)
+	}
+	if got := indexLast(t, h, b); got == 4 {
+		t.Error("the index still shows the deleted post as the last post")
 	}
 	art := articleOf(page, 4)
 	if !strings.Contains(art, ">Deleted<") || !hasForm(art, "/p/4/restore") || hasForm(art, "/p/4/delete") {
@@ -196,12 +279,15 @@ func TestModeratorControls(t *testing.T) {
 
 	// Restore it.
 	do("/p/4/restore", url.Values{}, "/p/4")
-	page = check("after the restore", 2, 5, 2)
+	page = check("after the restore", 2)
 	if l := lastLog(); l != (logRow{2, "post.restore", "post", 4}) {
 		t.Errorf("restore log = %+v", l)
 	}
 	if art := articleOf(page, 4); strings.Contains(art, ">Deleted<") || hasForm(art, "/p/4/restore") || !hasForm(art, "/p/4/delete") {
 		t.Errorf("the restored post: %s", art)
+	}
+	if got := indexLast(t, h, b); got != 4 {
+		t.Errorf("after the restore the index shows post %d as the last post, want 4", got)
 	}
 	if loc := getAs(t, h, "/p/4", b).Header().Get("Location"); loc != "/t/1#p4" {
 		t.Errorf("GET /p/4 = %q", loc)
@@ -209,7 +295,7 @@ func TestModeratorControls(t *testing.T) {
 
 	// Approve the held post.
 	do("/p/3/approve", url.Values{}, "/p/3")
-	page = check("after the approval", 3, 6, 3)
+	page = check("after the approval", 3)
 	if l := lastLog(); l != (logRow{2, "post.approve", "post", 3}) {
 		t.Errorf("approve log = %+v", l)
 	}
@@ -219,7 +305,7 @@ func TestModeratorControls(t *testing.T) {
 
 	// Lock the topic, then unlock it.
 	do("/t/1/lock", url.Values{}, "/t/1")
-	page = check("after the lock", 3, 6, 4)
+	page = check("after the lock", 4)
 	if l := lastLog(); l != (logRow{2, "topic.lock", "topic", 1}) {
 		t.Errorf("lock log = %+v", l)
 	}
@@ -227,9 +313,9 @@ func TestModeratorControls(t *testing.T) {
 		t.Errorf("the locked topic offers Unlock only, and says Locked; forms %v", formActions(page))
 	}
 	do("/t/1/lock", url.Values{}, "/t/1") // a second click changes nothing
-	check("after a second lock", 3, 6, 4)
+	check("after a second lock", 4)
 	do("/t/1/unlock", url.Values{}, "/t/1")
-	page = check("after the unlock", 3, 6, 5)
+	page = check("after the unlock", 5)
 	if l := lastLog(); l != (logRow{2, "topic.unlock", "topic", 1}) {
 		t.Errorf("unlock log = %+v", l)
 	}
@@ -545,5 +631,141 @@ func TestModeratorEditReason(t *testing.T) {
 	}
 	if err := pool.QueryRow(t.Context(), `select edit_reason from posts where id = 3`).Scan(&stored); err != nil || stored != "" {
 		t.Errorf("own edit stored the reason %q (%v)", stored, err)
+	}
+}
+
+// button matches the button with the given text inside a form with the given
+// action.
+func hasButton(page, action, text string) bool {
+	_, rest, ok := strings.Cut(page, `action="`+action+`"`)
+	if !ok {
+		return false
+	}
+	form, _, _ := strings.Cut(rest, "</form>")
+	return strings.Contains(form, `<button type="submit" class="button-quiet">`+text+`</button>`)
+}
+
+// TestModeratorLabels: the words on the buttons and tags are the words of the
+// brief, where they should show, and absent for a viewer without the rights.
+func TestModeratorLabels(t *testing.T) {
+	h, pool := modSite(t)
+	// State: post 4 deleted, post 3 held (the fixture), and topic 1 locked.
+	exec(t, pool, `update posts set visibility = 'deleted', visibility_before_delete = 'approved' where id = 4;
+update topics set locked = true where id = 1`)
+	b := signIn(t, h, "bob", "example-password")
+	a := signIn(t, h, "alice", "example-password") // an admin with no mod rights in forum 2
+	c := signIn(t, h, "carol", "example-password") // the author of the held post 3
+
+	tag := func(page string, id int, text string) bool {
+		return strings.Contains(articleOf(page, id), `<span class="tag tag-warn">`+text+`</span>`)
+	}
+	moderator := bodyOf(t, getAs(t, h, "/t/1", b))
+	for _, w := range []struct {
+		what string
+		ok   bool
+	}{
+		{"Restore on the deleted post", hasButton(moderator, "/p/4/restore", "Restore")},
+		{"Approve on the held post", hasButton(moderator, "/p/3/approve", "Approve")},
+		{"Unlock on the locked topic", hasButton(moderator, "/t/1/unlock", "Unlock")},
+		{"Delete on a live post", hasButton(moderator, "/p/2/delete", "Delete")},
+		{"the Deleted tag on the deleted post", tag(moderator, 4, "Deleted")},
+		{"the Waiting for approval tag on the held post", tag(moderator, 3, "Waiting for approval")},
+	} {
+		if !w.ok {
+			t.Errorf("the moderator's page lacks %s", w.what)
+		}
+	}
+	// Each tag and button shows where it belongs, and only there.
+	if tag(moderator, 3, "Deleted") || tag(moderator, 4, "Waiting for approval") || tag(moderator, 2, "Deleted") || tag(moderator, 2, "Waiting for approval") {
+		t.Error("a tag shows on the wrong post")
+	}
+	if hasButton(moderator, "/p/4/delete", "Delete") || hasButton(moderator, "/t/1/lock", "Lock") {
+		t.Error("the moderator is offered Delete on a deleted post, or Lock on a locked topic")
+	}
+	if !strings.Contains(moderator, `<span class="tag">Locked</span>`) {
+		t.Error("the locked topic shows no Locked tag")
+	}
+
+	// The author of the held post sees the tag, and no button but the own ones.
+	author := bodyOf(t, getAs(t, h, "/t/1", c))
+	if !tag(author, 3, "Waiting for approval") {
+		t.Error("the author of the held post does not see the tag")
+	}
+	for _, page := range map[string]string{
+		"carol":   author,
+		"alice":   bodyOf(t, getAs(t, h, "/t/1", a)),
+		"a guest": bodyOf(t, get(t, h, "/t/1")),
+	} {
+		for _, word := range []string{">Approve<", ">Restore<", ">Lock<", ">Unlock<", ">Deleted<"} {
+			if strings.Contains(page, word) {
+				t.Errorf("a viewer without the rights sees %s", word)
+			}
+		}
+	}
+	for who, page := range map[string]string{"alice": bodyOf(t, getAs(t, h, "/t/1", a)), "a guest": bodyOf(t, get(t, h, "/t/1"))} {
+		if strings.Contains(page, "Waiting for approval") {
+			t.Errorf("%s sees the tag of a held post that is not hers", who)
+		}
+	}
+}
+
+// A restore can leave the post and its topic hidden from the restorer, who holds
+// mod.delete and not mod.approve: the topic comes back held. The answer then goes
+// to the forum, as the answer to a confirmed delete does.
+func TestRestoreToAHiddenTopic(t *testing.T) {
+	h, pool := modSite(t)
+	exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (3, 2, 'mod.delete', 3)`)
+	// Topic 1 and its first post were held, then deleted.
+	exec(t, pool, `update topics set visibility = 'deleted', visibility_before_delete = 'unapproved' where id = 1;
+update posts set visibility = 'deleted', visibility_before_delete = 'unapproved' where id = 1`)
+	c := signIn(t, h, "carol", "example-password")
+	if rec := getAs(t, h, "/t/1", c); rec.Code != http.StatusOK {
+		t.Fatalf("the restorer does not see the deleted topic: %d", rec.Code)
+	}
+	rec := send(t, h, "/p/1/restore", c, url.Values{})
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/f/2" {
+		t.Fatalf("restore = %d %q, want 303 /f/2", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := getAs(t, h, "/t/1", c); rec.Code != http.StatusNotFound {
+		t.Fatalf("the topic is still visible to the restorer: %d", rec.Code)
+	}
+	if rec := getAs(t, h, "/f/2", c); rec.Code != http.StatusOK {
+		t.Errorf("the forum = %d", rec.Code)
+	}
+	// A moderator who can see the held topic goes to the post.
+	b := signIn(t, h, "bob", "example-password")
+	exec(t, pool, `update posts set visibility = 'deleted', visibility_before_delete = 'unapproved' where id = 2`)
+	if rec := send(t, h, "/p/2/restore", b, url.Values{}); rec.Header().Get("Location") != "/p/2" {
+		t.Errorf("bob's restore = %d %q, want 303 /p/2", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// A moderator who edits the own post by mod.edit alone is not asked for a reason,
+// and the log row has none.
+func TestModeratorEditOfOwnPostPage(t *testing.T) {
+	h, pool := modSite(t)
+	exec(t, pool, `update topics set locked = true where id = 1`)
+	b := signIn(t, h, "bob", "example-password")
+	rec := getAs(t, h, "/p/2/edit", b)
+	if page := bodyOf(t, rec); rec.Code != http.StatusOK || strings.Contains(page, `name="reason"`) || strings.Contains(page, "Edit reason") {
+		t.Errorf("GET /p/2/edit = %d; the form asks for a reason: %v", rec.Code, strings.Contains(page, `name="reason"`))
+	}
+	// Alice's post still asks.
+	if page := bodyOf(t, getAs(t, h, "/p/1/edit", b)); !strings.Contains(page, `name="reason"`) {
+		t.Error("the form for another member's post does not ask for a reason")
+	}
+	rec = send(t, h, "/p/2/edit", b, url.Values{"body": {"Bob edits."}, "reason": {"forged"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST /p/2/edit = %d", rec.Code)
+	}
+	var stored, logged string
+	if err := pool.QueryRow(t.Context(), `select edit_reason from posts where id = 2`).Scan(&stored); err != nil || stored != "" {
+		t.Errorf("stored reason = %q (%v)", stored, err)
+	}
+	if err := pool.QueryRow(t.Context(), `select details->>'reason' from mod_log where action = 'post.edit' and target_id = 2`).Scan(&logged); err != nil {
+		t.Fatalf("no log row for the edit: %v", err)
+	}
+	if logged != "" {
+		t.Errorf("logged reason = %q, want none", logged)
 	}
 }

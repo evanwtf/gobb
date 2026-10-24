@@ -3,6 +3,7 @@ package board_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/evanwtf/gobb/internal/board"
@@ -160,4 +161,59 @@ func TestLockedErrors(t *testing.T) {
 
 func errIsLock(err error) bool {
 	return errors.Is(err, board.ErrTopicLocked) || errors.Is(err, board.ErrForumLocked)
+}
+
+// TestModeratorEditOfOwnPost: a moderator who edits the own post by mod.edit alone
+// (the topic is locked, so post.edit_own stops) is not asked for a reason. A reason
+// that arrives anyway is neither checked, nor stored, nor logged. The edit still
+// writes its log row. Another member's post still asks.
+func TestModeratorEditOfOwnPost(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	m := moderator(t, pool, bob)
+	if _, err := pool.Exec(ctx, `update topics set locked = true where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Post 2 is bob's.
+	e, err := board.LoadEdit(ctx, pool, m, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Moderated {
+		t.Error("the form asks bob for a reason on his own post")
+	}
+	if e, err = board.LoadEdit(ctx, pool, m, 1); err != nil || !e.Moderated {
+		t.Errorf("alice's post: Moderated %v, %v; want the form to ask", e.Moderated, err)
+	}
+
+	forged := strings.Repeat("r", 300) // past the limit: not checked, since not asked
+	d := board.Draft{Source: "Bob edits his own post.", IP: ip1}
+	if err := board.EditPost(ctx, pool, m, 2, d, forged, t0); err != nil {
+		t.Fatalf("EditPost of the own post with a reason past the limit: %v", err)
+	}
+	var stored, details string
+	if err := pool.QueryRow(ctx, `select edit_reason from posts where id = 2`).Scan(&stored); err != nil || stored != "" {
+		t.Errorf("stored reason = %q (%v)", stored, err)
+	}
+	if err := pool.QueryRow(ctx, `select details->>'reason' from mod_log where action = 'post.edit' and target_id = 2`).Scan(&details); err != nil {
+		t.Fatalf("the edit wrote no log row: %v", err)
+	}
+	if details != "" {
+		t.Errorf("logged reason = %q, want none", details)
+	}
+
+	// Another member's post: the reason is checked, stored and logged.
+	d = board.Draft{Title: "Welcome again", Source: "Bob edits alice's post.", IP: ip1}
+	_, err = board.LoadEdit(ctx, pool, m, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInput(t, board.EditPost(ctx, pool, m, 1, d, forged, t0.Add(1)), "reason", "")
+	if err := board.EditPost(ctx, pool, m, 1, d, "typo", t0.Add(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `select edit_reason from posts where id = 1`).Scan(&stored); err != nil || stored != "typo" {
+		t.Errorf("stored reason = %q (%v)", stored, err)
+	}
 }

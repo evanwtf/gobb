@@ -648,41 +648,110 @@ func TestPreviewOfEditAgreesWithSave(t *testing.T) {
 	}
 }
 
-func TestPostingNeedsToken(t *testing.T) {
-	h, pool := siteWithPool(t, postingBoard(), Options{})
-	a := signIn(t, h, "alice", "example-password")
-	before := dumpData(t, pool)
-	for _, target := range []string{"/f/2/post", "/t/1/reply", "/p/1/edit", "/p/1/delete", "/p/1/restore", "/p/1/approve", "/t/1/lock", "/t/1/unlock"} {
-		form := url.Values{"title": {"x"}, "body": {"No token."}, "confirm": {"1"}}
-		for name, f := range map[string]url.Values{
-			"no token":    form,
-			"wrong token": func() url.Values { c := cloneForm(form); c.Set("csrf", "nope"); return c }(),
-		} {
-			rec := request(t, h, http.MethodPost, target, a, f)
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("POST %s, %s: status %d, want 403", target, name, rec.Code)
-			}
-		}
-		// A guest's token does not work for a member.
-		guest := request(t, h, http.MethodPost, target, nil, form)
-		if guest.Code != http.StatusForbidden {
-			t.Errorf("POST %s as a guest with no token: status %d", target, guest.Code)
-		}
-		// A request from another site is refused before the token is read.
-		r := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
-		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		r.Header.Set("Sec-Fetch-Site", "cross-site")
-		for _, c := range a {
-			r.AddCookie(c)
-		}
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, r)
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("cross-site POST %s: status %d, want 403", target, rec.Code)
-		}
+// tokenRow is one POST route of TestPostingNeedsToken. The actor holds every right
+// that the request needs, and setup puts the board where the request would change
+// something, so that a missing check on the token shows as a 303 and a change,
+// and never as a refusal of the rights. The first step of the test sends the
+// request with a good token and wants 303: a row that fails there is refused by
+// something other than the token.
+type tokenRow struct {
+	target string
+	actor  string // "" is a guest
+	form   url.Values
+	setup  string
+}
+
+var tokenRows = []tokenRow{
+	{"/f/2/post", "alice", url.Values{"title": {"x"}, "body": {"No token."}}, ""},
+	{"/t/1/reply", "alice", url.Values{"body": {"No token."}}, ""},
+	{"/p/1/edit", "alice", url.Values{"title": {"x"}, "body": {"No token."}}, ""},
+	{"/p/1/delete", "bob", url.Values{"confirm": {"1"}}, ""},
+	{"/p/4/restore", "bob", url.Values{}, `update posts set visibility = 'deleted', visibility_before_delete = 'approved' where id = 4`},
+	{"/p/3/approve", "bob", url.Values{}, ""},
+	{"/t/1/lock", "bob", url.Values{}, ""},
+	{"/t/1/unlock", "bob", url.Values{}, `update topics set locked = true where id = 1`},
+	{"/f/2/post", "", url.Values{"title": {"x"}, "body": {"No token."}, "guest_name": {"Visitor 9"}}, ""},
+	{"/t/1/reply", "", url.Values{"body": {"No token."}, "guest_name": {"Visitor 9"}}, ""},
+}
+
+// tokenSite is the posting board where bob moderates forum 2 and guests may post
+// there with no approval, with the setup of the row applied.
+func tokenSite(t *testing.T, row tokenRow) (http.Handler, *pgxpool.Pool) {
+	t.Helper()
+	b := postingBoard()
+	b.Grants = append(b.Grants, guestGrant(2, "topic.start"), guestGrant(2, "topic.reply"),
+		guestGrant(2, "post.no_approval"), guestGrant(2, "post.markdown"))
+	h, pool := siteWithPool(t, b, Options{})
+	for _, o := range []string{"mod.delete", "mod.approve", "mod.edit", "mod.lock"} {
+		exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (2, 2, '`+o+`', 3)`)
 	}
-	if diff := diffTables(before, dumpData(t, pool)); len(diff) != 0 {
-		t.Errorf("a refused POST changed %v", diff)
+	if row.setup != "" {
+		exec(t, pool, row.setup)
+	}
+	return h, pool
+}
+
+// TestPostingNeedsToken: every POST route that changes data refuses a request with
+// no token, a wrong token, the token of another visitor, and a cross-site origin,
+// and changes nothing. Each row is first sent with a good token to show that the
+// token is the only thing in the way. The routes run in the order of the table,
+// and a route that skips site.protect fails its own rows.
+func TestPostingNeedsToken(t *testing.T) {
+	for _, row := range tokenRows {
+		name := row.target + " as " + row.actor
+		if row.actor == "" {
+			name = row.target + " as a guest"
+		}
+		t.Run(name, func(t *testing.T) {
+			login := func(h http.Handler) []*http.Cookie {
+				if row.actor == "" {
+					return nil
+				}
+				return signIn(t, h, row.actor, "example-password")
+			}
+			// The control: a good token gets 303.
+			h, _ := tokenSite(t, row)
+			if rec := send(t, h, row.target, login(h), row.form); rec.Code != http.StatusSeeOther {
+				t.Fatalf("POST %s with a good token = %d, want 303 (the row is refused by something other than the token)\n%s",
+					row.target, rec.Code, bodyOf(t, rec))
+			}
+
+			h, pool := tokenSite(t, row)
+			cookies := login(h)
+			before := dumpData(t, pool)
+			guestPage := getAs(t, h, "/", nil)
+			wrong := cloneForm(row.form)
+			wrong.Set("csrf", "nope")
+			other := cloneForm(row.form)
+			other.Set("csrf", formToken(t, bodyOf(t, guestPage)))
+			for what, f := range map[string]url.Values{"no token": row.form, "wrong token": wrong} {
+				if rec := request(t, h, http.MethodPost, row.target, cookies, f); rec.Code != http.StatusForbidden {
+					t.Errorf("POST %s, %s: status %d, want 403", row.target, what, rec.Code)
+				}
+			}
+			if row.actor != "" {
+				// A guest's token does not work for a member.
+				if rec := request(t, h, http.MethodPost, row.target, cookies, other); rec.Code != http.StatusForbidden {
+					t.Errorf("POST %s with a guest's token: status %d, want 403", row.target, rec.Code)
+				}
+			}
+			// A request from another site is refused before the token is read.
+			f := cloneForm(row.form)
+			r := httptest.NewRequest(http.MethodPost, row.target, strings.NewReader(f.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			r.Header.Set("Sec-Fetch-Site", "cross-site")
+			for _, c := range cookies {
+				r.AddCookie(c)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("cross-site POST %s: status %d, want 403", row.target, rec.Code)
+			}
+			if diff := diffTables(before, dumpData(t, pool)); len(diff) != 0 {
+				t.Errorf("a refused POST changed %v", diff)
+			}
+		})
 	}
 }
 
