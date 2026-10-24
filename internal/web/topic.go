@@ -24,6 +24,11 @@ type topicData struct {
 	Posts  []postView
 	Poll   *pollView
 	Pager  *pager
+	// CanReply shows the Reply buttons. ReplyHref is the address of the form.
+	CanReply  bool
+	ReplyHref string
+	// Held is true after a post that waits for approval: the page then says so.
+	Held bool
 }
 
 // postView is a post with its rendered HTML.
@@ -32,6 +37,11 @@ type postView struct {
 	// HTML and SigHTML come from markup.Render, which escapes everything.
 	HTML, SigHTML template.HTML
 	Loc           *time.Location
+	// Actions are the buttons that the viewer sees on the post.
+	Actions postActions
+	// Preview is true for the preview of a form: the post has no ID, no
+	// permalink and no buttons.
+	Preview bool
 }
 
 // pollView is a poll with the share of each option.
@@ -86,32 +96,20 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	if navigated {
 		tp.Topic.Views++
 	}
-	smileys, err := board.SmileyLookup(ctx, s.pool)
+	rc, err := s.renderContext(ctx, p.Viewer, tp.Forum.ID)
 	if err != nil {
 		s.serverError(w, r, err)
 		return
 	}
-	rc := markup.RenderContext{Smiley: smileys, BasePath: s.base}
-	if !tp.CanDownload {
-		// An attachment image that the viewer may not load shows as a note.
-		note := "not available to you"
-		if p.Viewer.UserID == 0 {
-			note = "sign in to view"
-		}
-		rc.ImageNote = func(src string) string {
-			if strings.HasPrefix(src, "/a/") {
-				return note
-			}
-			return ""
-		}
-	}
 
-	d := topicData{Topic: tp.Topic, Forum: tp.Forum}
+	d := topicData{Topic: tp.Topic, Forum: tp.Forum, Held: r.URL.Query().Get("held") == "1"}
+	d.CanReply = canReplyTo(p.Viewer, tp)
+	d.ReplyHref = s.path("t", strconv.FormatInt(id, 10), "reply")
 	d.Crumbs = s.crumbsFor(tp.Crumbs)
 	d.Crumbs = append(d.Crumbs, crumb{Label: tp.Forum.Name, Href: s.path("f", strconv.FormatInt(tp.Forum.ID, 10))})
 	d.Posts = make([]postView, len(tp.Posts))
 	for i, post := range tp.Posts {
-		pv := postView{Post: post, Loc: p.Viewer.Loc}
+		pv := postView{Post: post, Loc: p.Viewer.Loc, Actions: actionsFor(p.Viewer, tp, i, post, d.CanReply)}
 		body := markup.Render(post.Tree, rc)
 		p.addRendered(body)
 		pv.HTML = body.HTML

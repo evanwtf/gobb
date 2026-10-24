@@ -79,19 +79,8 @@ func changePostVisibility(ctx context.Context, pool *pgxpool.Pool, v Viewer, pos
 		)
 		switch change {
 		case changeDelete:
-			own = p.authorID == v.UserID && v.Perms.Has("post.delete_own", p.forumID)
-			if own && p.first {
-				// The first post of a topic with replies is not the author's to delete.
-				var others int
-				err := tx.QueryRow(ctx, `select count(*) from posts where topic_id = $1 and id <> $2 and visibility = 'approved'`,
-					p.topicID, p.id).Scan(&others)
-				if err != nil {
-					return fmt.Errorf("board: count posts of topic %d: %w", p.topicID, err)
-				}
-				own = others == 0
-			}
-			if !own && !v.Perms.Has("mod.delete", p.forumID) {
-				return ErrForbidden
+			if own, err = deleteRights(ctx, tx, v, p); err != nil {
+				return err
 			}
 			if p.visibility == "deleted" {
 				return nil

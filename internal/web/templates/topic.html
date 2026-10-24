@@ -12,6 +12,10 @@
   </h1>
   <p class="page-sub">Started by {{template "author" .Data.Topic.Author}} &middot; {{plural .Data.Topic.Replies "reply" "replies"}} &middot; {{plural .Data.Topic.Views "view" "views"}}</p>
 </header>
+{{template "heldnote" .Data.Held}}
+{{- if .Data.CanReply}}
+<div class="toolbar toolbar-start"><a class="button-quiet button-link" href="{{.Data.ReplyHref}}">Reply</a></div>
+{{- end}}
 
 {{- with .Data.Poll}}
 <section class="poll" aria-labelledby="poll-title">
@@ -33,59 +37,12 @@
 
 <div class="posts">
 {{- range .Data.Posts}}
-<article class="post{{if ne .Visibility "approved"}} post-{{.Visibility}}{{end}}" id="p{{.ID}}">
-  <div class="post-author">
-    {{- if .Card}}
-    <div class="author-avatar">
-      {{- if .Card.AvatarPath}}<img class="avatar" src="{{path "files" .Card.AvatarPath}}" alt="" width="96" height="96" loading="lazy">
-      {{- else}}<span class="avatar avatar-none" aria-hidden="true">{{initial .Card.Name}}</span>{{end -}}
-    </div>
-    <p class="author-name">{{template "author" .Author}}</p>
-    {{- if or .Card.RankTitle .Card.RankImage}}
-    <p class="author-rank">{{if .Card.RankImage}}<img class="rank-img" src="{{path "files" .Card.RankImage}}" alt="">{{end}}{{if .Card.RankTitle}}<span>{{.Card.RankTitle}}</span>{{end}}</p>
-    {{- end}}
-    <p class="author-stat">Joined: {{date .Card.Joined $.Viewer.Loc}}</p>
-    <p class="author-stat">Posts: <b>{{num .Card.PostCount}}</b></p>
-    {{- else}}
-    <div class="author-avatar"><span class="avatar avatar-none" aria-hidden="true">{{initial .Author.Name}}</span></div>
-    <p class="author-name">{{template "author" .Author}}</p>
-    <p class="author-rank"><span>Guest</span></p>
-    {{- end}}
-  </div>
-  <div class="post-main">
-    <header class="post-head">
-      <div class="post-title">
-        {{- if and .Subject (ne .Subject $.Data.Topic.Title) (ne .Subject (printf "Re: %s" $.Data.Topic.Title))}}<h2 class="post-subject">{{.Subject}}</h2>
-        {{- else}}<h2 class="visually-hidden">Post by <bdi>{{.Author.Name}}</bdi></h2>{{end}}
-        {{- if eq .Visibility "unapproved"}} <span class="tag tag-warn">Waiting for approval</span>{{end}}
-        {{- if eq .Visibility "deleted"}} <span class="tag tag-warn">Deleted</span>{{end}}
-      </div>
-      <a class="permalink" href="#p{{.ID}}" aria-label="Link to this post">{{time .At $.Viewer.Loc}}</a>
-    </header>
-    <div class="post-body">{{.HTML}}</div>
-    {{- if .Attachments}}
-    <section class="attachments" aria-label="Attachments">
-      <h3>Attachments</h3>
-      <ul>
-        {{- range .Attachments}}
-        <li><a href="{{path "a" (printf "%d" .ID)}}">{{.Name}}</a> <span class="muted">({{size .Size}}, {{plural .Downloads "download" "downloads"}})</span>{{if .Comment}} <span class="attach-comment">{{.Comment}}</span>{{end}}</li>
-        {{- end}}
-      </ul>
-    </section>
-    {{- end}}
-    {{- if .EditCount}}
-    <p class="edit-note">Edited{{with .EditedBy}} by {{template "author" .}}{{end}}{{with .EditedAt}} on {{time . $.Viewer.Loc}}{{end}}. {{plural .EditCount "edit" "edits"}} in all.{{if .EditReason}} Reason: {{.EditReason}}{{end}}</p>
-    {{- end}}
-    {{- if .SigHTML}}
-    <div class="signature">{{.SigHTML}}</div>
-    {{- end}}
-    {{- if .IP}}
-    <p class="post-ip">IP address: <code>{{.IP}}</code></p>
-    {{- end}}
-  </div>
-</article>
+{{template "post" postItem . $ $.Data.Topic.Title $.Data.Topic.ID}}
 {{- end}}
 </div>
 
+{{- if .Data.CanReply}}
+<div class="toolbar toolbar-start"><a class="button-quiet button-link" href="{{.Data.ReplyHref}}">Reply</a></div>
+{{- end}}
 {{template "pager" pagerAt .Data.Pager "Pages, bottom"}}
 {{end}}

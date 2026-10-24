@@ -1,0 +1,65 @@
+{{define "content"}}
+{{template "crumbs" .Data.Crumbs}}
+<header class="page-head">
+  <h1>{{.Data.Heading}}</h1>
+  {{- if .Data.Context}}
+  <p class="page-sub">{{.Data.Context}}</p>
+  {{- end}}
+</header>
+
+{{- if .Data.Notice}}
+<div class="form-error" role="alert">
+  <p class="form-error-text">{{.Data.Notice}}</p>
+</div>
+{{- end}}
+
+{{- with .Data.Preview}}
+<section class="preview" aria-labelledby="preview-title">
+  <h2 id="preview-title">Preview</h2>
+  <p class="hint">Nothing is saved yet. Check the text, then post it.</p>
+  <div class="posts">
+    {{template "post" postItem . $ $.Data.TopicTitle 0}}
+  </div>
+</section>
+{{- end}}
+
+<form class="post-form" method="post" action="{{.Data.Action}}">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{- if .Data.ShowName}}
+  <div class="field">
+    <label for="post-name">Your name</label>
+    <input id="post-name" name="guest_name" type="text" value="{{.Data.GuestName}}" autocomplete="nickname"
+      {{- if .Data.Err.Name}} aria-invalid="true" aria-describedby="post-name-error"{{end}}>
+    {{- if .Data.Err.Name}}<p class="field-error" id="post-name-error" role="alert">{{.Data.Err.Name}}</p>{{end}}
+  </div>
+  {{- end}}
+  {{- if .Data.ShowTitle}}
+  <div class="field">
+    <label for="post-title">Title</label>
+    <input id="post-title" name="title" type="text" value="{{.Data.Title}}"
+      {{- if .Data.Err.Title}} aria-invalid="true" aria-describedby="post-title-error"{{end}}>
+    {{- if .Data.Err.Title}}<p class="field-error" id="post-title-error" role="alert">{{.Data.Err.Title}}</p>{{end}}
+  </div>
+  {{- end}}
+  <div class="field">
+    <label for="post-body">Text</label>
+    <textarea id="post-body" name="body" rows="14" aria-describedby="post-body-hint{{if .Data.Err.Body}} post-body-error{{end}}"
+      {{- if .Data.Err.Body}} aria-invalid="true"{{end}}>{{textareaValue .Data.Source}}</textarea>
+    {{- if .Data.Err.Body}}<p class="field-error" id="post-body-error" role="alert">{{.Data.Err.Body}}</p>{{end}}
+    <p class="hint" id="post-body-hint">Markdown works here: **bold**, *italic*, [link](https://example.com), &gt; quote.</p>
+  </div>
+  {{- if .Data.ShowReason}}
+  <div class="field">
+    <label for="post-reason">Reason for the edit</label>
+    <input id="post-reason" name="reason" type="text" value="{{.Data.Reason}}"
+      {{- if .Data.Err.Reason}} aria-invalid="true" aria-describedby="post-reason-error"{{end}}>
+    {{- if .Data.Err.Reason}}<p class="field-error" id="post-reason-error" role="alert">{{.Data.Err.Reason}}</p>{{end}}
+  </div>
+  {{- end}}
+  <div class="form-actions">
+    <button class="button button-inline" type="submit">{{.Data.Submit}}</button>
+    <button class="button-quiet" type="submit" name="preview" value="1">Preview</button>
+    <a class="button-quiet button-link" href="{{.Data.Cancel}}">Cancel</a>
+  </div>
+</form>
+{{end}}

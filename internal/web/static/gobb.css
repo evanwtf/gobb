@@ -1063,3 +1063,42 @@ mark {
   .site-nav, .skip-link { display: none; }
   body { background: #fff; color: #000; }
 }
+
+/* ---- Posting forms -------------------------------------------------------- */
+
+.field textarea {
+  display: block;
+  width: 100%;
+  min-height: 12rem;
+  padding: 0.65rem 0.75rem;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--page);
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  resize: vertical;
+}
+.field textarea:focus-visible { outline: 3px solid var(--link); outline-offset: 1px; border-color: var(--link); }
+.field [aria-invalid="true"] { border-color: var(--new); border-width: 2px; }
+.field .hint { margin-top: 0.35rem; color: var(--muted); font-size: 0.875rem; }
+.field-error { margin-top: 0.35rem; font-weight: 600; color: var(--new); }
+.post-form { max-width: 52rem; }
+.form-actions, .confirm-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.button-inline { display: inline-block; width: auto; }
+.toolbar-start { justify-content: flex-start; }
+.preview { margin-bottom: 1.5rem; }
+.preview h2 { margin-bottom: 0.25rem; font-size: 1.1rem; }
+.preview .hint { margin-bottom: 0.75rem; color: var(--muted); font-size: 0.875rem; }
+.post-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; padding-top: 0.6rem; border-top: 1px solid var(--line-soft); }
+.notice-inline {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+  background: color-mix(in srgb, var(--accent) 12%, var(--row));
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+@media (max-width: 40rem) {
+  .button-inline, .form-actions .button-quiet, .post-actions .button-quiet { min-height: 2.5rem; }
+}

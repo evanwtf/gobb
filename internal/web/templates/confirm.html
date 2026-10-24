@@ -1,0 +1,16 @@
+{{define "content"}}
+<section class="notice" aria-labelledby="notice-title">
+  <h1 id="notice-title">Delete this post?</h1>
+  {{- if .Data.First}}
+  <p>This is the first post of its topic. Deleting it deletes the topic.</p>
+  {{- else}}
+  <p>The post leaves the topic. A moderator can bring it back.</p>
+  {{- end}}
+  <form class="confirm-form" method="post" action="{{.Data.Action}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="confirm" value="1">
+    <button class="button button-inline" type="submit">Delete</button>
+    <a class="button-quiet button-link" href="{{.Data.Cancel}}">Cancel</a>
+  </form>
+</section>
+{{end}}

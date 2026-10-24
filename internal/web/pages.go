@@ -30,11 +30,13 @@ func (s *site) parseTemplates() error {
 		"rows": func(rows []*board.Forum, v board.Viewer) forumRows {
 			return forumRows{Rows: rows, Loc: v.Loc, Member: v.UserID != 0}
 		},
-		"initial": initial,
-		"plural":  plural,
-		"size":    size,
-		"num":     num,
-		"pagerAt": pagerAt,
+		"initial":       initial,
+		"textareaValue": textareaValue,
+		"postItem":      postItem,
+		"plural":        plural,
+		"size":          size,
+		"num":           num,
+		"pagerAt":       pagerAt,
 		"markForm": func(action, label string, p *page) markFormData {
 			return markFormData{Action: action, Label: label, CSRF: p.CSRF, Return: p.Return}
 		},

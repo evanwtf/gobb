@@ -128,3 +128,73 @@
   {{- end}}
 </tr>
 {{end}}
+
+{{define "post"}}
+<article class="post{{if ne .Visibility "approved"}} post-{{.Visibility}}{{end}}{{if .Preview}} post-preview{{end}}"{{if .ID}} id="p{{.ID}}"{{end}}>
+  <div class="post-author">
+    {{- if .Card}}
+    <div class="author-avatar">
+      {{- if .Card.AvatarPath}}<img class="avatar" src="{{path "files" .Card.AvatarPath}}" alt="" width="96" height="96" loading="lazy">
+      {{- else}}<span class="avatar avatar-none" aria-hidden="true">{{initial .Card.Name}}</span>{{end -}}
+    </div>
+    <p class="author-name">{{template "author" .Author}}</p>
+    {{- if or .Card.RankTitle .Card.RankImage}}
+    <p class="author-rank">{{if .Card.RankImage}}<img class="rank-img" src="{{path "files" .Card.RankImage}}" alt="">{{end}}{{if .Card.RankTitle}}<span>{{.Card.RankTitle}}</span>{{end}}</p>
+    {{- end}}
+    <p class="author-stat">Joined: {{date .Card.Joined .Loc}}</p>
+    <p class="author-stat">Posts: <b>{{num .Card.PostCount}}</b></p>
+    {{- else}}
+    <div class="author-avatar"><span class="avatar avatar-none" aria-hidden="true">{{initial .Author.Name}}</span></div>
+    <p class="author-name">{{template "author" .Author}}</p>
+    <p class="author-rank"><span>Guest</span></p>
+    {{- end}}
+  </div>
+  <div class="post-main">
+    <header class="post-head">
+      <div class="post-title">
+        {{- if and .Subject (ne .Subject .Topic) (ne .Subject (printf "Re: %s" .Topic))}}<h2 class="post-subject">{{.Subject}}</h2>
+        {{- else}}<h2 class="visually-hidden">Post by <bdi>{{.Author.Name}}</bdi></h2>{{end}}
+        {{- if eq .Visibility "unapproved"}} <span class="tag tag-warn">Waiting for approval</span>{{end}}
+        {{- if eq .Visibility "deleted"}} <span class="tag tag-warn">Deleted</span>{{end}}
+      </div>
+      {{if .ID}}<a class="permalink" href="#p{{.ID}}" aria-label="Link to this post">{{time .At .Loc}}</a>{{else}}<span class="permalink">{{time .At .Loc}}</span>{{end}}
+    </header>
+    <div class="post-body">{{.HTML}}</div>
+    {{- if .Attachments}}
+    <section class="attachments" aria-label="Attachments">
+      <h3>Attachments</h3>
+      <ul>
+        {{- range .Attachments}}
+        <li><a href="{{path "a" (printf "%d" .ID)}}">{{.Name}}</a> <span class="muted">({{size .Size}}, {{plural .Downloads "download" "downloads"}})</span>{{if .Comment}} <span class="attach-comment">{{.Comment}}</span>{{end}}</li>
+        {{- end}}
+      </ul>
+    </section>
+    {{- end}}
+    {{- if .EditCount}}
+    <p class="edit-note">Edited{{with .EditedBy}} by {{template "author" .}}{{end}}{{with .EditedAt}} on {{time . $.Loc}}{{end}}. {{plural .EditCount "edit" "edits"}} in all.{{if .EditReason}} Reason: {{.EditReason}}{{end}}</p>
+    {{- end}}
+    {{- if .SigHTML}}
+    <div class="signature">{{.SigHTML}}</div>
+    {{- end}}
+    {{- if .IP}}
+    <p class="post-ip">IP address: <code>{{.IP}}</code></p>
+    {{- end}}
+    {{- if or .Actions.Quote .Actions.Edit .Actions.Delete}}
+    <div class="post-actions">
+      {{- if .Actions.Quote}}<a class="button-quiet button-link" href="{{path "t" (printf "%d" .TopicID) "reply"}}?quote={{.ID}}">Quote</a>{{end}}
+      {{- if .Actions.Edit}}<a class="button-quiet button-link" href="{{path "p" (printf "%d" .ID) "edit"}}">Edit</a>{{end}}
+      {{- if .Actions.Delete}}
+      <form class="mark-form" method="post" action="{{path "p" (printf "%d" .ID) "delete"}}">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button type="submit" class="button-quiet">Delete</button>
+      </form>
+      {{- end}}
+    </div>
+    {{- end}}
+  </div>
+</article>
+{{end}}
+
+{{define "heldnote"}}{{if .}}
+<p class="notice-inline" role="status">Your post was saved. It waits for a moderator to approve it, and then it shows on the board.</p>
+{{end}}{{end}}

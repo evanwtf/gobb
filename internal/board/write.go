@@ -248,7 +248,7 @@ func cleanTitle(s string) (string, error) {
 	case n == 0:
 		return "", inputError("title", "Enter a title.")
 	case n > maxTitleRunes:
-		return "", inputError("title", "The title is too long. The limit is 120 characters.")
+		return "", inputError("title", "The title is longer than 120 characters.")
 	}
 	return s, nil
 }
@@ -317,20 +317,29 @@ type topicRef struct {
 // so their counter updates cannot interleave. The statement that follows the
 // lock reads what the earlier holder committed.
 func lockTopic(ctx context.Context, tx pgx.Tx, sc scope, id int64) (topicRef, error) {
+	return readTopic(ctx, tx, sc, id, true)
+}
+
+// readTopic is [lockTopic] with the lock optional. A page that only checks the
+// rights of a writer (a form) reads without it.
+func readTopic(ctx context.Context, q db.Querier, sc scope, id int64, lock bool) (topicRef, error) {
 	t := topicRef{id: id}
 	var moved *int64
-	err := tx.QueryRow(ctx, `
+	forUpdate := ""
+	if lock {
+		forUpdate = "\n   for no key update of t"
+	}
+	err := q.QueryRow(ctx, `
 select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_topic_id,
        coalesce(t.visibility_before_delete, '')
   from topics t
- where t.id = $5 and `+visible("t", 1)+`
-   for no key update of t`, append(sc.args(), id)...).
+ where t.id = $5 and `+visible("t", 1)+forUpdate, append(sc.args(), id)...).
 		Scan(&t.forumID, &t.authorID, &t.visibility, &t.locked, &moved, &t.before)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return topicRef{}, ErrNotFound
 	}
 	if err != nil {
-		return topicRef{}, fmt.Errorf("board: lock topic %d: %w", id, err)
+		return topicRef{}, fmt.Errorf("board: read topic %d: %w", id, err)
 	}
 	t.moved = moved != nil
 	return t, nil
@@ -550,10 +559,7 @@ func NewTopic(ctx context.Context, pool *pgxpool.Pool, v Viewer, forumID int64, 
 		if err != nil {
 			return err
 		}
-		if kind != "forum" || !v.Perms.Has("topic.start", forumID) {
-			return ErrForbidden
-		}
-		if locked && !v.Perms.Has("mod.lock", forumID) {
+		if !mayStart(v, forumID, kind, locked) {
 			return ErrForbidden
 		}
 		au, err := resolveAuthor(ctx, tx, v, d, now)
@@ -675,7 +681,7 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 		if err != nil {
 			return err
 		}
-		if !v.Perms.Has("topic.reply", t.forumID) || t.visibility != "approved" || t.moved {
+		if !mayReplyTo(v, t) {
 			return ErrForbidden
 		}
 		// The forum lock comes after the checks that need no forum row, so a writer
@@ -684,7 +690,7 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 		if err != nil {
 			return err
 		}
-		if (t.locked || forumLocked) && !v.Perms.Has("mod.lock", t.forumID) {
+		if lockStops(v, t.forumID, t.locked, forumLocked) {
 			return ErrForbidden
 		}
 		au, err := resolveAuthor(ctx, tx, v, d, now)
@@ -731,30 +737,39 @@ type postRef struct {
 // [ErrNotFound]. A write that changes a counter of the forum then takes
 // [lockForum], after it has checked the rights of v.
 func lockPost(ctx context.Context, tx pgx.Tx, v Viewer, id int64) (postRef, topicRef, error) {
-	sc, err := newScope(ctx, tx, v)
+	return readPost(ctx, tx, v, id, true)
+}
+
+// readPost is [lockPost] with the locks optional. A page that only checks the
+// rights of a writer (a form) reads without them.
+func readPost(ctx context.Context, q db.Querier, v Viewer, id int64, lock bool) (postRef, topicRef, error) {
+	sc, err := newScope(ctx, q, v)
 	if err != nil {
 		return postRef{}, topicRef{}, err
 	}
 	var topicID int64
-	err = tx.QueryRow(ctx, `select p.topic_id from posts p where p.id = $5 and `+visible("p", 1), append(sc.args(), id)...).Scan(&topicID)
+	err = q.QueryRow(ctx, `select p.topic_id from posts p where p.id = $5 and `+visible("p", 1), append(sc.args(), id)...).Scan(&topicID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return postRef{}, topicRef{}, ErrNotFound
 	}
 	if err != nil {
 		return postRef{}, topicRef{}, fmt.Errorf("board: read post %d: %w", id, err)
 	}
-	t, err := lockTopic(ctx, tx, sc, topicID)
+	t, err := readTopic(ctx, q, sc, topicID, lock)
 	if err != nil {
 		return postRef{}, topicRef{}, err
 	}
 	p := postRef{id: id, topicID: topicID}
-	err = tx.QueryRow(ctx, `
+	forUpdate := ""
+	if lock {
+		forUpdate = "\n   for no key update of p"
+	}
+	err = q.QueryRow(ctx, `
 select p.forum_id, coalesce(p.author_id, 0), p.visibility, coalesce(p.visibility_before_delete, ''),
        p.enable_markdown, p.enable_smilies, p.enable_autolink,
        p.id = (select f.id from posts f where f.topic_id = p.topic_id order by f.created_at, f.id limit 1)
   from posts p
- where p.id = $5 and p.topic_id = $6 and `+visible("p", 1)+`
-   for no key update of p`, append(sc.args(), id, topicID)...).
+ where p.id = $5 and p.topic_id = $6 and `+visible("p", 1)+forUpdate, append(sc.args(), id, topicID)...).
 		Scan(&p.forumID, &p.authorID, &p.visibility, &p.before, &p.flags.Markdown, &p.flags.Smilies, &p.flags.Autolink, &p.first)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return postRef{}, topicRef{}, ErrNotFound
@@ -794,12 +809,9 @@ func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d
 		if err != nil {
 			return err
 		}
-		if v.UserID == 0 {
-			return ErrForbidden
-		}
-		own := p.authorID == v.UserID && v.Perms.Has("post.edit_own", p.forumID) && !t.locked
-		if !own && !v.Perms.Has("mod.edit", p.forumID) {
-			return ErrForbidden
+		own, err := editRights(v, p, t)
+		if err != nil {
+			return err
 		}
 		moderated := !own
 		if moderated {
@@ -858,43 +870,36 @@ update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
 // followed by a blank line, so that the writer types below it.
 //
 // Only an approved post in an approved topic can be quoted, and v must read its
-// forum and hold the reply rights there: topic.reply, and an unlocked topic and
-// forum or mod.lock. The caller still checks the reply rights of the topic that
-// the quote goes into, which can be another topic. A post that v cannot see, an unapproved post,
-// a deleted post, and a post in a deleted or held topic give [ErrNotFound], even
-// to a moderator who sees them on the page: the text of a hidden post never
-// reaches a form. A viewer who reads the post but may not reply gets
-// [ErrForbidden].
+// forum and hold topic.reply there. The lock on the topic and the forum of the
+// quoted post does not matter: a quote can go into another topic, and the caller
+// checks the topic that the reply goes into with [CanReply]. A post that v cannot
+// see, an unapproved post, a deleted post, and a post in a deleted or held topic
+// give [ErrNotFound], even to a moderator who sees them on the page: the text of
+// a hidden post never reaches a form. A viewer who reads the post but holds no
+// topic.reply there gets [ErrForbidden].
 func QuoteSource(ctx context.Context, q db.Querier, v Viewer, postID int64) (string, error) {
 	sc, err := newScope(ctx, q, v)
 	if err != nil {
 		return "", err
 	}
 	var (
-		forumID       int64
-		name, text    string
-		topicLocked   bool
-		forumIsLocked bool
+		forumID    int64
+		name, text string
 	)
 	err = q.QueryRow(ctx, `
-select p.forum_id, coalesce(u.username, p.author_name), p.body_source, t.locked, f.locked
+select p.forum_id, coalesce(u.username, p.author_name), p.body_source
   from posts p
   join topics t on t.id = p.topic_id
-  join forums f on f.id = p.forum_id
   left join users u on u.id = p.author_id
  where p.id = $5 and p.visibility = 'approved' and t.visibility = 'approved'
-   and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).Scan(&forumID, &name, &text, &topicLocked, &forumIsLocked)
+   and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).Scan(&forumID, &name, &text)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("board: read post %d: %w", postID, err)
 	}
-	// The reply rights of the table, applied to the topic of the quoted post: the
-	// topic is approved (the query), v holds topic.reply, and the topic and its
-	// forum are unlocked or v holds mod.lock. A quote can go into another topic, so
-	// the caller still checks the target topic with the same rights.
-	if !v.Perms.Has("topic.reply", forumID) || ((topicLocked || forumIsLocked) && !v.Perms.Has("mod.lock", forumID)) {
+	if !v.Perms.Has("topic.reply", forumID) {
 		return "", ErrForbidden
 	}
 	var sb strings.Builder

@@ -15,6 +15,9 @@ import (
 const (
 	maxLoginBody = 16 << 10
 	maxPostBody  = 4 << 10
+	// maxPostingBody is the cap of the posting forms: a body of 60,000 bytes, a
+	// title, and the escapes that a form adds.
+	maxPostingBody = 128 << 10
 )
 
 // newCSRFSecret returns 32 random bytes in base64url, the value of a guest's

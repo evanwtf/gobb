@@ -282,6 +282,10 @@ var bodyCaps = []struct {
 	{"/scheme", "/scheme", 4 << 10},
 	{"/read", "/read", 4 << 10},
 	{"/f/{id}/read", "/f/1/read", 4 << 10},
+	{"/f/{id}/post", "/f/2/post", maxPostingBody},
+	{"/t/{id}/reply", "/t/1/reply", maxPostingBody},
+	{"/p/{id}/edit", "/p/1/edit", maxPostingBody},
+	{"/p/{id}/delete", "/p/1/delete", 4 << 10},
 }
 
 // Every POST route has a cap on its body. A body over it answers 413 in the

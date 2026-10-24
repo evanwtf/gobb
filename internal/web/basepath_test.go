@@ -30,6 +30,7 @@ func checkBasePath(t *testing.T, where, body, base string) {
 // under the base path. Later tasks add their pages to the list.
 func TestBasePathEverywhere(t *testing.T) {
 	b := linkBoard()
+	allowGroup(b, 2, 2, "post.delete_own")
 	for _, g := range []int64{1, 2} {
 		allowGroup(b, g, 0, "account.search")
 		allowGroup(b, g, 2, "forum.search")
@@ -87,6 +88,48 @@ func TestBasePathEverywhere(t *testing.T) {
 	}
 	if rec := get(t, h, "/forum/new"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/forum/login?next=%2Fforum%2Fnew" {
 		t.Errorf("guest /forum/new = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// The posting pages and their answers keep the prefix too: the forms, the
+	// preview, the confirm step, and the redirects.
+	for _, p := range []string{"/forum/f/2/post", "/forum/t/1/reply", "/forum/t/1/reply?quote=1", "/forum/p/1/edit"} {
+		rec := getAs(t, h, p, alice)
+		if rec.Code != http.StatusOK {
+			t.Errorf("member %s: status %d", p, rec.Code)
+			continue
+		}
+		body := bodyOf(t, rec)
+		checkBasePath(t, "member "+p, body, "/forum/")
+		if !strings.Contains(body, `<form class="post-form" method="post" action="/forum/`) {
+			t.Errorf("member %s: the form does not post under the base path", p)
+		}
+	}
+	for _, c := range []struct{ target, want string }{
+		{"/forum/f/2/post", `href="/forum/f/2"`},
+		{"/forum/t/1/reply", `href="/forum/t/1"`},
+		{"/forum/p/1/edit", `href="/forum/p/1"`},
+	} {
+		rec, _ := postAsAt(t, h, "/forum/", c.target, alice, url.Values{"title": {"Base"}, "body": {"Some **text**."}, "preview": {"1"}})
+		body := bodyOf(t, rec)
+		if rec.Code != http.StatusOK || !strings.Contains(body, "<strong>text</strong>") || !strings.Contains(body, c.want) {
+			t.Errorf("preview at %s: status %d, cancel link %s present: %v", c.target, rec.Code, c.want, strings.Contains(body, c.want))
+		}
+		checkBasePath(t, "preview "+c.target, body, "/forum/")
+	}
+	rec, _ = postAsAt(t, h, "/forum/", "/forum/f/2/post", alice, url.Values{"title": {"Base"}, "body": {"Made under a base path."}})
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/forum/p/") {
+		t.Errorf("POST /forum/f/2/post = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	made := rec.Header().Get("Location")
+	rec, _ = postAsAt(t, h, "/forum/", made+"/delete", alice, url.Values{})
+	if body := bodyOf(t, rec); rec.Code != http.StatusOK || !strings.Contains(body, `action="`+made+`/delete"`) || !strings.Contains(body, "Delete this post?") {
+		t.Errorf("POST %s/delete = %d", made, rec.Code)
+	} else {
+		checkBasePath(t, "confirm "+made, body, "/forum/")
+	}
+	rec, _ = postAsAt(t, h, "/forum/", made+"/delete", alice, url.Values{"confirm": {"1"}})
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/forum/") {
+		t.Errorf("confirmed delete = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 
 	// The pages that refuse a guest, and the account redirect, keep the prefix too.

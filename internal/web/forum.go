@@ -25,6 +25,11 @@ type forumData struct {
 	Pager     *pager
 	// IsCategory is true for a category: it lists forums and no topics.
 	IsCategory bool
+	// CanStart shows the New topic button. PostHref is the address of the form.
+	CanStart bool
+	PostHref string
+	// Held is true after a post that waits for approval: the page then says so.
+	Held bool
 }
 
 // topicRowView is a topic row with the time zone of the viewer.
@@ -119,6 +124,9 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		Topics:     rowViews(fp.Topics, loc),
 		Pager:      newPager(s.path("f", strconv.FormatInt(id, 10)), fp.Page, fp.Pages),
 		IsCategory: fp.Forum.Kind == "category",
+		CanStart:   canStartIn(p.Viewer, fp.Forum),
+		PostHref:   s.path("f", strconv.FormatInt(id, 10), "post"),
+		Held:       r.URL.Query().Get("held") == "1",
 	}
 	s.render(w, http.StatusOK, "forum.html", p)
 }

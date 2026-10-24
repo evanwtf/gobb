@@ -105,7 +105,7 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "profile.html", "members.html", "team.html", "page.html", "search.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -168,6 +168,13 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /t/{id}", s.topic)
 	inner.HandleFunc("GET /t/{id}/new", s.topicNew)
 	inner.HandleFunc("GET /new", s.newPage)
+	inner.HandleFunc("GET /f/{id}/post", s.postForm(kindTopic))
+	inner.Handle("POST /f/{id}/post", s.protect(maxPostingBody, s.postSubmit(kindTopic)))
+	inner.HandleFunc("GET /t/{id}/reply", s.postForm(kindReply))
+	inner.Handle("POST /t/{id}/reply", s.protect(maxPostingBody, s.postSubmit(kindReply)))
+	inner.HandleFunc("GET /p/{id}/edit", s.postForm(kindEdit))
+	inner.Handle("POST /p/{id}/edit", s.protect(maxPostingBody, s.postSubmit(kindEdit)))
+	inner.Handle("POST /p/{id}/delete", s.protect(maxPostBody, s.deletePost))
 	inner.Handle("POST /read", s.protect(maxPostBody, s.markAllRead))
 	inner.Handle("POST /f/{id}/read", s.protect(maxPostBody, s.markForumRead))
 	inner.HandleFunc("GET /p/{id}", s.post)

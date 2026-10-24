@@ -5,12 +5,18 @@
   {{- if .Data.Forum.Description}}
   <p class="page-sub">{{.Data.Forum.Description}}</p>
   {{- end}}
-  {{- if .Viewer.UserID}}
+  {{- if or .Viewer.UserID .Data.CanStart}}
   <div class="toolbar">
+    {{- if .Data.CanStart}}
+    <a class="button-quiet button-link" href="{{.Data.PostHref}}">New topic</a>
+    {{- end}}
+    {{- if .Viewer.UserID}}
     {{template "markform" markForm (path "f" (printf "%d" .Data.Forum.ID) "read") "Mark this forum read" .}}
+    {{- end}}
   </div>
   {{- end}}
 </header>
+{{template "heldnote" .Data.Held}}
 
 {{- if .Data.Forum.Rules}}
 <section class="rules" aria-labelledby="rules-title">

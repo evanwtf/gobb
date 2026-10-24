@@ -832,7 +832,7 @@ func TestWriteNeedsAnAddress(t *testing.T) {
 	}
 }
 
-func TestQuoteSourceNeedsTheReplyRights(t *testing.T) {
+func TestQuoteSourceIgnoresTheLockOfTheQuotedPost(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	c := viewerFor(t, pool, carol)
@@ -842,19 +842,17 @@ func TestQuoteSourceNeedsTheReplyRights(t *testing.T) {
 	if _, err := pool.Exec(ctx, `update topics set locked = true where id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	_, err := board.QuoteSource(ctx, pool, c, 2)
-	wantIs(t, err, board.ErrForbidden, "locked topic")
-	grantOpts(t, pool, carol, 2, "mod.lock")
-	if _, err := board.QuoteSource(ctx, pool, viewerFor(t, pool, carol), 2); err != nil {
-		t.Errorf("locked topic, mod.lock: %v", err)
+	// The lock belongs to the topic that the reply goes into, which the caller
+	// checks (board.CanReply). The topic and forum of the quoted post do not
+	// stop a quote.
+	if _, err := board.QuoteSource(ctx, pool, c, 2); err != nil {
+		t.Errorf("locked topic of the quoted post: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `update topics set locked = false where id = 1; update forums set locked = true where id = 2`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = board.QuoteSource(ctx, pool, viewerFor(t, pool, alice), 2)
-	wantIs(t, err, board.ErrForbidden, "locked forum")
-	if _, err := board.QuoteSource(ctx, pool, viewerFor(t, pool, carol), 2); err != nil {
-		t.Errorf("locked forum, mod.lock: %v", err)
+	if _, err := board.QuoteSource(ctx, pool, viewerFor(t, pool, alice), 2); err != nil {
+		t.Errorf("locked forum of the quoted post: %v", err)
 	}
 }
 
