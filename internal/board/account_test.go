@@ -146,7 +146,7 @@ func TestChangePasswordRules(t *testing.T) {
 		{"the username", "Alice-Longname", same},
 		{"the username in other case", "ALICE-LONGNAME", same},
 		{"the username in full-width letters", "ａｌｉｃｅ-longname", same},
-		{"the username with a zero-width space", "alice​-longname", same},
+		{"the username with a zero-width space", "alice\u200b-longname", same},
 		{"not UTF-8", "ten bytes \xff\xfe", "Use a password that is valid UTF-8."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
