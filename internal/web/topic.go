@@ -79,8 +79,12 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	if isNavigation(r) {
-		s.countView(r, p.Viewer, &tp)
+	// A top-level navigation counts a view and marks the page read, but only once
+	// the page is built: a page that fails writes nothing. The page shows the view
+	// that it counts.
+	navigated := isNavigation(r)
+	if navigated {
+		tp.Topic.Views++
 	}
 	smileys, err := board.SmileyLookup(ctx, s.pool)
 	if err != nil {
@@ -120,7 +124,11 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	d.Pager = newPager(s.path("t", strconv.FormatInt(id, 10)), tp.Page, tp.Pages)
 	p.Title = tp.Topic.Title
 	p.Data = d
-	s.render(w, http.StatusOK, "topic.html", p)
+	s.renderThen(w, http.StatusOK, "topic.html", p, func() {
+		if navigated {
+			s.countView(r, p.Viewer, &tp)
+		}
+	})
 }
 
 // newPollView adds the share of each option, as a whole percent of the total.

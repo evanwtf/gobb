@@ -224,7 +224,8 @@ func topicSQL(where, order, limit string) string {
 select t.id, t.title, t.kind, t.visibility, t.locked,
        coalesce(t.author_id, 0), coalesce(au.username, t.author_name),
        t.reply_count, t.view_count, coalesce(t.moved_to_topic_id, 0), t.forum_id,
-       coalesce(t.moved_to_topic_id is null and t.last_post_at > ` + unreadAfter + `, false),
+       coalesce(t.moved_to_topic_id is null and t.last_post_at > ` + unreadAfter + `
+              and ` + seesPostAfter(unreadAfter) + `, false),
        lp.id, lp.created_at, coalesce(lp.author_id, 0), coalesce(lu.username, lp.author_name)
   from (select t.* from topics t ` + where + order + ` ` + limit + `) t
   left join users me on me.id = $4::bigint

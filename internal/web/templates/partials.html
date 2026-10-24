@@ -27,7 +27,9 @@
 {{- end}}
 {{end}}
 
-{{define "newbadge"}}<span class="badge-new">New</span>{{end}}
+{{define "newbadge"}}<span class="badge-new" aria-hidden="true">New</span>{{end}}
+
+{{define "newtext"}}<span class="visually-hidden">New: </span>{{end}}
 
 {{define "markform"}}
 <form class="mark-form" method="post" action="{{.Action}}">
@@ -55,7 +57,7 @@
         {{- if eq .Kind "link"}}
         <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>
         {{- else if .Readable}}
-        <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>
+        <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{if .New}}{{template "newtext"}}{{end}}{{.Name}}</a>
         {{- else}}
         <span class="forum-name forum-name-locked">{{template "lock"}} {{.Name}}</span>
         {{- end}}
@@ -103,7 +105,7 @@
     {{- if eq .Visibility "unapproved"}}<span class="tag tag-warn">Waiting for approval</span> {{end}}
     {{- if eq .Visibility "deleted"}}<span class="tag tag-warn">Deleted</span> {{end}}
     {{- if .New}}{{template "newbadge"}} {{end}}
-    <a class="topic-link" href="{{path "t" (printf "%d" .ID)}}">{{.Title}}</a>
+    <a class="topic-link" href="{{path "t" (printf "%d" .ID)}}">{{if .New}}{{template "newtext"}}{{end}}{{.Title}}</a>
     {{- if .Locked}} <span class="tag">Locked</span>{{end}}
     <p class="topic-meta">by {{template "author" .Author}}
       {{- with .Forum}} in <a href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>{{end}}

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/bundle"
+	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
 )
@@ -319,10 +320,17 @@ func TestNewPage(t *testing.T) {
 	// and neither has a badge or a jump link.
 	bob := signIn(t, h, "bob", "example-password")
 	body = bodyOf(t, getAs(t, h, "/new", bob))
-	for _, want := range []string{"Welcome to the example board", "Favorite color?", "Members Lounge", "New since your last visit (2)"} {
+	for _, want := range []string{"Welcome to the example board", "Favorite color?", "Members Lounge"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("bob /new lacks %q", want)
 		}
+	}
+	// The nav counts unread topics, and bob has read both: the item is hidden.
+	if strings.Contains(body, `href="/new"`) {
+		t.Error("bob has no unread topic, and the nav still links /new")
+	}
+	if strings.Contains(bodyOf(t, getAs(t, h, "/", bob)), `href="/new"`) {
+		t.Error("bob: the nav of the index links /new at 0")
 	}
 	if strings.Contains(body, "badge-new") || strings.Contains(body, "/t/1/new") {
 		t.Error("bob /new marks a read topic as new")
@@ -331,7 +339,7 @@ func TestNewPage(t *testing.T) {
 	// Alice reads both forums and has both topics unread.
 	alice := signIn(t, h, "alice", "example-password")
 	body = bodyOf(t, getAs(t, h, "/new", alice))
-	for _, want := range []string{"Favorite color?", "Welcome to the example board", "Members Lounge", "/t/2/new", "/t/1/new"} {
+	for _, want := range []string{"Favorite color?", "Welcome to the example board", "Members Lounge", "/t/2/new", "/t/1/new", "New since your last visit (2)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("alice /new lacks %q", want)
 		}
@@ -436,5 +444,161 @@ func TestVisitWindow(t *testing.T) {
 	}
 	if !visit.Equal(time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)) || !active.Equal(now) {
 		t.Errorf("after 3 hours: visit %v, active %v", visit, active)
+	}
+}
+
+// The nav count is the number of unread topics. It falls as the member reads, and
+// the item hides at 0.
+func TestNavCountFalls(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `update users set last_visit_at = '2019-06-01T00:00:00Z', last_mark_at = null where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	alice := signIn(t, h, "alice", "example-password")
+	nav := func() string {
+		t.Helper()
+		body := bodyOf(t, getAs(t, h, "/", alice))
+		_, rest, _ := strings.Cut(body, `aria-label="Main"`)
+		nav, _, _ := strings.Cut(rest, "</nav>")
+		return nav
+	}
+	if !strings.Contains(nav(), "New since your last visit (2)") {
+		t.Fatalf("nav at start:\n%s", nav())
+	}
+	// Reading topic 1 leaves topic 2.
+	getWith(t, h, "/t/1", alice, asPage)
+	if !strings.Contains(nav(), "New since your last visit (1)") {
+		t.Errorf("nav after one topic:\n%s", nav())
+	}
+	// The list still holds both topics, one of them read.
+	body := bodyOf(t, getAs(t, h, "/new", alice))
+	if !strings.Contains(body, "Welcome to the example board") || strings.Count(body, "badge-new") != 1 {
+		t.Errorf("/new after reading topic 1 holds %d badges", strings.Count(body, "badge-new"))
+	}
+	getWith(t, h, "/t/2", alice, asPage)
+	if strings.Contains(nav(), `href="/new"`) {
+		t.Errorf("nav at 0 still links /new:\n%s", nav())
+	}
+	// The page itself still opens at 0.
+	if rec := getAs(t, h, "/new", alice); rec.Code != http.StatusOK {
+		t.Errorf("/new at 0 = %d", rec.Code)
+	}
+}
+
+// A request of a member who is not active writes nothing to users.
+func TestInactiveMemberWritesNothing(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	ctx := context.Background()
+	carol := signIn(t, h, "carol", "example-password")
+	if _, err := pool.Exec(ctx, `update users set state = 'inactive', last_active_at = null where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	row := func() string {
+		t.Helper()
+		var s string
+		if err := pool.QueryRow(ctx, `select to_jsonb(u)::text from users u where id = 3`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	before := row()
+	for _, p := range []string{"/", "/t/1", "/new", "/f/2"} {
+		getWith(t, h, p, carol, asPage)
+	}
+	if after := row(); after != before {
+		t.Errorf("a request of an inactive member changed the row:\n%s\n%s", before, after)
+	}
+	// The same holds for the function: an inactive user is not recorded.
+	if err := board.RecordVisit(ctx, pool, 3, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if after := row(); after != before {
+		t.Errorf("RecordVisit wrote for an inactive member:\n%s\n%s", before, after)
+	}
+}
+
+// The view count and the topic mark are written after the page renders. A page
+// that fails writes neither.
+func TestFailedPageWritesNoBookkeeping(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	ctx := context.Background()
+	carol := signIn(t, h, "carol", "example-password")
+	if _, err := pool.Exec(ctx, `drop table smilies`); err != nil {
+		t.Fatal(err)
+	}
+	rec := getWith(t, h, "/t/1", carol, asPage)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /t/1 with no smilies table = %d, want 500", rec.Code)
+	}
+	var views, marks int
+	if err := pool.QueryRow(ctx, `select view_count from topics where id = 1`).Scan(&views); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `select count(*) from topic_marks where user_id = 3`).Scan(&marks); err != nil {
+		t.Fatal(err)
+	}
+	if views != 42 || marks != 0 {
+		t.Errorf("after a 500: %d views, %d marks; want 42 and 0", views, marks)
+	}
+}
+
+// /t/{marker}/new answers 301 to the target's /new, after the permission check of
+// /t/{marker}.
+func TestMarkerNewRedirect(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	ctx := context.Background()
+	alice := signIn(t, h, "alice", "example-password")
+	rec := getAs(t, h, "/t/3/new", alice)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/t/1/new" {
+		t.Errorf("/t/3/new = %d %q, want 301 /t/1/new", rec.Code, rec.Header().Get("Location"))
+	}
+	// /t/3 answers the same way.
+	if rec := getAs(t, h, "/t/3", alice); rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/t/1" {
+		t.Errorf("/t/3 = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	// A guest may not read the forum of the marker: 404, as for /t/3.
+	if rec := get(t, h, "/t/3/new"); rec.Code != http.StatusNotFound {
+		t.Errorf("guest /t/3/new = %d, want 404", rec.Code)
+	}
+	// A marker whose target the viewer may not see is a 404 too.
+	if _, err := pool.Exec(ctx, `update topics set forum_id = 2, moved_to_topic_id = 2 where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	carol := signIn(t, h, "carol", "example-password")
+	if rec := getAs(t, h, "/t/3", carol); rec.Code != http.StatusNotFound {
+		t.Fatalf("carol /t/3 = %d, want 404", rec.Code)
+	}
+	if rec := getAs(t, h, "/t/3/new", carol); rec.Code != http.StatusNotFound {
+		t.Errorf("carol /t/3/new = %d, want 404", rec.Code)
+	}
+}
+
+// The link of an unread topic and of an unread forum says "New" in its accessible
+// name, and the visible pill is hidden from a screen reader so that it is not
+// read twice.
+func TestNewInAccessibleName(t *testing.T) {
+	h, _ := siteWithPool(t, bundletest.Small(), Options{})
+	carol := signIn(t, h, "carol", "example-password")
+	idx := bodyOf(t, getAs(t, h, "/", carol))
+	row := rowOf(idx, "forum-row", "Main Discussion")
+	if !strings.Contains(row, `<span class="visually-hidden">New: </span>Main Discussion</a>`) {
+		t.Errorf("the forum link does not say New:\n%s", row)
+	}
+	fp := bodyOf(t, getAs(t, h, "/f/2", carol))
+	trow := rowOf(fp, "topic-row", "Welcome to the example board")
+	if !strings.Contains(trow, `<span class="visually-hidden">New: </span>Welcome to the example board</a>`) {
+		t.Errorf("the topic link does not say New:\n%s", trow)
+	}
+	for _, r := range []string{row, trow} {
+		if !strings.Contains(r, `<span class="badge-new" aria-hidden="true">New</span>`) {
+			t.Errorf("the pill is not hidden from a screen reader:\n%s", r)
+		}
+	}
+	// A read topic has neither.
+	bob := signIn(t, h, "bob", "example-password")
+	bp := bodyOf(t, getAs(t, h, "/f/2", bob))
+	if strings.Contains(rowOf(bp, "topic-row", "Welcome"), "New: ") {
+		t.Error("a read topic link says New")
 	}
 }

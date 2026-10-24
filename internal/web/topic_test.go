@@ -363,6 +363,20 @@ func TestPaginationBounds(t *testing.T) {
 			}
 		}
 	}
+	// The "new since" list has the same bounds. A guest goes to sign in first, so
+	// a member asks.
+	alice := signIn(t, h, "alice", "example-password")
+	for _, q := range []string{"0", "-1", "abc", strings.Repeat("9", 30), "+2", "%20"} {
+		if rec := getAs(t, h, "/new?page="+q, alice); rec.Code != http.StatusBadRequest {
+			t.Errorf("/new?page=%s: %d, want 400", q, rec.Code)
+		}
+	}
+	if rec := getAs(t, h, "/new?page=", alice); rec.Code != http.StatusOK {
+		t.Errorf("/new?page=: %d, want 200", rec.Code)
+	}
+	if rec := getAs(t, h, "/new?page=2", alice); rec.Code != http.StatusNotFound {
+		t.Errorf("/new?page=2: %d, want 404", rec.Code)
+	}
 	// The forum list has pages too: 3 topics are on one page; page 2 is missing.
 	if rec := get(t, h, "/f/2?page=2"); rec.Code != http.StatusNotFound {
 		t.Errorf("/f/2?page=2: %d, want 404", rec.Code)

@@ -216,6 +216,10 @@ type page struct {
 	// page that is current.
 	ctx    context.Context
 	navKey string
+	// navUnread is the count of unread topics of the "new since your last visit"
+	// list when the page already knows it. addNewLink then asks the database for
+	// nothing.
+	navUnread *int
 }
 
 // navLink is one link of the nav bar.
@@ -323,18 +327,28 @@ func (s *site) touch(w http.ResponseWriter, r *http.Request, sess session.Sessio
 	}
 }
 
-// addNewLink adds "New since your last visit (N)" to the nav of a member. When
+// addNewLink adds "New since your last visit (N)" to the nav of a member, where N
+// is the number of unread topics of the list. The item hides when N is 0. When
 // the count cannot be read, the link stays and shows no number.
 func (s *site) addNewLink(p *page) {
 	if p.ctx == nil || p.Viewer.UserID == 0 {
 		return
 	}
 	label := "New since your last visit"
-	n, err := board.CountNew(p.ctx, s.pool, p.Viewer)
-	if err != nil {
-		slog.Warn("cannot count the new topics", "err", err)
-	} else {
-		label += " (" + strconv.Itoa(n) + ")"
+	unread := p.navUnread
+	if unread == nil {
+		_, n, err := board.NewCounts(p.ctx, s.pool, p.Viewer)
+		if err != nil {
+			slog.Warn("cannot count the new topics", "err", err)
+		} else {
+			unread = &n
+		}
+	}
+	if unread != nil {
+		if *unread == 0 {
+			return
+		}
+		label += " (" + strconv.Itoa(*unread) + ")"
 	}
 	p.Nav = append(p.Nav, navLink{Label: label, Href: s.path("new"), Current: p.navKey == "new"})
 }
@@ -342,6 +356,14 @@ func (s *site) addNewLink(p *page) {
 // render executes the page template into a buffer, so that a template error
 // gives a clean 500 and not half a page, then writes it with status.
 func (s *site) render(w http.ResponseWriter, status int, name string, p *page) {
+	s.renderThen(w, status, name, p, nil)
+}
+
+// renderThen is [site.render] with a step in the middle: after the page is built
+// and before it is sent, it calls after. A page that fails to build never calls
+// it, so bookkeeping that belongs to a page that was shown (a view count, a
+// read mark) is not written for a page that was not.
+func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *page, after func()) {
 	t, ok := s.pages[name]
 	if !ok {
 		slog.Error("render: no such template", "name", name)
@@ -368,6 +390,9 @@ func (s *site) render(w http.ResponseWriter, status int, name string, p *page) {
 		slog.Error("render", "template", name, "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	if after != nil {
+		after()
 	}
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")

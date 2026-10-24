@@ -21,6 +21,17 @@ const unreadAfter = `greatest(coalesce(me.last_mark_at, me.registered_at), fm.ma
 // unreadVisible is the visibility clause of [unreadForumsSQL].
 var unreadVisible = visible("t", 1)
 
+// seesPostAfter is the SQL condition on a topic t: it holds a post that the
+// viewer sees (the scope is $1 to $4) and that is newer than the time expr.
+// The last_post_at of a topic can come from a post that the viewer may not see
+// (a topic whose only posts wait for approval takes the time of the newest one),
+// so a time test on the topic alone would show such a topic as new. The index
+// posts_topic_created_idx serves the probe.
+func seesPostAfter(expr string) string {
+	return `exists (select 1 from posts p where p.topic_id = t.id and ` + visible("p", 1) +
+		` and p.created_at > (` + expr + `))`
+}
+
 // RecordVisit notes that member userID made a request at now.
 //
 // last_active_at moves to now when it is empty or more than five minutes old, so
@@ -36,7 +47,7 @@ update users set
                              and $2::timestamptz - last_active_at > interval '30 minutes'
                             then last_active_at else last_visit_at end,
        last_active_at = $2::timestamptz
- where id = $1
+ where id = $1 and state = 'active'
    and (last_active_at is null or $2::timestamptz - last_active_at > interval '5 minutes')`,
 		userID, now)
 	if err != nil {
@@ -51,7 +62,7 @@ update users set
 func StartVisit(ctx context.Context, q db.Querier, userID int64, now time.Time) error {
 	_, err := q.Exec(ctx, `
 update users set last_visit_at = coalesce(last_active_at, last_visit_at), last_active_at = $2
- where id = $1`, userID, now)
+ where id = $1 and state = 'active'`, userID, now)
 	if err != nil {
 		return fmt.Errorf("board: start visit of user %d: %w", userID, err)
 	}
@@ -60,11 +71,12 @@ update users set last_visit_at = coalesce(last_active_at, last_visit_at), last_a
 
 // MarkTopic records that the member read topicID up to the time upTo. The
 // stored mark is the later of the old one and upTo, so a mark never moves back.
+// A mark that is not newer than the stored one writes no row version.
 func MarkTopic(ctx context.Context, q db.Querier, userID, topicID int64, upTo time.Time) error {
 	_, err := q.Exec(ctx, `
 insert into topic_marks (user_id, topic_id, marked_at) values ($1, $2, $3)
-on conflict (user_id, topic_id) do update
-   set marked_at = greatest(topic_marks.marked_at, excluded.marked_at)`, userID, topicID, upTo)
+on conflict (user_id, topic_id) do update set marked_at = excluded.marked_at
+ where excluded.marked_at > topic_marks.marked_at`, userID, topicID, upTo)
 	if err != nil {
 		return fmt.Errorf("board: mark topic %d: %w", topicID, err)
 	}
@@ -121,18 +133,20 @@ func MarkForum(ctx context.Context, q db.Querier, v Viewer, forumID int64, now t
 	_, err = q.Exec(ctx, `
 insert into forum_marks (user_id, forum_id, marked_at)
 select $1, f, $3 from unnest($2::bigint[]) f
-on conflict (user_id, forum_id) do update
-   set marked_at = greatest(forum_marks.marked_at, excluded.marked_at)`, v.UserID, ids, now)
+on conflict (user_id, forum_id) do update set marked_at = excluded.marked_at
+ where excluded.marked_at > forum_marks.marked_at`, v.UserID, ids, now)
 	if err != nil {
 		return fmt.Errorf("board: mark forum %d: %w", forumID, err)
 	}
 	return nil
 }
 
-// MarkAll sets the member's mark-all time to now. It never moves the time back.
+// MarkAll sets the member's mark-all time to now. It never moves the time back,
+// and a time that is not newer writes no row version.
 func MarkAll(ctx context.Context, q db.Querier, userID int64, now time.Time) error {
 	_, err := q.Exec(ctx, `
-update users set last_mark_at = greatest(last_mark_at, $2) where id = $1`, userID, now)
+update users set last_mark_at = $2
+ where id = $1 and (last_mark_at is null or last_mark_at < $2)`, userID, now)
 	if err != nil {
 		return fmt.Errorf("board: mark all read for user %d: %w", userID, err)
 	}
@@ -159,7 +173,8 @@ select distinct t.forum_id
   left join topic_marks tm on tm.user_id = me.id and tm.topic_id = t.id
  where t.last_post_at > (select coalesce(last_mark_at, registered_at) from users where id = $4::bigint)
    and t.last_post_at > ` + unreadAfter + `
-   and t.moved_to_topic_id is null and ` + unreadVisible
+   and t.moved_to_topic_id is null and ` + unreadVisible + `
+   and ` + seesPostAfter(unreadAfter)
 
 // forumsWithUnread returns the IDs of the forums that hold a topic which is
 // unread for member v and which v may read. One query serves the whole index.
@@ -203,36 +218,55 @@ type NewPage struct {
 	Page, Pages int
 	// Total is the number of topics on all pages.
 	Total int
+	// Unread is how many of them the member has not read.
+	Unread int
 }
 
 // newSinceWhere selects the topics of the list: the last post is newer than the
 // member's last visit, the topic is not a moved-topic marker, and the viewer may
 // see it. The time is a scalar subquery that PostgreSQL evaluates once, so
 // topics_last_post_idx can bound the scan. The scope arguments are $1 to $4.
-var newSinceWhere = `t.last_post_at > (select coalesce(last_visit_at, registered_at) from users where id = $4::bigint)
-   and t.moved_to_topic_id is null and ` + visible("t", 1)
+var newSinceWhere = `t.last_post_at > ` + lastVisit + `
+   and t.moved_to_topic_id is null and ` + visible("t", 1) + `
+   and ` + seesPostAfter(lastVisit)
+
+// lastVisit is the SQL scalar subquery for the last visit of the member $4.
+const lastVisit = `(select coalesce(last_visit_at, registered_at) from users where id = $4::bigint)`
+
+// newCountsSQL counts the topics of the list, and the ones among them that the
+// member has not read.
+var newCountsSQL = `
+select count(*), count(*) filter (where t.last_post_at > ` + unreadAfter + ` and ` + seesPostAfter(unreadAfter) + `)
+  from topics t
+  left join users me on me.id = $4::bigint
+  left join forum_marks fm on fm.user_id = $4::bigint and fm.forum_id = t.forum_id
+  left join topic_marks tm on tm.user_id = $4::bigint and tm.topic_id = t.id
+ where ` + newSinceWhere
 
 // newSinceOrder is the order of the list: newest activity first, the order of
 // topics_last_post_idx.
 const newSinceOrder = ` order by t.last_post_at desc, t.id desc`
 
-// CountNew returns how many topics [NewSince] lists for v, over all pages. A
-// guest has none.
-func CountNew(ctx context.Context, q db.Querier, v Viewer) (int, error) {
+// NewCounts returns how many topics [NewSince] lists for v over all pages, and
+// how many of them v has not read. A guest has none.
+func NewCounts(ctx context.Context, q db.Querier, v Viewer) (total, unread int, err error) {
 	if v.UserID == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	sc, err := newScope(ctx, q, v)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var n int
-	err = q.QueryRow(ctx, `
-select count(*) from topics t where `+newSinceWhere, sc.args()...).Scan(&n)
+	return newCounts(ctx, q, sc)
+}
+
+// newCounts is [NewCounts] for a scope that the caller already computed.
+func newCounts(ctx context.Context, q db.Querier, sc scope) (total, unread int, err error) {
+	err = q.QueryRow(ctx, newCountsSQL, sc.args()...).Scan(&total, &unread)
 	if err != nil {
-		return 0, fmt.Errorf("board: count new topics: %w", err)
+		return 0, 0, fmt.Errorf("board: count new topics: %w", err)
 	}
-	return n, nil
+	return total, unread, nil
 }
 
 // NewSince returns page number page (from 1) of the topics that have a post
@@ -250,17 +284,17 @@ func NewSince(ctx context.Context, q db.Querier, v Viewer, page int) (NewPage, e
 		}
 		return NewPage{Page: 1, Pages: 1}, nil
 	}
-	total, err := CountNew(ctx, q, v)
-	if err != nil {
-		return NewPage{}, err
-	}
-	out := NewPage{Page: page, Pages: pageCount(total, topicsPerPage), Total: total}
-	if page < 1 || page > out.Pages {
-		return NewPage{}, ErrNotFound
-	}
 	sc, err := newScope(ctx, q, v)
 	if err != nil {
 		return NewPage{}, err
+	}
+	total, unread, err := newCounts(ctx, q, sc)
+	if err != nil {
+		return NewPage{}, err
+	}
+	out := NewPage{Page: page, Pages: pageCount(total, topicsPerPage), Total: total, Unread: unread}
+	if page < 1 || page > out.Pages {
+		return NewPage{}, ErrNotFound
 	}
 	rows, err := topicRows(ctx, q, `where `+newSinceWhere, newSinceOrder, `limit $5 offset $6`,
 		append(sc.args(), topicsPerPage, (page-1)*topicsPerPage)...)
@@ -301,12 +335,35 @@ func NewSince(ctx context.Context, q db.Querier, v Viewer, page int) (NewPage, e
 // mark and topic mark. When no post is newer, it returns the last post that v
 // sees. A guest has no marks, so the first post comes back.
 //
-// A topic that v may not see, a missing topic, a moved-topic marker and a topic
-// with no post that v sees give [ErrNotFound].
+// A moved-topic marker gives a [MovedError] when v may see its target, as
+// [TopicView] does. A topic that v may not see, a missing topic, a marker whose
+// target v may not see, and a topic with no post that v sees give [ErrNotFound].
 func FirstUnread(ctx context.Context, q db.Querier, v Viewer, topicID int64) (int64, error) {
 	sc, err := newScope(ctx, q, v)
 	if err != nil {
 		return 0, err
+	}
+	var movedTo int64
+	err = q.QueryRow(ctx, `select coalesce(t.moved_to_topic_id, 0) from topics t where t.id = $5 and `+visible("t", 1),
+		append(sc.args(), topicID)...).Scan(&movedTo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("board: read topic %d: %w", topicID, err)
+	}
+	if movedTo != 0 {
+		var ok bool
+		err := q.QueryRow(ctx, `select exists (select 1 from topics m where m.id = $5 and `+visible("m", 1)+`)`,
+			append(sc.args(), movedTo)...).Scan(&ok)
+		if err != nil {
+			return 0, fmt.Errorf("board: read topic %d: %w", movedTo, err)
+		}
+		if !ok || movedTo == topicID {
+			// A marker that points at itself would send the visitor round and round.
+			return 0, ErrNotFound
+		}
+		return 0, MovedError{To: movedTo}
 	}
 	var postID *int64
 	err = q.QueryRow(ctx, `

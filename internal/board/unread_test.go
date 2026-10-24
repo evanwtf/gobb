@@ -79,6 +79,30 @@ func memberFor(t *testing.T, pool *pgxpool.Pool, id int64) board.Viewer {
 	return v
 }
 
+// addBulkTopics adds n approved topics to forum 2, each with one approved post,
+// the newest topic last. The topics are made up.
+func addBulkTopics(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+insert into topics (forum_id, title, author_id, author_name, created_at, last_post_at, kind, visibility)
+select 2, 'Bulk ' || k, 1, 'alice', timestamptz '2024-01-01' + k * interval '1 hour',
+       timestamptz '2024-01-01' + k * interval '1 hour', 'normal', 'approved'
+  from generate_series(1, $1::int) k`, n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+insert into posts (topic_id, forum_id, author_id, author_name, created_at, subject, body_source, body_tree, body_text, visibility)
+select t.id, t.forum_id, 1, 'alice', t.created_at, t.title, 'Made-up text',
+       '{"k":"root","c":[]}'::jsonb, 'Made-up text', 'approved'
+  from topics t where t.title like 'Bulk %'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `update topics t set last_post_id = p.id from posts p where p.topic_id = t.id and t.title like 'Bulk %'`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecordVisit(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
@@ -284,8 +308,6 @@ func TestMarkForumAndAll(t *testing.T) {
 	}
 
 	// MarkAll moves last_mark_at, and nothing is New afterward.
-	bob := memberFor(t, pool, 2)
-	_ = bob
 	carolAll := memberFor(t, pool, 3)
 	if _, err := pool.Exec(ctx, `delete from forum_marks where user_id = 3`); err != nil {
 		t.Fatal(err)
@@ -424,8 +446,15 @@ func TestNewSince(t *testing.T) {
 			t.Errorf("alice: topic %d is not New", r.ID)
 		}
 	}
-	if n, err := board.CountNew(ctx, pool, alice); err != nil || n != 2 {
-		t.Errorf("CountNew(alice) = %d, %v; want 2", n, err)
+	if total, unread, err := board.NewCounts(ctx, pool, alice); err != nil || total != 2 || unread != 2 {
+		t.Errorf("NewCounts(alice) = %d, %d, %v; want 2, 2", total, unread, err)
+	}
+	// Bob has both topics in the list and has read both.
+	if total, unread, err := board.NewCounts(ctx, pool, bob); err != nil || total != 2 || unread != 0 {
+		t.Errorf("NewCounts(bob) = %d, %d, %v; want 2, 0", total, unread, err)
+	}
+	if np.Unread != 2 {
+		t.Errorf("alice: NewPage.Unread = %d, want 2", np.Unread)
 	}
 
 	// A guest has no list.
@@ -443,13 +472,7 @@ func TestNewSince(t *testing.T) {
 func TestNewSincePages(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
-	if _, err := pool.Exec(ctx, `
-insert into topics (forum_id, title, author_id, author_name, created_at, last_post_at, kind, visibility)
-select 2, 'Bulk ' || n, 1, 'alice', timestamptz '2024-01-01' + n * interval '1 hour',
-       timestamptz '2024-01-01' + n * interval '1 hour', 'normal', 'approved'
-  from generate_series(1, 120) n`); err != nil {
-		t.Fatal(err)
-	}
+	addBulkTopics(t, pool, 120)
 	if _, err := pool.Exec(ctx, `update users set last_visit_at = null where id = 1`); err != nil {
 		t.Fatal(err)
 	}
@@ -496,8 +519,6 @@ func TestFirstUnread(t *testing.T) {
 	if id, err = board.FirstUnread(ctx, pool, carol, 1); err != nil || id != 4 {
 		t.Errorf("after a mark on post 3: %d, %v; want 4", id, err)
 	}
-	// Bob cannot see post 3, so for him the first unread post after the same
-	// time is post 4 as well.
 	// After MarkAll nothing is newer, so the answer is the last post.
 	if err := board.MarkAll(ctx, pool, 3, utc(2026, 10, 24, 12, 0)); err != nil {
 		t.Fatal(err)
@@ -591,15 +612,198 @@ func TestBadgesCostAFixedNumberOfQueries(t *testing.T) {
 		return index, forum, c.n
 	}
 	i0, f0, n0 := count()
-	if _, err := pool.Exec(ctx, `
-insert into topics (forum_id, title, author_id, author_name, created_at, last_post_at, kind, visibility)
-select 2, 'Bulk ' || n, 1, 'alice', timestamptz '2024-01-01' + n * interval '1 hour',
-       timestamptz '2024-01-01' + n * interval '1 hour', 'normal', 'approved'
-  from generate_series(1, 120) n`); err != nil {
-		t.Fatal(err)
-	}
+	addBulkTopics(t, pool, 120)
 	i1, f1, n1 := count()
 	if i0 != i1 || f0 != f1 || n0 != n1 {
 		t.Errorf("statements before and after 120 topics: index %d/%d, forum %d/%d, new %d/%d", i0, i1, f0, f1, n0, n1)
+	}
+}
+
+// A no-op mark writes no row version: the mark is already newer.
+func TestNoOpMarksWriteNothing(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	carol := memberFor(t, pool, 3)
+	xmin := func(sql string) string {
+		t.Helper()
+		var x string
+		if err := pool.QueryRow(ctx, sql).Scan(&x); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	check := func(name, sql string, older, same, newer func()) {
+		t.Helper()
+		before := xmin(sql)
+		older()
+		same()
+		if got := xmin(sql); got != before {
+			t.Errorf("%s: a mark that is not newer changed xmin %s to %s", name, before, got)
+		}
+		newer()
+		if got := xmin(sql); got == before {
+			t.Errorf("%s: a newer mark did not write", name)
+		}
+	}
+	T := utc(2026, 10, 24, 12, 0)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	must(board.MarkTopic(ctx, pool, 3, 1, T))
+	check("topic mark", `select xmin::text from topic_marks where user_id = 3 and topic_id = 1`,
+		func() { must(board.MarkTopic(ctx, pool, 3, 1, T.Add(-time.Hour))) },
+		func() { must(board.MarkTopic(ctx, pool, 3, 1, T)) },
+		func() { must(board.MarkTopic(ctx, pool, 3, 1, T.Add(time.Hour))) })
+
+	must(board.MarkForum(ctx, pool, carol, 2, T))
+	check("forum mark", `select xmin::text from forum_marks where user_id = 3 and forum_id = 2`,
+		func() { must(board.MarkForum(ctx, pool, carol, 2, T.Add(-time.Hour))) },
+		func() { must(board.MarkForum(ctx, pool, carol, 2, T)) },
+		func() { must(board.MarkForum(ctx, pool, carol, 2, T.Add(time.Hour))) })
+
+	must(board.MarkAll(ctx, pool, 3, T))
+	check("mark all", `select xmin::text from users where id = 3`,
+		func() { must(board.MarkAll(ctx, pool, 3, T.Add(-time.Hour))) },
+		func() { must(board.MarkAll(ctx, pool, 3, T)) },
+		func() { must(board.MarkAll(ctx, pool, 3, T.Add(time.Hour))) })
+}
+
+// addUnapprovedOnlyTopic adds topic 10 to forum 2. It is approved and holds one
+// post, by carol, that waits for approval. The importer gives such a topic the
+// time of that post as last_post_at.
+func addUnapprovedOnlyTopic(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, q := range []string{
+		`insert into topics (id, forum_id, title, author_id, author_name, created_at, last_post_at, kind, visibility)
+		 overriding system value
+		 values (10, 2, 'Waiting for a moderator', 1, 'alice', '2026-10-10T00:00:00Z', '2026-10-10T00:00:00Z', 'normal', 'approved')`,
+		`insert into posts (id, topic_id, forum_id, author_id, author_name, created_at, subject, body_source, body_tree, body_text, visibility)
+		 overriding system value
+		 values (10, 10, 2, 3, 'carol', '2026-10-10T00:00:00Z', 'Hello', 'Made-up text', '{"k":"root","c":[]}'::jsonb, 'Made-up text', 'unapproved')`,
+		`update topics set last_post_id = 10 where id = 10`,
+		`update users set last_mark_at = '2026-10-01T00:00:00Z', last_visit_at = '2026-10-01T00:00:00Z' where id = 1`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A topic whose only new post waits for approval is not New for a viewer who
+// cannot see that post, and neither is its forum. The author sees it as New.
+func TestUnapprovedOnlyPostIsNotNew(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	addUnapprovedOnlyTopic(t, pool)
+
+	alice := memberFor(t, pool, 1)
+	if topicNew(t, pool, alice, 2, 10) {
+		t.Error("alice: topic 10 is New for a post she cannot see")
+	}
+	if n, _ := forumNew(t, pool, alice, 2); n {
+		t.Error("alice: forum 2 is New for a post she cannot see")
+	}
+	np, err := board.NewSince(ctx, pool, alice, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range np.Topics {
+		if r.ID == 10 {
+			t.Error("alice: the list holds topic 10")
+		}
+	}
+	if total, unread, err := board.NewCounts(ctx, pool, alice); err != nil || unread != 0 || total != len(np.Topics) {
+		t.Errorf("alice: NewCounts = %d, %d, %v; the list has %d rows", total, unread, err, len(np.Topics))
+	}
+
+	// Carol wrote the post and sees it, so for her it is new.
+	if _, err := pool.Exec(ctx, `update users set last_mark_at = '2026-10-01T00:00:00Z', last_visit_at = '2026-10-01T00:00:00Z' where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	carol := memberFor(t, pool, 3)
+	if !topicNew(t, pool, carol, 2, 10) {
+		t.Error("carol: topic 10 is not New")
+	}
+	if n, _ := forumNew(t, pool, carol, 2); !n {
+		t.Error("carol: forum 2 is not New")
+	}
+}
+
+// FirstUnread skips a post that the viewer cannot see. Post 3 waits for
+// approval and is the first one after the mark, but alice cannot see it.
+func TestFirstUnreadSkipsHiddenPost(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	if _, err := pool.Exec(ctx, `update users set last_mark_at = '2020-01-01T00:00:00Z' where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	alice := memberFor(t, pool, 1)
+	// Posts 1 and 2 are from 2019, post 3 is hidden, and post 4 is the first
+	// visible post after the mark.
+	if id, err := board.FirstUnread(ctx, pool, alice, 1); err != nil || id != 4 {
+		t.Errorf("alice: FirstUnread = %d, %v; want 4", id, err)
+	}
+	// Carol sees post 3.
+	carol := memberFor(t, pool, 3)
+	if _, err := pool.Exec(ctx, `update users set last_mark_at = '2020-01-01T00:00:00Z' where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := board.FirstUnread(ctx, pool, carol, 1); err != nil || id != 3 {
+		t.Errorf("carol: FirstUnread = %d, %v; want 3", id, err)
+	}
+}
+
+// A marker answers MovedError for a viewer who may see its target, after the
+// permission check of the marker itself.
+func TestFirstUnreadOfMarker(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	alice := memberFor(t, pool, 1)
+	_, err := board.FirstUnread(ctx, pool, alice, 3)
+	var moved board.MovedError
+	if !errors.As(err, &moved) || moved.To != 1 {
+		t.Errorf("alice: marker 3 = %v, want MovedError to 1", err)
+	}
+	// Guests cannot read forum 3, where the marker is.
+	if _, err := board.FirstUnread(ctx, pool, guestOn(t, pool), 3); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("guest: marker 3 = %v, want ErrNotFound", err)
+	}
+	// Move the marker to forum 2 and its target to forum 3: carol may see the
+	// marker and not the target.
+	if _, err := pool.Exec(ctx, `update topics set forum_id = 2, moved_to_topic_id = 2 where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.FirstUnread(ctx, pool, memberFor(t, pool, 3), 3); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("carol: marker with a hidden target = %v, want ErrNotFound", err)
+	}
+}
+
+// The list costs a fixed set of statements: the scope once, the counts once, the
+// page and the forum names. The counts alone cost the scope and one more.
+func TestNewSinceStatementCount(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	alice := memberFor(t, pool, 1)
+	if _, err := pool.Exec(ctx, `update users set last_visit_at = '2019-06-01T00:00:00Z' where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	c := counting{pool: pool}
+	if _, err := board.NewSince(ctx, &c, alice, 1); err != nil {
+		t.Fatal(err)
+	}
+	if c.n != 4 {
+		t.Errorf("NewSince ran %d statements, want 4", c.n)
+	}
+	c.n = 0
+	if _, _, err := board.NewCounts(ctx, &c, alice); err != nil {
+		t.Fatal(err)
+	}
+	if c.n != 2 {
+		t.Errorf("NewCounts ran %d statements, want 2", c.n)
 	}
 }

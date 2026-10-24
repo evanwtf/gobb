@@ -434,7 +434,8 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
 .tracks .forum-name, .tracks .topic-link { font-weight: 500; }
 .tracks .row-new .forum-name, .tracks .row-new .topic-link { font-weight: 800; }
 .tracks .row-new .forum-main::before { width: 6px; }
-.tracks tr.row-new { background: color-mix(in srgb, var(--accent) 8%, var(--row)); }
+/* A red tint, so that an unread row differs from the blue tint of an announcement. */
+.tracks tr.row-new { background: color-mix(in srgb, var(--new) 11%, var(--row)); }
 .jump-new { font-weight: 600; text-decoration: underline; text-underline-offset: 0.15em; }
 
 .toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; margin: 0 0 1rem; }

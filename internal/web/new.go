@@ -38,14 +38,13 @@ func isNavigation(r *http.Request) bool {
 
 // countView does the bookkeeping of a topic page that a person opened: it adds
 // a view, and for a member it marks the topic read up to the newest post on the
-// page. A page that shows only old posts leaves the newer posts unread. A
-// failure is logged; the page still shows.
+// page. A page that shows only old posts leaves the newer posts unread. The
+// caller runs it after the page is built (see [site.renderThen]). A failure is
+// logged; the page still shows.
 func (s *site) countView(r *http.Request, v board.Viewer, tp *board.TopicPage) {
 	ctx := r.Context()
 	if err := board.CountView(ctx, s.pool, tp.Topic.ID); err != nil {
 		slog.Warn("cannot count a view", "topic", tp.Topic.ID, "err", err)
-	} else {
-		tp.Topic.Views++
 	}
 	if v.UserID == 0 || len(tp.Posts) == 0 {
 		return
@@ -109,6 +108,8 @@ func (s *site) newPage(w http.ResponseWriter, r *http.Request) {
 	for i, row := range np.Topics {
 		rows[i] = topicRowView{TopicRow: row.TopicRow, Loc: p.Viewer.Loc, Forum: row.Forum}
 	}
+	// The nav of this page needs no second count: the list has it.
+	p.navUnread = &np.Unread
 	p.Data = newData{
 		Topics: rows,
 		Pager:  newPager(s.path("new"), np.Page, np.Pages),
@@ -121,7 +122,8 @@ func (s *site) newPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // topicNew serves GET /t/{id}/new: a redirect to the first post of the topic that
-// the viewer has not read. The permission check runs first, so a hidden topic
+// the viewer has not read. A moved-topic marker answers 301 to the /new of its
+// target. The permission check runs first, so a hidden topic
 // gives the 404 of a missing one.
 func (s *site) topicNew(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
@@ -135,6 +137,11 @@ func (s *site) topicNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	postID, err := board.FirstUnread(r.Context(), s.pool, p.Viewer, id)
+	var moved board.MovedError
+	if errors.As(err, &moved) {
+		http.Redirect(w, r, s.path("t", strconv.FormatInt(moved.To, 10), "new"), http.StatusMovedPermanently)
+		return
+	}
 	if err != nil {
 		s.postRedirectError(w, r, err)
 		return

@@ -81,7 +81,7 @@ func TestUnreadQueriesUseIndex(t *testing.T) {
 	sc := scope{read: []int64{2}, approve: []int64{}, del: []int64{}, userID: 3}
 	for name, sql := range map[string]string{
 		"forums with unread": unreadForumsSQL,
-		"new since, count":   `select count(*) from topics t where ` + newSinceWhere,
+		"new since, count":   newCountsSQL,
 	} {
 		if plan := explain(t, sql, sc.args()...); !strings.Contains(plan, "last_post_idx") || strings.Contains(plan, "Seq Scan on topics") {
 			t.Errorf("%s: the plan does not use an index on last_post_at:\n%s", name, plan)
