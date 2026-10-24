@@ -10,7 +10,8 @@ references and a count that disagrees with the manifest all stop the import.
 
 `docs/example-bundle/` is a complete small bundle with made-up data. A test keeps it in
 step with the format, and `bundle.Check` accepts it. `bundle.Check` proves the rules that
-span rows (unique IDs, references, files) without a database.
+span rows (unique IDs, references, files) without a database. A fault in a whole file,
+such as no owner, a missing built-in group or a file that no row names, has no line number.
 
 ## Layout
 

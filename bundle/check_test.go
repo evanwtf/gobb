@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -293,6 +294,108 @@ func TestCheckUsernameCollision(t *testing.T) {
 	want := `users.jsonl:6: username: user 9 and user 7 have the same cleaned username "bob"`
 	if len(errs) != 1 || errs[0].Error() != want {
 		t.Fatalf("Check = %v\nwant one error: %s", err, want)
+	}
+}
+
+func TestCheckWithoutFilesDirectory(t *testing.T) {
+	// No row names a file: a bundle with no files/ is valid.
+	b := bundletest.Small()
+	b.Settings.HeaderImage = nil
+	b.Ranks[0].Image = nil
+	b.Users[0].Avatar = nil
+	b.Attachments = nil
+	b.Smilies = nil
+	b.Files = map[string][]byte{}
+	dir := bundletest.Write(t, b)
+	if err := os.RemoveAll(filepath.Join(dir, "files")); err != nil {
+		t.Fatal(err)
+	}
+	r, err := bundle.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := bundle.Check(r); err != nil {
+		t.Fatalf("Check = %v, want nil", err)
+	}
+
+	// Rows name files: each gets the normal "does not exist" error.
+	dir = bundletest.Write(t, bundletest.Small())
+	if err := os.RemoveAll(filepath.Join(dir, "files")); err != nil {
+		t.Fatal(err)
+	}
+	r, err = bundle.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var errs bundle.Errors
+	if err := bundle.Check(r); !errors.As(err, &errs) {
+		t.Fatalf("Check = %v, want bundle.Errors", err)
+	}
+	want := []string{
+		"settings.json: header_image.path: files/header/banner.png does not exist",
+		"ranks.jsonl:1: image.path: files/ranks/newcomer.png does not exist",
+		"users.jsonl:1: avatar.path: files/avatars/1.png does not exist",
+		"attachments.jsonl:1: file.path: files/attachments/1.png does not exist",
+		"attachments.jsonl:2: file.path: files/attachments/2.gif does not exist",
+		"smilies.jsonl:1: image.path: files/smilies/smile.gif does not exist",
+		"smilies.jsonl:2: image.path: files/smilies/grin.png does not exist",
+	}
+	if len(errs) != len(want) {
+		t.Fatalf("Check = %v\nwant %d errors", errs, len(want))
+	}
+	for i, e := range errs {
+		if e.Error() != want[i] {
+			t.Errorf("error %d = %q, want %q", i, e, want[i])
+		}
+	}
+}
+
+func TestCheckNamedDirectory(t *testing.T) {
+	dir := bundletest.Write(t, bundletest.Small())
+	avatar := filepath.Join(dir, "files", "avatars", "1.png")
+	if err := os.Remove(avatar); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(avatar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r, err := bundle.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "users.jsonl:1: avatar.path: files/avatars/1.png is not a regular file"
+	var errs bundle.Errors
+	if err := bundle.Check(r); !errors.As(err, &errs) || len(errs) != 1 || errs[0].Error() != want {
+		t.Fatalf("Check = %v, want one error: %s", err, want)
+	}
+}
+
+func TestCheckDeepUnnamedFile(t *testing.T) {
+	b := bundletest.Small()
+	b.Files["attachments/a/b/stray.png"] = []byte("x")
+	want := "files/attachments/a/b/stray.png: no row names this file"
+	var errs bundle.Errors
+	if err := checkBoard(t, b); !errors.As(err, &errs) || len(errs) != 1 || errs[0].Error() != want {
+		t.Fatalf("Check = %v, want one error: %s", err, want)
+	}
+}
+
+func TestCheckLongCycleMessage(t *testing.T) {
+	b := bundletest.Small()
+	const first, n = 4, 30
+	for i := range n {
+		id := int64(first + i)
+		next := int64(first + (i+1)%n)
+		b.Forums = append(b.Forums, bundle.Forum{ID: id, ParentID: &next, Kind: "category", Name: "loop"})
+	}
+	var ids []string
+	for i := range 20 {
+		ids = append(ids, strconv.Itoa(first+i))
+	}
+	want := "forums.jsonl:4: parent_id: the parent chain loops: " + strings.Join(ids, ", ") + ", …"
+	var errs bundle.Errors
+	if err := checkBoard(t, b); !errors.As(err, &errs) || len(errs) != 1 || errs[0].Error() != want {
+		t.Fatalf("Check = %v, want one error: %s", err, want)
 	}
 }
 

@@ -77,8 +77,13 @@ var errFull = errors.New("bundle: error limit reached")
 //
 // Nothing references a gone user, except a user route with a fixed target.
 //
-// Check returns nil, or an [Errors] with up to 100 errors in file order. It
-// returns any other error unchanged when a file cannot be read.
+// Check returns nil, or an [Errors] with up to 100 errors, sorted by file
+// (in the order of [Files]) and line. Check stops at the 100th error it finds.
+// Some rules are proved only when a file ends, so the 100 errors are the first
+// 100 found, and a later error may sit earlier in file order than one of them.
+// A fault in a whole file, such as a missing owner, has no line. A files/
+// directory that is absent counts as an empty one. Check returns any other
+// error unchanged when a file cannot be read.
 func Check(r *Reader) error {
 	w := &whole{
 		r:     r,
@@ -528,11 +533,16 @@ func (w *whole) reportCycle(cycle []int64) {
 			start = i
 		}
 	}
-	ids := make([]string, 0, len(cycle)+1)
-	for i := range cycle {
+	const show = 20 // a long cycle would make a long message
+	ids := make([]string, 0, show+1)
+	for i := range min(len(cycle), show) {
 		ids = append(ids, strconv.FormatInt(cycle[(start+i)%len(cycle)], 10))
 	}
-	ids = append(ids, ids[0])
+	if len(cycle) > show {
+		ids = append(ids, "…")
+	} else {
+		ids = append(ids, ids[0])
+	}
 	first := cycle[start]
 	w.bad("forums.jsonl", w.forums[first].line, "parent_id", "the parent chain loops: %s", strings.Join(ids, ", "))
 }
@@ -797,6 +807,11 @@ func (w *whole) checkFiles() {
 	}
 	root := filepath.Join(w.r.dir, "files")
 	seen := map[string]bool{}
+	// Open accepts a bundle with no files/ directory: it is an empty tree.
+	if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
+		w.reportMissing(seen)
+		return
+	}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -804,14 +819,19 @@ func (w *whole) checkFiles() {
 		if w.full() {
 			return filepath.SkipAll
 		}
-		if d.IsDir() {
-			return nil
-		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if n, ok := w.named[rel]; ok {
+				// A row names a directory: it is there, but it is not a file.
+				seen[rel] = true
+				w.bad(n.file, n.line, n.field+".path", "files/%s is not a regular file", rel)
+			}
+			return nil
+		}
 		n, ok := w.named[rel]
 		if !ok {
 			w.bad("files/"+rel, 0, "", "no row names this file")
@@ -828,6 +848,11 @@ func (w *whole) checkFiles() {
 		w.fatal = err
 		return
 	}
+	w.reportMissing(seen)
+}
+
+// reportMissing reports each named path that the walk did not see.
+func (w *whole) reportMissing(seen map[string]bool) {
 	if w.full() {
 		return
 	}
