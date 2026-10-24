@@ -688,9 +688,39 @@ designer's call):
 
 ## 17. Two releases **(owner)**
 
-- **Release 1 — cutover.** Everything in sections 7 to 16 except open sign-up. Sign-up
-  stays closed, as it is on the first board today. The sign-up form, the question
-  challenge and the holding area may ship in this release but stay switched off.
+- **Release 1 — cutover, lean. (owner, 2026-10-24)** The least that the first board
+  needs, so that it moves to gobb as soon as possible. In the last year, 10 people
+  wrote 54 posts and started 9 topics, attached 2 files and sent about 3 private
+  messages, and the last poll was in 2019. Release 1 holds:
+  - the read side (Plan 3);
+  - posting: a new topic, a reply, a quote, and the edit and delete of one's own posts;
+  - the profile: change the password, the email address and the signature;
+  - moderation on the page: delete or restore a post, edit a post, lock a topic, and
+    approve a held post;
+  - admin commands: reset a password, and ban or unban a user;
+  - the release of the image on a tag, a rehearsal on the production host, and the
+    cutover.
+
+  Sign-up stays closed, as it is on the first board today.
+
+  **Cutover is done when (owner):**
+  - gobb serves the board's website;
+  - the old software's process no longer runs on the host;
+  - every member account still signs in with its existing password.
+
+  The last point is checked in three ways: every imported hash is in a format that
+  gobb verifies (all of them, counted); the legacy test vectors pass; and the owner
+  signs in with a real account on the rehearsal and again after cutover.
+- **After cutover.** Everything else in sections 7 to 16 comes in later releases. The
+  data for each part is imported at cutover and kept, so nothing is lost while it
+  waits. This covers:
+  - private messages;
+  - creating polls, and voting;
+  - attachment uploads;
+  - email, with notifications and password reset by email (until then, a member who
+    forgets a password asks the admin);
+  - the admin panel;
+  - load protection, crawler readiness and trust bands.
 - **Release 2 — reopen sign-up.** Turn on registration with every defense in section 10,
   after email has worked in production and the board has run on gobb for a while.
 
