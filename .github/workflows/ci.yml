@@ -161,23 +161,39 @@ jobs:
           curl -fsS "http://$port/healthz"
 
       # The negative case: on a database with no board, the script must fail at the
-      # first URL. A script that passes here checks nothing.
+      # first URL, on the 503 of an empty board. A script that passes here checks
+      # nothing, and a curl failure also exits 1, so the step wants the line too.
       - name: Smoke script fails on an empty board
         run: |
           port=$(docker compose port gobb 8080)
           status=0
           sh scripts/smoke-serve.sh "http://$port" > "$RUNNER_TEMP/smoke-empty.txt" 2>&1 || status=$?
           cat "$RUNNER_TEMP/smoke-empty.txt"
+          line=0
+          grep -q -x -F 'FAIL /: want status 200, got 503' "$RUNNER_TEMP/smoke-empty.txt" || line=1
           rm -f "$RUNNER_TEMP/smoke-empty.txt"
           [ "$status" = 1 ] || { echo "want exit status 1 on an empty board, got $status"; exit 1; }
+          [ "$line" = 0 ] || { echo "want the line 'FAIL /: want status 200, got 503'"; exit 1; }
 
-      # gobb reads the legacy routes once at start, so it stops for the import
-      # and starts again on the loaded board.
+      # gobb reads the legacy routes and the stored hashes once at start, so it
+      # stops for the import and starts again on the loaded board. Before the
+      # start, bob and carol get a 64 MiB argon2id hash for the burst step below.
       - name: Import the example bundle
         run: |
           docker compose stop gobb
           docker compose run --rm -v "$PWD/docs/example-bundle:/import:ro" gobb import /import
+          out=$(docker compose exec -T postgres psql -U gobb -d gobb -v ON_ERROR_STOP=1 < .github/memcap-hashes.sql)
+          echo "$out"
+          [ "$out" = "UPDATE 2" ] || { echo "want UPDATE 2 for the 64 MiB hashes"; exit 1; }
           docker compose up -d --wait
+          # The start-up lines: the memory limit from the cgroup of the cap, and
+          # a charge of 64 MiB, two checks at once.
+          logs=$(docker compose logs --no-color gobb)
+          echo "$logs" | grep -E 'memory limit|password check charge|sign-in floor'
+          echo "$logs" | grep -q -F 'limit_bytes=187904819 source=cgroup gate_budget_kib=131072' ||
+            { echo "want the memory limit from the cgroup: 70% of 256 MiB, and a 128 MiB gate"; exit 1; }
+          echo "$logs" | grep -q -F 'kib=65536 checks_at_once=2' ||
+            { echo "want a charge of 65536 KiB, two checks at once"; exit 1; }
 
       - name: Serve pages under the memory cap
         run: |
@@ -210,6 +226,43 @@ jobs:
           else
             echo "cgroup memory.peak is not readable on this runner (tried the systemd and cgroupfs paths); the docker stats line above is the only memory figure"
           fi
+
+      # The memory test of the cap. Forty wrong passwords, 20 at a time, against
+      # the two 64 MiB hashes: each try comes from its own address, and each
+      # name takes 20 of them, the limit per name, so every try runs a 64 MiB
+      # check. Without a Go memory limit, the heap can grow to twice the memory
+      # in use, and the kernel can kill gobb. A restart clears the sign-in
+      # limits, so a kill fails the step.
+      - name: A burst of wrong passwords under the memory cap
+        run: |
+          port=$(docker compose port gobb 8080)
+          cid=$(docker compose ps -q gobb)
+          status=0
+          sh scripts/login-burst.sh "http://$port" 40 20 bob carol || status=$?
+          state=$(docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}}' "$cid")
+          echo "restarts and OOM kill: $state"
+          docker stats --no-stream --format 'docker stats now: {{.MemUsage}} ({{.MemPerc}})' "$cid"
+          [ "$state" = "0 false" ] || { echo "gobb restarted or the kernel killed it"; exit 1; }
+          [ "$status" = 0 ] || exit 1
+          # The cgroup (v2) of the container: its peak must stay under the cap,
+          # and the kernel must have killed nothing. A restart makes a new
+          # cgroup, so the restart count above is the check that sees a kill.
+          id=$(docker inspect -f '{{.Id}}' "$cid")
+          dir=
+          for d in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
+            if [ -r "$d/memory.peak" ] && [ -r "$d/memory.events" ]; then
+              dir=$d
+              break
+            fi
+          done
+          [ -n "$dir" ] || { echo "cgroup memory.peak is not readable on this runner"; exit 1; }
+          peak=$(cat "$dir/memory.peak")
+          oom=$(awk '$1 == "oom_kill" { print $2 }' "$dir/memory.events")
+          echo "cgroup path used: $dir"
+          echo "memory.peak: $peak bytes ($((peak / 1048576)) MiB)"
+          echo "memory.events oom_kill: $oom"
+          [ "$oom" = 0 ] || { echo "the kernel killed a process in the container"; exit 1; }
+          [ "$peak" -lt 268435456 ] || { echo "memory.peak reached the 256 MiB cap"; exit 1; }
 
       # Compose gives gobb a 30 s grace period. A clean stop must end well inside
       # it, with exit code 0 (137 means Docker sent SIGKILL).
