@@ -124,7 +124,7 @@ var staticTypes = map[string]string{
 func (s *site) favicon(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(staticFS, "static/icon.svg")
 	if err != nil {
-		http.NotFound(w, r)
+		s.writeFailure(w, http.StatusNotFound)
 		return
 	}
 	h := w.Header()

@@ -142,6 +142,12 @@ holds no board: `gobb import` loads one (see "Import a bundle"). Until then ever
 answers 503 and says to run `gobb import`, and `/healthz` answers 200. The server reads
 the legacy route table once at start, so restart it after an import.
 
+Every error page, 5xx included, is a page of the board in its default scheme. The server
+keeps the board name, the header image and the default scheme in memory, so the error
+page needs no database: when the database is down or slow, a page answers 500 as a
+guest's page, with no session and no counts. When a template fails, the answer is a 500
+or 503 page that the server built at start. Only `/healthz` answers in plain text.
+
 The server reads these variables. Docker Compose reads the last one:
 
 | Variable | Meaning | Default |

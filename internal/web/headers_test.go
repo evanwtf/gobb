@@ -456,7 +456,8 @@ func TestOneScriptTagPerProvider(t *testing.T) {
 }
 
 // A response that is not a page and that answers an error tells search engines
-// to skip it, as the robots meta does for a page.
+// to skip it, as the robots meta does for a page. Only /healthz answers so: the
+// other errors are pages (spec 13).
 func TestNoindexHeaderOnPlainErrors(t *testing.T) {
 	h, _ := smallSite(t)
 	// The mux answers 405 in plain text.
@@ -474,17 +475,16 @@ func TestNoindexHeaderOnPlainErrors(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("X-Robots-Tag") != "noindex" {
 		t.Errorf("healthz 503: %d, X-Robots-Tag %q", rec.Code, rec.Header().Get("X-Robots-Tag"))
 	}
-	// A request that cannot read the settings gets the plain-text fallback of
-	// the error page.
+	// A request that cannot read the settings gets the error page of a guest,
+	// from the settings in memory: a page, with the robots meta and no header.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/t/1", nil).WithContext(ctx))
-	if strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
-		t.Skipf("the cancelled request still built a page (%d)", rec.Code)
-	}
-	if rec.Code < 400 || rec.Header().Get("X-Robots-Tag") != "noindex" {
-		t.Errorf("plain-text fallback: %d, X-Robots-Tag %q", rec.Code, rec.Header().Get("X-Robots-Tag"))
+	if rec.Code != http.StatusInternalServerError || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") ||
+		!strings.Contains(rec.Body.String(), `<meta name="robots" content="noindex">`) || rec.Header().Get("X-Robots-Tag") != "" {
+		t.Errorf("a request that cannot read the settings: %d %q, X-Robots-Tag %q, want a 500 page with the robots meta",
+			rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("X-Robots-Tag"))
 	}
 	// A page answer carries the meta element and no header.
 	if got := get(t, h, "/nope").Header().Get("X-Robots-Tag"); got != "" {

@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"log/slog"
@@ -81,7 +82,26 @@ type site struct {
 	// legacy holds the old routes and file prefixes of the board. It is read
 	// once, in New: the server stops for an import.
 	legacy *legacy.Table
+	// frame is the copy of the settings that an error page needs. It lives in
+	// memory, so an error page needs no database. New loads it, and every page
+	// that reads the settings replaces it when they change. It is nil for a
+	// database with no board.
+	frame atomic.Pointer[frame]
+	// staticErrors holds the themed 500 and 503 pages, built once in New. They
+	// answer when even the error template fails.
+	staticErrors map[int][]byte
 }
+
+// frame is what an error page needs of the board: the settings, for the board
+// name, the header image and the default scheme, and the board's time zone.
+type frame struct {
+	settings board.Settings
+	loc      *time.Location
+}
+
+// onNew, when set, sees the site that New built, before New returns. A test
+// sets it, to break the templates of a running site.
+var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
@@ -119,6 +139,16 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		return nil, err
 	}
 	s.legacy = tab
+	// The error pages need the settings without the database.
+	switch set, err := board.LoadSettings(ctx, pool); {
+	case err == nil:
+		s.keepFrame(set)
+	case !errors.Is(err, board.ErrNoSettings):
+		return nil, err
+	}
+	if s.staticErrors, err = s.buildStaticErrors(); err != nil {
+		return nil, err
+	}
 	// The charge of every password check follows the most costly stored hash.
 	// Like the legacy table, it is read once: the server stops for an import.
 	if err := s.login.LoadCharge(ctx); err != nil {
@@ -167,6 +197,12 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		root.Handle("/", inner)
 	} else {
 		root.Handle(s.base, http.StripPrefix(strings.TrimSuffix(s.base, "/"), inner))
+		// A path outside the base path gets the themed 404 too, not the plain
+		// text of the mux.
+		root.HandleFunc("/", s.notFound)
+	}
+	if onNew != nil {
+		onNew(s)
 	}
 	return secure(s.guard(root)), nil
 }
@@ -318,9 +354,13 @@ type navLink struct {
 func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav string) (*page, error) {
 	ctx := r.Context()
 	settings, err := board.LoadSettings(ctx, s.pool)
+	if errors.Is(err, board.ErrNoSettings) {
+		s.frame.Store(nil)
+	}
 	if err != nil {
 		return nil, err
 	}
+	s.keepFrame(settings)
 	s.noDataLogged.Store(false)
 	id, err := s.identify(w, r)
 	if err != nil {
@@ -482,7 +522,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	t, ok := s.pages[name]
 	if !ok {
 		slog.Error("render: no such template", "name", name)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		s.renderFailed(w, status)
 		return
 	}
 	if p.Controls {
@@ -492,7 +532,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 			var err error
 			if secret, err = newCSRFSecret(); err != nil {
 				slog.Error("render: csrf secret", "err", err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				s.renderFailed(w, status)
 				return
 			}
 			http.SetCookie(w, s.cookie(csrfCookie, secret, 0))
@@ -508,7 +548,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		layoutBuilds.Add(1)
 		if err := t.ExecuteTemplate(io.Discard, "layout", p); err != nil {
 			slog.Error("render", "template", name, "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			s.renderFailed(w, status)
 			return
 		}
 		after()
@@ -518,7 +558,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	layoutBuilds.Add(1)
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
 		slog.Error("render", "template", name, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		s.renderFailed(w, status)
 		return
 	}
 	h := w.Header()
@@ -543,8 +583,10 @@ type errorData struct {
 	Href, HrefLabel string
 }
 
-// fail writes the error page with the given status. When the settings cannot be
-// read, it falls back to plain text.
+// fail writes the error page with the given status, in the layout. When the
+// page of the viewer cannot be built (the database is down or slow, or holds
+// no board), the page is a guest's, from the settings in memory
+// ([site.framePage]). It never answers in plain text.
 func (s *site) fail(w http.ResponseWriter, r *http.Request, status int, heading, message string) {
 	s.failLink(w, r, status, heading, message, "", "")
 }
@@ -552,12 +594,11 @@ func (s *site) fail(w http.ResponseWriter, r *http.Request, status int, heading,
 // failLink is [site.fail] with a link under the message.
 func (s *site) failLink(w http.ResponseWriter, r *http.Request, status int, heading, message, href, label string) {
 	p, err := s.begin(w, r, heading, "")
-	if errors.Is(err, board.ErrNoSettings) {
-		p = s.emptyPage(r, heading)
-	} else if err != nil {
-		slog.Error("error page", "err", err)
-		http.Error(w, heading, status)
-		return
+	if err != nil {
+		if !errors.Is(err, board.ErrNoSettings) {
+			slog.Warn("error page from the settings in memory", "status", status, "err", err)
+		}
+		p = s.framePage(r, heading)
 	}
 	p.Data = errorData{Status: status, Heading: heading, Message: message, Href: href, HrefLabel: label}
 	s.render(w, status, "error.html", p)
@@ -568,24 +609,146 @@ func (s *site) notFound(w http.ResponseWriter, r *http.Request) {
 	s.fail(w, r, http.StatusNotFound, "Page not found", "There is no page at this address.")
 }
 
-// emptyPage returns the page frame for a database with no board in it: the
-// name gobb, the guest zone UTC and the first scheme.
-func (s *site) emptyPage(r *http.Request, title string) *page {
-	scheme := board.Schemes[0]
-	if q := r.URL.Query().Get("scheme"); board.ValidScheme(q) {
-		scheme = q
+// keepFrame stores set as the settings of the error pages, when they differ
+// from the stored ones.
+func (s *site) keepFrame(set board.Settings) {
+	if cur := s.frame.Load(); cur != nil && cur.settings == set {
+		return
 	}
-	return &page{
+	loc, err := time.LoadLocation(set.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	s.frame.Store(&frame{settings: set, loc: loc})
+}
+
+// framePage returns the page of a guest built from the settings in memory: the
+// board name, the header image, the default scheme (or a valid ?scheme= of r,
+// which may be nil) and the board's time zone. It reads no database, no
+// session and no nav count, and it has no forms. It is an error page, so it
+// carries the robots meta. With no settings in memory (a
+// database with no board), the frame is gobb's own: the name gobb, the zone
+// UTC and the first scheme.
+func (s *site) framePage(r *http.Request, title string) *page {
+	set, loc, scheme := board.Settings{BoardName: "gobb"}, time.UTC, board.Schemes[0]
+	if f := s.frame.Load(); f != nil {
+		set, loc = f.settings, f.loc
+		if board.ValidScheme(set.DefaultScheme) {
+			scheme = set.DefaultScheme
+		}
+	}
+	if r != nil {
+		if q := r.URL.Query().Get("scheme"); board.ValidScheme(q) {
+			scheme = q
+		}
+	}
+	p := &page{
 		Title:    title,
 		Scheme:   scheme,
-		Settings: board.Settings{BoardName: "gobb"},
-		Viewer:   board.Viewer{Loc: time.UTC, Scheme: scheme},
+		Settings: set,
+		Viewer:   board.Viewer{Loc: loc, Scheme: scheme},
 		CSS:      s.path("static", "gobb.css") + "?v=" + s.assetVersion,
 		JS:       s.path("static", "gobb.js") + "?v=" + s.assetVersion,
 		Icon:     s.path("static", "icon.svg") + "?v=" + s.assetVersion,
 		Home:     s.path(),
 		Nav:      []navLink{{Label: "Index", Href: s.path()}},
+		Noindex:  true,
 	}
+	if set.HeaderImage != "" {
+		p.HeaderSrc = s.path("files", set.HeaderImage)
+	}
+	return p
+}
+
+// failTexts are the texts of the error pages that need no handler: a page that
+// could not be built, and the static pages that New builds.
+var failTexts = map[int]errorData{
+	http.StatusInternalServerError: {Heading: "Something went wrong", Message: "The server could not build this page. Try again in a moment."},
+	http.StatusServiceUnavailable:  {Heading: "Try again soon", Message: "The board cannot answer right now. Try again in a moment."},
+	http.StatusNotFound:            {Heading: "Page not found", Message: "There is no page at this address."},
+}
+
+// renderFailed answers a page that could not be built (a template or the csrf
+// secret failed). A 503 stays a 503; any other status becomes a 500.
+func (s *site) renderFailed(w http.ResponseWriter, status int) {
+	if status != http.StatusServiceUnavailable {
+		status = http.StatusInternalServerError
+	}
+	s.writeFailure(w, status)
+}
+
+// writeFailure answers status with the error page of a guest from the settings
+// in memory ([site.framePage]): no database, no session, no csrf token. When
+// the error template fails too, it writes the page that New built for the
+// status (the 500 for any status but 503).
+func (s *site) writeFailure(w http.ResponseWriter, status int) {
+	d := failTexts[status]
+	d.Status = status
+	p := s.framePage(nil, d.Heading)
+	p.Data = d
+	var buf bytes.Buffer
+	t, ok := s.pages["error.html"]
+	if ok {
+		if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
+			slog.Error("render: the error template failed", "err", err)
+			ok = false
+		}
+	}
+	if !ok {
+		s.writeStatic(w, status)
+		return
+	}
+	writeHTML(w, status, buf.Bytes())
+}
+
+// writeStatic writes the themed page that New built for status: the 503 for
+// 503, and the 500 for any other status.
+func (s *site) writeStatic(w http.ResponseWriter, status int) {
+	b, ok := s.staticErrors[status]
+	if !ok {
+		status = http.StatusInternalServerError
+		b = s.staticErrors[status]
+	}
+	if len(b) == 0 {
+		// New always builds the pages. Only a site that New did not build has
+		// none.
+		b = []byte(lastResort)
+	}
+	writeHTML(w, status, b)
+}
+
+// lastResort is the page of a site with no static error pages. Only a site
+// value that New did not build reaches it.
+const lastResort = "<!doctype html>\n<html lang=\"en\"><title>Error</title><p>Something went wrong. Try again in a moment.</p></html>\n"
+
+// writeHTML writes an error page with the base policy of the site. No cache
+// keeps it: the next request may well succeed.
+func writeHTML(w http.ResponseWriter, status int, body []byte) {
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Content-Security-Policy", baseCSP)
+	h.Set("Cache-Control", "no-store")
+	h.Del("Content-Length")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// buildStaticErrors builds the themed 500 and 503 pages from the settings in
+// memory, once, at start. A broken error template fails New here.
+func (s *site) buildStaticErrors() (map[int][]byte, error) {
+	out := map[int][]byte{}
+	for _, status := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		d := failTexts[status]
+		d.Status = status
+		p := s.framePage(nil, d.Heading)
+		p.Data = d
+		var buf bytes.Buffer
+		if err := s.pages["error.html"].ExecuteTemplate(&buf, "layout", p); err != nil {
+			return nil, fmt.Errorf("web: build the %d page: %w", status, err)
+		}
+		out[status] = buf.Bytes()
+	}
+	return out, nil
 }
 
 // serverError logs err and answers 500 with the layout. A database with no
