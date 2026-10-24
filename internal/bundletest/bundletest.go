@@ -335,6 +335,7 @@ func Small() *Board {
 				{Option: "account.avatar", Setting: bundle.Yes},
 				{Option: "account.profile", Setting: bundle.Yes},
 				{Option: "account.view_profiles", Setting: bundle.Yes},
+				{Option: "account.search", Setting: bundle.Yes},
 				{Option: "account.password", Setting: bundle.Yes},
 				{Option: "account.email", Setting: bundle.Yes},
 			},

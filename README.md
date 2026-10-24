@@ -139,7 +139,8 @@ docker compose run --rm -T gobb perms export > "$WORK/perms.jsonl" || echo "perm
 `gobb serve` needs a PostgreSQL database and a data directory. It applies the pending
 migrations at start, so a new database needs no `gobb migrate` first. A new database
 holds no board: `gobb import` loads one (see "Import a bundle"). Until then every page
-answers 500, and `/healthz` answers 200.
+answers 503 and says to run `gobb import`, and `/healthz` answers 200. The server reads
+the legacy route table once at start, so restart it after an import.
 
 The server reads these variables:
 
@@ -168,21 +169,57 @@ Open `http://127.0.0.1:8180/` in a browser. Add `?scheme=slate-deep` or
 `?scheme=slate-light` to the address to see one page in another color scheme. The
 board's `default_color_scheme` setting picks the scheme for everyone else.
 
+### Sign in
+
+Members sign in at `/login` with a username or an email address, and the password. The
+box "Remember me" keeps the session for a year; without it the session lasts 24 hours.
+A guest sees the pages that the guests group may read. Search and the member pages need
+a permission, and the board decides who holds it.
+
+To check a sign-in from a shell, run the smoke script against a running server that holds
+`docs/example-bundle/`. It fetches the pages, signs in as the made-up member `alice`,
+and exits at the first failure:
+
+```sh
+export BASE=http://127.0.0.1:8180
+sh scripts/smoke-serve.sh "$BASE"
+```
+
 ### Sign in over plain HTTP
 
-Members sign in at `/login`. The session cookie is `Secure` by default, and a browser
-sends a `Secure` cookie only over HTTPS. To try a private copy on `http://127.0.0.1`,
-turn the flag off for that run:
+The session cookie is `Secure` by default, and a browser sends a `Secure` cookie only
+over HTTPS. To try a private copy on `http://127.0.0.1`, turn the flag off for that run.
+In a shell:
 
 ```sh
 export GOBB_COOKIE_SECURE=false
 ./gobb serve
 ```
 
+With Docker Compose, set `GOBB_COOKIE_SECURE=false` in `.env`, then run
+`docker compose up -d --wait` again.
+
 Keep it `true` for any copy that people reach over a network. Every form post must come
 from the same origin: the browser's `Origin` or `Sec-Fetch-Site` header is checked
 against the `Host` header. A reverse proxy has to pass the `Host` header of the visitor
 on to gobb.
+
+### Old addresses
+
+A bundle carries the address patterns of the old board (`legacy_routes`) and the paths
+of its old files (`legacy_files`). A request that no page of gobb answers is matched
+against them, and the answer is a 301 to the new address: an old topic link goes to
+`/t/{id}`, with `?page=` when the old offset points past the first page. An old profile
+link of a removed member answers 410. A link to something the visitor may not see
+answers the same 404 as a link to something that does not exist, so an old link never
+shows that a hidden topic exists. An address that matches nothing answers 404.
+
+With the example bundle, `/old/thread.cgi?view=full&id=1` answers 301 to `/t/1`, and
+`/old/about.cgi` answers 301 to `/pages/about`:
+
+```sh
+curl -sS -o /dev/null -D - "$BASE/old/thread.cgi?view=full&id=1"
+```
 
 ### Sign-in limits
 
@@ -202,7 +239,7 @@ the operator:
   answers 503.
 
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
-the database pool, inside 25 seconds. A second signal exits at once.
+the database pool, inside 20 seconds. A second signal exits at once.
 
 ## Status
 

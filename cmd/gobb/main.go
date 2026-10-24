@@ -35,9 +35,11 @@ import (
 )
 
 // shutdownTimeout is the window for a clean stop: it covers the end of the
-// open requests and the close of the database pool. It stays under the 30 s
-// stop grace period in compose.yaml. The tests shorten it.
-var shutdownTimeout = 25 * time.Second
+// open requests and the close of the database pool. Together with poolGrace
+// (the extra time after a shutdown that ran out of time) it must stay under the
+// 30 s stop_grace_period in compose.yaml: 20 s and 5 s leave 5 s before Docker
+// sends SIGKILL. The tests shorten it.
+var shutdownTimeout = 20 * time.Second
 
 // poolGrace is how long closePool gets after a shutdown that ran out of time.
 // The tests shorten it.

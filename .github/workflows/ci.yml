@@ -24,120 +24,19 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: gobb
-        ports:
-          # A random host port, bound to localhost: the runner is shared.
-          - "127.0.0.1::5432"
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # The commit-message scan reads the whole history.
-          fetch-depth: 0
-          # No step needs git credentials, and branch code runs later.
-          persist-credentials: false
-
-      - name: Scope the Go caches to this run
-        run: |
-          {
-            echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-            echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          } >> "$GITHUB_ENV"
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Public-repo guards
-        env:
-          PUBLIC_DENYLIST: ${{ secrets.PUBLIC_DENYLIST }}
-        run: |
-          if [ -z "$PUBLIC_DENYLIST" ]; then
-            echo "PUBLIC_DENYLIST secret is empty"
-            exit 1
-          fi
-          umask 077
-          # Branch code runs in later steps. Do not leave the list on disk.
-          trap 'rm -f "$RUNNER_TEMP/denylist"' EXIT
-          printf '%s\n' "$PUBLIC_DENYLIST" > "$RUNNER_TEMP/denylist"
-          status=0
-          DENYLIST_FILE="$RUNNER_TEMP/denylist" sh scripts/check-public.sh || status=$?
-          # Local hooks can be bypassed, so scan every commit message too.
-          msgs="$RUNNER_TEMP/commit-messages.txt"
-          git log --format='%H%n%B' > "$msgs"
-          DENYLIST_FILE="$RUNNER_TEMP/denylist" sh scripts/check-public.sh "$msgs" || status=$?
-          # Plain mode: a scissors line in one message must not hide the rest.
-          sh scripts/refuse-session-ids.sh "$msgs" || status=$?
-          echo "guards: tree and commit messages scanned, status $status"
-          exit "$status"
-
-      - name: Format, vet, staticcheck, govulncheck
-        run: |
-          status=0
-          note() { [ "$status" -ne 0 ] || status=$1; }
-          # The shell runs with -e. Capture each status so no tool stops the rest.
-          fmt_status=0
-          out=$(gofmt -l . 2>&1) || fmt_status=$?
-          if [ "$fmt_status" -ne 0 ] || [ -n "$out" ]; then
-            echo "gofmt: these files need formatting, or gofmt failed:"
-            echo "$out"
-            note "$fmt_status"
-            note 1
-          fi
-          go vet ./... || note $?
-          go tool staticcheck ./... || note $?
-          go tool govulncheck ./... || note $?
-          exit "$status"
-
-      - name: Test
-        env:
-          GOBB_TEST_DATABASE_URL: postgres://postgres:gobb@localhost:${{ job.services.postgres.ports['5432'] }}/postgres?sslmode=disable
-        run: |
-          status=0
-          go test -race -json ./... > test.json 2> test.err || status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "go test failed with status $status; output follows."
-            cat test.err
-            grep -F '"Output":"' test.json \
-              | sed -n 's/,"OutputType":"[a-z-]*"//; s/.*"Output":"\(.*\)"}$/\1/p' \
-              | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g'
-          fi
-          # A package with no test files also emits a skip event, but with no
-          # "Test" field. Only a skipped test counts.
-          if grep -F '"Action":"skip"' test.json | grep -q -F '"Test":'; then
-            echo "unexpected skipped test"
-            grep -F '"Action":"skip"' test.json | grep -F '"Test":'
-            exit 1
-          fi
-          echo "tests: $(grep -c '"Action":"pass"' test.json) pass events, no skips"
-          exit "$status"
-
-      # The module cache is read-only; make it writable so rm can remove it.
-      - name: Clean up
-        if: always()
-        run: |
-          rm -f "$RUNNER_TEMP/denylist" "$RUNNER_TEMP/commit-messages.txt"
-          chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
-          rm -rf "$GOMODCACHE" "$GOCACHE"
-
-  image:
+        image:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 15
     env:
-      # Every name carries the run ID: the runner is shared.
-      IMAGE: gobb:ci-${{ github.run_id }}
-      COMPOSE_PROJECT_NAME: gobb-ci-${{ github.run_id }}
+      # Every name carries the run ID and the attempt: the runner is shared.
+      IMAGE: gobb:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PROJECT_NAME: gobb-ci-${{ github.run_id }}-${{ github.run_attempt }}
       # compose.yaml tags the image it builds as ghcr.io/evanwtf/gobb:$GOBB_VERSION.
-      GOBB_VERSION: ci-${{ github.run_id }}
+      GOBB_VERSION: ci-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PASSWORD: ci
+      # Every compose command uses the CI port override and the 256 MiB cap.
+      COMPOSE_FILE: compose.yaml:.github/compose.ci.yaml:.github/compose.memcap.yaml
     steps:
       - uses: actions/checkout@v7
         with:
@@ -154,17 +53,50 @@ jobs:
       # --wait returns once postgres and gobb both report healthy.
       - name: Start the stack
         run: |
-          docker compose -f compose.yaml -f .github/compose.ci.yaml up -d --build --wait
-          port=$(docker compose -f compose.yaml -f .github/compose.ci.yaml port gobb 8080)
+          docker compose up -d --build --wait
+          port=$(docker compose port gobb 8080)
           curl -fsS "http://$port/healthz"
+
+      # gobb reads the legacy routes once at start, so it stops for the import
+      # and starts again on the loaded board.
+      - name: Import the example bundle
+        run: |
+          docker compose stop gobb
+          docker compose run --rm -v "$PWD/docs/example-bundle:/import:ro" gobb import /import
+          docker compose up -d --wait
+
+      - name: Serve pages under the memory cap
+        run: |
+          port=$(docker compose port gobb 8080)
+          sh scripts/smoke-serve.sh "http://$port"
+          cid=$(docker compose ps -q gobb)
+          docker inspect -f 'limit={{.HostConfig.Memory}} swap={{.HostConfig.MemorySwap}}' "$cid"
+          [ "$(docker inspect -f '{{.HostConfig.Memory}}' "$cid")" = 268435456 ]
+          docker stats --no-stream --format 'memory: {{.MemUsage}} ({{.MemPerc}})' "$cid"
+          state=$(docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}}' "$cid")
+          echo "restarts and OOM kill: $state"
+          [ "$state" = "0 false" ]
+
+      # Compose gives gobb a 30 s grace period. A clean stop must end first,
+      # with exit code 0 (137 means Docker sent SIGKILL).
+      - name: Stop gobb cleanly
+        run: |
+          cid=$(docker compose ps -q gobb)
+          start=$(date +%s.%N)
+          docker compose stop gobb
+          end=$(date +%s.%N)
+          code=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
+          took=$(awk -v s="$start" -v e="$end" 'BEGIN { printf "%.1f", e - s }')
+          echo "stop took $took s, exit code $code"
+          [ "$code" = 0 ]
 
       - name: Show the logs after a failure
         if: failure()
-        run: docker compose -f compose.yaml -f .github/compose.ci.yaml logs --no-color || true
+        run: docker compose logs --no-color || true
 
       # Leave no containers, volumes, networks or images on the shared runner.
       - name: Clean up
         if: always()
         run: |
-          docker compose -f compose.yaml -f .github/compose.ci.yaml down -v --remove-orphans || true
+          docker compose down -v --remove-orphans || true
           docker image rm "$IMAGE" "ghcr.io/evanwtf/gobb:$GOBB_VERSION" || true

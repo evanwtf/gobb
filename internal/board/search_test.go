@@ -105,7 +105,13 @@ func TestSearchScope(t *testing.T) {
 		t.Errorf("alice, color = %v, want [6 5]", got)
 	}
 	// Without account.search the answer is ErrForbidden, whatever the forum rights.
+	// The small board's member role holds account.search, so drop it here.
 	b = bundletest.Small()
+	for i := range b.Roles {
+		b.Roles[i].Settings = slices.DeleteFunc(b.Roles[i].Settings, func(rs bundle.RoleSetting) bool {
+			return rs.Option == "account.search"
+		})
+	}
 	allow(b, 2, 2, "forum.search")
 	pool3, _ := boardtest.Load(t, b)
 	_, err := board.Search(context.Background(), pool3, memberFor(t, pool3, 2), board.SearchQuery{Text: "example"})

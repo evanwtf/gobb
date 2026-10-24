@@ -1,0 +1,9 @@
+# Memory-cap override for the smoke run in CI. Use it together with
+# compose.ci.yaml. It holds gobb to 256 MiB, with no swap on top, and turns off
+# the Secure flag so that curl can sign in over plain http.
+services:
+  gobb:
+    mem_limit: 256m
+    memswap_limit: 256m
+    environment:
+      GOBB_COOKIE_SECURE: "false"
