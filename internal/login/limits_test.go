@@ -290,13 +290,13 @@ func TestLimitedDoesNotWait(t *testing.T) {
 	}
 }
 
-// A full gate answers ErrBusy without the floor, and without a count against the
+// A full gate answers ErrBusy after the floor, and without a count against the
 // address.
 func TestCheckBusy(t *testing.T) {
 	gate := login.NewGate(1024)
 	svc, f, _ := limitedService(t, 1, 100, gate)
 	svc.GateWait = 50 * time.Millisecond
-	svc.Floor = time.Minute
+	svc.Floor = 200 * time.Millisecond
 	hold, err := gate.Acquire(t.Context(), 1024, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -305,8 +305,8 @@ func TestCheckBusy(t *testing.T) {
 	if _, err := svc.Check(t.Context(), "alice", "right", ip, now); !errors.Is(err, login.ErrBusy) {
 		t.Fatalf("err = %v, want ErrBusy", err)
 	}
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("ErrBusy took %v", took)
+	if took := time.Since(start); took < svc.Floor || took > 5*time.Second {
+		t.Errorf("ErrBusy took %v, want the floor %v", took, svc.Floor)
 	}
 	if f.calls.Load() != 0 {
 		t.Error("Verify ran on a full gate")
@@ -726,5 +726,123 @@ func TestKnownAddressQueryOnlyWhenNameLimited(t *testing.T) {
 	_, _ = svc.Check(ctx, "alice", "right", addr(20), now)
 	if n := spy.userIPs.Load(); n != 1 {
 		t.Errorf("the user_ips query ran %d times for one name-limited try, want 1", n)
+	}
+}
+
+// gateHeld returns a service with a gate that has room for 1,024 KiB and not for
+// the uniform charge of a check: the budget is 30,000 KiB and a holder has
+// 20,000. The service has a floor of 300 ms and a gate wait of 60 ms.
+func gateHeld(t *testing.T) (*login.Service, *fakeVerify) {
+	t.Helper()
+	_, pool := newService(t)
+	gate := login.NewGate(30000)
+	hold, err := gate.Acquire(t.Context(), 20000, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(hold)
+	f := &fakeVerify{}
+	svc := login.NewWith(pool, login.Options{Gate: gate, Verify: f.verify})
+	svc.Floor = 300 * time.Millisecond
+	svc.GateWait = 60 * time.Millisecond
+	return svc, f
+}
+
+// The three kinds of name that a stranger can try: a legacy hash (1,024 KiB by
+// its own cost), a gobb hash, and no account at all.
+var hashKinds = []struct{ kind, name string }{
+	{"legacy hash", "bob"},
+	{"gobb hash", "alice"},
+	{"unknown name", "nobody"},
+}
+
+// With the gate full for a hash of 19 MiB and not for 1 MiB, a legacy account,
+// a gobb account and an unknown name all wait for the gate: they charge the same.
+// The wait ends in ErrBusy for each, no sooner than the floor.
+func TestCheckFloorHoldsOnBusy(t *testing.T) {
+	for _, k := range hashKinds {
+		t.Run(k.kind, func(t *testing.T) {
+			svc, f := gateHeld(t)
+			start := time.Now()
+			_, err := svc.Check(t.Context(), k.name, "wrong", ip, now)
+			took := time.Since(start)
+			if !errors.Is(err, login.ErrBusy) {
+				t.Errorf("err = %v, want ErrBusy", err)
+			}
+			if took < svc.Floor {
+				t.Errorf("answered after %v, before the floor %v", took, svc.Floor)
+			}
+			if f.calls.Load() != 0 {
+				t.Error("Verify ran with no room in the gate")
+			}
+		})
+	}
+}
+
+// A context that ends during the gate wait (the client half-closed) gives the
+// same error for all three, and no answer before the floor.
+func TestCheckFloorHoldsOnGateCancel(t *testing.T) {
+	for _, k := range hashKinds {
+		t.Run(k.kind, func(t *testing.T) {
+			svc, f := gateHeld(t)
+			svc.GateWait = 10 * time.Second
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			time.AfterFunc(50*time.Millisecond, cancel)
+			start := time.Now()
+			_, err := svc.Check(ctx, k.name, "wrong", ip, now)
+			took := time.Since(start)
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("err = %v, want context.Canceled", err)
+			}
+			if took < svc.Floor {
+				t.Errorf("answered after %v, before the floor %v", took, svc.Floor)
+			}
+			if f.calls.Load() != 0 {
+				t.Error("Verify ran with no room in the gate")
+			}
+		})
+	}
+}
+
+// Every failure that follows a reservation takes the floor: an inactive account, a
+// ban, and a lookup that fails. A good password does not.
+func TestCheckFloorHoldsOnEveryFailure(t *testing.T) {
+	svc, _, pool := limitedService(t, 100, 100, nil)
+	svc.Floor = 300 * time.Millisecond
+	exec(t, pool, `update users set password_hash = (select password_hash from users where id = 1), password_scheme = 'gobb' where id = 4`)
+	dead, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, c := range []struct {
+		name string
+		ctx  context.Context
+		user string
+		from netip.Addr
+		want func(error) bool
+	}{
+		{"inactive", t.Context(), "dave", ip, func(err error) bool { return errors.Is(err, login.ErrInactive) }},
+		{"banned", t.Context(), "alice", netip.MustParseAddr("10.99.1.2"), func(err error) bool {
+			var b *login.BannedError
+			return errors.As(err, &b)
+		}},
+		{"lookup cancelled", dead, "alice", ip, func(err error) bool { return errors.Is(err, context.Canceled) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			start := time.Now()
+			_, err := svc.Check(c.ctx, c.user, "right", c.from, now)
+			if !c.want(err) {
+				t.Fatalf("err = %v", err)
+			}
+			if took := time.Since(start); took < svc.Floor {
+				t.Errorf("answered after %v, before the floor %v", took, svc.Floor)
+			}
+		})
+	}
+	start := time.Now()
+	if id, err := svc.Check(t.Context(), "alice", "right", ip, now); err != nil || id != 1 {
+		t.Fatalf("good sign-in = %d, %v", id, err)
+	}
+	if took := time.Since(start); took >= svc.Floor {
+		t.Errorf("a good password took %v, want no wait", took)
 	}
 }

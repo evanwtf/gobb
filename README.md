@@ -240,9 +240,11 @@ the operator:
   The same mistake turns off the name limit for everyone: every member's known
   address is then the address of the proxy.
 - A failed sign-in takes at least 400 ms, even when the client closes its end of the
-  connection early.
-- Password checks share 128 MiB of memory. A check that finds no room for 5 seconds
-  answers 503.
+  connection early. This holds for every failure after the limits pass: a wrong
+  password, a busy server, an inactive account and a ban.
+- Password checks share 128 MiB of memory. Every check holds the same share (about
+  19 MiB), whatever the kind of hash, so the wait does not tell a stranger which
+  accounts have old hashes. A check that finds no room for 5 seconds answers 503.
 
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 20 seconds. A second signal exits at once.

@@ -65,7 +65,7 @@ func (e *LimitedError) Error() string {
 // email address is longer. The limit keeps the cleaning cheap.
 const maxName = 512
 
-// DefaultFloor is the least time that a failed check takes.
+// DefaultFloor is the least time that a failed check takes (see [Service.Floor]).
 const DefaultFloor = 400 * time.Millisecond
 
 // The defaults of [New]. Spec 19 leaves the numbers to the builder.
@@ -107,8 +107,10 @@ type Options struct {
 type Service struct {
 	q   db.Querier
 	opt Options
-	// Floor is the least time that a failed [Service.Check] (ErrWrong or
-	// ErrAmbiguous) takes, counted from its start. The hashes of the imported
+	// Floor is the least time that a failed [Service.Check] takes, counted from
+	// its start. A failure is any return except a good password and a
+	// [*LimitedError]: a wrong password, an ambiguous address, a busy gate, an
+	// inactive account, a ban and an error. The hashes of the imported
 	// board differ a lot in cost, and an unknown name costs one fast check, so
 	// without a floor the time to answer would tell a stranger whether a name or
 	// an address has an account. New sets it to [DefaultFloor]; a test may set it
@@ -195,10 +197,14 @@ type candidate struct {
 //
 // A wrong password or an ambiguous address keeps the two reserved events. Any
 // other end gives them back: a good password, [ErrBusy], [ErrInactive], a ban, a
-// context or a database error. A good password also clears the name. A failure
-// that a stranger can cause with a guess (ErrWrong or ErrAmbiguous) returns no
-// sooner than Floor after the call began, whatever happens to ctx. The wait
-// comes after the gate is released.
+// context or a database error. A good password also clears the name.
+//
+// Every return after the reservation, except a good password, comes no sooner
+// than Floor after the call began, whatever happens to ctx: a wrong password, an
+// ambiguous address, [ErrBusy], a gate wait that ctx ended, [ErrInactive], a ban,
+// and a lookup or database error. Otherwise the time to answer would tell a
+// stranger which check ran. The wait comes after the gate is released. A
+// [*LimitedError] and a good password return at once.
 func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now time.Time) (int64, error) {
 	start := time.Now()
 	k := s.keys(name, ip)
@@ -207,17 +213,19 @@ func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now
 		return 0, err
 	}
 	id, err := s.check(ctx, name, pw, ip, now)
-	switch {
-	case errors.Is(err, ErrWrong) || errors.Is(err, ErrAmbiguous):
-		s.wait(start)
-	case err == nil:
+	if err == nil {
 		s.refund(held, k, now, false)
 		if s.opt.NameLimit != nil && k.nameOK {
 			s.opt.NameLimit.Reset(k.name)
 		}
-	default:
+		return id, nil
+	}
+	// Every failure that follows the reservation takes the floor. The events of
+	// a wrong password stay; any other end gives them back.
+	if !errors.Is(err, ErrWrong) && !errors.Is(err, ErrAmbiguous) {
 		s.refund(held, k, now, true)
 	}
+	s.wait(start)
 	return id, err
 }
 
@@ -354,10 +362,26 @@ func (s *Service) wait(start time.Time) {
 	time.Sleep(left)
 }
 
+// chargeKiB is what one password check holds of the gate. It is the same for
+// every check: the larger of the memory of a hash with the current gobb
+// parameters and the memory of the stored hash. The first term is what the dummy
+// check for an unknown name costs, so a legacy account (bcrypt, phpass or md5,
+// 1,024 KiB by its own cost), a gobb account and an unknown name all wait for the
+// gate alike, and the time to wait does not tell a stranger the kind of hash.
+// The rehash holds the same charge. Every gate charge in this package comes from
+// here.
+//
+// The one residual: a stored hash above the current parameters (argon2id with
+// more memory) charges its own cost. That happens only when an operator lowers
+// the parameters, or for an imported argon2id hash with a larger m.
+func chargeKiB(scheme, stored string) uint64 {
+	return max(password.HashMemoryKiB, password.MemoryKiB(scheme, stored))
+}
+
 // verify checks pw against a stored hash. It holds the memory that the hash
 // needs in the gate while the hash runs, and lets go before it returns.
 func (s *Service) verify(ctx context.Context, pw, stored, scheme string) (ok, needsRehash bool, err error) {
-	release, err := s.acquire(ctx, password.MemoryKiB(scheme, stored))
+	release, err := s.acquire(ctx, chargeKiB(scheme, stored))
 	if err != nil {
 		return false, false, err
 	}
@@ -523,7 +547,7 @@ func inetArg(ip netip.Addr) any {
 func (s *Service) rehash(ctx context.Context, u candidate, pw string) {
 	// The hash needs memory like any check, so it holds the gate. When the gate
 	// stays full, skip: the password is right, and the next sign-in tries again.
-	release, err := s.acquire(ctx, password.HashMemoryKiB)
+	release, err := s.acquire(ctx, chargeKiB("gobb", ""))
 	if err != nil {
 		slog.Warn("login: skipped a rehash", "user", u.id, "err", err)
 		return
