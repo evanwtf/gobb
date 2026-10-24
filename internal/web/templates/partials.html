@@ -27,8 +27,18 @@
 {{- end}}
 {{end}}
 
+{{define "newbadge"}}<span class="badge-new">New</span>{{end}}
+
+{{define "markform"}}
+<form class="mark-form" method="post" action="{{.Action}}">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="next" value="{{.Return}}">
+  <button type="submit" class="button-quiet">{{.Label}}</button>
+</form>
+{{end}}
+
 {{define "forumtable"}}
-<table class="forums">
+<table class="forums{{if .Member}} tracks{{end}}">
   <thead>
     <tr>
       <th scope="col" class="col-forum">Forum</th>
@@ -39,8 +49,9 @@
   </thead>
   <tbody>
   {{- range .Rows}}
-    <tr class="forum-row">
+    <tr class="forum-row{{if .New}} row-new{{end}}">
       <td class="forum-main">
+        {{- if .New}}{{template "newbadge"}} {{end}}
         {{- if eq .Kind "link"}}
         <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>
         {{- else if .Readable}}
@@ -81,7 +92,7 @@
 {{end}}
 
 {{define "toprow"}}
-<tr class="topic-row{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}">
+<tr class="topic-row{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}{{if .New}} row-new{{end}}">
   <td class="forum-main topic-main">
     {{- if .MovedTo}}
     <span class="tag tag-moved">Moved:</span> <a class="topic-link" href="{{path "t" (printf "%d" .MovedTo)}}">{{.Title}}</a>
@@ -91,9 +102,12 @@
     {{- if eq .Kind "sticky"}}<span class="tag tag-sticky">Sticky</span> {{end}}
     {{- if eq .Visibility "unapproved"}}<span class="tag tag-warn">Waiting for approval</span> {{end}}
     {{- if eq .Visibility "deleted"}}<span class="tag tag-warn">Deleted</span> {{end}}
+    {{- if .New}}{{template "newbadge"}} {{end}}
     <a class="topic-link" href="{{path "t" (printf "%d" .ID)}}">{{.Title}}</a>
     {{- if .Locked}} <span class="tag">Locked</span>{{end}}
-    <p class="topic-meta">by {{template "author" .Author}}</p>
+    <p class="topic-meta">by {{template "author" .Author}}
+      {{- with .Forum}} in <a href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>{{end}}
+      {{- if .New}} &middot; <a class="jump-new" href="{{path "t" (printf "%d" .ID) "new"}}">Go to the first unread post</a>{{end}}</p>
     {{- end}}
   </td>
   {{- if .MovedTo}}

@@ -132,6 +132,14 @@ type Viewer struct {
 	Loc *time.Location
 	// Scheme is the color scheme of the viewer.
 	Scheme string
+	// LastVisit is the member's last_visit_at, or registered_at when that is
+	// null. The "new since your last visit" list starts here. It is zero for a
+	// guest.
+	LastVisit time.Time
+	// MarkFloor is the member's last_mark_at, or registered_at when that is
+	// null. A topic whose last post is not after it counts as read. It is zero
+	// for a guest.
+	MarkFloor time.Time
 }
 
 // Guest returns the viewer who is not signed in. The guest sees times in the
@@ -159,9 +167,15 @@ func Guest(ctx context.Context, q db.Querier, s Settings) (Viewer, error) {
 // scheme that the row holds and gobb does not know falls back to the board's.
 // A user who does not exist, or is not active, gives [ErrNotFound].
 func Member(ctx context.Context, q db.Querier, userID int64, s Settings) (Viewer, error) {
-	var name, zone, scheme, state string
-	err := q.QueryRow(ctx, `select username, timezone, color_scheme, state from users where id = $1`, userID).
-		Scan(&name, &zone, &scheme, &state)
+	var (
+		name, zone, scheme, state string
+		lastVisit, markFloor      time.Time
+	)
+	err := q.QueryRow(ctx, `
+select username, timezone, color_scheme, state,
+       coalesce(last_visit_at, registered_at), coalesce(last_mark_at, registered_at)
+  from users where id = $1`, userID).
+		Scan(&name, &zone, &scheme, &state, &lastVisit, &markFloor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Viewer{}, ErrNotFound
 	}
@@ -193,6 +207,6 @@ func Member(ctx context.Context, q db.Querier, userID int64, s Settings) (Viewer
 	}
 	return Viewer{
 		UserID: userID, Name: name, Perms: acl.Resolve(subject),
-		Loc: loc, Scheme: scheme,
+		Loc: loc, Scheme: scheme, LastVisit: lastVisit, MarkFloor: markFloor,
 	}, nil
 }

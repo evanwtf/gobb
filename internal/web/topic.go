@@ -79,6 +79,9 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	if isNavigation(r) {
+		s.countView(r, p.Viewer, &tp)
+	}
 	smileys, err := board.SmileyLookup(ctx, s.pool)
 	if err != nil {
 		s.serverError(w, r, err)
@@ -147,17 +150,29 @@ func (s *site) post(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	topicID, page, err := board.PostLocation(r.Context(), s.pool, p.Viewer, id)
-	switch {
-	case errors.Is(err, board.ErrNotFound):
-		s.notFound(w, r)
-		return
-	case err != nil:
-		s.serverError(w, r, err)
+	s.redirectToPost(w, r, p.Viewer, id)
+}
+
+// redirectToPost answers 302 to the page of the topic that holds post postID, as
+// viewer v sees it. A post that v may not see gives the 404 of a missing one.
+func (s *site) redirectToPost(w http.ResponseWriter, r *http.Request, v board.Viewer, postID int64) {
+	topicID, page, err := board.PostLocation(r.Context(), s.pool, v, postID)
+	if err != nil {
+		s.postRedirectError(w, r, err)
 		return
 	}
-	target := pageHref(s.path("t", strconv.FormatInt(topicID, 10)), page) + "#p" + strconv.FormatInt(id, 10)
+	target := pageHref(s.path("t", strconv.FormatInt(topicID, 10)), page) + "#p" + strconv.FormatInt(postID, 10)
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// postRedirectError answers the error of a lookup that precedes a redirect to a
+// post: a missing or hidden row is a 404, anything else a 500.
+func (s *site) postRedirectError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, board.ErrNotFound) {
+		s.notFound(w, r)
+		return
+	}
+	s.serverError(w, r, err)
 }
 
 // inlineTypes are the attachment types that the browser may show in the page.

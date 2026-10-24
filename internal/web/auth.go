@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -244,6 +245,9 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.serverError(w, r, err)
 		return
+	}
+	if err := board.StartVisit(r.Context(), s.pool, userID, now); err != nil {
+		slog.Warn("cannot start a visit", "err", err)
 	}
 	// A sign-in on top of another one ends the old session.
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {

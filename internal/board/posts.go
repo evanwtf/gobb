@@ -150,7 +150,7 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 		return TopicPage{}, MovedError{To: t.MovedTo}
 	}
 
-	f, _, crumbs, err := locateForum(ctx, q, v, forumID)
+	f, _, crumbs, err := locateForum(ctx, q, v, forumID, false)
 	if err != nil {
 		return TopicPage{}, err
 	}

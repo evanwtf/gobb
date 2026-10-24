@@ -35,6 +35,9 @@ func (s *site) parseTemplates() error {
 		"size":    size,
 		"num":     num,
 		"pagerAt": pagerAt,
+		"markForm": func(action, label string, p *page) markFormData {
+			return markFormData{Action: action, Label: label, CSRF: p.CSRF, Return: p.Return}
+		},
 	}
 	s.pages = map[string]*template.Template{}
 	for _, name := range pageFiles {
@@ -45,6 +48,11 @@ func (s *site) parseTemplates() error {
 		s.pages[name] = t
 	}
 	return nil
+}
+
+// markFormData is the data of the mark-read form partial.
+type markFormData struct {
+	Action, Label, CSRF, Return string
 }
 
 // timeTag writes t in loc as a <time> element. The datetime attribute holds the

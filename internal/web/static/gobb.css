@@ -4,8 +4,9 @@
 /* ---- Color schemes -------------------------------------------------------
    Each scheme sets the same twelve tokens. The page uses the tokens and no
    other color. The pairs text and muted on page and row, link on page and row,
-   bar-text on bar, and header-text on header all reach WCAG AA (4.5:1); a test
-   holds them to it. The "new" badge is a signal, not text, and is exempt. */
+   bar-text on bar, header-text on header, on-accent on accent, and on-badge on
+   badge all reach WCAG AA (4.5:1); a test holds them to it. --new is a signal
+   color for borders and bars; the "New" pill has text, so it uses --badge. */
 
 :root[data-scheme="slate"] {
   color-scheme: dark;
@@ -21,6 +22,8 @@
   --accent: #009aff;
   --on-accent: #04121f;
   --new: #ff0000;
+  --badge: #d40000;
+  --on-badge: #ffffff;
 }
 
 :root[data-scheme="slate-deep"] {
@@ -37,6 +40,8 @@
   --accent: #009aff;
   --on-accent: #04121f;
   --new: #ff0000;
+  --badge: #d40000;
+  --on-badge: #ffffff;
 }
 
 :root[data-scheme="slate-light"] {
@@ -53,6 +58,8 @@
   --accent: #009aff;
   --on-accent: #04121f;
   --new: #d90000;
+  --badge: #c40000;
+  --on-badge: #ffffff;
 }
 
 /* Colors that follow from the tokens. */
@@ -402,6 +409,49 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
   .auth-card { margin: 1rem auto; padding: 1.25rem; }
   .scheme-picker button { min-height: 2.5rem; }
 }
+
+/* ---- Unread: badges, marks and the mark-read buttons --------------------- */
+
+/* The pill has its own text, so it needs no color to be read. */
+.badge-new {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  background: var(--badge);
+  color: var(--on-badge);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1.45;
+  text-transform: uppercase;
+  vertical-align: 0.12em;
+  white-space: nowrap;
+}
+
+/* A member's lists: a name that is read is plain, one that is not is bold with
+   a wider bar at the edge of the row. Weight and width carry the meaning, not
+   color. */
+.tracks .forum-name, .tracks .topic-link { font-weight: 500; }
+.tracks .row-new .forum-name, .tracks .row-new .topic-link { font-weight: 800; }
+.tracks .row-new .forum-main::before { width: 6px; }
+.tracks tr.row-new { background: color-mix(in srgb, var(--accent) 8%, var(--row)); }
+.jump-new { font-weight: 600; text-decoration: underline; text-underline-offset: 0.15em; }
+
+.toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; margin: 0 0 1rem; }
+.page-head .toolbar { justify-content: flex-start; margin: 0.75rem 0 0; }
+.mark-form { margin: 0; }
+.button-quiet {
+  appearance: none;
+  padding: 0.4rem 0.9rem;
+  font: 600 0.9rem/1.4 var(--font);
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.button-quiet:hover { background: var(--hover); }
+.button-quiet:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
 
 /* ---- Footer -------------------------------------------------------------- */
 
@@ -753,6 +803,7 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
   .notice { margin: 1.5rem auto; padding: 1.25rem; }
 
   .page-head h1 { font-size: 1.35rem; }
+  .button-quiet { min-height: 2.5rem; }
   .poll { padding: 0.85rem 1rem; }
   .poll-label { flex-direction: column; gap: 0; }
 

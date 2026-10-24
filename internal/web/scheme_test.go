@@ -11,6 +11,7 @@ import (
 var schemeTokens = []string{
 	"--page", "--row", "--bar", "--bar-text", "--header", "--header-text",
 	"--text", "--muted", "--link", "--accent", "--on-accent", "--new",
+	"--badge", "--on-badge",
 }
 
 // slateSpec is the Slate palette of spec 13.
@@ -112,7 +113,7 @@ func TestSchemesPassAA(t *testing.T) {
 			{"--text", "--row"}, {"--muted", "--row"},
 			{"--link", "--page"}, {"--link", "--row"},
 			{"--bar-text", "--bar"}, {"--header-text", "--header"},
-			{"--on-accent", "--accent"},
+			{"--on-accent", "--accent"}, {"--on-badge", "--badge"},
 		}
 		for _, p := range pairs {
 			fg, bg := tokens[p[0]], tokens[p[1]]

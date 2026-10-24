@@ -30,6 +30,13 @@ type TopicRow struct {
 	// MovedTo is the ID of the target topic when the row is a moved-topic marker,
 	// and 0 otherwise.
 	MovedTo int64
+	// ForumID is the forum that holds the topic.
+	ForumID int64
+	// New is true when the topic is unread for a member: its last post is newer
+	// than the member's mark for the topic, for its forum and for the whole
+	// board. A guest, a marker and a topic whose lists did not ask for it have
+	// New false.
+	New bool
 }
 
 // ForumPage is one page of a forum or a category.
@@ -66,8 +73,10 @@ func (e MovedError) Error() string { return fmt.Sprintf("board: topic moved to %
 // v may not list but may read comes from its own row, with no children and no
 // ancestors. Any other forum gives [ErrNotFound]; the caller applies the rule
 // for the kind.
-func locateForum(ctx context.Context, q db.Querier, v Viewer, id int64) (f *Forum, listed bool, crumbs []*Forum, err error) {
-	tree, err := Index(ctx, q, v)
+//
+// withNew asks for the New flags of the tree; a topic page does not need them.
+func locateForum(ctx context.Context, q db.Querier, v Viewer, id int64, withNew bool) (f *Forum, listed bool, crumbs []*Forum, err error) {
+	tree, err := index(ctx, q, v, withNew)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -118,7 +127,7 @@ select parent_id, kind, name, description, rules, coalesce(link_url, ''), locked
 //     exists.
 //   - A page after the last gives [ErrNotFound]. An empty forum has one page.
 func ForumView(ctx context.Context, q db.Querier, v Viewer, forumID int64, page int) (ForumPage, error) {
-	f, listed, crumbs, err := locateForum(ctx, q, v, forumID)
+	f, listed, crumbs, err := locateForum(ctx, q, v, forumID, true)
 	if err != nil {
 		return ForumPage{}, err
 	}
@@ -155,19 +164,18 @@ func ForumView(ctx context.Context, q db.Querier, v Viewer, forumID int64, page 
 		return ForumPage{}, ErrNotFound
 	}
 
-	out.Topics, err = topicRows(ctx, q, `where `+regularTopics+`
- order by (t.kind = 'sticky') desc, t.last_post_at desc, t.id desc
- limit $6 offset $7`, append(args, topicsPerPage, (page-1)*topicsPerPage)...)
+	out.Topics, err = topicRows(ctx, q, `where `+regularTopics, regularOrder, `limit $6 offset $7`,
+		append(args, topicsPerPage, (page-1)*topicsPerPage)...)
 	if err != nil {
 		return ForumPage{}, err
 	}
 	// Two queries, so that each one reads its own partial index: global topics
 	// come first, then the announcements of this forum.
-	global, err := topicRows(ctx, q, `where `+globalTopics+globalOrder, sc.args()...)
+	global, err := topicRows(ctx, q, `where `+globalTopics, globalOrder, ``, sc.args()...)
 	if err != nil {
 		return ForumPage{}, err
 	}
-	announce, err := topicRows(ctx, q, `where `+announceTopics+announceOrder, args...)
+	announce, err := topicRows(ctx, q, `where `+announceTopics, announceOrder, ``, args...)
 	if err != nil {
 		return ForumPage{}, err
 	}
@@ -200,24 +208,39 @@ var announceTopics = `t.kind = 'announce' and t.forum_id = $5 and ` + visible("t
 // topics_announce_idx.
 const announceOrder = ` order by t.last_post_at desc, t.id desc`
 
-// topicSelect is the start of the topic list query. A where, order or limit
-// clause follows it.
-const topicSelect = `
+// regularOrder is the order of a page of topics: sticky first, then the newest
+// activity.
+const regularOrder = ` order by (t.kind = 'sticky') desc, t.last_post_at desc, t.id desc`
+
+// topicSQL returns the topic list query for the where, order and limit clauses.
+// The inner select picks the page from topics alone, so the order and the limit
+// use the indexes of topics. The outer select then joins the authors, the last
+// post and the viewer's row and marks (the viewer being $4) to those rows only,
+// each by primary key (the lateral join with a limit keeps the planner from
+// reading all the marks of a member who has tens of thousands): the New flag of every row comes from the same statement,
+// and a member with many marks costs no more than one with none.
+func topicSQL(where, order, limit string) string {
+	return `
 select t.id, t.title, t.kind, t.visibility, t.locked,
        coalesce(t.author_id, 0), coalesce(au.username, t.author_name),
-       t.reply_count, t.view_count, coalesce(t.moved_to_topic_id, 0),
+       t.reply_count, t.view_count, coalesce(t.moved_to_topic_id, 0), t.forum_id,
+       coalesce(t.moved_to_topic_id is null and t.last_post_at > ` + unreadAfter + `, false),
        lp.id, lp.created_at, coalesce(lp.author_id, 0), coalesce(lu.username, lp.author_name)
-  from topics t
+  from (select t.* from topics t ` + where + order + ` ` + limit + `) t
+  left join users me on me.id = $4::bigint
+  left join forum_marks fm on fm.user_id = $4::bigint and fm.forum_id = t.forum_id
+  left join lateral (select marked_at from topic_marks
+                      where user_id = $4::bigint and topic_id = t.id limit 1) tm on true
   left join users au on au.id = t.author_id
   left join posts lp on lp.id = t.last_post_id and lp.visibility = 'approved'
-  left join users lu on lu.id = lp.author_id
- `
+  left join users lu on lu.id = lp.author_id` + order
+}
 
 // topicRows runs the topic list query with the given where, order and limit
 // clauses and returns the rows. The arguments start with the four of
 // [scope.args].
-func topicRows(ctx context.Context, q db.Querier, tail string, args ...any) ([]TopicRow, error) {
-	rows, err := q.Query(ctx, topicSelect+tail, args...)
+func topicRows(ctx context.Context, q db.Querier, where, order, limit string, args ...any) ([]TopicRow, error) {
+	rows, err := q.Query(ctx, topicSQL(where, order, limit), args...)
 	if err != nil {
 		return nil, fmt.Errorf("board: list topics: %w", err)
 	}
@@ -232,7 +255,7 @@ func topicRows(ctx context.Context, q db.Querier, tail string, args ...any) ([]T
 			lastNm *string
 		)
 		if err := rows.Scan(&r.ID, &r.Title, &r.Kind, &r.Visibility, &r.Locked,
-			&r.Author.ID, &r.Author.Name, &r.Replies, &r.Views, &r.MovedTo,
+			&r.Author.ID, &r.Author.Name, &r.Replies, &r.Views, &r.MovedTo, &r.ForumID, &r.New,
 			&lastID, &lastAt, &lastBy, &lastNm); err != nil {
 			return nil, fmt.Errorf("board: list topics: %w", err)
 		}

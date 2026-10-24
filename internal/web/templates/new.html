@@ -1,0 +1,37 @@
+{{define "content"}}
+<header class="page-head">
+  <h1>New since your last visit</h1>
+  <p class="page-sub">
+    {{- if .Data.Topics}}{{plural .Data.Total "topic" "topics"}} with posts since {{time .Data.Since .Viewer.Loc}}. A topic you have not read has a New badge.
+    {{- else}}Nothing has been posted since {{time .Data.Since .Viewer.Loc}}.{{end -}}
+  </p>
+  <div class="toolbar">
+    {{template "markform" markForm (path "read") "Mark all read" .}}
+  </div>
+</header>
+
+{{template "pager" pagerAt .Data.Pager "Pages, top"}}
+{{- if .Data.Topics}}
+<section class="category" aria-labelledby="new-title">
+  <div class="bar"><h2 id="new-title">Topics</h2></div>
+  <table class="forums topics tracks">
+    <thead>
+      <tr>
+        <th scope="col" class="col-forum">Topic</th>
+        <th scope="col" class="col-num">Replies</th>
+        <th scope="col" class="col-num">Views</th>
+        <th scope="col" class="col-last">Last post</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .Data.Topics}}
+    {{template "toprow" .}}
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+{{template "pager" pagerAt .Data.Pager "Pages, bottom"}}
+{{- else}}
+<p class="empty standalone">There is nothing new to show.</p>
+{{- end}}
+{{end}}

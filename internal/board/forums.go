@@ -43,7 +43,11 @@ type Forum struct {
 	// read. They count approved rows only.
 	Topics, Posts int
 	// Last is the newest approved post in the same set, or nil.
-	Last     *PostRef
+	Last *PostRef
+	// New is true when the forum, or a descendant that the viewer may read,
+	// holds an unread topic that the viewer may read. It is always false for a
+	// guest.
+	New      bool
 	Children []*Forum
 }
 
@@ -68,7 +72,15 @@ const maxDepth = 32
 // descendant that v may read (forum.read), so a forum that v cannot read adds
 // nothing, not a count and not a last post. Index reads the forums with one
 // query and the last posts with one more.
+//
+// For a member, Index also sets New. One more query finds the forums that hold
+// unread topics, however many topics there are.
 func Index(ctx context.Context, q db.Querier, v Viewer) ([]*Forum, error) {
+	return index(ctx, q, v, true)
+}
+
+// index is [Index]. The withNew flag skips the query for the New flags.
+func index(ctx context.Context, q db.Querier, v Viewer, withNew bool) ([]*Forum, error) {
 	rows, err := q.Query(ctx, `
 select id, parent_id, kind, name, description, rules, coalesce(link_url, ''),
        locked, topic_count, post_count, coalesce(last_post_id, 0)
@@ -138,9 +150,17 @@ select id, parent_id, kind, name, description, rules, coalesce(link_url, ''),
 		return nil, err
 	}
 
+	var unread map[int64]bool
+	if withNew && v.UserID != 0 {
+		if unread, err = forumsWithUnread(ctx, q, v); err != nil {
+			return nil, err
+		}
+	}
+
 	var build func(n *forumNode) *Forum
 	build = func(n *forumNode) *Forum {
 		f := n.Forum
+		f.New = n.Kind == "forum" && unread[n.ID]
 		f.Readable = n.Kind != "forum" || v.Perms.Has("forum.read", n.ID)
 		if n.Kind != "link" && v.Perms.Has("forum.read", n.ID) {
 			f.Topics, f.Posts = n.ownTopics, n.ownPosts
@@ -149,6 +169,7 @@ select id, parent_id, kind, name, description, rules, coalesce(link_url, ''),
 		for _, c := range n.children {
 			cf := build(c)
 			f.Children = append(f.Children, cf)
+			f.New = f.New || cf.New
 			f.Topics += cf.Topics
 			f.Posts += cf.Posts
 			if cf.Last != nil && (f.Last == nil || newer(cf.Last, f.Last)) {

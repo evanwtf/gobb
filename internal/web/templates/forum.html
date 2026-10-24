@@ -5,6 +5,11 @@
   {{- if .Data.Forum.Description}}
   <p class="page-sub">{{.Data.Forum.Description}}</p>
   {{- end}}
+  {{- if .Viewer.UserID}}
+  <div class="toolbar">
+    {{template "markform" markForm (path "f" (printf "%d" .Data.Forum.ID) "read") "Mark this forum read" .}}
+  </div>
+  {{- end}}
 </header>
 
 {{- if .Data.Forum.Rules}}
@@ -28,7 +33,7 @@
 <section class="category" aria-labelledby="topics-title">
   <div class="bar"><h2 id="topics-title">Topics</h2></div>
   {{- if or .Data.Pinned .Data.Topics}}
-  <table class="forums topics">
+  <table class="forums topics{{if .Viewer.UserID}} tracks{{end}}">
     <thead>
       <tr>
         <th scope="col" class="col-forum">Topic</th>

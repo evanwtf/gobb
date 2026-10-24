@@ -1,5 +1,10 @@
 {{define "content"}}
 <h1 class="visually-hidden">Board index</h1>
+{{- if .Viewer.UserID}}
+<div class="toolbar">
+  {{template "markform" markForm (path "read") "Mark all read" .}}
+</div>
+{{- end}}
 {{range .Data.Groups}}
 <section class="category{{if not .Title}} untitled{{end}}"{{if .Title}} aria-labelledby="cat-{{.Forum.ID}}"{{end}}>
   <div class="bar">

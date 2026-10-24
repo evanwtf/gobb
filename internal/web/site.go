@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -67,7 +68,7 @@ type site struct {
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "login.html", "error.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -88,6 +89,10 @@ func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, erro
 	inner.HandleFunc("GET /{$}", s.index)
 	inner.HandleFunc("GET /f/{id}", s.forum)
 	inner.HandleFunc("GET /t/{id}", s.topic)
+	inner.HandleFunc("GET /t/{id}/new", s.topicNew)
+	inner.HandleFunc("GET /new", s.newPage)
+	inner.Handle("POST /read", s.protect(s.markAllRead))
+	inner.Handle("POST /f/{id}/read", s.protect(s.markForumRead))
 	inner.HandleFunc("GET /p/{id}", s.post)
 	inner.HandleFunc("GET /a/{id}", s.attachment)
 	inner.HandleFunc("GET /login", s.loginPage)
@@ -200,6 +205,11 @@ type page struct {
 	csrfSecret string
 	// Data holds the data of the page template.
 	Data any
+	// ctx and navKey let render add the "new since your last visit" link to the
+	// nav of a member: ctx is the request context, navKey the nav item of the
+	// page that is current.
+	ctx    context.Context
+	navKey string
 }
 
 // navLink is one link of the nav bar.
@@ -230,6 +240,13 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 	}
 	var v board.Viewer
 	if id.token != "" {
+		// A top-level navigation counts as activity and may start a new visit.
+		// Any other request, such as the load of an image, writes nothing here.
+		if isNavigation(r) {
+			if err := board.RecordVisit(ctx, s.pool, id.sess.UserID, s.opt.Now()); err != nil {
+				slog.Warn("cannot record a visit", "err", err)
+			}
+		}
 		v, err = board.Member(ctx, s.pool, id.sess.UserID, settings)
 		switch {
 		case errors.Is(err, board.ErrNotFound):
@@ -270,6 +287,8 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 		Return:     ret,
 		Schemes:    choices(scheme),
 		csrfSecret: id.secret(),
+		ctx:        ctx,
+		navKey:     nav,
 	}
 	if id.token == "" && nav != "login" {
 		p.LoginHref = s.loginHref(ret)
@@ -299,6 +318,22 @@ func (s *site) touch(w http.ResponseWriter, r *http.Request, sess session.Sessio
 	}
 }
 
+// addNewLink adds "New since your last visit (N)" to the nav of a member. When
+// the count cannot be read, the link stays and shows no number.
+func (s *site) addNewLink(p *page) {
+	if p.ctx == nil || p.Viewer.UserID == 0 {
+		return
+	}
+	label := "New since your last visit"
+	n, err := board.CountNew(p.ctx, s.pool, p.Viewer)
+	if err != nil {
+		slog.Warn("cannot count the new topics", "err", err)
+	} else {
+		label += " (" + strconv.Itoa(n) + ")"
+	}
+	p.Nav = append(p.Nav, navLink{Label: label, Href: s.path("new"), Current: p.navKey == "new"})
+}
+
 // render executes the page template into a buffer, so that a template error
 // gives a clean 500 and not half a page, then writes it with status.
 func (s *site) render(w http.ResponseWriter, status int, name string, p *page) {
@@ -322,6 +357,7 @@ func (s *site) render(w http.ResponseWriter, status int, name string, p *page) {
 		}
 		p.CSRF = session.CSRFToken(secret)
 	}
+	s.addNewLink(p)
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
 		slog.Error("render", "template", name, "err", err)

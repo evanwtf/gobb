@@ -31,6 +31,9 @@ type forumData struct {
 type topicRowView struct {
 	board.TopicRow
 	Loc *time.Location
+	// Forum is the forum of the topic on the "new since your last visit" list.
+	// It is nil on a forum page.
+	Forum *board.Forum
 }
 
 func rowViews(rows []board.TopicRow, loc *time.Location) []topicRowView {
