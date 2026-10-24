@@ -88,19 +88,20 @@ func (v *vet) text(field, s string) bool {
 func hasControl(s string) bool { return strings.IndexFunc(s, unicode.IsControl) >= 0 }
 
 // name checks a "name": 1 to 255 bytes after trimming Unicode white space (as
-// strings.TrimSpace does), no control characters.
+// strings.TrimSpace does). The value holds no control character anywhere, ends
+// included, so a trailing newline is refused.
 func (v *vet) name(field, s string) {
 	if !v.text(field, s) {
 		return
 	}
 	t := strings.TrimSpace(s)
 	switch {
+	case hasControl(s):
+		v.add(field, "holds a control character")
 	case t == "":
 		v.add(field, "is empty after trimming white space")
 	case len(t) > maxName:
 		v.add(field, "is %d bytes; the limit is %d", len(t), maxName)
-	case hasControl(t):
-		v.add(field, "holds a control character")
 	}
 }
 
@@ -514,10 +515,13 @@ func (f Forum) check() []*Error {
 		v.add("link_url", "is required when kind is link")
 	case f.Kind != "link" && f.LinkURL != nil:
 		v.add("link_url", "must be null unless kind is link")
-	case f.LinkURL != nil && v.text("link_url", *f.LinkURL) && *f.LinkURL != strings.TrimSpace(*f.LinkURL):
-		v.add("link_url", "must not start or end with white space")
-	case f.LinkURL != nil && !markup.CheckLinkURL(*f.LinkURL):
-		v.add("link_url", "is not an allowed link target")
+	case f.LinkURL != nil && v.text("link_url", *f.LinkURL):
+		switch u := *f.LinkURL; {
+		case u != strings.TrimSpace(u):
+			v.add("link_url", "must not start or end with white space")
+		case !markup.CheckLinkURL(u):
+			v.add("link_url", "is not an allowed link target")
+		}
 	}
 	return v.errs
 }

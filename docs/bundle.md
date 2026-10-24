@@ -75,8 +75,9 @@ Every integer that is not an ID fits a 32-bit database column, so the limit is
   `2020-03-04T00:06:07-05:00`. `Z` counts as an offset.
 - **string**: valid UTF-8, with no U+0000, and at most 100,000 bytes unless the table
   says less.
-- **name**: 1 to 255 bytes after gobb trims spaces from both ends, with no control
-  characters.
+- **name**: 1 to 255 bytes after gobb trims Unicode white space from both ends. A
+  control character is refused anywhere in the value, at the ends too. A trailing
+  newline or tab is an error.
 - **label**: at most 255 bytes, with no control characters. It may be empty.
 - **slug**: matches `^[a-z0-9][a-z0-9-]{0,63}$`.
 - **param**: matches `^[A-Za-z0-9_]{1,64}$`.

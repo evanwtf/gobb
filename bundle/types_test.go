@@ -349,7 +349,15 @@ func TestCheckFields(t *testing.T) {
 		{"username only spaces", func() Row { u := validUser(); u.Username = "   "; return u }(), "username"},
 		{"username NBSP only", func() Row { u := validUser(); u.Username = "\u00a0"; return u }(), "username"},
 		{"username U+3000 only", func() Row { u := validUser(); u.Username = "\u3000\u3000"; return u }(), "username"},
-		{"username newline only", func() Row { u := validUser(); u.Username = "\n"; return u }(), "username"},
+		{"username trailing newline", func() Row { u := validUser(); u.Username = "alice\n"; return u }(), "username"},
+		{"group name trailing newline", func() Row { g := validGroup(); g.Name = "alice\n"; return g }(), "name"},
+		{"username leading tab", func() Row { u := validUser(); u.Username = "\talice"; return u }(), "username"},
+		{"group name leading tab", func() Row { g := validGroup(); g.Name = "\talice"; return g }(), "name"},
+		{"username trailing CRLF", func() Row { u := validUser(); u.Username = "alice\r\n"; return u }(), "username"},
+		{"group name trailing CRLF", func() Row { g := validGroup(); g.Name = "alice\r\n"; return g }(), "name"},
+		{"username trailing U+0085", func() Row { u := validUser(); u.Username = "alice\u0085"; return u }(), "username"},
+		{"group name trailing U+0085", func() Row { g := validGroup(); g.Name = "alice\u0085"; return g }(), "name"},
+		{"username newline only is a control character", func() Row { u := validUser(); u.Username = "\n"; return u }(), "username"},
 		{"username tab only", func() Row { u := validUser(); u.Username = "\t "; return u }(), "username"},
 		{"group name NBSP only", func() Row { g := validGroup(); g.Name = "\u00a0"; return g }(), "name"},
 		{"role name U+3000 only", func() Row { r := validRole(); r.Name = "\u3000"; return r }(), "name"},
@@ -666,6 +674,26 @@ func TestCheckManifestAndSettings(t *testing.T) {
 	ok.HeaderImage = ptr(ref("header"))
 	if errs := ok.check(); len(errs) != 0 {
 		t.Errorf("valid header image: %v", errs[0])
+	}
+}
+
+func TestNameFaultIsOneError(t *testing.T) {
+	for _, name := range []string{"alice\n", "\talice", "alice\r\n", "alice\u0085", "\n", "\u00a0", " "} {
+		u := validUser()
+		u.Username = name
+		if got := u.check(); len(got) != 1 {
+			t.Errorf("username %q: %d errors, want 1: %v", name, len(got), got)
+		}
+	}
+}
+
+func TestLinkURLFaultIsOneError(t *testing.T) {
+	for _, u := range []string{"a\x00b", "a\xffb", " https://example.com/", "javascript:x"} {
+		f := validForum()
+		f.Kind, f.LinkURL = "link", ptr(u)
+		if got := f.check(); len(got) != 1 {
+			t.Errorf("link_url %q: %d errors, want 1: %v", u, len(got), got)
+		}
 	}
 }
 
