@@ -84,7 +84,14 @@
 - The author's topic mark moves to the new post's time, so the author's own post is not "new" to them.
 - `users.post_count` grows by one for each approved post in a forum where the writer has `post.counts`. It shrinks when such a post is deleted, and grows again on restore.
 
-**Duplicates.** A post whose author, topic and body source equal those of a post that the same author made in the last 60 seconds is not saved again. The write returns the earlier post, and the handler redirects to it.
+**Duplicates.** A post whose author, topic and body source equal those of a post that the same author made in the last 60 seconds is not saved again. The write returns the earlier post, and the handler redirects to it. For a guest, "the same author" means the same address.
+
+**Guest posts. (owner, 2026-10-24)** On the first board, one forum lets guests post: it is where a member who is locked out asks for help. Password reset by email waits until after cutover, so this forum is that member's only way in. gobb follows the grants, as for a member:
+- A guest may start a topic or reply where the guests group holds `topic.start` or `topic.reply`. The post is held unless the guests group holds `post.no_approval` there.
+- A guest gives a name of 1–40 characters. A name whose `account.CleanUsername` equals a member's `username_clean` is refused, with "That name belongs to a member. Sign in, or choose another name." So nobody can post as the admin.
+- The post stores `author_id` null, the name in `author_name`, and the address in `author_ip`.
+- A guest can never edit, delete, quote-edit or moderate. A guest has no topic marks and no post count.
+- The owner may revisit guest posting after cutover (GitHub issue).
 
 **Counters.** Task 2 moves the importer's two recompute statements into `internal/counters`. It adds one-row forms of each: `Topic(ctx, q, topicID)` and `Forum(ctx, q, forumID)`. The importer keeps calling the whole-board form. A write calls the one-row forms for each topic and forum it touches, in its own transaction.
 
@@ -188,7 +195,7 @@ Rules:
     - A non-nil `flags` is an edit's stored flags.
     - `forumID` 0 means a signature: `flags` must be the member's stored signature flags, no forum right applies, and the limit is 2,000 bytes.
     - The error is `*board.InputError{Field, Message string}` for a limit, a refused image or a tree that fails `Validate`.
-  - `board.Draft{Title, Source string}`.
+  - `board.Draft{Title, Source, GuestName string; IP netip.Addr}`. `GuestName` applies to a guest only. `IP` is the writer's address, stored in `author_ip` for every new post.
   - `board.NewTopic(ctx, pool, v, forumID int64, d Draft, now time.Time) (postID int64, err error)`.
   - `board.Reply(ctx, pool, v, topicID int64, d Draft, now time.Time) (postID int64, err error)`.
   - `board.EditPost(ctx, pool, v, postID int64, d Draft, reason string, now time.Time) error`. The title applies when the post is the first post of its topic.
@@ -207,7 +214,12 @@ Rules:
   - `TestWritesCheckOwnership`:
     - carol, who has no moderator rights, gets `ErrForbidden` for EditPost and DeletePost on alice's post in a forum she can read.
     - On a post in a forum she cannot read, she gets `ErrNotFound`.
-    - A guest gets `ErrForbidden` for every write.
+    - A guest gets `ErrForbidden` for EditPost, DeletePost and every moderator write, even where the guests group may post.
+  - `TestGuestPost`:
+    - with `topic.reply` granted to the guests group on forum 2, a guest reply with the name "Visitor" is saved, with `author_id` null, `author_name` "Visitor" and the guest's address;
+    - it is held unless the guests group also holds `post.no_approval`;
+    - the name "ALICE" is refused with the message under "Guest posts";
+    - without the grant, a guest reply gets `ErrForbidden`.
     - Each test grants and removes the rights its case needs, so a fixture's moderator rights cannot make a refusal pass.
   - `TestWriteRights`: one case for each row of "Who may do what", allowed and refused, including:
     - a reply to a locked topic refused for a member and allowed with `mod.lock`;
@@ -250,6 +262,7 @@ Rules:
 - The forum page shows "New topic" when the viewer may start one. The topic page shows "Reply" at the top and bottom, and "Quote" and "Edit" or "Delete" on each post, each only when the viewer may.
 - "Delete" is a POST form with a confirm step that needs no script: the first POST answers with a page that asks "Delete this post?", holding a second form with `confirm=1`.
 - The form shows the title field on a new topic, and on the edit of a first post. The text box holds the source. Under it, one line says "Markdown works here: **bold**, *italic*, [link](https://example.com), > quote."
+- For a guest, the form adds a "Your name" field (see "Guest posts"). The "New topic" and "Reply" buttons show to a guest only where the guests group may post.
 - On success: 303 to `/p/{id}`. On an `InputError`: 400 with the form, the text and the message beside the field. On `ErrForbidden`: 403. On `ErrNotFound`: 404.
 
 - [ ] **Step 1: Write the failing tests**
@@ -264,6 +277,10 @@ Rules:
   - `TestFormKeepsTextOnError`: a POST with a 121-character title and a 2,000-word body answers 400. The form holds the full body and the message "The title is longer than 120 characters."
   - `TestPreviewSavesNothing`: a POST with `preview=1` answers 200 with the rendered body, and the post count does not change.
   - `TestPostingNeedsToken`: a POST without the CSRF token answers 403, and nothing changes.
+  - `TestGuestPostingPage`:
+    - with `topic.start` granted to the guests group on forum 2, a guest sees "New topic", fills in "Your name", posts and gets 303, and the topic page shows the name with no profile link;
+    - a guest sees no "Edit" or "Delete" on that post;
+    - on a forum without the grant, the guest sees no "New topic", and the form's URL answers 403.
   - `TestPayloadsThroughPosting`: each line of `markup/testdata/xss/payloads.txt` is posted as a reply. On each topic page that shows them, every `.post-body` element passes `htmlcheck.Check`. The page's CSP header is the same as for a page with no payloads.
   - `TestCSPStrictEverywhere`: for every GET path in `getPaths`, the new form pages included, the CSP has no `unsafe-inline`, no `unsafe-eval`, no `*` and no `data:` in `script-src`. Its `object-src` is `'none'`, its `base-uri` is `'none'`, and its `form-action` is `'self'`.
   - Add the form pages to `getPaths` and `TestBasePathEverywhere`.
