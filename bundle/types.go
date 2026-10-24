@@ -71,10 +71,14 @@ type Error struct {
 }
 
 // Error returns the message in the form "file:line: field: msg". It drops ":line"
-// when Line is 0, and "field: " when Field is empty.
+// when Line is 0, and "field: " when Field is empty. When File is empty and Line
+// is set, it starts with "line N" instead.
 func (e *Error) Error() string {
 	s := e.File
-	if e.Line > 0 {
+	switch {
+	case e.Line > 0 && s == "":
+		s = "line " + strconv.Itoa(e.Line)
+	case e.Line > 0:
 		s += ":" + strconv.Itoa(e.Line)
 	}
 	if s != "" {

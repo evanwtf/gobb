@@ -104,7 +104,7 @@ board's base path: with base path `/forum/`, the path `/p/5` means `/forum/p/5`.
 
 | Path | Target |
 |---|---|
-| `/p/<post id>` | the post, on its topic page |
+| `/p/<post id>` | the post, on its topic page (`#p<id>`) |
 | `/t/<topic id>` | the topic |
 | `/f/<forum id>` | the forum |
 | `/u/<user id>` | the profile |
@@ -575,7 +575,7 @@ names a row that exists: a forum, a topic, a post, a user or an attachment, by k
 `avatar` it names a user. The pair (`path`, `match`) is unique.
 
 ```json
-{"path":"showtopic.php","match":{},"id_param":"t","target_kind":"topic","target_id":null,"target_slug":null,"offset_param":"start","position":1}
+{"path":"old/thread.cgi","match":{"view":"full"},"id_param":"id","target_kind":"topic","target_id":null,"target_slug":null,"offset_param":"page","position":1}
 ```
 
 ## legacy_files.jsonl
@@ -588,7 +588,7 @@ A row maps an old URL prefix of the source system to a gobb directory.
 | `dir` | string | `smilies` or `ranks`. |
 
 ```json
-{"prefix":"images/smilies/","dir":"smilies"}
+{"prefix":"img/emoticons/","dir":"smilies"}
 ```
 
 ## static_pages.jsonl

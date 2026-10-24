@@ -84,11 +84,11 @@ func fullRows() []Row {
 		},
 		Smiley{Code: ":)", Image: ref("smilies"), Description: "smile", Position: 1},
 		LegacyRoute{
-			Path: "index.php", Match: map[string]string{"mode": "view"}, IDParam: ptr("id"),
+			Path: "old/main.cgi", Match: map[string]string{"view": "full"}, IDParam: ptr("id"),
 			TargetKind: "forum", TargetID: ptr(int64(1)), TargetSlug: ptr("about"),
-			OffsetParam: ptr("start"), Position: 1,
+			OffsetParam: ptr("page"), Position: 1,
 		},
-		LegacyFile{Prefix: "images/smilies/", Dir: "smilies"},
+		LegacyFile{Prefix: "img/emoticons/", Dir: "smilies"},
 		StaticPage{Slug: "about", Title: "About", Body: body(), UpdatedAt: testTime},
 	}
 }
@@ -117,7 +117,7 @@ func validRows() []Row {
 		validBan(),
 		validSmiley(),
 		validRoute(),
-		LegacyFile{Prefix: "images/smilies/", Dir: "smilies"},
+		LegacyFile{Prefix: "img/emoticons/", Dir: "smilies"},
 		validPage(),
 	}
 }
@@ -190,8 +190,8 @@ func validSmiley() Smiley {
 
 func validRoute() LegacyRoute {
 	return LegacyRoute{
-		Path: "showtopic.php", Match: map[string]string{}, IDParam: ptr("t"),
-		TargetKind: "topic", OffsetParam: ptr("start"),
+		Path: "old/thread.cgi", Match: map[string]string{}, IDParam: ptr("id"),
+		TargetKind: "topic", OffsetParam: ptr("page"),
 	}
 }
 
@@ -252,7 +252,6 @@ func TestNilPointersMarshalAsNull(t *testing.T) {
 				t.Fatal(err)
 			}
 			rt := reflect.TypeOf(r)
-			nullable := 0
 			for i := range rt.NumField() {
 				f := rt.Field(i)
 				name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
@@ -265,13 +264,11 @@ func TestNilPointersMarshalAsNull(t *testing.T) {
 					continue
 				}
 				if f.Type.Kind() == reflect.Pointer {
-					nullable++
 					if string(raw) != "null" {
 						t.Errorf("%s marshals as %s, want null", name, raw)
 					}
 				}
 			}
-			_ = nullable
 		})
 	}
 }
@@ -286,6 +283,8 @@ func TestErrorString(t *testing.T) {
 		{Error{File: "posts.jsonl", Line: 3, Msg: "bad line"}, "posts.jsonl:3: bad line"},
 		{Error{File: "posts.jsonl", Msg: "3 rows, manifest says 4"}, "posts.jsonl: 3 rows, manifest says 4"},
 		{Error{Field: "title", Msg: "empty"}, "title: empty"},
+		{Error{Line: 7, Field: "title", Msg: "empty"}, "line 7: title: empty"},
+		{Error{Line: 7, Msg: "bad line"}, "line 7: bad line"},
 	}
 	for _, tt := range tests {
 		if got := tt.e.Error(); got != tt.want {
@@ -347,6 +346,14 @@ func TestCheckFields(t *testing.T) {
 		field string
 	}{
 		{"username only spaces", func() Row { u := validUser(); u.Username = "   "; return u }(), "username"},
+		{"username NBSP only", func() Row { u := validUser(); u.Username = "\u00a0"; return u }(), "username"},
+		{"username U+3000 only", func() Row { u := validUser(); u.Username = "\u3000\u3000"; return u }(), "username"},
+		{"username newline only", func() Row { u := validUser(); u.Username = "\n"; return u }(), "username"},
+		{"username tab only", func() Row { u := validUser(); u.Username = "\t "; return u }(), "username"},
+		{"group name NBSP only", func() Row { g := validGroup(); g.Name = "\u00a0"; return g }(), "name"},
+		{"role name U+3000 only", func() Row { r := validRole(); r.Name = "\u3000"; return r }(), "name"},
+		{"forum name newline only", func() Row { f := validForum(); f.Name = "\n"; return f }(), "name"},
+		{"page title NBSP only", func() Row { p := validPage(); p.Title = "\u00a0"; return p }(), "title"},
 		{"username control", func() Row { u := validUser(); u.Username = "a\x01b"; return u }(), "username"},
 		{"username too long", func() Row { u := validUser(); u.Username = strings.Repeat("a", 256); return u }(), "username"},
 		{"password scheme", func() Row { u := validUser(); u.Password.Scheme = "md5"; return u }(), "password.scheme"},
@@ -358,6 +365,7 @@ func TestCheckFields(t *testing.T) {
 		{"legacy hash unknown form", func() Row { u := validUser(); u.Password.Hash = "md5:abc"; return u }(), "password.hash"},
 		{"user state", func() Row { u := validUser(); u.State = "banned"; return u }(), "state"},
 		{"user timezone", func() Row { u := validUser(); u.Timezone = "Mars/Base"; return u }(), "timezone"},
+		{"user timezone long", func() Row { u := validUser(); u.Timezone = strings.Repeat("a", 65); return u }(), "timezone"},
 		{"user timezone empty", func() Row { u := validUser(); u.Timezone = ""; return u }(), "timezone"},
 		{"user timezone Local", func() Row { u := validUser(); u.Timezone = "Local"; return u }(), "timezone"},
 		{"user color", func() Row { u := validUser(); u.ColorScheme = "neon"; return u }(), "color_scheme"},
@@ -441,6 +449,11 @@ func TestCheckFields(t *testing.T) {
 		{"forum link missing url", func() Row { f := validForum(); f.Kind = "link"; return f }(), "link_url"},
 		{"forum url on non-link", func() Row { f := validForum(); f.LinkURL = ptr("https://example.com/"); return f }(), "link_url"},
 		{"forum kind", func() Row { f := validForum(); f.Kind = "board"; return f }(), "kind"},
+		{"forum link url padded", func() Row {
+			f := validForum()
+			f.Kind, f.LinkURL = "link", ptr(" https://example.com/")
+			return f
+		}(), "link_url"},
 		{"forum own parent", func() Row { f := validForum(); f.ParentID = ptr(f.ID); return f }(), "parent_id"},
 		{"topic kind", func() Row { t := validTopic(); t.Kind = "pinned"; return t }(), "kind"},
 		{"topic visibility", func() Row { t := validTopic(); t.Visibility = "hidden"; return t }(), "visibility"},
@@ -562,9 +575,9 @@ func TestCheckFields(t *testing.T) {
 			return r
 		}(), "target_id"},
 		{"route kind", func() Row { r := validRoute(); r.TargetKind = "image"; return r }(), "target_kind"},
-		{"route path leading slash", func() Row { r := validRoute(); r.Path = "/x.php"; return r }(), "path"},
-		{"route path query", func() Row { r := validRoute(); r.Path = "x.php?a=1"; return r }(), "path"},
-		{"route path fragment", func() Row { r := validRoute(); r.Path = "x.php#a"; return r }(), "path"},
+		{"route path leading slash", func() Row { r := validRoute(); r.Path = "/old/x.cgi"; return r }(), "path"},
+		{"route path query", func() Row { r := validRoute(); r.Path = "old/x.cgi?a=1"; return r }(), "path"},
+		{"route path fragment", func() Row { r := validRoute(); r.Path = "old/x.cgi#a"; return r }(), "path"},
 		{"route path empty", func() Row { r := validRoute(); r.Path = ""; return r }(), "path"},
 		{"route path long", func() Row { r := validRoute(); r.Path = strings.Repeat("a", 256); return r }(), "path"},
 		{"route match key", func() Row { r := validRoute(); r.Match = map[string]string{"a-b": "x"}; return r }(), "match"},
@@ -577,10 +590,10 @@ func TestCheckFields(t *testing.T) {
 			}
 			return r
 		}(), "match"},
-		{"legacy file no slash", LegacyFile{Prefix: "images/smilies", Dir: "smilies"}, "prefix"},
-		{"legacy file leading slash", LegacyFile{Prefix: "/images/", Dir: "smilies"}, "prefix"},
+		{"legacy file no slash", LegacyFile{Prefix: "img/emoticons", Dir: "smilies"}, "prefix"},
+		{"legacy file leading slash", LegacyFile{Prefix: "/img/", Dir: "smilies"}, "prefix"},
 		{"legacy file empty", LegacyFile{Prefix: "", Dir: "smilies"}, "prefix"},
-		{"legacy file dir", LegacyFile{Prefix: "images/", Dir: "avatars"}, "dir"},
+		{"legacy file dir", LegacyFile{Prefix: "img/", Dir: "avatars"}, "dir"},
 		{"page bad slug", func() Row { p := validPage(); p.Slug = "Bad Slug"; return p }(), "slug"},
 		{"page slug starts with dash", func() Row { p := validPage(); p.Slug = "-a"; return p }(), "slug"},
 		{"page slug long", func() Row { p := validPage(); p.Slug = strings.Repeat("a", 65); return p }(), "slug"},
@@ -632,6 +645,7 @@ func TestCheckManifestAndSettings(t *testing.T) {
 		{"board name", s(func(x *Settings) { x.BoardName = "" }).check(), "board_name"},
 		{"board description", s(func(x *Settings) { x.BoardDescription = strings.Repeat("d", 256) }).check(), "board_description"},
 		{"timezone", s(func(x *Settings) { x.Timezone = "Nowhere/Land" }).check(), "timezone"},
+		{"board name NBSP only", s(func(x *Settings) { x.BoardName = "\u00a0" }).check(), "board_name"},
 		{"scheme", s(func(x *Settings) { x.DefaultColorScheme = "red" }).check(), "default_color_scheme"},
 		{"registration", s(func(x *Settings) { x.Registration = "maybe" }).check(), "registration"},
 		{"header dir", s(func(x *Settings) { x.HeaderImage = ptr(ref("avatars")) }).check(), "header_image.path"},

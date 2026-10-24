@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -89,6 +90,33 @@ func docCases() []docCase {
 	return out
 }
 
+// tableFields returns the first column of every table row in a section, as a
+// map from field name to whether the row has a "?" mark. Prose does not count.
+func tableFields(sec string) map[string]bool {
+	out := map[string]bool{}
+	for line := range strings.SplitSeq(sec, "\n") {
+		m := tableRowRE.FindStringSubmatch(line)
+		if m != nil {
+			out[m[1]] = m[2] == "?"
+		}
+	}
+	return out
+}
+
+var tableRowRE = regexp.MustCompile("^\\| `([a-z0-9_]+)`(\\??) \\|")
+
+// topFields returns the top-level JSON fields of a struct type and whether each
+// may be null (a pointer).
+func topFields(t reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	for i := range t.NumField() {
+		f := t.Field(i)
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		out[name] = f.Type.Kind() == reflect.Pointer
+	}
+	return out
+}
+
 func TestDocCoversEveryField(t *testing.T) {
 	secs := sections(t)
 	cases := docCases()
@@ -106,7 +134,24 @@ func TestDocCoversEveryField(t *testing.T) {
 			if !ok {
 				t.Fatalf("docs/bundle.md has no %q heading", "## "+c.section)
 			}
-			for _, name := range jsonNames(reflect.TypeOf(c.value).Elem()) {
+			rt := reflect.TypeOf(c.value).Elem()
+			got, want := tableFields(sec), topFields(rt)
+			for name, nullable := range want {
+				g, ok := got[name]
+				switch {
+				case !ok:
+					t.Errorf("table has no row for field `%s`", name)
+				case g != nullable:
+					t.Errorf("field `%s`: table nullable=%v, type nullable=%v", name, g, nullable)
+				}
+			}
+			for name := range got {
+				if _, ok := want[name]; !ok {
+					t.Errorf("table has a row for `%s`, which the type does not have", name)
+				}
+			}
+			// Nested names (inside file, body, lists) appear in the prose.
+			for _, name := range jsonNames(rt) {
 				if !strings.Contains(sec, "`"+name+"`") {
 					t.Errorf("section does not mention field `%s`", name)
 				}

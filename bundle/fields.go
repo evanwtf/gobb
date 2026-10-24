@@ -11,10 +11,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-	_ "time/tzdata" // the zone check gives the same answer on every host
+	_ "time/tzdata" // zone data for a host that has none of its own
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/evanwtf/gobb/internal/account"
 	"github.com/evanwtf/gobb/internal/acl"
 	"github.com/evanwtf/gobb/internal/password"
 	"github.com/evanwtf/gobb/markup"
@@ -79,16 +80,16 @@ func (v *vet) text(field, s string) bool {
 
 func hasControl(s string) bool { return strings.IndexFunc(s, unicode.IsControl) >= 0 }
 
-// name checks a "name": 1 to 255 bytes after trimming spaces, no control
-// characters.
+// name checks a "name": 1 to 255 bytes after trimming Unicode white space (as
+// strings.TrimSpace does), no control characters.
 func (v *vet) name(field, s string) {
 	if !v.text(field, s) {
 		return
 	}
-	t := strings.Trim(s, " ")
+	t := strings.TrimSpace(s)
 	switch {
 	case t == "":
-		v.add(field, "is empty after trimming spaces")
+		v.add(field, "is empty after trimming white space")
 	case len(t) > maxName:
 		v.add(field, "is %d bytes; the limit is %d", len(t), maxName)
 	case hasControl(t):
@@ -222,23 +223,31 @@ func (v *vet) optFile(field string, f *FileRef, dir string) {
 // body checks a body.
 func (v *vet) body(field string, b Body) { v.text(field+".source", b.Source) }
 
-var zoneCache sync.Map // name -> bool
+// maxZoneName is the longest zone name that the check passes to LoadLocation.
+const maxZoneName = 64
+
+// zoneOK holds the zone names that LoadLocation has accepted. A failed name is
+// not cached, so a hostile bundle cannot grow the map.
+var zoneOK sync.Map // name -> struct{}
 
 // zone checks that s is an IANA zone name that time.LoadLocation accepts.
-// LoadLocation also takes "" (UTC) and "Local"; the format does not.
+// LoadLocation also takes "" (UTC) and "Local"; the format does not. The answer
+// can depend on the host: LoadLocation reads the host's zoneinfo first, and uses
+// the copy embedded by time/tzdata only when the host has none.
 func (v *vet) zone(field, s string) {
 	if !v.text(field, s) {
 		return
 	}
-	ok, cached := zoneCache.Load(s)
-	if !cached {
-		_, err := time.LoadLocation(s)
-		ok = err == nil && s != "" && s != "Local"
-		zoneCache.Store(s, ok)
+	if _, ok := zoneOK.Load(s); ok {
+		return
 	}
-	if !ok.(bool) {
-		v.add(field, "is %q; it must be an IANA time zone name", clip(s))
+	if s != "" && s != "Local" && len(s) <= maxZoneName {
+		if _, err := time.LoadLocation(s); err == nil {
+			zoneOK.Store(s, struct{}{})
+			return
+		}
 	}
+	v.add(field, "is %q; it must be an IANA time zone name of at most %d bytes", clip(s), maxZoneName)
 }
 
 // smileyCode checks that code is valid as the code of a markup smiley element.
@@ -311,6 +320,9 @@ func (u User) check() []*Error {
 	var v vet
 	v.id("id", u.ID)
 	v.name("username", u.Username)
+	if strings.TrimSpace(u.Username) != "" && account.CleanUsername(u.Username) == "" {
+		v.add("username", "is empty after gobb cleans it")
+	}
 	v.label("email", u.Email)
 	if v.enum("password.scheme", u.Password.Scheme, passwordScheme) &&
 		v.text("password.hash", u.Password.Hash) &&
@@ -461,7 +473,9 @@ func (f Forum) check() []*Error {
 		v.add("link_url", "is required when kind is link")
 	case f.Kind != "link" && f.LinkURL != nil:
 		v.add("link_url", "must be null unless kind is link")
-	case f.LinkURL != nil && v.text("link_url", *f.LinkURL) && !markup.CheckLinkURL(*f.LinkURL):
+	case f.LinkURL != nil && v.text("link_url", *f.LinkURL) && *f.LinkURL != strings.TrimSpace(*f.LinkURL):
+		v.add("link_url", "must not start or end with white space")
+	case f.LinkURL != nil && !markup.CheckLinkURL(*f.LinkURL):
 		v.add("link_url", "is not an allowed link target")
 	}
 	return v.errs
