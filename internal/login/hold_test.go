@@ -375,18 +375,28 @@ func (q slowLookup) Query(ctx context.Context, sql string, args ...any) (pgx.Row
 	return q.Querier.Query(ctx, sql, args...)
 }
 
+// The two floor tests give the lookup of a missing name a gap of lookupGap, and
+// compare the least answer time of each name over several trials. The scheduler
+// only adds time to an answer, so the least of the trials drops its noise. The
+// tolerance is far under the gap: a floor that leaks the lookup shows a
+// difference of about lookupGap and fails, while a jitter of a few milliseconds
+// passes.
+const (
+	lookupGap      = 20 * time.Millisecond
+	floorTolerance = 5 * time.Millisecond
+)
+
 // The floor covers the lookup. A name with an account and a name without one
-// answer at the same time even when the lookup of the missing name takes 5 ms
+// answer at the same time even when the lookup of the missing name takes 20 ms
 // longer: the floor counts from the start of the sign-in, moved only by the
 // time spent waiting for the gate.
 func TestFloorCoversTheLookup(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
-	s := NewWith(slowLookup{pool, 5 * time.Millisecond, "alice"}, Options{
+	s := NewWith(slowLookup{pool, lookupGap, "alice"}, Options{
 		Gate:   NewGate(DefaultBudgetKiB),
 		Verify: func(string, string, string) (bool, bool) { return false, false },
 	})
 	s.Floor = 60 * time.Millisecond
-	// The least of several answers drops the noise of the scheduler.
 	least := map[string]time.Duration{}
 	for range 8 {
 		for _, name := range []string{"alice", "nobody"} {
@@ -405,20 +415,20 @@ func TestFloorCoversTheLookup(t *testing.T) {
 			t.Errorf("%s: answered after %v, before the floor of %v", name, d, s.Floor)
 		}
 	}
-	if diff := (least["nobody"] - least["alice"]).Abs(); diff > time.Millisecond {
-		t.Errorf("answer times differ by %v (alice %v, nobody %v), want within 1 ms", diff, least["alice"], least["nobody"])
+	if diff := (least["nobody"] - least["alice"]).Abs(); diff > floorTolerance {
+		t.Errorf("answer times differ by %v (alice %v, nobody %v), want within %v", diff, least["alice"], least["nobody"], floorTolerance)
 	}
 }
 
 // The floor covers the lookup on the busy path too. The gate stays full until
 // the wait for it ends, so every sign-in answers [ErrBusy]. A name with an
-// account and a name without one (whose lookup takes 5 ms longer) answer at the
+// account and a name without one (whose lookup takes 20 ms longer) answer at the
 // same time, and no sooner than the wait plus the floor: the floor counts from the
 // start, moved forward by the wait, whether or not the gate grants room.
 func TestFloorCoversTheLookupWhenBusy(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	gate := NewGate(password.HashMemoryKiB)
-	s := NewWith(slowLookup{pool, 5 * time.Millisecond, "alice"}, Options{
+	s := NewWith(slowLookup{pool, lookupGap, "alice"}, Options{
 		Gate:   gate,
 		Verify: func(string, string, string) (bool, bool) { return false, false },
 	})
@@ -448,7 +458,7 @@ func TestFloorCoversTheLookupWhenBusy(t *testing.T) {
 			t.Errorf("%s: answered after %v, before the wait plus the floor of %v", name, d, gateWait+s.Floor)
 		}
 	}
-	if diff := (least["nobody"] - least["alice"]).Abs(); diff > time.Millisecond {
-		t.Errorf("busy answer times differ by %v (alice %v, nobody %v), want within 1 ms", diff, least["alice"], least["nobody"])
+	if diff := (least["nobody"] - least["alice"]).Abs(); diff > floorTolerance {
+		t.Errorf("busy answer times differ by %v (alice %v, nobody %v), want within %v", diff, least["alice"], least["nobody"], floorTolerance)
 	}
 }
