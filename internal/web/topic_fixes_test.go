@@ -189,3 +189,27 @@ func TestPageStructure(t *testing.T) {
 		t.Error("the heading of post 2 is missing")
 	}
 }
+
+// A request that is not a navigation (an image load, a prefetch) has no
+// bookkeeping to write, so the page is built once. A navigation builds it twice:
+// once to see that it builds, once after the read marks, for the nav count.
+func TestNonNavigationBuildsTheTopicOnce(t *testing.T) {
+	h, _ := siteWithPool(t, pagedBoard(), Options{})
+	carol := signIn(t, h, "carol", "example-password")
+	count := func(hdr map[string]string) int64 {
+		before := layoutBuilds.Load()
+		if rec := getWith(t, h, "/t/1", carol, hdr); rec.Code != http.StatusOK {
+			t.Fatalf("status %d", rec.Code)
+		}
+		return layoutBuilds.Load() - before
+	}
+	if n := count(asImage); n != 1 {
+		t.Errorf("an image load built the page %d times, want 1", n)
+	}
+	if n := count(map[string]string{"Sec-Fetch-Dest": "document", "Sec-Purpose": "prefetch"}); n != 1 {
+		t.Errorf("a prefetch built the page %d times, want 1", n)
+	}
+	if n := count(asPage); n != 2 {
+		t.Errorf("a navigation built the page %d times, want 2", n)
+	}
+}

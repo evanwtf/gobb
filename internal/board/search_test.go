@@ -159,9 +159,9 @@ func TestSearchTitle(t *testing.T) {
 
 func TestSearchTitleOfHiddenTopics(t *testing.T) {
 	b := searchBoard()
-	// The marker (topic 3) holds the title "Welcome ..."; give it a rare word.
+	// The marker (topic 3) gets a rare word in its title: a marker is never found.
 	b.Topics[2].Title = "Quokka marker"
-	// Topic 1 is unapproved: nothing in it is found.
+	// Topic 9, added here, is unapproved: nothing in it is found.
 	b.Topics = append(b.Topics, bundle.Topic{
 		ID: 9, ForumID: 2, Title: "Narwhal sightings", AuthorID: ptr(int64(1)), AuthorName: "alice",
 		CreatedAt: utc(2021, 1, 1, 0, 0), Kind: "normal", Visibility: "unapproved",
@@ -355,7 +355,7 @@ func TestSearchBounds(t *testing.T) {
 	}
 	// Words that the parser drops, and an operator with nothing after it, are
 	// no error.
-	for _, text := range []string{"the", "!!!", "-", "\"", "or or", "a:*", "(((", "-example"} {
+	for _, text := range []string{"the", "!!!", "-", "\"", "or or", "a:*", "(((", "example -zebra"} {
 		if _, err := board.Search(ctx, pool, g, board.SearchQuery{Text: text}); err != nil {
 			t.Errorf("Search(%q) = %v", text, err)
 		}
@@ -436,8 +436,7 @@ func TestSearchTotalCap(t *testing.T) {
 	}
 }
 
-// A search runs a fixed number of statements: the forums, the author when
-// there is one, the total and the hits.
+// A search runs a fixed number of statements.
 func TestSearchStatementCount(t *testing.T) {
 	pool, _ := boardtest.Load(t, postsBoard(60))
 	g := guestFor(t, pool)
@@ -446,15 +445,18 @@ func TestSearchStatementCount(t *testing.T) {
 		sq   board.SearchQuery
 		want int
 	}{
-		{"text", board.SearchQuery{Text: "gizmo"}, 3},
-		{"text, best", board.SearchQuery{Text: "gizmo", Sort: "best", Page: 2}, 3},
+		// The statements: the query (parsed once), the forums, the author when
+		// there is one, the total and the page.
+		{"text", board.SearchQuery{Text: "gizmo"}, 4},
+		{"text, best", board.SearchQuery{Text: "gizmo", Sort: "best", Page: 2}, 4},
 		{"author", board.SearchQuery{Author: "bob"}, 4},
-		{"text and author", board.SearchQuery{Text: "gizmo", Author: "bob"}, 4},
-		{"no hits", board.SearchQuery{Text: "zzzzzz"}, 2},
+		{"text and author", board.SearchQuery{Text: "gizmo", Author: "bob"}, 5},
+		{"no hits", board.SearchQuery{Text: "zzzzzz"}, 3},
+		{"only a negation", board.SearchQuery{Text: "-gizmo"}, 1},
 		{"empty", board.SearchQuery{}, 0},
 	} {
 		cnt := counting{pool: pool}
-		if _, err := board.Search(context.Background(), &cnt, g, c.sq); err != nil {
+		if _, err := board.Search(context.Background(), &cnt, g, c.sq); err != nil && !errors.Is(err, board.ErrSearchNoWord) {
 			t.Fatal(err)
 		}
 		if cnt.n != c.want {
@@ -481,9 +483,191 @@ func TestSearchForums(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].ID != 2 {
 		t.Errorf("guest: %+v, %v", got, err)
 	}
+	// forum.search without forum.read lists nothing.
+	b := searchBoard()
+	allow(b, 1, 3, "forum.search")
+	pool2, _ := boardtest.Load(t, b)
+	got, err = board.SearchForums(ctx, pool2, guestFor(t, pool2))
+	if err != nil || len(got) != 1 || got[0].ID != 2 {
+		t.Errorf("guest with forum.search on forum 3: %+v, %v", got, err)
+	}
 	// Bob may read forum 2 and search it; he has no forum.search on forum 3.
 	got, err = board.SearchForums(ctx, pool, memberFor(t, pool, 2))
 	if err != nil || len(got) != 1 || got[0].ID != 2 {
 		t.Errorf("bob: %+v, %v", got, err)
+	}
+}
+
+func TestSearchBadText(t *testing.T) {
+	pool, _ := boardtest.Load(t, searchBoard())
+	g := guestFor(t, pool)
+	for _, sq := range []board.SearchQuery{
+		{Text: "\xff"},
+		{Text: "a\x00b"},
+		{Author: "a\x00b"},
+		{Author: "\xc3"},
+		{Text: "example", Author: "\xff"},
+		{Text: "ok\xe2\x82"},
+	} {
+		cnt := counting{pool: pool}
+		_, err := board.Search(context.Background(), &cnt, g, sq)
+		if !errors.Is(err, board.ErrBadSearch) {
+			t.Errorf("Search(%q, %q) = %v, want ErrBadSearch", sq.Text, sq.Author, err)
+		}
+		if cnt.n != 0 {
+			t.Errorf("Search(%q, %q) ran %d statements, want 0", sq.Text, sq.Author, cnt.n)
+		}
+	}
+	// A viewer without the right still gets ErrForbidden first.
+	b := bundletest.Small()
+	pool2, _ := boardtest.Load(t, b)
+	if _, err := board.Search(context.Background(), pool2, guestFor(t, pool2), board.SearchQuery{Text: "\xff"}); !errors.Is(err, board.ErrForbidden) {
+		t.Errorf("no right, bad text = %v, want ErrForbidden", err)
+	}
+}
+
+// A query of more than 16 terms is refused: its cost grows with the terms.
+func TestSearchTooManyTerms(t *testing.T) {
+	pool, _ := boardtest.Load(t, searchBoard())
+	g := guestFor(t, pool)
+	words := strings.Fields("apple banana cherry damson elder fig grape hazel iris jasmine kale lemon mango nectar olive peach quince")
+	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: strings.Join(words[:16], " or ")}); err != nil {
+		t.Errorf("16 terms = %v, want no error", err)
+	}
+	_, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: strings.Join(words, " or ")})
+	if !errors.Is(err, board.ErrSearchTooManyTerms) || !errors.Is(err, board.ErrBadSearch) {
+		t.Errorf("17 terms = %v, want ErrSearchTooManyTerms (an ErrBadSearch)", err)
+	}
+	// A stop word is no term.
+	if _, err := board.Search(context.Background(), pool, g, board.SearchQuery{Text: "the and of " + strings.Join(words[:16], " ")}); err != nil {
+		t.Errorf("16 terms and stop words = %v, want no error", err)
+	}
+}
+
+// A query with no positive term would list every post without the word.
+func TestSearchNoPositiveTerm(t *testing.T) {
+	pool, _ := boardtest.Load(t, searchBoard())
+	g := guestFor(t, pool)
+	for _, sq := range []board.SearchQuery{
+		{Text: "-example"},
+		{Text: "-example -welcome"},
+		{Text: "example or -welcome"},
+		{Text: "-example", Author: "alice"},
+		{Text: "\"-example\" or -zebra"},
+	} {
+		cnt := counting{pool: pool}
+		_, err := board.Search(context.Background(), &cnt, g, sq)
+		if !errors.Is(err, board.ErrSearchNoWord) {
+			t.Errorf("Search(%q) = %v, want ErrSearchNoWord", sq.Text, err)
+		}
+		if cnt.n > 1 {
+			t.Errorf("Search(%q) ran %d statements, want 1 (the parse)", sq.Text, cnt.n)
+		}
+	}
+	// A positive term next to a negation is a search, and an author alone is too.
+	if got := hitIDs(search(t, pool, g, board.SearchQuery{Text: "welcome -diagram"})); len(got) == 0 {
+		t.Error("welcome -diagram finds nothing")
+	}
+	if got := hitIDs(search(t, pool, g, board.SearchQuery{Text: "example -zebra"})); !slices.Equal(got, []int64{1}) {
+		t.Errorf("example -zebra = %v, want [1]", got)
+	}
+	if got := hitIDs(search(t, pool, g, board.SearchQuery{Author: "alice"})); !slices.Equal(got, []int64{1}) {
+		t.Errorf("author alice = %v, want [1]", got)
+	}
+	// A query that is all stop words is an empty search, not an error.
+	p := search(t, pool, g, board.SearchQuery{Text: "the of"})
+	if len(p.Hits) != 0 || p.Pages != 1 {
+		t.Errorf("stop words = %+v", p)
+	}
+}
+
+// The forum of the post and the forum of its topic must both be readable. A post
+// whose forum_id is out of step with its topic's never shows a hidden topic.
+func TestSearchForumOutOfStep(t *testing.T) {
+	pool, _ := boardtest.Load(t, searchBoard())
+	ctx := context.Background()
+	g := guestFor(t, pool)
+	// Post 5 is in topic 2, which sits in forum 3 (hidden from guests).
+	if _, err := pool.Exec(ctx, `update posts set forum_id = 2 where id in (5, 6)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, sq := range []board.SearchQuery{
+		{Text: "color"}, {Text: "favorite"}, {Author: "bob"}, {Author: "alice"}, {Text: "color", Author: "bob"},
+		{Text: "color", Sort: "best"}, {Text: "color", ForumID: 2},
+	} {
+		for _, id := range hitIDs(search(t, pool, g, sq)) {
+			if id == 5 || id == 6 {
+				t.Errorf("guest, %+v: finds post %d of a hidden topic", sq, id)
+			}
+		}
+	}
+	// A topic title in a hidden forum is no leak through the title arm either.
+	if _, err := pool.Exec(ctx, `update topics set title = 'Quokka lounge' where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if got := hitIDs(search(t, pool, g, board.SearchQuery{Text: "quokka"})); len(got) != 0 {
+		t.Errorf("quokka = %v, want none", got)
+	}
+	// The other way round: the post is in the hidden forum, its topic is readable.
+	if _, err := pool.Exec(ctx, `update posts set forum_id = 3 where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if got := hitIDs(search(t, pool, g, board.SearchQuery{Text: "diagram"})); len(got) != 0 {
+		t.Errorf("diagram = %v, want none (the post is in a hidden forum)", got)
+	}
+}
+
+func TestSearchDeleted(t *testing.T) {
+	b := searchBoard()
+	b.Posts[1].Visibility = "deleted"  // post 2, "diagram"
+	b.Topics[1].Visibility = "deleted" // topic 2: posts 5 and 6, "color"
+	pool, _ := boardtest.Load(t, b)
+	alice := memberFor(t, pool, 1)
+	g := guestFor(t, pool)
+	for _, v := range []board.Viewer{g, alice} {
+		for _, sq := range []board.SearchQuery{{Text: "diagram"}, {Text: "color"}, {Text: "favorite"}, {Author: "bob"}} {
+			if got := hitIDs(search(t, pool, v, sq)); len(got) != 0 {
+				t.Errorf("viewer %d, %+v = %v, want none", v.UserID, sq, got)
+			}
+		}
+	}
+	// The rest of the topic still shows.
+	if got := hitIDs(search(t, pool, g, board.SearchQuery{Text: "welcome"})); len(got) == 0 {
+		t.Error("welcome finds nothing")
+	}
+}
+
+// A generic plan has no value for the parameters, so it cannot fold the query.
+// The statements give the same hits as under a custom plan.
+func TestSearchGenericPlan(t *testing.T) {
+	pool, _ := boardtest.Load(t, postsBoard(60))
+	ctx := context.Background()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	g := guestFor(t, pool)
+	var want [][]int64
+	cases := []board.SearchQuery{
+		{Text: "gizmo"}, {Text: "gizmo", Sort: "best", Page: 2}, {Text: "welcome"}, {Text: "gizmo or zebra"},
+		{Text: "gizmo", Author: "bob"}, {Author: "bob"},
+	}
+	for _, sq := range cases {
+		want = append(want, hitIDs(search(t, pool, g, sq)))
+	}
+	if _, err := conn.Exec(ctx, `set plan_cache_mode = force_generic_plan`); err != nil {
+		t.Fatal(err)
+	}
+	for run := range 8 {
+		for i, sq := range cases {
+			got, err := board.Search(ctx, conn, g, sq)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(hitIDs(got), want[i]) {
+				t.Errorf("run %d, %+v: generic plan gives %v, want %v", run, sq, hitIDs(got), want[i])
+			}
+		}
 	}
 }

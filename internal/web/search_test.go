@@ -254,3 +254,53 @@ func TestSearchNavBox(t *testing.T) {
 		t.Error("the nav search field has no label")
 	}
 }
+
+// A query that search refuses answers 400 with the form and a message, and never
+// a 500. The server checks the bytes; maxlength counts UTF-16 units.
+func TestSearchRefusals(t *testing.T) {
+	h, _ := newTestSite(t, searchSiteBoard(), Options{})
+	words := strings.Join(strings.Fields("apple banana cherry damson elder fig grape hazel iris jasmine kale lemon mango nectar olive peach quince"), "+or+")
+	for _, c := range []struct {
+		target, message string
+	}{
+		{"/search?q=%FF", "cannot use"},
+		{"/search?q=a%00b", "cannot use"},
+		{"/search?author=a%00b", "cannot use"},
+		{"/search?q=example&author=%C3", "cannot use"},
+		{"/search?q=" + strings.Repeat("a", 257), "256 bytes"},
+		{"/search?author=" + strings.Repeat("a", 257), "256 bytes"},
+		{"/search?q=" + strings.Repeat("%C3%A9", 129), "256 bytes"},
+		{"/search?q=" + words, "at most 16"},
+	} {
+		rec := get(t, h, c.target)
+		body := bodyOf(t, rec)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %.60s: status %d, want 400", c.target, rec.Code)
+			continue
+		}
+		if !strings.Contains(body, c.message) || !strings.Contains(body, `name="q"`) || !strings.Contains(body, `id="s-forum"`) {
+			t.Errorf("GET %.60s: the page lacks the message %q or the form", c.target, c.message)
+		}
+		if strings.Contains(body, "\x00") || strings.Contains(body, "\xff") {
+			t.Errorf("GET %.60s: the page echoes the bad bytes", c.target)
+		}
+	}
+	// The page and forum values hold ASCII digits only.
+	for _, target := range []string{"/search?q=x&forum=%2B2", "/search?q=x&forum=2%20", "/search?q=x&forum=0x2", "/search?q=x&forum=" + strings.Repeat("9", 30)} {
+		if rec := get(t, h, target); rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %s: status %d, want 400", target, rec.Code)
+		}
+	}
+	// A query with no positive term is no error: the form and a hint.
+	for _, target := range []string{"/search?q=-example", "/search?q=-example&author=alice", "/search?q=example+or+-welcome"} {
+		rec := get(t, h, target)
+		body := bodyOf(t, rec)
+		if rec.Code != http.StatusOK || !strings.Contains(body, "Add a word to find.") || strings.Contains(body, "search-hit") || strings.Contains(body, "No posts match") {
+			t.Errorf("GET %s: status %d, body lacks the hint or lists hits", target, rec.Code)
+		}
+	}
+	// The same admins who follow the profile link still find the author's posts.
+	if rec := get(t, h, "/search?author=alice"); rec.Code != http.StatusOK || !strings.Contains(bodyOf(t, rec), `href="/p/1"`) {
+		t.Errorf("author alone: status %d", rec.Code)
+	}
+}

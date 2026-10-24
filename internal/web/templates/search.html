@@ -4,6 +4,9 @@
   <p class="page-sub">Find posts by their words, by their forum or by their author.</p>
 </header>
 
+{{- if .Data.Notice}}
+<p class="form-error" role="alert"><span class="form-error-text">{{.Data.Notice}}</span></p>
+{{- end}}
 <form class="search-form" method="get" action="{{path "search"}}" role="search" aria-label="Search posts">
   <div class="search-fields">
     <div class="field search-q">

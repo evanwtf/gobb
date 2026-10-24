@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -27,6 +28,9 @@ const (
 	maxSearchHits = searchPerPage * maxSearchPages
 	// MaxSearchBytes is the longest text or author that [Search] accepts.
 	MaxSearchBytes = 256
+	// MaxSearchTerms is the most terms that a search text may hold after the
+	// parser drops the stop words. The cost of a search grows with the terms.
+	MaxSearchTerms = 16
 )
 
 // The two runes that mark a matched word in the output of ts_headline. They are
@@ -50,8 +54,54 @@ const (
 const headlineOptions = "StartSel=" + markStart + ", StopSel=" + markStop +
 	", MaxWords=35, MinWords=15, ShortWord=2, MaxFragments=0"
 
-// ErrBadSearch means the search text or the author name is too long.
+// ErrBadSearch means the search text or the author name cannot be searched. Its
+// causes below all match it with errors.Is.
 var ErrBadSearch = errors.New("board: bad search")
+
+var (
+	// ErrSearchTooLong means the text or the author is over [MaxSearchBytes].
+	ErrSearchTooLong = fmt.Errorf("%w: over %d bytes", ErrBadSearch, MaxSearchBytes)
+	// ErrSearchBadText means the text or the author is not valid UTF-8 or holds
+	// a NUL byte, which PostgreSQL refuses.
+	ErrSearchBadText = fmt.Errorf("%w: not valid UTF-8, or holds a NUL byte", ErrBadSearch)
+	// ErrSearchTooManyTerms means the text holds more than [MaxSearchTerms] terms.
+	ErrSearchTooManyTerms = fmt.Errorf("%w: more than %d terms", ErrBadSearch, MaxSearchTerms)
+)
+
+// ErrSearchNoWord means the text has no positive term, such as "-word" alone. It
+// would list every post that lacks the word, so [Search] refuses it. It is no
+// [ErrBadSearch]: the page shows the form with a hint.
+var ErrSearchNoWord = errors.New("board: search has no word to find")
+
+// validSearchString reports whether s may go to PostgreSQL as text.
+func validSearchString(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
+}
+
+// parsedQuery is what PostgreSQL makes of a search text.
+type parsedQuery struct {
+	// tsquery is the query in its text form, to pass back as a parameter.
+	tsquery string
+	// terms is the number of terms in it.
+	terms int
+	// tree is querytree(): "T" for a query with no positive term.
+	tree string
+}
+
+// parseSearchText parses text once, in one statement. The statements that follow
+// take the result as a parameter, so a plan that has no value for the parameters
+// still parses the query once and not once for each row.
+func parseSearchText(ctx context.Context, q db.Querier, text string) (parsedQuery, error) {
+	var out parsedQuery
+	err := q.QueryRow(ctx, `
+select q::text, (select count(*) from regexp_matches(q::text, '''(?:[^'']|'''')*''', 'g')), querytree(q)
+  from (select websearch_to_tsquery('english'::regconfig, $1) as q) s`, text).
+		Scan(&out.tsquery, &out.terms, &out.tree)
+	if err != nil {
+		return parsedQuery{}, fmt.Errorf("board: parse search text: %w", err)
+	}
+	return out, nil
+}
 
 // SearchQuery is one search. Text is the words to find. ForumID is the forum to
 // search, or 0 for every forum. Author is a member name. Sort is "new" (the
@@ -111,7 +161,10 @@ func searchForumIDs(ctx context.Context, q db.Querier, v Viewer, forumID int64) 
 // Search finds posts for v. It covers the forums where v has forum.read and
 // forum.search, and only approved posts in approved topics that are not
 // markers. A viewer without account.search gets [ErrForbidden]. A text or an
-// author over [MaxSearchBytes] gives [ErrBadSearch]. A page past 40, or past
+// author over [MaxSearchBytes], one that is not valid UTF-8 or holds a NUL byte,
+// and a text of more than [MaxSearchTerms] terms give [ErrBadSearch] (the causes
+// are [ErrSearchTooLong], [ErrSearchBadText] and [ErrSearchTooManyTerms]). A text
+// with no positive term gives [ErrSearchNoWord]. A page past 40, or past
 // the last page of the hits, gives [ErrNotFound]. An empty text with no author
 // is no search: the result has no hits.
 //
@@ -120,8 +173,8 @@ func searchForumIDs(ctx context.Context, q db.Querier, v Viewer, forumID int64) 
 // The author matches the cleaned user name, so an unknown author gives no
 // hits and a post without an author ID is never found by author.
 //
-// A search runs one statement for the forums, one for the author when there is
-// one, one for the total and one for the page of hits. The total counts at most
+// A search runs one statement that parses the text, one for the forums, one for
+// the author when there is one, one for the total and one for the page of hits. The total counts at most
 // 1,000 rows, and ts_headline runs on the hits of the page only.
 func Search(ctx context.Context, q db.Querier, v Viewer, sq SearchQuery) (SearchPage, error) {
 	if !v.Perms.Has("account.search", 0) {
@@ -129,7 +182,10 @@ func Search(ctx context.Context, q db.Querier, v Viewer, sq SearchQuery) (Search
 	}
 	text, author := strings.TrimSpace(sq.Text), strings.TrimSpace(sq.Author)
 	if len(sq.Text) > MaxSearchBytes || len(sq.Author) > MaxSearchBytes {
-		return SearchPage{}, ErrBadSearch
+		return SearchPage{}, ErrSearchTooLong
+	}
+	if !validSearchString(sq.Text) || !validSearchString(sq.Author) {
+		return SearchPage{}, ErrSearchBadText
 	}
 	page := max(sq.Page, 1)
 	if page > maxSearchPages {
@@ -141,6 +197,26 @@ func Search(ctx context.Context, q db.Querier, v Viewer, sq SearchQuery) (Search
 			return SearchPage{}, ErrNotFound
 		}
 		return empty, nil
+	}
+
+	// The text is parsed once, before any other statement. A query with no
+	// positive term, or with too many terms, stops here.
+	var tsquery string
+	if text != "" {
+		pq, err := parseSearchText(ctx, q, text)
+		if err != nil {
+			return SearchPage{}, err
+		}
+		switch {
+		case pq.terms > MaxSearchTerms:
+			return SearchPage{}, ErrSearchTooManyTerms
+		case pq.tree == "T":
+			return SearchPage{}, ErrSearchNoWord
+		case pq.tsquery == "":
+			// Only stop words: nothing can match.
+			return finishEmpty(page)
+		}
+		tsquery = pq.tsquery
 	}
 
 	forums, err := searchForumIDs(ctx, q, v, sq.ForumID)
@@ -165,7 +241,7 @@ func Search(ctx context.Context, q db.Querier, v Viewer, sq SearchQuery) (Search
 	}
 	sb := searchBuilder{args: args, byText: text != "", byAuthor: author != "", best: sq.Sort == "best"}
 	if sb.byText {
-		sb.text = sb.arg(text)
+		sb.text = sb.arg(tsquery)
 	}
 	if sb.byAuthor {
 		sb.author = sb.arg(authorID)
@@ -231,33 +307,46 @@ func (b *searchBuilder) hits(withRank bool) string {
 		authorA = " and p.author_id = " + b.author
 		authorB = " and fp.author_id = " + b.author
 	}
+	// The post and its topic must both sit in a forum of the scope, so a post
+	// whose forum_id is out of step with its topic's never shows a hidden topic.
 	if !b.byText {
 		return `
 select p.id, p.created_at, 0::real as rank
   from posts p join topics t on t.id = p.topic_id
- where p.visibility = 'approved' and p.forum_id = any($1::bigint[])
+ where p.visibility = 'approved' and p.forum_id = any($1::bigint[]) and t.forum_id = any($1::bigint[])
    and t.visibility = 'approved' and t.moved_to_topic_id is null` + authorA
 	}
-	tsq := "websearch_to_tsquery('english'::regconfig, " + b.text + ")"
 	return `
-select p.id, p.created_at, ` + rank("ts_rank(p.search, "+tsq+")") + ` as rank
-  from posts p join topics t on t.id = p.topic_id
- where p.search @@ ` + tsq + ` and p.visibility = 'approved' and p.forum_id = any($1::bigint[])
+select p.id, p.created_at, ` + rank("ts_rank(p.search, q.tsq)") + ` as rank
+  from posts p join topics t on t.id = p.topic_id cross join q
+ where p.search @@ q.tsq and p.visibility = 'approved'
+   and p.forum_id = any($1::bigint[]) and t.forum_id = any($1::bigint[])
    and t.visibility = 'approved' and t.moved_to_topic_id is null` + authorA + `
 union all
-select fp.id, fp.created_at, ` + rank("ts_rank(to_tsvector('english'::regconfig, t.title), "+tsq+")") + `
-  from topics t
-  cross join lateral (select p2.id, p2.created_at, p2.author_id, p2.search from posts p2
+select fp.id, fp.created_at, ` + rank("ts_rank(to_tsvector('english'::regconfig, t.title), q.tsq)") + `
+  from topics t cross join q
+  cross join lateral (select p2.id, p2.created_at, p2.author_id, p2.forum_id, p2.search from posts p2
                        where p2.topic_id = t.id and p2.visibility = 'approved'
                        order by p2.created_at, p2.id limit 1) fp
- where to_tsvector('english'::regconfig, t.title) @@ ` + tsq + `
-   and t.visibility = 'approved' and t.moved_to_topic_id is null and t.forum_id = any($1::bigint[])
-   and not (fp.search @@ ` + tsq + `)` + authorB
+ where to_tsvector('english'::regconfig, t.title) @@ q.tsq
+   and t.visibility = 'approved' and t.moved_to_topic_id is null
+   and t.forum_id = any($1::bigint[]) and fp.forum_id = any($1::bigint[])
+   and not (fp.search @@ q.tsq)` + authorB
+}
+
+// with returns the start of a statement: the common table expression that holds
+// the parsed query once, so that no row parses it again, and the hits.
+func (b *searchBuilder) with(withRank bool) string {
+	q := ""
+	if b.byText {
+		q = "q as materialized (select " + b.text + "::text::tsquery as tsq), "
+	}
+	return "with " + q + "hits as (" + b.hits(withRank) + ")"
 }
 
 // countSQL returns the statement of the total. It stops at [maxSearchHits] rows.
 func (b *searchBuilder) countSQL() string {
-	return "with hits as (" + b.hits(false) + ") select count(*) from (select 1 from hits limit " +
+	return b.with(false) + " select count(*) from (select 1 from hits limit " +
 		strconv.Itoa(maxSearchHits) + ") c"
 }
 
@@ -274,19 +363,22 @@ func (b *searchBuilder) pageSQL(page int) (string, []any) {
 		opts := fmt.Sprintf("$%d", len(args)+1)
 		args = append(args, headlineOptions)
 		snippet = "ts_headline('english'::regconfig, translate(p.subject || ' ' || p.body_text, E'<>\\uE000\\uE001\\uE002\\uE003', E'\\uE002\\uE003'), " +
-			"websearch_to_tsquery('english'::regconfig, " + b.text + "), " + opts + ")"
+			"q.tsq, " + opts + ")"
 	}
 	args = append(args, searchPerPage, (page-1)*searchPerPage)
 	limit := fmt.Sprintf("limit $%d offset $%d", len(args)-1, len(args))
-	return `
-with hits as (` + b.hits(true) + `)
+	cross := ""
+	if b.byText {
+		cross = " cross join q"
+	}
+	return b.with(true) + `
 select p.id, p.topic_id, t.title, coalesce(p.author_id, 0), coalesce(u.username, p.author_name), p.created_at,
        f.id, f.name, f.kind, ` + snippet + `
   from (select * from hits h order by ` + order + ` ` + limit + `) h
   join posts p on p.id = h.id
   join topics t on t.id = p.topic_id
-  join forums f on f.id = p.forum_id
-  left join users u on u.id = p.author_id
+  join forums f on f.id = t.forum_id
+  left join users u on u.id = p.author_id` + cross + `
  order by ` + order, args
 }
 

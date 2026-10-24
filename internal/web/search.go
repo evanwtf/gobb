@@ -32,6 +32,34 @@ type searchData struct {
 	// Capped is true when the total hit the limit of 1,000.
 	Capped bool
 	Pager  *pager
+	// Notice is a message above the results: why the query was refused, or a
+	// hint. It is empty when there is none.
+	Notice string
+}
+
+// echo returns s as text for a form field: invalid UTF-8 and NUL bytes, which a
+// query that search refused may hold, become U+FFFD and nothing.
+func echo(s string) string {
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "")
+}
+
+// parseForum reads a ?forum= value: empty or ASCII digits only. 0 means every
+// forum.
+func parseForum(s string) (int64, bool) {
+	if s == "" {
+		return 0, true
+	}
+	if len(s) > 18 {
+		return 0, false
+	}
+	var n int64
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int64(s[i]-'0')
+	}
+	return n, true
 }
 
 // searchHref returns the link to page n of a search. The link keeps every filter
@@ -89,27 +117,30 @@ func (s *site) search(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusForbidden, "error.html", p)
 		return
 	}
-	var forumID int64
-	if v := query.Get("forum"); v != "" {
-		forumID, err = strconv.ParseInt(v, 10, 64)
-		if err != nil || forumID < 0 {
-			s.fail(w, r, http.StatusBadRequest, "Bad request", "The forum number in this address is not valid.")
-			return
-		}
+	forumID, ok := parseForum(query.Get("forum"))
+	if !ok {
+		s.fail(w, r, http.StatusBadRequest, "Bad request", "The forum number in this address is not valid.")
+		return
 	}
 	sort := "new"
 	if query.Get("sort") == "best" {
 		sort = "best"
 	}
 	d := searchData{Text: query.Get("q"), Author: query.Get("author"), Sort: sort, ForumID: forumID}
+	status := http.StatusOK
 
 	sp, err := board.Search(r.Context(), s.pool, p.Viewer, board.SearchQuery{
 		Text: d.Text, ForumID: forumID, Author: d.Author, Sort: sort, Page: page,
 	})
 	switch {
-	case errors.Is(err, board.ErrBadSearch):
-		s.fail(w, r, http.StatusBadRequest, "Bad request", "The search words or the author name are too long. Use at most 256 bytes.")
-		return
+	case errors.Is(err, board.ErrSearchTooLong):
+		status, d.Notice = http.StatusBadRequest, "The search words or the author name are longer than 256 bytes. Shorten them and try again."
+	case errors.Is(err, board.ErrSearchBadText):
+		status, d.Notice = http.StatusBadRequest, "The search words or the author name hold a character that search cannot use."
+	case errors.Is(err, board.ErrSearchTooManyTerms):
+		status, d.Notice = http.StatusBadRequest, "Use at most "+strconv.Itoa(board.MaxSearchTerms)+" words in one search. Remove some and try again."
+	case errors.Is(err, board.ErrSearchNoWord):
+		d.Notice = "Add a word to find."
 	case errors.Is(err, board.ErrNotFound):
 		s.notFound(w, r)
 		return
@@ -128,12 +159,16 @@ func (s *site) search(w http.ResponseWriter, r *http.Request) {
 			Label: strings.Repeat("\u00a0\u00a0", f.Depth) + f.Name,
 		})
 	}
-	d.Searched = strings.TrimSpace(d.Text) != "" || strings.TrimSpace(d.Author) != ""
-	d.Hits, d.Total = sp.Hits, sp.Total
-	d.Capped = sp.Total >= 1000
-	d.Pager = newPagerWith(func(n int) string {
-		return s.searchHref(d.Text, forumID, d.Author, sort, n)
-	}, sp.Page, sp.Pages)
+	// A refused query shows the form and the message, and no results.
+	d.Text, d.Author = echo(d.Text), echo(d.Author)
+	if d.Notice == "" {
+		d.Searched = strings.TrimSpace(d.Text) != "" || strings.TrimSpace(d.Author) != ""
+		d.Hits, d.Total = sp.Hits, sp.Total
+		d.Capped = sp.Total >= 1000
+		d.Pager = newPagerWith(func(n int) string {
+			return s.searchHref(d.Text, forumID, d.Author, sort, n)
+		}, sp.Page, sp.Pages)
+	}
 	p.Data = d
-	s.render(w, http.StatusOK, "search.html", p)
+	s.render(w, status, "search.html", p)
 }

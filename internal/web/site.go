@@ -416,6 +416,10 @@ func (s *site) render(w http.ResponseWriter, status int, name string, p *page) {
 	s.renderThen(w, status, name, p, nil)
 }
 
+// layoutBuilds counts the executions of the layout template. A test reads it to
+// see that a request that has no bookkeeping builds the page once.
+var layoutBuilds atomic.Int64
+
 // renderThen is [site.render] with a step in the middle: once the page is known
 // to build and before the nav count is read, it calls after. A page that fails to
 // build never calls it, so bookkeeping that belongs to a page that was shown (a
@@ -446,6 +450,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		// Build the page once to see that it builds, then write the bookkeeping,
 		// then build it again: the nav count comes after the write, so the page
 		// that marks a topic read does not count that topic as unread.
+		layoutBuilds.Add(1)
 		if err := t.ExecuteTemplate(io.Discard, "layout", p); err != nil {
 			slog.Error("render", "template", name, "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -455,6 +460,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	}
 	s.addNav(p)
 	var buf bytes.Buffer
+	layoutBuilds.Add(1)
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
 		slog.Error("render", "template", name, "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

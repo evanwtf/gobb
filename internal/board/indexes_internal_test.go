@@ -122,7 +122,7 @@ select 'member' || k, 'member' || k, '', '', '', 'legacy', 'active', timestamptz
   from generate_series(1, 400) k`); err != nil {
 		t.Fatal(err)
 	}
-	for _, order := range []string{memberOrder["name"], memberOrder["joined"], memberOrder["posts"]} {
+	for _, order := range []memberSort{memberOrder["name"], memberOrder["joined"], memberOrder["posts"]} {
 		rows, err := pool.Query(ctx, "explain (analyze, format json) "+membersSQL(order), membersPerPage, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -147,7 +147,7 @@ select 'member' || k, 'member' || k, '', '', '', 'legacy', 'active', timestamptz
 			// Actual Loops times Actual Rows is how many rank rows the node
 			// produced for all its parents; Loops alone says how often it ran.
 			if loops, _ := n["Actual Loops"].(float64); loops > float64(membersPerPage) {
-				t.Errorf("order %q: the ranks lookup ran %v times; a page has %d rows", order, loops, membersPerPage)
+				t.Errorf("order %+v: the ranks lookup ran %v times; a page has %d rows", order, loops, membersPerPage)
 			}
 		}
 	}

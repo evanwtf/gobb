@@ -124,11 +124,13 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	d.Pager = newPager(s.path("t", strconv.FormatInt(id, 10)), tp.Page, tp.Pages)
 	p.Title = tp.Topic.Title
 	p.Data = d
-	s.renderThen(w, http.StatusOK, "topic.html", p, func() {
-		if navigated {
-			s.countView(r, p.Viewer, &tp)
-		}
-	})
+	// Only a navigation has bookkeeping to write. Any other request (an image
+	// load, a prefetch) gets nil, so the page is built once and not twice.
+	var after func()
+	if navigated {
+		after = func() { s.countView(r, p.Viewer, &tp) }
+	}
+	s.renderThen(w, http.StatusOK, "topic.html", p, after)
 }
 
 // newPollView adds the share of each option, as a whole percent of the total.

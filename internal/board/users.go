@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -131,22 +130,27 @@ type MembersPage struct {
 	Page, Pages int
 }
 
-// memberOrder maps a sort name to its ORDER BY clause. The name is the only
-// part of the clause that a visitor can influence, and only as a key here.
-var memberOrder = map[string]string{
-	"name":   "u.username_clean, u.id",
-	"joined": "u.registered_at, u.id",
-	"posts":  "u.post_count desc, u.username_clean, u.id",
+// memberSort is one order of the member list, written for the two levels of the
+// query: inner sorts the bare users table, outer sorts the joined rows.
+type memberSort struct{ inner, outer string }
+
+// memberOrder maps a sort name to its order. The name is the only part of the
+// clauses that a visitor can influence, and only as a key here.
+var memberOrder = map[string]memberSort{
+	"name":   {"username_clean, id", "u.username_clean, u.id"},
+	"joined": {"registered_at, id", "u.registered_at, u.id"},
+	"posts":  {"post_count desc, username_clean, id", "u.post_count desc, u.username_clean, u.id"},
 }
 
 // membersSQL returns the query for one page of the member list, in the given
-// ORDER BY. The arguments are the limit and the offset.
-func membersSQL(order string) string {
+// order. The arguments are the limit and the offset.
+func membersSQL(order memberSort) string {
 	// The sort and the limit run on users alone; the rank lookup runs for the rows
-	// of the page only.
+	// of the page only. The inner query names the columns that the outer one reads.
 	return `select ` + cardColumns + `
-  from (select * from users where state = 'active' order by ` + strings.ReplaceAll(order, "u.", "") + ` limit $1 offset $2) u` + cardJoins + `
- order by ` + order
+  from (select id, username, username_clean, avatar_path, post_count, registered_at, rank_id
+          from users where state = 'active' order by ` + order.inner + ` limit $1 offset $2) u` + cardJoins + `
+ order by ` + order.outer
 }
 
 // Members returns page number page (from 1) of the active members, in the order
