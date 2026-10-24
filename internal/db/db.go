@@ -35,3 +35,30 @@ func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	}
 	return pool, nil
 }
+
+// DataTables returns the names of the base tables of the current schema, except
+// schema_migrations, sorted. These are the tables that hold forum data. The
+// importer checks them for rows and truncates them.
+func DataTables(ctx context.Context, q Querier) ([]string, error) {
+	rows, err := q.Query(ctx,
+		`select table_name from information_schema.tables
+		 where table_schema = current_schema() and table_type = 'BASE TABLE'
+		   and table_name <> 'schema_migrations'
+		 order by table_name`)
+	if err != nil {
+		return nil, fmt.Errorf("db: list data tables: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("db: list data tables: %w", err)
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list data tables: %w", err)
+	}
+	return names, nil
+}

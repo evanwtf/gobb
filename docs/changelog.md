@@ -89,3 +89,16 @@ that the pages stand on.
   `internal/bundletest` builds a small valid board for tests, and `docs/example-bundle/`
   holds that board as a committed example. `go test ./bundle -run TestExampleBundle
   -update` regenerates it.
+- The importer, part one: `importer.Run` loads a bundle (a directory or a `.tar.gz`)
+  into an empty database. It holds an advisory lock on one connection for the whole run,
+  checks the bundle with `bundle.Check`, refuses a database that has rows or a data
+  directory that has entries (the error names the table or the directory), stages the
+  files under `.import-<hex>/` while it hashes them, loads everything in one transaction
+  with deferred constraints, resets the sequences, and moves the five data directories
+  into place after the commit. `Replace` truncates every table and moves the old
+  directories to `.replaced-<UTC time>/`. This part loads ranks, users, gone users,
+  groups, members, roles, grants, forums, bans, smilies, legacy routes and files, static
+  pages and the settings. Names come from `account.CleanUsername` and `CleanEmail`;
+  signatures and static pages are parsed with `markup.Parse` and checked with
+  `markup.Validate`, and an error names the file, the line and the ID. `db.DataTables`
+  lists the tables that hold forum data.

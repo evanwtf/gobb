@@ -425,3 +425,18 @@ func TestForumPositionDefaultsToZero(t *testing.T) {
 		t.Errorf("position = %d, want 0", position)
 	}
 }
+
+// TestDataTables checks that DataTables lists the schema tables, sorted, and
+// leaves out the migration runner's own table.
+func TestDataTables(t *testing.T) {
+	pool := dbtest.New(t)
+	got, err := db.DataTables(context.Background(), pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := slices.Clone(schemaTables)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("DataTables = %v, want %v", got, want)
+	}
+}
