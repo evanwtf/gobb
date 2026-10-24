@@ -66,11 +66,7 @@ func FuzzParse(f *testing.F) {
 			if err := markup.Validate(got); err != nil {
 				t.Fatalf("invalid tree for %q with %+v: %v", s, opt, err)
 			}
-			out := markup.Render(got, smileys())
-			htmlcheck.Check(t, string(out.HTML))
-			if strings.ContainsAny(out.Text, "<>") {
-				t.Fatalf("Text has an angle bracket for %q: %q", s, out.Text)
-			}
+			htmlcheck.Check(t, string(markup.Render(got, smileys()).HTML))
 		}
 	})
 }

@@ -1,7 +1,6 @@
 package markup
 
 import (
-	"context"
 	"html"
 	"html/template"
 	"net/url"
@@ -10,8 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/evanwtf/gobb/internal/dbtest"
 )
 
 // renderSmileys is the smiley table that the render tests use.
@@ -924,48 +921,31 @@ func TestRenderRedditIsAPlainLink(t *testing.T) {
 }
 
 // TestTextKeepsAngleBracketText covers text that stands only inside angle
-// brackets. The PostgreSQL parser of the search column reads "<like this>" as a
-// markup tag and drops it, so the plain text must not carry the brackets.
+// brackets. Rendered.Text is the faithful plain text of the post: it keeps the
+// brackets, so a snippet shows what the member wrote. The search column and the
+// title index of the database map the brackets to spaces (migration 0008); the
+// tests of the board package check that a search finds the words.
 func TestTextKeepsAngleBracketText(t *testing.T) {
 	for _, md := range []bool{true, false} {
 		src := "see <like this> here"
-		got := Render(Parse(src, Options{Markdown: md}), RenderContext{}).Text
-		if !strings.Contains(got, "like this") {
-			t.Errorf("markdown=%v: Text = %q, want it to contain %q", md, got, "like this")
+		r := Render(Parse(src, Options{Markdown: md}), RenderContext{})
+		if r.Text != src {
+			t.Errorf("markdown=%v: Text = %q, want %q", md, r.Text, src)
 		}
-		if strings.ContainsAny(got, "<>") {
-			t.Errorf("markdown=%v: Text = %q, want no angle bracket: the search parser reads it as a tag", md, got)
-		}
-		// The HTML keeps the brackets, escaped.
-		out := string(Render(Parse(src, Options{Markdown: md}), RenderContext{}).HTML)
-		if want := "<p>see &lt;like this&gt; here</p>"; out != want {
-			t.Errorf("markdown=%v: HTML = %q, want %q", md, out, want)
+		if want := "<p>see &lt;like this&gt; here</p>"; string(r.HTML) != want {
+			t.Errorf("markdown=%v: HTML = %q, want %q", md, r.HTML, want)
 		}
 	}
 	// Brackets in code, in a link address and in a display text count too.
-	for _, src := range []string{"`<code words>`", "```\n<fenced words>\n```", "[<in label>](https://example.com/?a=<b>)", "<tag>"} {
-		got := Render(Parse(src, allOn), RenderContext{}).Text
-		if strings.ContainsAny(got, "<>") {
-			t.Errorf("Text of %q = %q, want no angle bracket", src, got)
-		}
-	}
-}
-
-// TestTextAngleBracketSearch asks PostgreSQL itself: the search column must
-// find a word that stood only inside angle brackets in the post.
-func TestTextAngleBracketSearch(t *testing.T) {
-	pool := dbtest.New(t)
-	text := Render(Parse("see <like this> here, and <b>bold words</b> too", Options{Markdown: true}), RenderContext{}).Text
-	for _, word := range []string{"like", "bold", "words", "see"} {
-		var found bool
-		err := pool.QueryRow(context.Background(),
-			`select to_tsvector('english'::regconfig, $1::text) @@ plainto_tsquery('english'::regconfig, $2::text)`,
-			text, word).Scan(&found)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !found {
-			t.Errorf("search for %q does not find it in Text %q", word, text)
+	for src, want := range map[string]string{
+		"`<code words>`":                           "<code words>",
+		"```\n<fenced words>\n```":                 "<fenced words>",
+		"[<in label>](https://example.com/?a=<b>)": "<in label>",
+		"<tag>":                "<tag>",
+		"if a < b then x -> y": "if a < b then x -> y",
+	} {
+		if got := Render(Parse(src, allOn), RenderContext{}).Text; got != want {
+			t.Errorf("Text of %q = %q, want %q", src, got, want)
 		}
 	}
 }

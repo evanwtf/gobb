@@ -33,6 +33,11 @@ const maxShown = 2000
 
 // Check fails t for every problem in fragment. It reports all of them, not the
 // first, and it shows the fragment.
+//
+// The fragment must be the raw bytes of the inner HTML of the element, as the
+// server wrote them. Do not pass a node that html.Parse built and rendered again:
+// the tree builder repairs the faults that this check exists to see (an
+// unclosed tag, a stray end tag, a tag in the wrong place, a repeated attribute).
 func Check(t testing.TB, fragment string) {
 	t.Helper()
 	problems := Problems(fragment)
@@ -63,6 +68,9 @@ func Problems(fragment string) []string {
 			// bytes it dropped.
 			if raw := z.Raw(); len(raw) > 0 {
 				c.add("incomplete tag %q", raw)
+			}
+			for _, name := range c.open {
+				c.add("unclosed <%s>", name)
 			}
 			return c.problems
 		case html.TextToken:
@@ -158,6 +166,34 @@ type checker struct {
 	origins  []string
 	problems []string
 	seen     map[string]bool // problems about a whole element, said once
+	open     []string        // the start tags that have no end tag yet
+}
+
+// void are the elements that have no end tag.
+var void = []string{"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+// track keeps the stack of open elements: a start tag of an element that is not
+// void opens one, and an end tag must close the one on top. A self-closing slash
+// does nothing on an element that is not void, as in a browser.
+func (c *checker) track(name string, start bool) {
+	if slices.Contains(void, name) {
+		if !start {
+			c.add("end tag </%s> has no start tag: <%s> is a void element", name, name)
+		}
+		return
+	}
+	if start {
+		c.open = append(c.open, name)
+		return
+	}
+	switch top := len(c.open) - 1; {
+	case top < 0:
+		c.add("end tag </%s> has no start tag", name)
+	case c.open[top] != name:
+		c.add("end tag </%s> does not match <%s>", name, c.open[top])
+	default:
+		c.open = c.open[:top]
+	}
 }
 
 func (c *checker) add(format string, args ...any) {
@@ -177,6 +213,7 @@ func (c *checker) once(format, name string) {
 // attributes.
 func (c *checker) element(tok tag, start bool) {
 	name := tok.name
+	c.track(name, start)
 	if slices.Contains(forbidden, name) {
 		c.once("forbidden element <%s>", name)
 	}
@@ -208,6 +245,8 @@ func (c *checker) element(tok tag, start bool) {
 		}
 		if !slices.Contains(attrs, key) {
 			c.add("attribute %s is not allowed on <%s>", key, name)
+		} else if !markup.AttrValueOK(name, key, a.val) {
+			c.add("attribute %s=%q on <%s> is not a value that the renderer writes", key, a.val, name)
 		}
 		switch key {
 		case "href":

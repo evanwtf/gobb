@@ -1,6 +1,7 @@
 package markup
 
 import (
+	"html"
 	"maps"
 	"regexp"
 	"slices"
@@ -172,6 +173,160 @@ func TestEmbedOriginsCoverTheEmbedTable(t *testing.T) {
 		}
 		if !slices.Contains(frames, o) {
 			t.Errorf("EmbedOrigins lists %q, which no embed of richSource uses", o)
+		}
+	}
+}
+
+// TestValuelessAttributeCannotBeForged covers the one way to write an attribute
+// with no value. A stored alt that equals the old marker string of the renderer
+// must come out as a normal quoted value, and no member text may change the shape
+// of a tag.
+func TestValuelessAttributeCannotBeForged(t *testing.T) {
+	for _, alt := range []string{"\x00bare", "bare", "\x00", ""} {
+		n := tree(para(el("img", at("src", "/a.png", "alt", alt))))
+		out := string(Render(n, RenderContext{}).HTML)
+		want := `<img src="/a.png" alt="` + alt + `" loading="lazy" class="post-img">`
+		if !strings.Contains(out, want) {
+			t.Errorf("alt %q: HTML = %q, want it to hold %q", alt, out, want)
+		}
+	}
+	// A smiley code and a language name are member text too.
+	if out := openTag("iframe", "allowfullscreen", "\x00bare"); out != `<iframe allowfullscreen="`+"\x00bare"+`">` {
+		t.Errorf("a string value wrote %q", out)
+	}
+	if out := openTag("iframe", "allowfullscreen", bare); out != `<iframe allowfullscreen>` {
+		t.Errorf("the bare value wrote %q", out)
+	}
+}
+
+// freeAttrs are the attributes whose values are addresses or member text. The
+// HTML check has its own rules for them (the URL rules, or nothing for an alt).
+var freeAttrs = map[string]bool{
+	"a/href": true, "img/src": true, "img/alt": true, "iframe/src": true,
+	"blockquote/data-instgrm-permalink": true, "blockquote/data-text-post-permalink": true,
+}
+
+// patternAttrs are the attributes whose value follows a rule, not a list.
+var patternAttrs = map[string]bool{"ol/start": true, "code/class": true}
+
+func unescapeHTML(s string) string { return html.UnescapeString(s) }
+
+var attrValuePattern = regexp.MustCompile(`\s([a-z][a-z-]*)(?:="([^"]*)")?`)
+
+// usedValues returns, for each "tag/attr", the values in html. An attribute with
+// no value has the value "".
+func usedValues(html string) map[string][]string {
+	used := map[string][]string{}
+	for _, m := range tagPattern.FindAllStringSubmatch(html, -1) {
+		for _, a := range attrValuePattern.FindAllStringSubmatch(m[2], -1) {
+			key := m[1] + "/" + a[1]
+			v := unescapeHTML(a[2])
+			if !slices.Contains(used[key], v) {
+				used[key] = append(used[key], v)
+			}
+		}
+	}
+	return used
+}
+
+// TestPinnedValuesAreWhatTheRendererWrites pins the values of the attributes that
+// the renderer always writes as a constant, in both directions: every value in
+// the output is in the table, and every value in the table is written. Every
+// attribute of [Allowed] is pinned, a pattern, or listed as free.
+func TestPinnedValuesAreWhatTheRendererWrites(t *testing.T) {
+	used := usedValues(string(richRender().HTML))
+	for tag, attrs := range Allowed() {
+		for _, attr := range attrs {
+			key := tag + "/" + attr
+			values, pinned := fixedValues[tag][attr]
+			switch {
+			case freeAttrs[key], patternAttrs[key]:
+				if pinned {
+					t.Errorf("%s is both pinned and free", key)
+				}
+			case !pinned:
+				t.Errorf("%s has no pinned value and is not listed as free", key)
+			default:
+				got := slices.Clone(used[key])
+				want := slices.Clone(values)
+				slices.Sort(got)
+				slices.Sort(want)
+				if !slices.Equal(got, want) {
+					t.Errorf("%s: the renderer writes %q, the table pins %q", key, got, want)
+				}
+			}
+		}
+	}
+	for key, values := range used {
+		tag, attr, _ := strings.Cut(key, "/")
+		for _, v := range values {
+			if !AttrValueOK(tag, attr, v) {
+				t.Errorf("AttrValueOK(%s, %s, %q) refuses a value the renderer writes", tag, attr, v)
+			}
+		}
+	}
+}
+
+func TestAttrValueOK(t *testing.T) {
+	for _, tc := range []struct {
+		tag, attr, value string
+		want             bool
+	}{
+		{"a", "rel", "nofollow ugc noopener", true},
+		{"a", "rel", "noopener", false},
+		{"a", "rel", "", false},
+		{"a", "rel", "nofollow ugc noopener x", false},
+		{"iframe", "allow", "fullscreen", true},
+		{"iframe", "allow", "camera; microphone", false},
+		{"iframe", "allow", "fullscreen; camera", false},
+		{"iframe", "allow", "*", false},
+		{"iframe", "referrerpolicy", "strict-origin-when-cross-origin", true},
+		{"iframe", "referrerpolicy", "unsafe-url", false},
+		{"iframe", "loading", "lazy", true},
+		{"iframe", "loading", "eager", false},
+		{"iframe", "allowfullscreen", "", true},
+		{"iframe", "allowfullscreen", "allowfullscreen", false},
+		{"iframe", "class", "embed youtube", true},
+		{"iframe", "class", "embed youtube x", false},
+		{"iframe", "title", "YouTube video", true},
+		{"iframe", "title", "x", false},
+		{"img", "loading", "lazy", true},
+		{"img", "loading", "eager", false},
+		{"img", "class", "post-img", true},
+		{"img", "class", "smiley", true},
+		{"img", "class", "x", false},
+		{"span", "class", "spoiler", true},
+		{"span", "class", "img-note", true},
+		{"span", "class", "x", false},
+		{"span", "tabindex", "0", true},
+		{"span", "tabindex", "-1", false},
+		{"span", "tabindex", "1", false},
+		{"div", "class", "embed-link", true},
+		{"div", "class", "x", false},
+		{"pre", "class", "code", true},
+		{"pre", "class", "code x", false},
+		{"blockquote", "class", "twitter-tweet", true},
+		{"blockquote", "class", "x", false},
+		{"code", "class", "language-go", true},
+		{"code", "class", "language-c++", true},
+		{"code", "class", "language-", false},
+		{"code", "class", "language-a b", false},
+		{"code", "class", "language-a\"b", false},
+		{"code", "class", "x", false},
+		{"ol", "start", "3", true},
+		{"ol", "start", "123456789", true},
+		{"ol", "start", "0", false},
+		{"ol", "start", "03", false},
+		{"ol", "start", "1234567890", false},
+		{"ol", "start", "x", false},
+		{"ol", "start", "", false},
+		// Not pinned: the check has its own rules.
+		{"a", "href", "anything", true},
+		{"img", "alt", "anything", true},
+		{"img", "src", "anything", true},
+	} {
+		if got := AttrValueOK(tc.tag, tc.attr, tc.value); got != tc.want {
+			t.Errorf("AttrValueOK(%s, %s, %q) = %v, want %v", tc.tag, tc.attr, tc.value, got, tc.want)
 		}
 	}
 }

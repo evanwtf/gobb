@@ -310,6 +310,71 @@ func TestSearchSnippetEscapes(t *testing.T) {
 	}
 }
 
+// The PostgreSQL text search reads "<word words>" as a markup tag and drops it.
+// The search column of the posts and the index of the titles map the angle
+// brackets to spaces, so a word that stands only inside brackets is found in a
+// body, in a subject and in a title, and the stored text keeps its brackets.
+func TestSearchFindsBracketWords(t *testing.T) {
+	t.Run("body, as the import stores it", func(t *testing.T) {
+		b := searchBoard()
+		b.Posts[0].Body = bundle.Body{Source: "see <zebrafish words> here", Markdown: true}
+		pool, _ := boardtest.Load(t, b)
+		if got := hitIDs(search(t, pool, guestFor(t, pool), board.SearchQuery{Text: "zebrafish"})); !slices.Equal(got, []int64{1}) {
+			t.Errorf("zebrafish = %v, want [1]", got)
+		}
+		var text string
+		if err := pool.QueryRow(context.Background(), `select body_text from posts where id = 1`).Scan(&text); err != nil {
+			t.Fatal(err)
+		}
+		if text != "see <zebrafish words> here" {
+			t.Errorf("body_text = %q, want the text with its brackets", text)
+		}
+	})
+	t.Run("body, as a write stores it", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, searchBoard())
+		setBodyText(t, pool, 1, "see <zebrafish> here")
+		if got := hitIDs(search(t, pool, guestFor(t, pool), board.SearchQuery{Text: "zebrafish"})); !slices.Equal(got, []int64{1}) {
+			t.Errorf("zebrafish = %v, want [1]", got)
+		}
+	})
+	t.Run("subject", func(t *testing.T) {
+		b := searchBoard()
+		b.Posts[0].Subject = "<zebrafish> subject"
+		pool, _ := boardtest.Load(t, b)
+		if got := hitIDs(search(t, pool, guestFor(t, pool), board.SearchQuery{Text: "zebrafish"})); !slices.Equal(got, []int64{1}) {
+			t.Errorf("zebrafish = %v, want [1]", got)
+		}
+	})
+	t.Run("title", func(t *testing.T) {
+		b := searchBoard()
+		b.Topics[0].Title = "<zebrafish> crossing"
+		pool, _ := boardtest.Load(t, b)
+		g := guestFor(t, pool)
+		for _, sort := range []string{"", "best"} {
+			p := search(t, pool, g, board.SearchQuery{Text: "zebrafish", Sort: sort})
+			if got := hitIDs(p); !slices.Equal(got, []int64{1}) {
+				t.Errorf("sort %q: zebrafish = %v, want [1]", sort, got)
+			}
+			if len(p.Hits) == 1 && p.Hits[0].Post.TopicTitle != "<zebrafish> crossing" {
+				t.Errorf("the title = %q, want it with its brackets", p.Hits[0].Post.TopicTitle)
+			}
+		}
+	})
+	// Text that is not a tag was never at risk, and the snippet shows it as it is.
+	t.Run("snippet keeps the brackets", func(t *testing.T) {
+		b := searchBoard()
+		b.Posts[5].Body = bundle.Body{Source: "if a < b then x -> y needle", Markdown: true}
+		pool, _ := boardtest.Load(t, b)
+		p := search(t, pool, memberFor(t, pool, 1), board.SearchQuery{Text: "needle"})
+		if len(p.Hits) != 1 {
+			t.Fatalf("needle = %v", hitIDs(p))
+		}
+		if s := string(p.Hits[0].Snippet); !strings.Contains(s, "a &lt; b then x -&gt; y <mark>needle</mark>") {
+			t.Errorf("snippet = %q", s)
+		}
+	})
+}
+
 // The marker runes in the text of a post cannot make a mark or break the page.
 func TestSearchSnippetMarkerRunes(t *testing.T) {
 	b := searchBoard()

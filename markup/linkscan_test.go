@@ -77,16 +77,27 @@ func countLinks(n *Node) int {
 	return c
 }
 
-// TestLinkBudgetEndsAtTheEnd checks the other side: when the budget is gone,
-// the text stays text, the tree is valid, and a link after the run is text too.
+// TestLinkBudgetEndsAtTheEnd checks the other side: when the budget is gone, the
+// text stays text, the tree is valid, and a good link after the run is text too.
 func TestLinkBudgetEndsAtTheEnd(t *testing.T) {
 	src := strings.Repeat("[a](", 30000) + " [ok](/fine)"
 	tree := Parse(src, allOn)
 	if err := Validate(tree); err != nil {
 		t.Fatal(err)
 	}
-	if got := allText(tree); !strings.Contains(got, "[a]([a](") {
+	got := allText(tree)
+	if !strings.Contains(got, "[a]([a](") {
 		t.Errorf("the run is not kept as text: %.60q", got)
+	}
+	if !strings.HasSuffix(got, "[ok](/fine)") {
+		t.Errorf("the link after the run is not kept as text: %.60q", got[max(0, len(got)-60):])
+	}
+	if has(tree, "url") {
+		t.Error("the tree holds a url element: the link after the run should be text")
+	}
+	// The same link after a short run is a link: the budget is what ends it.
+	if short := Parse(strings.Repeat("[a](", 20)+" [ok](/fine)", allOn); !has(short, "url") {
+		t.Error("a link after a short run is not a link")
 	}
 }
 

@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/evanwtf/gobb/internal/htmlcheck"
@@ -223,9 +226,6 @@ func TestPayloadsRenderSafe(t *testing.T) {
 					if again := string(markup.Render(decoded, rc).HTML); again != html {
 						t.Errorf("flags %+v: the stored form renders differently\n got: %s\nwant: %s", opt, again, html)
 					}
-					if strings.ContainsAny(out.Text, "<>") {
-						t.Errorf("flags %+v: Text has an angle bracket: %q", opt, out.Text)
-					}
 					if base == "" {
 						links += strings.Count(html, "<a ")
 						images += strings.Count(html, "<img ")
@@ -245,6 +245,100 @@ func TestPayloadsRenderSafe(t *testing.T) {
 	for name, n := range map[string]int{"links": links, "images": images, "frames": frames, "code blocks": pres, "quotes": quotes, "spoilers": spoilers} {
 		if n < 5 {
 			t.Errorf("only %d %s across the corpus: the payloads do not reach that path", n, name)
+		}
+	}
+}
+
+// destOf returns the raw destination of the first "](" of a payload, and whether
+// the payload is an image. It returns "" for a payload with no inline link.
+func destOf(text string) (dest string, image bool) {
+	i := strings.Index(text, "](")
+	if i < 0 {
+		return "", false
+	}
+	open := strings.LastIndex(text[:i], "[")
+	return strings.TrimPrefix(text[i+2:], "<"), open > 0 && text[open-1] == '!'
+}
+
+// schemeOf reduces a destination to the scheme that a browser would read: it
+// removes white space and control characters, decodes percent escapes and
+// character references, and lower-cases. It returns "" for an unknown scheme.
+func schemeOf(dest string) string {
+	head := dest
+	if len(head) > 48 {
+		head = head[:48]
+	}
+	head = html.UnescapeString(head)
+	if d, err := url.PathUnescape(head); err == nil {
+		head = d
+	}
+	head = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, strings.ToLower(head))
+	for _, scheme := range []string{"javascript", "vbscript", "data"} {
+		if strings.HasPrefix(head, scheme+":") {
+			return scheme
+		}
+	}
+	return ""
+}
+
+// formsOf says in which forms a destination writes its scheme: plain, with a
+// character reference (entity), percent-encoded, or with white space or a control
+// character in or before the scheme.
+func formsOf(dest string) map[string]bool {
+	head := dest
+	if i := strings.IndexByte(head, ':'); i >= 0 && i < 40 {
+		head = head[:i+1]
+	} else if len(head) > 40 {
+		head = head[:40]
+	}
+	forms := map[string]bool{}
+	if strings.Contains(head, "&") {
+		forms["entity"] = true
+	}
+	if strings.Contains(head, "%") {
+		forms["percent"] = true
+	}
+	if strings.IndexFunc(head, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		forms["white space or control"] = true
+	}
+	if len(forms) == 0 {
+		forms["plain"] = true
+	}
+	return forms
+}
+
+// TestPayloadMatrix requires a payload for each cell of the grid in the plan:
+// javascript:, vbscript: and data: as the scheme of a link and of an image, each
+// plain, entity-encoded, percent-encoded, and with white space or a control
+// character. The per-category counts of TestPayloadCorpus do not enforce it.
+func TestPayloadMatrix(t *testing.T) {
+	cells := map[string]int{}
+	for _, p := range loadPayloads(t) {
+		dest, image := destOf(p.text)
+		scheme := schemeOf(dest)
+		if scheme == "" {
+			continue
+		}
+		kind := "link"
+		if image {
+			kind = "image"
+		}
+		for form := range formsOf(dest) {
+			cells[scheme+" "+kind+" "+form]++
+		}
+	}
+	for _, scheme := range []string{"javascript", "vbscript", "data"} {
+		for _, kind := range []string{"link", "image"} {
+			for _, form := range []string{"plain", "entity", "percent", "white space or control"} {
+				if cells[scheme+" "+kind+" "+form] == 0 {
+					t.Errorf("no payload for %s: as the scheme of %s %s, written %s", scheme, map[string]string{"link": "a", "image": "an"}[kind], kind, form)
+				}
+			}
 		}
 	}
 }

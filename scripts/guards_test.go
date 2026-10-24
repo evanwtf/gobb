@@ -406,3 +406,45 @@ func TestCheckPublicCommitMessageModeSkipsOnlyTheDiff(t *testing.T) {
 		t.Fatalf("body after comment: exit %d, output %q", code, out)
 	}
 }
+
+// fuzzScript runs scripts/fuzz.sh from the repo root.
+func fuzzScript(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+	return run(t, "..", nil, "fuzz.sh", args...)
+}
+
+// A fuzz target whose name matches nothing makes go test pass with a warning, so
+// a renamed target would turn the CI job into a green no-op. The script lists the
+// target first and fails when the list is not exactly its name.
+func TestFuzzScriptRefusesAMissingTarget(t *testing.T) {
+	for name, target := range map[string]string{
+		"misspelled name":    "./markup/ FuzzParsee",
+		"unanchored prefix":  "./markup/ FuzzPars",
+		"name of a test":     "./markup/ TestParseBasic",
+		"name in other pkg":  "./internal/password/ FuzzParse",
+		"package with none":  "./internal/version/ FuzzVersion",
+		"package that fails": "./no/such/package/ FuzzParse",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, code := fuzzScript(t, "1s", target)
+			if code != 1 {
+				t.Fatalf("exit %d for %q, want 1:\n%s", code, target, out)
+			}
+			if strings.Contains(out, "fuzz: elapsed") {
+				t.Errorf("the script fuzzed for %q:\n%s", target, out)
+			}
+		})
+	}
+	// One bad target does not hide the others: the good one still runs.
+	out, code := fuzzScript(t, "1s", "./markup/ FuzzParsee", "./internal/password/ FuzzVerifyLegacy")
+	if code != 1 || !strings.Contains(out, "FuzzParsee") || !strings.Contains(out, "fuzz: elapsed") {
+		t.Errorf("exit %d, want a failure for the bad target and a run of the good one:\n%s", code, out)
+	}
+}
+
+func TestFuzzScriptRunsARealTarget(t *testing.T) {
+	out, code := fuzzScript(t, "2s", "./internal/password/ FuzzVerifyLegacy")
+	if code != 0 || !strings.Contains(out, "fuzz: elapsed") {
+		t.Errorf("exit %d, want 0 and a fuzz run:\n%s", code, out)
+	}
+}

@@ -38,9 +38,9 @@ type Rendered struct {
 	HTML template.HTML
 	// Text is the plain text of the post: everything except the contents of quote
 	// elements and the embeds. Block elements and br elements end a line. A link
-	// that has a display text adds its full target after the display text. Each
-	// angle bracket is a space: the text search of PostgreSQL would read
-	// "<like this>" as a tag and drop it. It feeds the search text of a post.
+	// that has a display text adds its full target after the display text. It
+	// feeds the search text of a post. It keeps angle brackets as written: the
+	// search column of the database maps them to spaces (migration 0008).
 	Text string
 	// FrameSrc lists the origins that the embeds of this tree load in frames.
 	// It is sorted and has no duplicates.
@@ -159,28 +159,11 @@ func (r *renderer) pushKids(kids []*Node, tight, inTightLi, quote bool) {
 	}
 }
 
-// searchSafe turns each angle bracket in s into a space. The text search of
-// PostgreSQL reads "<like this>" as a markup tag and drops what it holds, so a
-// word that stood only inside angle brackets would never be found.
-func searchSafe(s string) string {
-	if !strings.ContainsAny(s, "<>") {
-		return s
-	}
-	return strings.Map(func(c rune) rune {
-		if c == '<' || c == '>' {
-			return ' '
-		}
-		return c
-	}, s)
-}
-
-// addText adds s to the plain text, unless the node is inside a quote. The plain
-// text has no angle bracket: see [searchSafe].
+// addText adds s to the plain text, unless the node is inside a quote.
 func (r *renderer) addText(s string, quote bool) {
 	if quote || s == "" {
 		return
 	}
-	s = searchSafe(s)
 	r.text.WriteString(s)
 	r.textNL = s[len(s)-1] == '\n'
 }

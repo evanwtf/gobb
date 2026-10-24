@@ -153,19 +153,16 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # One run reports every target: a failure in one does not skip the rest.
-      # -run '^$' skips the unit tests, which the check job ran.
+      # scripts/fuzz.sh lists each target first and fails when the name matches no
+      # fuzz test (go test alone exits 0 with a warning, so a renamed target would
+      # pass with nothing fuzzed). One run reports every target. -run '^$' skips
+      # the unit tests, which the check job ran.
       - name: Fuzz each target for 60 seconds
         run: |
-          status=0
-          for target in "./markup/ FuzzParse" "./markup/ FuzzRender" "./internal/password/ FuzzVerifyLegacy"; do
-            pkg=${target% *}
-            name=${target#* }
-            echo "::group::$name in $pkg"
-            go test -run '^$' -fuzz "^$name\$" -fuzztime 60s -parallel 4 "$pkg" || status=$?
-            echo "::endgroup::"
-          done
-          exit "$status"
+          sh scripts/fuzz.sh 60s \
+            "./markup/ FuzzParse" \
+            "./markup/ FuzzRender" \
+            "./internal/password/ FuzzVerifyLegacy"
 
       - name: Upload the failing inputs
         if: failure()

@@ -324,16 +324,22 @@ select p.id, p.created_at, ` + rank("ts_rank(p.search, q.tsq)") + ` as rank
    and p.forum_id = any($1::bigint[]) and t.forum_id = any($1::bigint[])
    and t.visibility = 'approved' and t.moved_to_topic_id is null` + authorA + `
 union all
-select fp.id, fp.created_at, ` + rank("ts_rank(to_tsvector('english'::regconfig, t.title), q.tsq)") + `
+select fp.id, fp.created_at, ` + rank("ts_rank("+titleVector+", q.tsq)") + `
   from topics t cross join q
   cross join lateral (select p2.id, p2.created_at, p2.author_id, p2.forum_id, p2.search from posts p2
                        where p2.topic_id = t.id and p2.visibility = 'approved'
                        order by p2.created_at, p2.id limit 1) fp
- where to_tsvector('english'::regconfig, t.title) @@ q.tsq
+ where ` + titleVector + ` @@ q.tsq
    and t.visibility = 'approved' and t.moved_to_topic_id is null
    and t.forum_id = any($1::bigint[]) and fp.forum_id = any($1::bigint[])
    and not (fp.search @@ q.tsq)` + authorB
 }
+
+// titleVector is the search vector of a topic title. It is the expression of
+// topics_title_search_idx (migration 0008), character for character, so that the
+// query uses the index. The expression maps "<" and ">" to spaces: see the
+// migration.
+const titleVector = "to_tsvector('english'::regconfig, translate(t.title, '<>', '  '))"
 
 // with returns the start of a statement: the common table expression that holds
 // the parsed query once, so that no row parses it again, and the hits.

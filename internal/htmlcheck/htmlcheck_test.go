@@ -115,6 +115,44 @@ var catches = []struct {
 	{"instagram permalink javascript", `<blockquote class="instagram-media" data-instgrm-permalink="javascript:x"></blockquote>`, "data-instgrm-permalink"},
 	{"threads permalink data", `<blockquote class="text-post-media" data-text-post-permalink="data:x"></blockquote>`, "data-text-post-permalink"},
 
+	// An attribute that the renderer always writes as a constant takes only that
+	// constant.
+	{"allow with other permissions", `<iframe src="https://www.youtube-nocookie.com/embed/x" allow="camera; microphone"></iframe>`, `attribute allow="camera; microphone" on <iframe> is not a value`},
+	{"allow with a wildcard", `<iframe src="https://www.youtube-nocookie.com/embed/x" allow="*"></iframe>`, `attribute allow="*" on <iframe> is not a value`},
+	{"allow with an extra permission", `<iframe src="https://www.youtube-nocookie.com/embed/x" allow="fullscreen; camera"></iframe>`, `attribute allow="fullscreen; camera" on <iframe> is not a value`},
+	{"referrerpolicy unsafe", `<iframe src="https://player.vimeo.com/video/1" referrerpolicy="unsafe-url"></iframe>`, `attribute referrerpolicy="unsafe-url" on <iframe> is not a value`},
+	{"iframe loading eager", `<iframe src="https://player.vimeo.com/video/1" loading="eager"></iframe>`, `attribute loading="eager" on <iframe> is not a value`},
+	{"iframe title", `<iframe src="https://player.vimeo.com/video/1" title="x"></iframe>`, `attribute title="x" on <iframe> is not a value`},
+	{"iframe class", `<iframe src="https://player.vimeo.com/video/1" class="embed vimeo x"></iframe>`, `attribute class="embed vimeo x" on <iframe> is not a value`},
+	{"allowfullscreen with a value", `<iframe src="https://player.vimeo.com/video/1" allowfullscreen="x"></iframe>`, `attribute allowfullscreen="x" on <iframe> is not a value`},
+	{"rel opener", `<a href="/x" rel="opener">x</a>`, `attribute rel="opener" on <a> is not a value`},
+	{"rel empty", `<a href="/x" rel="">x</a>`, `attribute rel="" on <a> is not a value`},
+	{"img loading eager", `<img src="/a.png" loading="eager">`, `attribute loading="eager" on <img> is not a value`},
+	{"img class", `<img src="/a.png" class="x">`, `attribute class="x" on <img> is not a value`},
+	{"span class", `<span class="x">y</span>`, `attribute class="x" on <span> is not a value`},
+	{"span tabindex 1", `<span class="spoiler" tabindex="1">y</span>`, `attribute tabindex="1" on <span> is not a value`},
+	{"span tabindex negative", `<span class="spoiler" tabindex="-1">y</span>`, `attribute tabindex="-1" on <span> is not a value`},
+	{"div class", `<div class="x">y</div>`, `attribute class="x" on <div> is not a value`},
+	{"pre class", `<pre class="x"><code>y</code></pre>`, `attribute class="x" on <pre> is not a value`},
+	{"blockquote class", `<blockquote class="x">y</blockquote>`, `attribute class="x" on <blockquote> is not a value`},
+	{"code class", `<code class="x">y</code>`, `attribute class="x" on <code> is not a value`},
+	{"code class with a space", `<code class="language-a b">y</code>`, `attribute class="language-a b" on <code> is not a value`},
+	{"ol start zero", `<ol start="0"><li>x</li></ol>`, `attribute start="0" on <ol> is not a value`},
+	{"ol start text", `<ol start="x"><li>x</li></ol>`, `attribute start="x" on <ol> is not a value`},
+
+	// The tags balance: each start tag has its end tag, in order.
+	{"unclosed p", `<p>x`, "unclosed <p>"},
+	{"unclosed a", `<p>x</p><a href="/x">y`, "unclosed <a>"},
+	{"unclosed span", `<p><span class="spoiler" tabindex="0">y</p>`, "end tag </p> does not match <span>"},
+	{"unclosed li", `<ul><li>x</ul>`, "end tag </ul> does not match <li>"},
+	{"unclosed blockquote", `<blockquote><p>x</p>`, "unclosed <blockquote>"},
+	{"stray end tag", `<p>x</p></p>`, "end tag </p> has no start tag"},
+	{"end tag alone", `</p>`, "end tag </p> has no start tag"},
+	{"wrong order", `<p><strong>x</p></strong>`, "end tag </p> does not match <strong>"},
+	{"self-closing p opens", `<p/>x`, "unclosed <p>"},
+	{"end tag of a void element", `<br></br>`, "end tag </br> has no start tag"},
+	{"end tag of img", `<img src="/a.png"></img>`, "end tag </img> has no start tag"},
+
 	// Markup that is not an element at all.
 	{"comment", `<p>a</p><!-- x -->`, "comment"},
 	{"conditional comment", `<!--[if IE]><script>x</script><![endif]-->`, "comment"},
@@ -217,10 +255,13 @@ func TestCheckAccepts(t *testing.T) {
 		`<a href="mailto:a%40b.c">x</a>`,
 		`<img src="/files/a.png" alt="" loading="lazy" class="post-img">`,
 		`<img src="https://example.com/a.png?x=1&amp;y=2" alt="x">`,
-		`<iframe class="embed" src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ" title="t" allowfullscreen></iframe>`,
+		`<iframe class="embed youtube" src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ" title="YouTube video" allowfullscreen></iframe>`,
 		`<ol start="3"><li>x</li></ol>`,
 		`<span class="spoiler" tabindex="0">x</span>`,
 		`<P>upper case tag</P>`,
+		`<ul><li><p>x</p></li></ul><br><hr><img src="/a.png" alt="x" loading="lazy" class="post-img">`,
+		`<pre class="code"><code class="language-c++">x</code></pre>`,
+		`<blockquote class="twitter-tweet"><a href="https://x.com/i/status/1">View post on X</a></blockquote>`,
 	} {
 		if p := htmlcheck.Problems(f); len(p) != 0 {
 			t.Errorf("Problems(%q) = %q, want none", f, p)

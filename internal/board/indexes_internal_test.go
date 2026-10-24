@@ -153,3 +153,27 @@ select 'member' || k, 'member' || k, '', '', '', 'legacy', 'active', timestamptz
 		}
 	}
 }
+
+// A search by text reads the posts through posts_search_idx and the titles
+// through topics_title_search_idx. The index expression of the titles is the one
+// that the query writes (titleVector), so a change to either side alone turns the
+// index off: the plan then scans the topics. The statements below hold the
+// predicates of the two arms of the search on their own, because on a fixture of
+// a few rows the planner picks other indexes for the join of the full statement.
+func TestSearchQueryUsesIndexes(t *testing.T) {
+	for _, tc := range []struct{ name, sql, index string }{
+		{"title arm", "select t.id from topics t where " + titleVector + " @@ to_tsquery('english', 'zebra')", "topics_title_search_idx"},
+		{"post arm", "select p.id from posts p where p.search @@ to_tsquery('english', 'zebra')", "posts_search_idx"},
+	} {
+		plan := explain(t, tc.sql)
+		if !strings.Contains(plan, tc.index) || strings.Contains(plan, "Seq Scan") {
+			t.Errorf("%s: the plan does not use %s:\n%s", tc.name, tc.index, plan)
+		}
+	}
+	// The full statement writes the same title expression.
+	sb := searchBuilder{args: []any{[]int64{2}}, byText: true}
+	sb.text = sb.arg("'zebra'")
+	if !strings.Contains(sb.countSQL(), "where "+titleVector+" @@") {
+		t.Errorf("the search statement does not write titleVector")
+	}
+}
