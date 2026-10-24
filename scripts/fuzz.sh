@@ -23,7 +23,9 @@ for target in "$@"; do
 	pkg=${target% *}
 	name=${target#* }
 	echo "== $name in $pkg"
-	if ! listed=$(go test -list "^${name}\$" "$pkg" 2>&1); then
+	# Only stdout holds the list. Stderr goes to the log as it is: a cold module
+	# cache makes go print "go: downloading ..." lines there.
+	if ! listed=$(go test -list "^${name}\$" "$pkg"); then
 		echo "$listed"
 		echo "FAIL: go test -list failed for $name in $pkg"
 		status=1

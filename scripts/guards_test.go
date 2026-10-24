@@ -448,3 +448,36 @@ func TestFuzzScriptRunsARealTarget(t *testing.T) {
 		t.Errorf("exit %d, want 0 and a fuzz run:\n%s", code, out)
 	}
 }
+
+// A cold module cache makes go print "go: downloading ..." lines on stderr before
+// the list. They must not count as names. A stub go on the PATH prints that noise
+// on stderr, then the name and the ok line on stdout, as the real tool does.
+func TestFuzzScriptIgnoresDownloadNoise(t *testing.T) {
+	bin := t.TempDir()
+	stub := `#!/bin/sh
+case "$*" in
+*-list*)
+	echo "go: downloading example.com/m v1.0.0" >&2
+	echo "FuzzThing"
+	printf 'ok  \texample.com/pkg\t0.01s\n'
+	;;
+*-fuzz*)
+	echo "go: downloading example.com/m v1.0.0" >&2
+	echo "fuzz: elapsed: 1s, execs: 1"
+	;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + bin + ":" + os.Getenv("PATH")}
+	out, code := run(t, "..", env, "fuzz.sh", "1s", "./pkg/ FuzzThing")
+	if code != 0 || !strings.Contains(out, "fuzz: elapsed") {
+		t.Errorf("exit %d, want 0 and a fuzz run:\n%s", code, out)
+	}
+	// And the stub still lets a wrong name fail.
+	out, code = run(t, "..", env, "fuzz.sh", "1s", "./pkg/ FuzzOther")
+	if code != 1 {
+		t.Errorf("a name the list does not hold: exit %d, want 1:\n%s", code, out)
+	}
+}
