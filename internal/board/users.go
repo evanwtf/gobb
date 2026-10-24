@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -53,7 +54,8 @@ type ProfilePage struct {
 //
 // A user who was removed for good gives [ErrGone], before any permission check.
 // Without account.view_profiles the viewer gets [ErrForbidden], whatever the ID.
-// A user who does not exist or is not active gives [ErrNotFound].
+// A user who does not exist gives [ErrNotFound]. An inactive member has a profile
+// like an active one: the member cannot sign in, but the posts are on the board.
 func Profile(ctx context.Context, q db.Querier, v Viewer, userID int64) (ProfilePage, error) {
 	var gone bool
 	if err := q.QueryRow(ctx, `select exists (select 1 from gone_users where id = $1)`, userID).Scan(&gone); err != nil {
@@ -71,7 +73,7 @@ func Profile(ctx context.Context, q db.Querier, v Viewer, userID int64) (Profile
 	)
 	err := scanCard(q.QueryRow(ctx, `select `+cardColumns+`, u.last_visit_at, u.signature_tree
   from users u`+cardJoins+`
- where u.id = $1 and u.state = 'active'`, userID), &out.Card, &out.LastVisit, &sig)
+ where u.id = $1`, userID), &out.Card, &out.LastVisit, &sig)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProfilePage{}, ErrNotFound
 	}
@@ -122,6 +124,16 @@ var memberOrder = map[string]string{
 	"posts":  "u.post_count desc, u.username_clean, u.id",
 }
 
+// membersSQL returns the query for one page of the member list, in the given
+// ORDER BY. The arguments are the limit and the offset.
+func membersSQL(order string) string {
+	// The sort and the limit run on users alone; the rank lookup runs for the rows
+	// of the page only.
+	return `select ` + cardColumns + `
+  from (select * from users where state = 'active' order by ` + strings.ReplaceAll(order, "u.", "") + ` limit $1 offset $2) u` + cardJoins + `
+ order by ` + order
+}
+
 // Members returns page number page (from 1) of the active members, in the order
 // sort names: "name" (ascending, the default), "joined" (oldest first) or "posts"
 // (most first). Any other sort is "name". The viewer needs account.view_profiles,
@@ -143,11 +155,7 @@ func Members(ctx context.Context, q db.Querier, v Viewer, sort string, page int)
 	if page < 1 || page > out.Pages {
 		return MembersPage{}, ErrNotFound
 	}
-	rows, err := q.Query(ctx, `select `+cardColumns+`
-  from users u`+cardJoins+`
- where u.state = 'active'
- order by `+order+`
- limit $1 offset $2`, membersPerPage, (page-1)*membersPerPage)
+	rows, err := q.Query(ctx, membersSQL(order), membersPerPage, (page-1)*membersPerPage)
 	if err != nil {
 		return MembersPage{}, fmt.Errorf("board: list members: %w", err)
 	}

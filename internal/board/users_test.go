@@ -108,6 +108,19 @@ func TestProfile(t *testing.T) {
 		t.Errorf("bob = %v, %v", p.Groups, err)
 	}
 
+	// An inactive member cannot sign in, but the posts are on the board and so is the
+	// profile. The member list still leaves the member out (see TestMembers).
+	dave, err := board.Profile(ctx, pool, bob, 4)
+	if err != nil {
+		t.Fatalf("inactive user: %v", err)
+	}
+	if dave.Card.Name != "dave" || dave.Card.ID != 4 || !slices.Equal(dave.Groups, []string{"members"}) {
+		t.Errorf("dave = %+v, groups %v", dave.Card, dave.Groups)
+	}
+	if _, err := board.Profile(ctx, pool, guest, 4); !errors.Is(err, board.ErrForbidden) {
+		t.Errorf("guest, inactive user: err = %v, want ErrForbidden", err)
+	}
+
 	for _, c := range []struct {
 		name string
 		v    board.Viewer
@@ -119,7 +132,6 @@ func TestProfile(t *testing.T) {
 		{"guest, a gone user", guest, 8, board.ErrGone},
 		{"bob, a gone user", bob, 8, board.ErrGone},
 		{"bob, an unknown ID", bob, 99, board.ErrNotFound},
-		{"bob, an inactive user", bob, 4, board.ErrNotFound},
 	} {
 		if _, err := board.Profile(ctx, pool, c.v, c.id); !errors.Is(err, c.want) {
 			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)

@@ -2,6 +2,7 @@ package board
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -96,5 +97,58 @@ func TestUnreadQueriesUseIndex(t *testing.T) {
 	// row, and never reads all of them.
 	if !strings.Contains(plan, "topic_marks_pkey") || strings.Contains(plan, "Hash Cond: (topic_marks.topic_id") {
 		t.Errorf("new since, page: the marks are not read by primary key:\n%s", plan)
+	}
+}
+
+// planNodes walks the JSON plan of explain and returns every node.
+func planNodes(n map[string]any) []map[string]any {
+	out := []map[string]any{n}
+	if kids, ok := n["Plans"].([]any); ok {
+		for _, k := range kids {
+			out = append(out, planNodes(k.(map[string]any))...)
+		}
+	}
+	return out
+}
+
+// The member list looks up ranks for the rows of the page, and for no other
+// member: the sort and the limit run first.
+func TestMembersLookUpRanksForThePageOnly(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	if _, err := pool.Exec(ctx, `
+insert into users (username, username_clean, email, email_clean, password_hash, password_scheme, state, registered_at, post_count)
+select 'member' || k, 'member' || k, '', '', '', 'legacy', 'active', timestamptz '2021-01-01' + k * interval '1 minute', k
+  from generate_series(1, 400) k`); err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range []string{memberOrder["name"], memberOrder["joined"], memberOrder["posts"]} {
+		rows, err := pool.Query(ctx, "explain (analyze, format json) "+membersSQL(order), membersPerPage, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc []byte
+		for rows.Next() {
+			if err := rows.Scan(&doc); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rows.Close()
+		var plan []struct {
+			Plan map[string]any `json:"Plan"`
+		}
+		if err := json.Unmarshal(doc, &plan); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range planNodes(plan[0].Plan) {
+			if n["Relation Name"] != "ranks" {
+				continue
+			}
+			// Actual Loops times Actual Rows is how many rank rows the node
+			// produced for all its parents; Loops alone says how often it ran.
+			if loops, _ := n["Actual Loops"].(float64); loops > float64(membersPerPage) {
+				t.Errorf("order %q: the ranks lookup ran %v times; a page has %d rows", order, loops, membersPerPage)
+			}
+		}
 	}
 }

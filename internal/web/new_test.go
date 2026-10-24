@@ -486,6 +486,32 @@ func TestNavCountFalls(t *testing.T) {
 	}
 }
 
+// The page that marks a topic read shows the count without that topic. Alice has
+// two unread topics; the page of the first shows 1, and the page of the second,
+// which leaves none, has no link to /new.
+func TestNavCountOnTheMarkingPage(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	if _, err := pool.Exec(context.Background(), `update users set last_visit_at = '2019-06-01T00:00:00Z', last_mark_at = null where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	alice := signIn(t, h, "alice", "example-password")
+	navOf := func(body string) string {
+		_, rest, _ := strings.Cut(body, `aria-label="Main"`)
+		nav, _, _ := strings.Cut(rest, "</nav>")
+		return nav
+	}
+	// An image load marks nothing, so its count stays.
+	if nav := navOf(bodyOf(t, getWith(t, h, "/t/1", alice, asImage))); !strings.Contains(nav, "(2)") {
+		t.Errorf("an image load changed the count:\n%s", nav)
+	}
+	if nav := navOf(bodyOf(t, getWith(t, h, "/t/1", alice, asPage))); !strings.Contains(nav, "New since your last visit (1)") {
+		t.Errorf("the page of the first topic:\n%s", nav)
+	}
+	if nav := navOf(bodyOf(t, getWith(t, h, "/t/2", alice, asPage))); strings.Contains(nav, `href="/new"`) {
+		t.Errorf("the page of the last unread topic still links /new:\n%s", nav)
+	}
+}
+
 // A request of a member who is not active writes nothing to users.
 func TestInactiveMemberWritesNothing(t *testing.T) {
 	h, pool := siteWithPool(t, bundletest.Small(), Options{})

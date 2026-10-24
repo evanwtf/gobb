@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -403,10 +404,10 @@ func (s *site) render(w http.ResponseWriter, status int, name string, p *page) {
 	s.renderThen(w, status, name, p, nil)
 }
 
-// renderThen is [site.render] with a step in the middle: after the page is built
-// and before it is sent, it calls after. A page that fails to build never calls
-// it, so bookkeeping that belongs to a page that was shown (a view count, a
-// read mark) is not written for a page that was not.
+// renderThen is [site.render] with a step in the middle: once the page is known
+// to build and before the nav count is read, it calls after. A page that fails to
+// build never calls it, so bookkeeping that belongs to a page that was shown (a
+// view count, a read mark) is not written for a page that was not.
 func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *page, after func()) {
 	t, ok := s.pages[name]
 	if !ok {
@@ -428,16 +429,24 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		}
 		p.CSRF = session.CSRFToken(secret)
 	}
-	s.addNav(p)
 	s.addPageLinks(p)
+	if after != nil {
+		// Build the page once to see that it builds, then write the bookkeeping,
+		// then build it again: the nav count comes after the write, so the page
+		// that marks a topic read does not count that topic as unread.
+		if err := t.ExecuteTemplate(io.Discard, "layout", p); err != nil {
+			slog.Error("render", "template", name, "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		after()
+	}
+	s.addNav(p)
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
 		slog.Error("render", "template", name, "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
-	}
-	if after != nil {
-		after()
 	}
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")

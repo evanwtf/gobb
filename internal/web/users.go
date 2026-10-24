@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"errors"
 	"html/template"
 	"net/http"
@@ -204,7 +205,7 @@ func (s *site) staticPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	p.Title = sp.Title
+	p.Title = cmp.Or(sp.Title, sp.Slug)
 	p.Data = pageData{StaticPage: sp, HTML: html}
 	s.render(w, http.StatusOK, "page.html", p)
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/bundletest"
 )
@@ -74,7 +76,7 @@ func TestProfilePages(t *testing.T) {
 	if rec.Code != http.StatusForbidden || !strings.Contains(body, `href="/login?next=%2Fu%2F1"`) {
 		t.Errorf("/u/1 as guest: status %d, sign-in link missing", rec.Code)
 	}
-	if strings.Contains(body, "alice") && strings.Contains(body, "Example signature") {
+	if strings.Contains(body, "alice") || strings.Contains(body, "Example signature") {
 		t.Error("the 403 page shows the profile")
 	}
 
@@ -85,7 +87,18 @@ func TestProfilePages(t *testing.T) {
 	if rec := get(t, h, "/u/8"); rec.Code != http.StatusGone {
 		t.Errorf("/u/8 as guest: status %d, want 410", rec.Code)
 	}
-	for _, p := range []string{"/u/99", "/u/4", "/u/0", "/u/-1", "/u/abc", "/u/01"} {
+	// An inactive member cannot sign in; the profile is there, as the posts are.
+	rec = getAs(t, h, "/u/4", bob)
+	if body := bodyOf(t, rec); rec.Code != http.StatusOK || !strings.Contains(body, "<bdi>dave</bdi>") || strings.Contains(body, "@example.com") {
+		t.Errorf("/u/4: status %d", rec.Code)
+	}
+	if rec := get(t, h, "/u/4"); rec.Code != http.StatusForbidden {
+		t.Errorf("/u/4 as guest: status %d, want 403", rec.Code)
+	}
+	if body := bodyOf(t, getAs(t, h, "/members", bob)); strings.Contains(body, "dave") {
+		t.Error("the member list shows an inactive member")
+	}
+	for _, p := range []string{"/u/99", "/u/0", "/u/-1", "/u/abc", "/u/01"} {
 		if rec := getAs(t, h, p, bob); rec.Code != http.StatusNotFound {
 			t.Errorf("%s: status %d, want 404", p, rec.Code)
 		}
@@ -253,7 +266,7 @@ func TestAccountRedirect(t *testing.T) {
 // last poster. A guest sees the links too: the profile answers with the way to
 // sign in.
 func TestAuthorLinks(t *testing.T) {
-	h, _ := newTestSite(t, pagedBoard(), Options{})
+	h, pool := siteWithPool(t, pagedBoard(), Options{})
 	for _, p := range []string{"/", "/f/2"} {
 		body := bodyOf(t, get(t, h, p))
 		if !strings.Contains(body, `<a href="/u/1"><bdi>alice</bdi></a>`) {
@@ -263,6 +276,33 @@ func TestAuthorLinks(t *testing.T) {
 	if !strings.Contains(bodyOf(t, get(t, h, "/t/7")), `<a href="/u/1"><bdi>alice</bdi></a>`) {
 		t.Error("/t/7: the author does not link")
 	}
+	// The "new since your last visit" list names the last poster the same way.
+	if _, err := pool.Exec(t.Context(), `update users set last_visit_at = '2021-01-01T00:00:00Z', last_mark_at = null where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	carol := signIn(t, h, "carol", "example-password")
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/new", carol)), `<a href="/u/1"><bdi>alice</bdi></a>`) {
+		t.Error("/new: the last poster does not link to the profile")
+	}
+}
+
+// A static page with no title shows its slug in the window title, as it does in
+// the heading.
+func TestStaticPageWithoutTitle(t *testing.T) {
+	h, pool := smallSite2(t)
+	if _, err := pool.Exec(t.Context(), `update static_pages set title = '' where slug = 'rules'`); err != nil {
+		t.Fatal(err)
+	}
+	body := bodyOf(t, get(t, h, "/pages/rules"))
+	if !strings.Contains(body, "<title>rules - Example Board</title>") || !strings.Contains(body, "<h1>rules</h1>") {
+		t.Errorf("an empty title: %s", body[:min(len(body), 400)])
+	}
+}
+
+// smallSite2 is smallSite with the pool.
+func smallSite2(t *testing.T) (http.Handler, *pgxpool.Pool) {
+	t.Helper()
+	return siteWithPool(t, bundletest.Small(), Options{})
 }
 
 func TestProfilePagesUnderBasePath(t *testing.T) {

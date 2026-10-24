@@ -807,3 +807,51 @@ func TestNewSinceStatementCount(t *testing.T) {
 		t.Errorf("NewCounts ran %d statements, want 2", c.n)
 	}
 }
+
+// A moderator with mod.approve sees a post that waits for approval, so the topic
+// is New for the moderator: in the badges, in "new since" and for FirstUnread. The
+// post is carol's, not bob's, so the author rule is not what lets bob see it.
+func TestModeratorSeesUnapprovedPostAsNew(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	addUnapprovedOnlyTopic(t, pool)
+	if _, err := pool.Exec(ctx, `
+update users set last_mark_at = '2026-10-01T00:00:00Z', last_visit_at = '2026-10-01T00:00:00Z' where id = 2;
+delete from forum_marks where user_id = 2; delete from topic_marks where user_id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	bob := memberFor(t, pool, 2)
+	if !bob.Perms.Has("mod.approve", 2) {
+		t.Fatal("the fixture's bob does not hold mod.approve in forum 2")
+	}
+	if !topicNew(t, pool, bob, 2, 10) {
+		t.Error("bob: topic 10 is not New")
+	}
+	if n, _ := forumNew(t, pool, bob, 2); !n {
+		t.Error("bob: forum 2 is not New")
+	}
+	np, err := board.NewSince(ctx, pool, bob, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *board.NewRow
+	for i := range np.Topics {
+		if np.Topics[i].ID == 10 {
+			row = &np.Topics[i]
+		}
+	}
+	if row == nil || !row.New {
+		t.Fatalf("bob: the list lacks topic 10, or it is not New: %+v", row)
+	}
+	if total, unread, err := board.NewCounts(ctx, pool, bob); err != nil || unread != np.Unread || total != np.Total || unread < 1 {
+		t.Errorf("bob: NewCounts = %d, %d, %v; the list says %d, %d", total, unread, err, np.Total, np.Unread)
+	}
+	if id, err := board.FirstUnread(ctx, pool, bob, 10); err != nil || id != 10 {
+		t.Errorf("bob: FirstUnread = %d, %v; want 10", id, err)
+	}
+	// Alice has no mod.approve and is not the author: none of it holds for her.
+	alice := memberFor(t, pool, 1)
+	if _, err := board.FirstUnread(ctx, pool, alice, 10); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("alice: FirstUnread err = %v, want ErrNotFound", err)
+	}
+}
