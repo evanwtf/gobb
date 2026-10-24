@@ -51,6 +51,7 @@ Decisions and limits that Plan 1 found and later plans must honor:
   - The quote button inserts `> **Name** [wrote](/p/N):` and then a `>` line, so the attribution is its own paragraph.
   - Set `enable_sig` from the member's preference on every insert. Its default is false.
   - YouTube start times can become an optional `start` attribute on `youtube`. This is additive, so stored trees stay valid.
+  - Open Graph preview cards for a bare link alone on its line, on by default (spec 12.2, owner). Build the fetcher with guards against requests to internal addresses: public addresses only, few redirects, time and size limits. Store cards apart from the post, fetch them after a save and after an import, and resolve short links to embeds with the same fetcher.
 - **Plan 5 (moderation).** A hard delete of a topic or a user must first remove the rows that depend on it. Most foreign keys do not cascade.
 - **Plan 6 (release).**
   - Add a test that pins the sha256 of each released migration.

@@ -427,10 +427,13 @@ designer's call):
 
 - To add a site later, add one entry to the embed table: its link patterns, its output,
   and the origins it needs in the Content-Security-Policy.
-- Links that need a server-side lookup to embed (short links, or Bluesky links by
-  handle) stay links at launch. Link previews for other sites (a title and image that
-  the server fetches) are a possible later feature; they bring server-side request
-  risk. **(designer's call)**
+- A bare link alone on its line to any other site shows a preview card: the title,
+  description and image from the page's Open Graph tags. It is on by default.
+  **(owner)** The server fetches the page, so the fetcher reaches public addresses
+  only, follows few redirects, and stops at time and size limits. The post stores only
+  the link; gobb stores the fetched card apart from it and refreshes it. The same
+  fetcher resolves short links (for example TikTok and Reddit short links) to their
+  embed. **(designer's call:** the guards and the storage.)
 - Embeds for services that no longer exist are the converter's business: it rewrites
   them as plain links.
 - Remote images (about 1,600 posts) stay hotlinked. No image proxy at launch: it would
