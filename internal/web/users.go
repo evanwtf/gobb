@@ -77,7 +77,7 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 		FindHref:    s.path("search") + "?" + url.Values{"author": {pp.Card.Name}}.Encode(),
 	}
 	if pp.Signature != nil {
-		html, err := s.renderTree(r, pp.Signature)
+		html, err := s.renderTree(r, p, pp.Signature)
 		if err != nil {
 			s.serverError(w, r, err)
 			return
@@ -89,13 +89,16 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "profile.html", p)
 }
 
-// renderTree renders a stored tree to HTML with the smilies of the board.
-func (s *site) renderTree(r *http.Request, tree *markup.Node) (template.HTML, error) {
+// renderTree renders a stored tree to HTML with the smilies of the board. It
+// adds what the embeds of the tree need to the policy and the scripts of p.
+func (s *site) renderTree(r *http.Request, p *page, tree *markup.Node) (template.HTML, error) {
 	smileys, err := board.SmileyLookup(r.Context(), s.pool)
 	if err != nil {
 		return "", err
 	}
-	return markup.Render(tree, markup.RenderContext{Smiley: smileys, BasePath: s.base}).HTML, nil
+	out := markup.Render(tree, markup.RenderContext{Smiley: smileys, BasePath: s.base})
+	p.addRendered(out)
+	return out.HTML, nil
 }
 
 // sortHead is one sortable column head of the member list.
@@ -208,7 +211,7 @@ func (s *site) staticPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	html, err := s.renderTree(r, sp.Tree)
+	html, err := s.renderTree(r, p, sp.Tree)
 	if err != nil {
 		s.serverError(w, r, err)
 		return

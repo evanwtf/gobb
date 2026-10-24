@@ -47,6 +47,13 @@ type Rendered struct {
 	// ScriptSrc lists the origins of the scripts that the embeds of this tree
 	// need. It is sorted and has no duplicates.
 	ScriptSrc []string
+	// ConnectSrc lists the origins that the provider scripts of this tree reach
+	// with fetch or XMLHttpRequest. It is sorted and has no duplicates.
+	ConnectSrc []string
+	// Scripts lists the full URLs of the provider scripts that the embeds of
+	// this tree need. A page loads each one once, with <script async>. It is
+	// sorted and has no duplicates.
+	Scripts []string
 }
 
 // renderItem is one entry of the render stack. An entry with a nil n closes an
@@ -68,8 +75,10 @@ type renderer struct {
 	textNL  bool // the text so far ends with a newline
 	stack   []renderItem
 	frames  map[string]struct{}
-	scripts map[string]struct{}
-	seen    map[*Node]struct{} // the nodes that Render has already visited
+	scripts map[string]struct{} // script origins
+	connect map[string]struct{}
+	urls    map[string]struct{} // script URLs
+	seen    map[*Node]struct{}  // the nodes that Render has already visited
 }
 
 // Render turns a tree into HTML. It is the one place that writes the HTML of a
@@ -117,10 +126,12 @@ func Render(n *Node, rc RenderContext) Rendered {
 		r.node(it)
 	}
 	return Rendered{
-		HTML:      template.HTML(r.html.String()),
-		Text:      strings.Trim(r.text.String(), "\n"),
-		FrameSrc:  sortedKeys(r.frames),
-		ScriptSrc: sortedKeys(r.scripts),
+		HTML:       template.HTML(r.html.String()),
+		Text:       strings.Trim(r.text.String(), "\n"),
+		FrameSrc:   sortedKeys(r.frames),
+		ScriptSrc:  sortedKeys(r.scripts),
+		ConnectSrc: sortedKeys(r.connect),
+		Scripts:    sortedKeys(r.urls),
 	}
 }
 
@@ -430,21 +441,30 @@ func (r *renderer) embed(it renderItem) {
 	if !ok {
 		return
 	}
-	out, frame, scripts := embedHTML(n.Name, id)
-	if out == "" {
+	e := embedHTML(n.Name, id)
+	if e.html == "" {
 		return
 	}
-	r.html.WriteString(out)
-	if r.frames == nil {
-		r.frames = map[string]struct{}{}
+	r.html.WriteString(e.html)
+	r.frames = addKey(r.frames, e.frame)
+	for _, o := range e.scriptSrc {
+		r.scripts = addKey(r.scripts, o)
 	}
-	r.frames[frame] = struct{}{}
-	for _, script := range scripts {
-		if r.scripts == nil {
-			r.scripts = map[string]struct{}{}
-		}
-		r.scripts[script] = struct{}{}
+	for _, o := range e.connect {
+		r.connect = addKey(r.connect, o)
 	}
+	for _, u := range e.scripts {
+		r.urls = addKey(r.urls, u)
+	}
+}
+
+// addKey adds k to the set m and returns it. A nil m becomes a new set.
+func addKey(m map[string]struct{}, k string) map[string]struct{} {
+	if m == nil {
+		m = map[string]struct{}{}
+	}
+	m[k] = struct{}{}
+	return m
 }
 
 // pathEsc escapes each segment of a "/"-separated ID for a URL path, then for
@@ -461,100 +481,150 @@ func pathEsc(id string) string {
 // Origins of the providers. Each embed in [embedHTML] names the page of the
 // provider's published embed documentation that its entry follows.
 const (
-	originYouTube    = "https://www.youtube-nocookie.com"
-	originVimeo      = "https://player.vimeo.com"
-	originXFrame     = "https://platform.twitter.com"
-	originXHost      = "https://platform.x.com"
-	originInstagram  = "https://www.instagram.com"
-	originReddit     = "https://embed.reddit.com"
-	originTikTok     = "https://www.tiktok.com"
-	originThreads    = "https://www.threads.com"
-	originSpotify    = "https://open.spotify.com"
-	originSoundCloud = "https://w.soundcloud.com"
+	originYouTube = "https://www.youtube-nocookie.com"
+	originVimeo   = "https://player.vimeo.com"
+	originXFrame  = "https://platform.twitter.com"
+	originXHost   = "https://platform.x.com"
+	// The hosts that X's widget script reaches with fetch or XHR.
+	originXSyndication    = "https://syndication.twitter.com"
+	originXCDNSyndication = "https://cdn.syndication.twimg.com"
+	originInstagram       = "https://www.instagram.com"
+	originReddit          = "https://embed.reddit.com"
+	originTikTok          = "https://www.tiktok.com"
+	originThreads         = "https://www.threads.com"
+	originSpotify         = "https://open.spotify.com"
+	originSoundCloud      = "https://w.soundcloud.com"
 )
 
-// embedHTML returns the HTML of an embed for a canonical ID, the origin it
-// loads in a frame, and the origins of the scripts it needs (nil for none). It
-// returns empty strings when the ID has the wrong shape for the tag.
+// embedOut is one row of the embed table: the HTML of an embed and the origins
+// that the page needs for it in its Content-Security-Policy.
+type embedOut struct {
+	html string
+	// frame is the origin that the embed loads in a frame.
+	frame string
+	// scripts are the full URLs of the provider scripts that the page loads.
+	scripts []string
+	// scriptSrc are the origins that script-src needs for those scripts. A script
+	// that answers with a redirect needs the origin of the target too.
+	scriptSrc []string
+	// connect are the origins that the provider scripts reach with fetch or
+	// XMLHttpRequest.
+	connect []string
+}
+
+// embedHTML returns the embed table row for a canonical ID. It returns an empty
+// row when the ID has the wrong shape for the tag.
 //
 // Every iframe has loading="lazy" and a title. None has a sandbox attribute:
 // the providers' players need both scripts and their own origin, and the
 // pair allow-scripts with allow-same-origin removes the sandbox.
-func embedHTML(tag, id string) (out, frame string, scripts []string) {
+func embedHTML(tag, id string) embedOut {
 	switch tag {
 	case "youtube":
 		// https://support.google.com/youtube/answer/171780 (privacy-enhanced mode
 		// uses youtube-nocookie.com). The allow and referrerpolicy values follow the
 		// markup that https://www.youtube.com/oembed returns.
-		return `<iframe class="embed youtube" src="` + originYouTube + `/embed/` + pathEsc(id) +
+		return embedOut{html: `<iframe class="embed youtube" src="` + originYouTube + `/embed/` + pathEsc(id) +
 			`" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen"` +
-			` allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`, originYouTube, nil
+			` allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`, frame: originYouTube}
 	case "vimeo":
 		// https://help.vimeo.com/hc/en-us/articles/12426260232977-About-Player-parameters
 		// shows src="https://player.vimeo.com/video/{id}" with allowfullscreen.
-		return `<iframe class="embed vimeo" src="` + originVimeo + `/video/` + pathEsc(id) +
-				`" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`,
-			originVimeo, nil
+		return embedOut{html: `<iframe class="embed vimeo" src="` + originVimeo + `/video/` + pathEsc(id) +
+			`" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`,
+			frame: originVimeo}
 	case "tweet":
 		// https://docs.x.com/x-for-websites/embedded-posts/overview, and the markup
 		// that https://publish.x.com/oembed returns: a blockquote.twitter-tweet with a
-		// link to x.com, and a script from platform.x.com/widgets.js. That script
-		// builds its iframes on platform.twitter.com.
+		// link to x.com, and the script at platform.x.com/widgets.js. The FAQ at
+		// https://docs.x.com/x-for-websites/embedded-posts/faq gives that script URL.
+		// The pages list no frame, connect or image host and give no CSP advice, so
+		// the lists below come from what the script does in a browser (see the report
+		// of the Task 9 check).
 		//
-		// ScriptSrc lists both hosts. platform.x.com/widgets.js answers with a 302 to
+		// scriptSrc lists both hosts. platform.x.com/widgets.js answers with a 302 to
 		// platform.twitter.com/widgets.js, and that script loads its chunks from
 		// https://platform.twitter.com/js/. A CSP checks each redirect, so a policy
 		// with only platform.x.com blocks the script and the tweet never renders.
-		return `<blockquote class="twitter-tweet"><a href="https://x.com/i/status/` + pathEsc(id) +
-			`">View post on X</a></blockquote>`, originXFrame, []string{originXFrame, originXHost}
+		//
+		// connect lists the hosts that the script reaches with fetch or XHR: the
+		// syndication hosts. The frame the script builds loads from
+		// platform.twitter.com.
+		return embedOut{
+			html: `<blockquote class="twitter-tweet"><a href="https://x.com/i/status/` + pathEsc(id) +
+				`">View post on X</a></blockquote>`,
+			frame:     originXFrame,
+			scripts:   []string{originXHost + "/widgets.js"},
+			scriptSrc: []string{originXFrame, originXHost},
+			connect:   []string{originXSyndication, originXCDNSyndication},
+		}
 	case "instagram":
-		// https://developers.facebook.com/docs/instagram/embedding : a
+		// https://developers.facebook.com/docs/instagram-platform/oembed : a
 		// blockquote.instagram-media that the script at www.instagram.com/embed.js
-		// turns into a frame.
+		// turns into a frame. The page names www.instagram.com only and gives no
+		// CSP advice.
 		link := "https://www.instagram.com/p/" + pathEsc(id) + "/"
-		return `<blockquote class="instagram-media" data-instgrm-permalink="` + link + `"><a href="` + link +
-			`">View on Instagram</a></blockquote>`, originInstagram, []string{originInstagram}
+		return embedOut{
+			html: `<blockquote class="instagram-media" data-instgrm-permalink="` + link + `"><a href="` + link +
+				`">View on Instagram</a></blockquote>`,
+			frame:     originInstagram,
+			scripts:   []string{originInstagram + "/embed.js"},
+			scriptSrc: []string{originInstagram},
+		}
 	case "reddit":
-		// The widget script is https://embed.reddit.com/widgets.js. It selects
+		// Reddit's embed page (https://www.reddit.com/wiki/embeds) answers 403 to a
+		// script fetch, so this entry follows the script's own behavior: the widget
+		// script is https://embed.reddit.com/widgets.js. It selects
 		// blockquote.reddit-embed-bq and loads its frames from embed.reddit.com.
 		sub, post, ok := strings.Cut(id, "/")
 		if !ok {
-			return "", "", nil
+			return embedOut{}
 		}
-		return `<blockquote class="reddit-embed-bq"><a href="https://www.reddit.com/r/` + pathEsc(sub) +
-			`/comments/` + pathEsc(post) + `/">View post on Reddit</a></blockquote>`, originReddit, []string{originReddit}
+		return embedOut{
+			html: `<blockquote class="reddit-embed-bq"><a href="https://www.reddit.com/r/` + pathEsc(sub) +
+				`/comments/` + pathEsc(post) + `/">View post on Reddit</a></blockquote>`,
+			frame:     originReddit,
+			scripts:   []string{originReddit + "/widgets.js"},
+			scriptSrc: []string{originReddit},
+		}
 	case "tiktok":
 		// https://developers.tiktok.com/doc/embed-player : the player is
 		// www.tiktok.com/player/v1/{post_id}.
-		return `<iframe class="embed tiktok" src="` + originTikTok + `/player/v1/` + pathEsc(id) +
-			`" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`, originTikTok, nil
+		return embedOut{html: `<iframe class="embed tiktok" src="` + originTikTok + `/player/v1/` + pathEsc(id) +
+			`" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`, frame: originTikTok}
 	case "threads":
 		// https://developers.facebook.com/docs/threads/tools-and-resources/embed-a-threads-post :
-		// a blockquote.text-post-media with data-text-post-permalink, and a
-		// script (embed.js) from www.threads.com. The docs show a trailing "/" on the
-		// permalink.
+		// a blockquote.text-post-media with data-text-post-permalink, and
+		// <script async src="https://www.threads.com/embed.js">. The page names
+		// www.threads.com for both and gives no CSP advice. The docs show a trailing
+		// "/" on the permalink.
 		user, post, ok := strings.Cut(id, "/")
 		if !ok {
-			return "", "", nil
+			return embedOut{}
 		}
 		link := "https://www.threads.com/@" + pathEsc(user) + "/post/" + pathEsc(post) + "/"
-		return `<blockquote class="text-post-media" data-text-post-permalink="` + link + `"><a href="` + link +
-			`">View on Threads</a></blockquote>`, originThreads, []string{originThreads}
+		return embedOut{
+			html: `<blockquote class="text-post-media" data-text-post-permalink="` + link + `"><a href="` + link +
+				`">View on Threads</a></blockquote>`,
+			frame:     originThreads,
+			scripts:   []string{originThreads + "/embed.js"},
+			scriptSrc: []string{originThreads},
+		}
 	case "spotify":
 		// https://developer.spotify.com/documentation/embeds : the iframe src is
 		// open.spotify.com/embed/{type}/{id}.
 		kind, item, ok := strings.Cut(id, "/")
 		if !ok {
-			return "", "", nil
+			return embedOut{}
 		}
-		return `<iframe class="embed spotify" src="` + originSpotify + `/embed/` + pathEsc(kind) + `/` + pathEsc(item) +
-				`" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`,
-			originSpotify, nil
+		return embedOut{html: `<iframe class="embed spotify" src="` + originSpotify + `/embed/` + pathEsc(kind) + `/` + pathEsc(item) +
+			`" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`,
+			frame: originSpotify}
 	case "soundcloud":
 		// https://developers.soundcloud.com/docs/api/html5-widget : an iframe whose
 		// src is w.soundcloud.com/player/?url={escaped resource URL}.
-		return `<iframe class="embed soundcloud" src="` + originSoundCloud + `/player/?url=https%3A//soundcloud.com/` +
-			pathEsc(id) + `" title="SoundCloud" loading="lazy"></iframe>`, originSoundCloud, nil
+		return embedOut{html: `<iframe class="embed soundcloud" src="` + originSoundCloud + `/player/?url=https%3A//soundcloud.com/` +
+			pathEsc(id) + `" title="SoundCloud" loading="lazy"></iframe>`, frame: originSoundCloud}
 	}
-	return "", "", nil
+	return embedOut{}
 }

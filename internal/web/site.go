@@ -25,6 +25,7 @@ import (
 	"github.com/evanwtf/gobb/internal/legacy"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/session"
+	"github.com/evanwtf/gobb/markup"
 )
 
 //go:embed templates/*.html
@@ -150,7 +151,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	} else {
 		root.Handle(s.base, http.StripPrefix(strings.TrimSuffix(s.base, "/"), inner))
 	}
-	return s.guard(root), nil
+	return secure(s.guard(root)), nil
 }
 
 // normalizeBase returns p with one leading and one trailing "/".
@@ -263,6 +264,22 @@ type page struct {
 	// list when the page already knows it. addNewLink then asks the database for
 	// nothing.
 	navUnread *int
+	// policy is the Content-Security-Policy of the page. A handler that renders
+	// posts adds the embeds of each one with addRendered.
+	policy policy
+	// Scripts are the URLs of the provider scripts that the embeds on the page
+	// need. The layout loads each one with <script async>.
+	Scripts []string
+	// Noindex adds the robots meta element. render sets it for the pages in
+	// noindexPages.
+	Noindex bool
+}
+
+// addRendered adds what the embeds of a rendered tree need to the page: the
+// origins for its policy and the provider scripts it loads.
+func (p *page) addRendered(r markup.Rendered) {
+	p.policy.add(r)
+	p.Scripts = mergeSorted(p.Scripts, r.Scripts)
 }
 
 // navLink is one link of the nav bar.
@@ -464,6 +481,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		p.CSRF = session.CSRFToken(secret)
 	}
 	s.addPageLinks(p)
+	p.Noindex = p.Noindex || noindexPages[name]
 	if after != nil {
 		// Build the page once to see that it builds, then write the bookkeeping,
 		// then build it again: the nav count comes after the write, so the page
@@ -486,7 +504,10 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	}
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", p.policy.String())
+	if h.Get("Cache-Control") == "" {
+		h.Set("Cache-Control", cacheControl(p.Viewer.UserID != 0))
+	}
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
 }

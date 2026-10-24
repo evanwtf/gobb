@@ -890,3 +890,57 @@ func TestRenderImageNote(t *testing.T) {
 		t.Errorf("unescaped note: %s", got)
 	}
 }
+
+func TestRenderScriptsAndConnect(t *testing.T) {
+	tw := Render(renderEmbed("tweet", "20"), RenderContext{})
+	if want := []string{"https://platform.x.com/widgets.js"}; !reflect.DeepEqual(tw.Scripts, want) {
+		t.Errorf("tweet Scripts = %v, want %v", tw.Scripts, want)
+	}
+	if len(tw.ConnectSrc) == 0 {
+		t.Error("tweet ConnectSrc is empty")
+	}
+	yt := Render(renderEmbed("youtube", "M7lc1UVf-VE"), RenderContext{})
+	if len(yt.Scripts) != 0 || len(yt.ConnectSrc) != 0 {
+		t.Errorf("youtube Scripts = %v, ConnectSrc = %v, want none", yt.Scripts, yt.ConnectSrc)
+	}
+	two := Render(tree(renderEmbed("tweet", "20").Children[0], renderEmbed("tweet", "21").Children[0]), RenderContext{})
+	if len(two.Scripts) != 1 || !reflect.DeepEqual(two.ConnectSrc, tw.ConnectSrc) {
+		t.Errorf("two tweets: Scripts = %v, ConnectSrc = %v", two.Scripts, two.ConnectSrc)
+	}
+}
+
+// TestRenderScriptsEveryEmbed pins the script URLs of the embed table. A script
+// URL is https, has a path, and its origin is in ScriptSrc.
+func TestRenderScriptsEveryEmbed(t *testing.T) {
+	want := map[string]string{
+		"tweet":     "https://platform.x.com/widgets.js",
+		"instagram": "https://www.instagram.com/embed.js",
+		"reddit":    "https://embed.reddit.com/widgets.js",
+		"threads":   "https://www.threads.com/embed.js",
+	}
+	ids := map[string]string{
+		"tweet": "20", "instagram": "CxYz_12-ab", "reddit": "programming/abc123", "threads": "zuck/C04flh-M8ii",
+		"youtube": "M7lc1UVf-VE", "vimeo": "76979871", "tiktok": "6718335390845095173",
+		"spotify": "track/4cOdK2wGLETKBW3PvgPWqT", "soundcloud": "forss/flickermood",
+	}
+	for tag, id := range ids {
+		r := Render(renderEmbed(tag, id), RenderContext{})
+		w, has := want[tag]
+		switch {
+		case has && !reflect.DeepEqual(r.Scripts, []string{w}):
+			t.Errorf("%s: Scripts = %v, want [%s]", tag, r.Scripts, w)
+		case !has && len(r.Scripts) != 0:
+			t.Errorf("%s: Scripts = %v, want none", tag, r.Scripts)
+		}
+		for _, u := range r.Scripts {
+			origin := u[:strings.Index(u[len("https://"):], "/")+len("https://")]
+			found := false
+			for _, o := range r.ScriptSrc {
+				found = found || o == origin
+			}
+			if !found {
+				t.Errorf("%s: origin %s of %s is not in ScriptSrc %v", tag, origin, u, r.ScriptSrc)
+			}
+		}
+	}
+}

@@ -4,6 +4,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{- if .Noindex}}
+<meta name="robots" content="noindex">
+{{- end}}
 <title>{{if .Title}}{{.Title}} - {{end}}{{.Settings.BoardName}}</title>
 <link rel="stylesheet" href="{{.CSS}}">
 <script src="{{.JS}}" defer></script>
@@ -77,6 +80,9 @@
     {{- end}}
   </div>
 </footer>
+{{- range .Scripts}}
+<script async src="{{.}}"></script>
+{{- end}}
 </body>
 </html>
 {{end}}

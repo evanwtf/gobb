@@ -112,9 +112,13 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	d.Posts = make([]postView, len(tp.Posts))
 	for i, post := range tp.Posts {
 		pv := postView{Post: post, Loc: p.Viewer.Loc}
-		pv.HTML = markup.Render(post.Tree, rc).HTML
+		body := markup.Render(post.Tree, rc)
+		p.addRendered(body)
+		pv.HTML = body.HTML
 		if post.Signature != nil {
-			pv.SigHTML = markup.Render(post.Signature, rc).HTML
+			sig := markup.Render(post.Signature, rc)
+			p.addRendered(sig)
+			pv.SigHTML = sig.HTML
 		}
 		d.Posts[i] = pv
 	}
@@ -251,10 +255,10 @@ func (s *site) attachment(w http.ResponseWriter, r *http.Request) {
 	if !inlineTypes[meta.Mime] {
 		disposition = "attachment"
 		contentType = "application/octet-stream"
-		h.Set("Content-Security-Policy", "sandbox")
+		// The download keeps the page policy and adds the sandbox to it.
+		h.Set("Content-Security-Policy", baseCSP+"; sandbox")
 	}
 	h.Set("Content-Type", contentType)
-	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "private, max-age=3600")
 	h.Set("Content-Disposition", disposition+"; filename*=UTF-8''"+encodeFilename(meta.Name))
 	http.ServeContent(w, r, "", time.Time{}, f)
