@@ -180,9 +180,10 @@ Rules:
     - Without `post.no_approval`, the reply is `unapproved` and no counter changes.
   - `TestCountersMatchRecompute`: after each of NewTopic, Reply, EditPost, DeletePost (a reply, then a first post), RestorePost, ApprovePost and SetTopicLock, running `counters.All` changes no row.
   - `TestWritesCheckOwnership`:
-    - bob gets `ErrForbidden` for EditPost and DeletePost on alice's post in a forum he can read.
-    - On a post in a forum he cannot read, he gets `ErrNotFound`.
+    - carol, who has no moderator rights, gets `ErrForbidden` for EditPost and DeletePost on alice's post in a forum she can read.
+    - On a post in a forum she cannot read, she gets `ErrNotFound`.
     - A guest gets `ErrForbidden` for every write.
+    - Each test grants and removes the rights its case needs, so a fixture's moderator rights cannot make a refusal pass.
   - `TestWriteRights`: one case for each row of "Who may do what", allowed and refused, including:
     - a reply to a locked topic refused for a member and allowed with `mod.lock`;
     - a reply to an unapproved topic refused;
@@ -266,7 +267,7 @@ Rules:
 - A held post shows "Waiting for approval" to its author and to moderators. A deleted post shows "Deleted" to moderators only (Plan 3's rule).
 
 - [ ] **Step 1: Write the failing tests**
-  - `TestModeratorControls`: as bob, with the moderator rights on forum 2:
+  - `TestModeratorControls`: as bob, granted `mod.delete`, `mod.approve`, `mod.edit` and `mod.lock` on forum 2 by the test:
     - delete a reply, then restore it;
     - approve a held post;
     - lock the topic, then unlock it.
