@@ -43,8 +43,10 @@ func rowViews(rows []board.TopicRow, loc *time.Location) []topicRowView {
 
 // pathID reads a positive integer path value. Anything else is not a page.
 func pathID(r *http.Request, name string) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
-	return id, err == nil && id > 0
+	raw := r.PathValue(name)
+	id, err := strconv.ParseInt(raw, 10, 64)
+	// Only the canonical spelling is a page: "+5" and "05" are not.
+	return id, err == nil && id > 0 && strconv.FormatInt(id, 10) == raw
 }
 
 // badPage answers 400 for a ?page= value that ParsePage refuses.

@@ -387,3 +387,42 @@ func TestSmileyLookup(t *testing.T) {
 		t.Error("bad image path")
 	}
 }
+
+// A marker that points at itself is a missing topic.
+func TestTopicViewMarkerSelf(t *testing.T) {
+	ctx := context.Background()
+	b := bundletest.Small()
+	b.Grants = append(b.Grants, listGrant(3), readGrant(3))
+	pool, _ := boardtest.Load(t, b)
+	if _, err := pool.Exec(ctx, `update topics set moved_to_topic_id = 3 where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.TopicView(ctx, pool, guestOn(t, pool), 3, 1); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// CanDownload says whether the viewer may load the attachments of the topic.
+func TestTopicViewCanDownload(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	tp, err := board.TopicView(ctx, pool, guestOn(t, pool), 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tp.CanDownload {
+		t.Error("a guest without the rights can download")
+	}
+	if _, err := pool.Exec(ctx, `insert into acl_group_grants (group_id, forum_id, option, setting) values (1, 0, 'account.download', 3)`); err != nil {
+		t.Fatal(err)
+	}
+	if tp, _ = board.TopicView(ctx, pool, guestOn(t, pool), 1, 1); tp.CanDownload {
+		t.Error("account.download alone is enough")
+	}
+	if _, err := pool.Exec(ctx, `insert into acl_group_grants (group_id, forum_id, option, setting) values (1, 2, 'attach.download', 3)`); err != nil {
+		t.Fatal(err)
+	}
+	if tp, _ = board.TopicView(ctx, pool, guestOn(t, pool), 1, 1); !tp.CanDownload {
+		t.Error("a guest with both rights cannot download")
+	}
+}

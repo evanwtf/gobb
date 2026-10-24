@@ -12,7 +12,7 @@
 
 {{define "pager"}}
 {{- if .}}
-<nav class="pager" aria-label="Pages">
+<nav class="pager" aria-label="{{.Label}}">
   <p class="pager-where">Page {{.Page}} of {{.Pages}}</p>
   <ul>
     {{- if .Prev}}<li><a class="pager-step" rel="prev" href="{{.Prev}}">Previous</a></li>{{end}}

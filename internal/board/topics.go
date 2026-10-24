@@ -161,11 +161,17 @@ func ForumView(ctx context.Context, q db.Querier, v Viewer, forumID int64, page 
 	if err != nil {
 		return ForumPage{}, err
 	}
-	out.Pinned, err = topicRows(ctx, q, `where `+pinnedTopics+`
- order by (t.kind = 'global') desc, t.last_post_at desc, t.id desc`, args...)
+	// Two queries, so that each one reads its own partial index: global topics
+	// come first, then the announcements of this forum.
+	global, err := topicRows(ctx, q, `where `+globalTopics+globalOrder, sc.args()...)
 	if err != nil {
 		return ForumPage{}, err
 	}
+	announce, err := topicRows(ctx, q, `where `+announceTopics+announceOrder, args...)
+	if err != nil {
+		return ForumPage{}, err
+	}
+	out.Pinned = append(global, announce...)
 	return out, nil
 }
 
@@ -179,15 +185,24 @@ var markerVisible = `(t.moved_to_topic_id is null or exists (
 // announcement or a global topic is pinned instead.
 var regularTopics = `t.forum_id = $5 and t.kind in ('normal', 'sticky') and ` + visible("t", 1) + ` and ` + markerVisible
 
-// pinnedTopics selects the announcements of forum $5 and the global topics of
-// every forum that the viewer may read.
-var pinnedTopics = `((t.kind = 'announce' and t.forum_id = $5) or t.kind = 'global') and ` + visible("t", 1) + ` and ` + markerVisible
+// globalTopics selects the global topics of every forum that the viewer may
+// read. It has no forum argument. The partial index topics_global_idx serves it.
+var globalTopics = `t.kind = 'global' and ` + visible("t", 1) + ` and ` + markerVisible
 
-// topicRows runs the topic list query with the given where, order and limit
-// clauses and returns the rows. The arguments start with the four of
-// [scope.args].
-func topicRows(ctx context.Context, q db.Querier, tail string, args ...any) ([]TopicRow, error) {
-	rows, err := q.Query(ctx, `
+// globalOrder is the order of the global topics: the order of topics_global_idx.
+const globalOrder = ` order by t.last_post_at desc, t.id desc`
+
+// announceTopics selects the announcements of forum $5. The partial index
+// topics_announce_idx serves it.
+var announceTopics = `t.kind = 'announce' and t.forum_id = $5 and ` + visible("t", 1) + ` and ` + markerVisible
+
+// announceOrder is the order of the announcements: the order of
+// topics_announce_idx.
+const announceOrder = ` order by t.last_post_at desc, t.id desc`
+
+// topicSelect is the start of the topic list query. A where, order or limit
+// clause follows it.
+const topicSelect = `
 select t.id, t.title, t.kind, t.visibility, t.locked,
        coalesce(t.author_id, 0), coalesce(au.username, t.author_name),
        t.reply_count, t.view_count, coalesce(t.moved_to_topic_id, 0),
@@ -196,7 +211,13 @@ select t.id, t.title, t.kind, t.visibility, t.locked,
   left join users au on au.id = t.author_id
   left join posts lp on lp.id = t.last_post_id and lp.visibility = 'approved'
   left join users lu on lu.id = lp.author_id
- `+tail, args...)
+ `
+
+// topicRows runs the topic list query with the given where, order and limit
+// clauses and returns the rows. The arguments start with the four of
+// [scope.args].
+func topicRows(ctx context.Context, q db.Querier, tail string, args ...any) ([]TopicRow, error) {
+	rows, err := q.Query(ctx, topicSelect+tail, args...)
 	if err != nil {
 		return nil, fmt.Errorf("board: list topics: %w", err)
 	}

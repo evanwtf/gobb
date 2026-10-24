@@ -92,6 +92,9 @@ type TopicPage struct {
 	// Poll is set on page 1 of a topic that has a poll.
 	Poll        *Poll
 	Page, Pages int
+	// CanDownload is true when the viewer has account.download and the
+	// attach.download right of the forum, so that /a/{id} serves them a file.
+	CanDownload bool
 }
 
 // TopicView returns page number page (from 1) of topic topicID as v sees it.
@@ -130,6 +133,10 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 	if err != nil {
 		return TopicPage{}, fmt.Errorf("board: read topic %d: %w", topicID, err)
 	}
+	if t.MovedTo == t.ID {
+		// A marker that points at itself would send the visitor round and round.
+		return TopicPage{}, ErrNotFound
+	}
 	if t.MovedTo != 0 {
 		var ok bool
 		err := q.QueryRow(ctx, `select exists (select 1 from topics m where m.id = $5 and `+visible("m", 1)+`)`,
@@ -148,6 +155,7 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 		return TopicPage{}, err
 	}
 	out.Forum, out.Crumbs, out.Page = f, crumbs, page
+	out.CanDownload = v.Perms.Has("account.download", 0) && v.Perms.Has("attach.download", forumID)
 
 	var n int
 	err = q.QueryRow(ctx, `select count(*) from posts p where p.topic_id = $5 and `+visible("p", 1),
@@ -296,6 +304,11 @@ select u.id, u.username, coalesce(u.avatar_path, ''), u.post_count, u.registered
 	return nil
 }
 
+// attachmentsSQL reads the attachments of the posts $1.
+const attachmentsSQL = `
+select post_id, id, real_name, mime, size, download_count, comment
+  from attachments where post_id = any($1) order by post_id, position, id`
+
 // fillAttachments reads the attachments of the posts with one query and sets
 // Attachments to those that the tree of the post does not show inline.
 func fillAttachments(ctx context.Context, q db.Querier, posts []Post) error {
@@ -308,9 +321,7 @@ func fillAttachments(ctx context.Context, q db.Querier, posts []Post) error {
 		ids[i] = p.ID
 		index[p.ID] = i
 	}
-	rows, err := q.Query(ctx, `
-select post_id, id, real_name, mime, size, download_count, comment
-  from attachments where post_id = any($1) order by post_id, position, id`, ids)
+	rows, err := q.Query(ctx, attachmentsSQL, ids)
 	if err != nil {
 		return fmt.Errorf("board: read attachments: %w", err)
 	}

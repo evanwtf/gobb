@@ -29,12 +29,12 @@
 </section>
 {{- end}}
 
-{{template "pager" .Data.Pager}}
+{{template "pager" pagerAt .Data.Pager "Pages, top"}}
 
 <div class="posts">
 {{- range .Data.Posts}}
 <article class="post{{if ne .Visibility "approved"}} post-{{.Visibility}}{{end}}" id="p{{.ID}}">
-  <aside class="post-author" aria-label="About the author">
+  <div class="post-author">
     {{- if .Card}}
     <div class="author-avatar">
       {{- if .Card.AvatarPath}}<img class="avatar" src="{{path "files" .Card.AvatarPath}}" alt="" width="96" height="96" loading="lazy">
@@ -51,11 +51,12 @@
     <p class="author-name">{{template "author" .Author}}</p>
     <p class="author-rank"><span>Guest</span></p>
     {{- end}}
-  </aside>
+  </div>
   <div class="post-main">
     <header class="post-head">
       <div class="post-title">
-        {{- if and .Subject (ne .Subject $.Data.Topic.Title) (ne .Subject (printf "Re: %s" $.Data.Topic.Title))}}<h2 class="post-subject">{{.Subject}}</h2>{{end}}
+        {{- if and .Subject (ne .Subject $.Data.Topic.Title) (ne .Subject (printf "Re: %s" $.Data.Topic.Title))}}<h2 class="post-subject">{{.Subject}}</h2>
+        {{- else}}<h2 class="visually-hidden">Post by <bdi>{{.Author.Name}}</bdi></h2>{{end}}
         {{- if eq .Visibility "unapproved"}} <span class="tag tag-warn">Waiting for approval</span>{{end}}
         {{- if eq .Visibility "deleted"}} <span class="tag tag-warn">Deleted</span>{{end}}
       </div>
@@ -86,5 +87,5 @@
 {{- end}}
 </div>
 
-{{template "pager" .Data.Pager}}
+{{template "pager" pagerAt .Data.Pager "Pages, bottom"}}
 {{end}}

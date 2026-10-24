@@ -830,3 +830,63 @@ func TestRenderBasePath(t *testing.T) {
 		t.Errorf("base / changed the html:\n%s\n%s", a, b)
 	}
 }
+
+// A base path in any odd form gives a rooted prefix, never a relative or a
+// scheme-relative URL.
+func TestRenderBasePathNormalized(t *testing.T) {
+	doc := tree(para(el("url", at("href", "/t/5"), txt("x"))))
+	for base, want := range map[string]string{
+		"forum/":    `href="/forum/t/5"`,
+		"forum":     `href="/forum/t/5"`,
+		"/forum//":  `href="/forum/t/5"`,
+		"//forum/":  `href="/forum/t/5"`,
+		"///":       `href="/t/5"`,
+		"/a/b/":     `href="/a/b/t/5"`,
+		"":          `href="/t/5"`,
+		"/":         `href="/t/5"`,
+		"https://x": `href="/t/5"`, // not a path: ignored
+		`/f\x`:      `href="/t/5"`,
+	} {
+		got := string(Render(doc, RenderContext{BasePath: base}).HTML)
+		if !strings.Contains(got, want) {
+			t.Errorf("BasePath %q: html = %s, want %s", base, got, want)
+		}
+	}
+}
+
+func TestRenderImageNote(t *testing.T) {
+	doc := tree(para(
+		el("img", at("src", "/a/1", "alt", "diagram")), txt(" "),
+		el("img", at("src", "/a/2", "alt", "")), txt(" "),
+		el("img", at("src", "/files/x.png", "alt", "other")),
+	))
+	rc := RenderContext{BasePath: "/forum/", ImageNote: func(src string) string {
+		if strings.HasPrefix(src, "/a/") {
+			return "sign in to view"
+		}
+		return ""
+	}}
+	r := Render(doc, rc)
+	got := string(r.HTML)
+	for _, want := range []string{
+		`<span class="img-note">Image: diagram (sign in to view)</span>`,
+		`<span class="img-note">Image: image (sign in to view)</span>`,
+		`<img src="/forum/files/x.png"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("html lacks %s:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `src="/forum/a/`) {
+		t.Errorf("the noted image still shows:\n%s", got)
+	}
+	// The plain text keeps the alt text, as before.
+	if want := Render(doc, RenderContext{BasePath: "/forum/"}).Text; r.Text != want {
+		t.Errorf("Text = %q, want %q", r.Text, want)
+	}
+	// A note with markup characters is escaped.
+	rc.ImageNote = func(string) string { return `<b>"x"</b>` }
+	if got := string(Render(tree(para(el("img", at("src", "/a/1", "alt", "<i>")))), rc).HTML); strings.Contains(got, "<b>") || strings.Contains(got, "<i>") {
+		t.Errorf("unescaped note: %s", got)
+	}
+}

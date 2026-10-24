@@ -22,6 +22,13 @@ type RenderContext struct {
 	// smiley. A target with a scheme, such as http, https or mailto, does not
 	// change. Rendered.Text does not change either.
 	BasePath string
+	// ImageNote, when it is set, is asked about the src of each img whose src is
+	// a site path. When it returns a non-empty note, the renderer writes
+	// <span class="img-note">Image: ALT (NOTE)</span> in place of the image,
+	// with "image" for an empty alt. A site uses it for an image that the viewer
+	// may not load, such as an attachment that needs a right the viewer lacks.
+	// Rendered.Text does not change.
+	ImageNote func(src string) string
 }
 
 // Rendered is the result of [Render].
@@ -279,11 +286,23 @@ func (r *renderer) list(it renderItem) {
 // sitePath puts the base path of the site in front of v when v is a site path.
 // Any other target, such as an https URL or a mailto: address, stays as it is.
 func (r *renderer) sitePath(v string) string {
-	prefix := strings.TrimSuffix(r.rc.BasePath, "/")
+	prefix := basePrefix(r.rc.BasePath)
 	if prefix == "" || !isSitePath(v) {
 		return v
 	}
 	return prefix + v
+}
+
+// basePrefix turns a base path such as "forum/" or "/forum/" into "/forum". The
+// result starts with one "/" and has no "/" at the end, so a site path that
+// follows it is rooted, and never a relative or a scheme-relative URL. A value
+// that is not a plain path (it holds a colon, a backslash or a space) gives "".
+func basePrefix(base string) string {
+	base = strings.Trim(base, "/")
+	if base == "" || strings.ContainsAny(base, ":\\ \t\r\n") {
+		return ""
+	}
+	return "/" + strings.Trim(strings.Join(strings.FieldsFunc(base, func(r rune) bool { return r == '/' }), "/"), "/")
 }
 
 // cleanLinkTarget returns the value that CheckLinkURL checked, or false.
@@ -366,6 +385,18 @@ func (r *renderer) image(it renderItem) {
 		r.html.WriteString(html.EscapeString(alt))
 		r.addText(alt, it.quote)
 		return
+	}
+	if r.rc.ImageNote != nil && isSitePath(src) {
+		if note := r.rc.ImageNote(src); note != "" {
+			label := alt
+			if label == "" {
+				label = "image"
+			}
+			r.html.WriteString(`<span class="img-note">Image: ` + html.EscapeString(label) +
+				` (` + html.EscapeString(note) + `)</span>`)
+			r.addText(alt, it.quote)
+			return
+		}
 	}
 	r.html.WriteString(`<img src="` + html.EscapeString(r.sitePath(src)) + `" alt="` + html.EscapeString(alt) +
 		`" loading="lazy" class="post-img">`)

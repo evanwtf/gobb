@@ -25,7 +25,10 @@ func article(t *testing.T, body string, id int) string {
 }
 
 func TestTopicPage(t *testing.T) {
-	h, _ := smallSite(t)
+	// Guests may download here, so post 2 shows its attachment as an image.
+	b := bundletest.Small()
+	b.Grants = append(b.Grants, guestGrant(0, "account.download"), guestGrant(2, "attach.download"))
+	h, _ := newTestSite(t, b, Options{})
 	rec := get(t, h, "/t/1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)

@@ -85,6 +85,19 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rc := markup.RenderContext{Smiley: smileys, BasePath: s.base}
+	if !tp.CanDownload {
+		// An attachment image that the viewer may not load shows as a note.
+		note := "not available to you"
+		if p.Viewer.UserID == 0 {
+			note = "sign in to view"
+		}
+		rc.ImageNote = func(src string) string {
+			if strings.HasPrefix(src, "/a/") {
+				return note
+			}
+			return ""
+		}
+	}
 
 	d := topicData{Topic: tp.Topic, Forum: tp.Forum}
 	d.Crumbs = s.crumbsFor(tp.Crumbs)

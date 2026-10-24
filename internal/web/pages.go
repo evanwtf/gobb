@@ -32,6 +32,7 @@ func (s *site) parseTemplates() error {
 		"plural":  plural,
 		"size":    size,
 		"num":     num,
+		"pagerAt": pagerAt,
 	}
 	s.pages = map[string]*template.Template{}
 	for _, name := range pageFiles {

@@ -15,7 +15,9 @@ import (
 // holds a poll and sits in forum 2 too, so a guest can see it.
 func richBoard() *bundletest.Board {
 	b := bundletest.Small()
-	b.Grants = append(b.Grants, guestGrant(3, "forum.list"), guestGrant(3, "forum.read"))
+	b.Grants = append(b.Grants, guestGrant(3, "forum.list"), guestGrant(3, "forum.read"),
+		// Guests may download, so the images of the posts load.
+		guestGrant(0, "account.download"), guestGrant(2, "attach.download"), guestGrant(3, "attach.download"))
 	b.Topics = append(b.Topics,
 		bundleTopic(5, 2, "Rich post", "normal", at(2021, 3, 4, 15, 0)),
 		bundleTopic(6, 2, "Another poll", "normal", at(2021, 3, 5, 15, 0)),

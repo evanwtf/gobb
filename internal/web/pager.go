@@ -8,6 +8,8 @@ type pager struct {
 	// Prev and Next are the links to the neighbors, or empty.
 	Prev, Next string
 	Items      []pageItem
+	// Label names the nav element, so that two pagers on a page differ.
+	Label string
 }
 
 // pageItem is one entry of the page links: a page, or a gap.
@@ -53,4 +55,14 @@ func newPager(base string, page, pages int) *pager {
 		last = n
 	}
 	return p
+}
+
+// pagerAt returns a copy of p named label. A nil pager stays nil.
+func pagerAt(p *pager, label string) *pager {
+	if p == nil {
+		return nil
+	}
+	c := *p
+	c.Label = label
+	return &c
 }
