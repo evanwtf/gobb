@@ -64,3 +64,9 @@ that the pages stand on.
   with a fixed subnet so the trusted-proxy default holds. `gobb serve` applies the
   migrations, serves `GET /healthz` and stops cleanly on SIGTERM. `gobb healthcheck`
   is the container health check.
+- The import bundle format, in `docs/bundle.md` and the public `bundle` package: types
+  for `manifest.json`, `settings.json` and the 23 data files, and the checks that need
+  only one row (string rules, enums, ranges, exactly-one rules, the scope fit of an
+  option grant, file path shape, IP addresses and ban prefixes). Every error names the
+  file, the line and the field. A test keeps `docs/bundle.md` in step with the types:
+  each field appears in its section, and each example line decodes and passes its checks.
