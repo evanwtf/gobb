@@ -56,7 +56,7 @@ type site struct {
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "error.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "error.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -74,6 +74,10 @@ func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, erro
 
 	inner := http.NewServeMux()
 	inner.HandleFunc("GET /{$}", s.index)
+	inner.HandleFunc("GET /f/{id}", s.forum)
+	inner.HandleFunc("GET /t/{id}", s.topic)
+	inner.HandleFunc("GET /p/{id}", s.post)
+	inner.HandleFunc("GET /a/{id}", s.attachment)
 	inner.HandleFunc("GET /static/{name}", s.static)
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
 	// Without this, the mux would redirect /files/avatars to /files/avatars/.

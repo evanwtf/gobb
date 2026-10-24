@@ -789,3 +789,44 @@ func TestRenderTextKeepsFullHrefBehindDisplay(t *testing.T) {
 		t.Errorf("quoted link Text = %q, want empty", q)
 	}
 }
+
+func TestRenderBasePath(t *testing.T) {
+	smileys := func(base string) RenderContext {
+		return RenderContext{BasePath: base, Smiley: func(code string) (Smiley, bool) {
+			return Smiley{Code: code, Image: "/files/smilies/smile.gif", Alt: "smile"}, code == ":)"
+		}}
+	}
+	doc := tree(para(
+		el("url", at("href", "/t/5"), txt("x")), txt(" "),
+		el("img", at("src", "/a/1", "alt", "d")), txt(" "),
+		el("smiley", at("code", ":)")), txt(" "),
+		el("url", at("href", "https://a.example/x"), txt("far")), txt(" "),
+		el("url", at("href", "mailto:a@b.example"), txt("mail")), txt(" "),
+		el("img", at("src", "https://a.example/i.png", "alt", "far")),
+	))
+	for _, base := range []string{"/forum/", "/forum"} {
+		got := string(Render(doc, smileys(base)).HTML)
+		for _, want := range []string{
+			`href="/forum/t/5"`,
+			`src="/forum/a/1"`,
+			`src="/forum/files/smilies/smile.gif"`,
+			`href="https://a.example/x"`,
+			`href="mailto:a@b.example"`,
+			`src="https://a.example/i.png"`,
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("base %q: html lacks %s\n%s", base, want, got)
+			}
+		}
+	}
+	plain := Render(doc, smileys("")).Text
+	for _, base := range []string{"/", "/forum/"} {
+		if got := Render(doc, smileys(base)).Text; got != plain {
+			t.Errorf("base %q: Text = %q, want %q", base, got, plain)
+		}
+	}
+	// A base of "/" is the same as none.
+	if a, b := Render(doc, smileys("/")).HTML, Render(doc, smileys("")).HTML; a != b {
+		t.Errorf("base / changed the html:\n%s\n%s", a, b)
+	}
+}

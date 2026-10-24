@@ -34,6 +34,11 @@ type Forum struct {
 	Rules       string
 	LinkURL     string
 	Locked      bool
+	// Readable is true when the viewer may open the forum. It is false for a
+	// forum that the viewer may list but not read: the page shows such a forum
+	// with a lock and no numbers. A category and a link forum are always
+	// readable, because they hold no topics.
+	Readable bool
 	// Topics and Posts add up the forum and the descendants that the viewer may
 	// read. They count approved rows only.
 	Topics, Posts int
@@ -136,6 +141,7 @@ select id, parent_id, kind, name, description, rules, coalesce(link_url, ''),
 	var build func(n *forumNode) *Forum
 	build = func(n *forumNode) *Forum {
 		f := n.Forum
+		f.Readable = n.Kind != "forum" || v.Perms.Has("forum.read", n.ID)
 		if n.Kind != "link" && v.Perms.Has("forum.read", n.ID) {
 			f.Topics, f.Posts = n.ownTopics, n.ownPosts
 			f.Last = posts[n.lastPostID]

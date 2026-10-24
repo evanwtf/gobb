@@ -6,52 +6,7 @@
     {{- if .Title}}<h2 id="cat-{{.Forum.ID}}"><a href="{{path "f" (printf "%d" .Forum.ID)}}">{{.Title}}</a></h2>{{end -}}
   </div>
   {{- if .Rows}}
-  <table class="forums">
-    <thead>
-      <tr>
-        <th scope="col" class="col-forum">Forum</th>
-        <th scope="col" class="col-num">Topics</th>
-        <th scope="col" class="col-num">Posts</th>
-        <th scope="col" class="col-last">Last post</th>
-      </tr>
-    </thead>
-    <tbody>
-    {{- range .Rows}}
-      <tr class="forum-row">
-        <td class="forum-main">
-          {{- if eq .Kind "link"}}
-          <a class="forum-name" href="{{.LinkURL}}">{{.Name}}</a>
-          {{- else}}
-          <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>
-          {{- end}}
-          {{- if .Locked}} <span class="tag">Locked</span>{{end}}
-          {{- if .Description}}
-          <p class="forum-desc">{{.Description}}</p>
-          {{- end}}
-          {{- if .Children}}
-          <p class="subforums"><span class="subforums-label">Subforums:</span>
-            {{- range $i, $c := .Children}}{{if $i}},{{end}} <a href="{{path "f" (printf "%d" $c.ID)}}">{{$c.Name}}</a>{{end}}</p>
-          {{- end}}
-        </td>
-        {{- if eq .Kind "link"}}
-        <td class="link-target" colspan="3"><span class="muted">Link:</span> <a href="{{.LinkURL}}">{{.LinkURL}}</a></td>
-        {{- else}}
-        <td class="num" data-label="Topics"><span class="forum-count">{{.Topics}}</span></td>
-        <td class="num" data-label="Posts"><span class="forum-count">{{.Posts}}</span></td>
-        <td class="last" data-label="Last post">
-          {{- with .Last}}
-          <a class="last-title" href="{{path "p" (printf "%d" .ID)}}">{{.TopicTitle}}</a>
-          <span class="last-meta">by {{template "author" .Author}}</span>
-          <span class="last-time">{{time .At $.Viewer.Loc}}</span>
-          {{- else}}
-          <span class="muted">No posts yet</span>
-          {{- end}}
-        </td>
-        {{- end}}
-      </tr>
-    {{- end}}
-    </tbody>
-  </table>
+  {{template "forumtable" rows .Rows $.Viewer.Loc}}
   {{- else}}
   <p class="empty">There are no forums here yet.</p>
   {{- end}}

@@ -1,0 +1,114 @@
+{{define "lock"}}<svg class="icon-lock" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 1a3.5 3.5 0 0 0-3.5 3.5V6H4a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-.5V4.5A3.5 3.5 0 0 0 8 1Zm-2 3.5a2 2 0 1 1 4 0V6H6V4.5Z"/></svg>{{end}}
+
+{{define "crumbs"}}
+<nav class="crumbs" aria-label="Breadcrumb">
+  <ol>
+    {{- range .}}
+    <li><a href="{{.Href}}">{{.Label}}</a></li>
+    {{- end}}
+  </ol>
+</nav>
+{{end}}
+
+{{define "pager"}}
+{{- if .}}
+<nav class="pager" aria-label="Pages">
+  <p class="pager-where">Page {{.Page}} of {{.Pages}}</p>
+  <ul>
+    {{- if .Prev}}<li><a class="pager-step" rel="prev" href="{{.Prev}}">Previous</a></li>{{end}}
+    {{- range .Items}}
+    {{- if .Gap}}<li class="pager-gap" aria-hidden="true">&hellip;</li>
+    {{- else if .Current}}<li><a class="pager-num current" href="{{.Href}}" aria-current="page">{{.Num}}</a></li>
+    {{- else}}<li><a class="pager-num" href="{{.Href}}">{{.Num}}</a></li>{{end}}
+    {{- end}}
+    {{- if .Next}}<li><a class="pager-step" rel="next" href="{{.Next}}">Next</a></li>{{end}}
+  </ul>
+</nav>
+{{- end}}
+{{end}}
+
+{{define "forumtable"}}
+<table class="forums">
+  <thead>
+    <tr>
+      <th scope="col" class="col-forum">Forum</th>
+      <th scope="col" class="col-num">Topics</th>
+      <th scope="col" class="col-num">Posts</th>
+      <th scope="col" class="col-last">Last post</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{- range .Rows}}
+    <tr class="forum-row">
+      <td class="forum-main">
+        {{- if eq .Kind "link"}}
+        <a class="forum-name" href="{{.LinkURL}}">{{.Name}}</a>
+        {{- else if .Readable}}
+        <a class="forum-name" href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>
+        {{- else}}
+        <span class="forum-name forum-name-locked">{{template "lock"}} {{.Name}}</span>
+        {{- end}}
+        {{- if .Locked}} <span class="tag">Locked</span>{{end}}
+        {{- if and .Description .Readable}}
+        <p class="forum-desc">{{.Description}}</p>
+        {{- end}}
+        {{- if .Children}}
+        <p class="subforums"><span class="subforums-label">Subforums:</span>
+          {{- range $i, $c := .Children}}{{if $i}},{{end}} {{if $c.Readable}}<a href="{{path "f" (printf "%d" $c.ID)}}">{{$c.Name}}</a>{{else}}<span class="subforum-locked">{{template "lock"}} {{$c.Name}}</span>{{end}}{{end}}</p>
+        {{- end}}
+      </td>
+      {{- if eq .Kind "link"}}
+      <td class="link-target" colspan="3"><span class="muted">Link:</span> <a href="{{.LinkURL}}">{{.LinkURL}}</a></td>
+      {{- else if not .Readable}}
+      <td class="members-only" colspan="3">{{template "lock"}} Members only</td>
+      {{- else}}
+      <td class="num" data-label="Topics"><span class="forum-count">{{.Topics}}</span></td>
+      <td class="num" data-label="Posts"><span class="forum-count">{{.Posts}}</span></td>
+      <td class="last" data-label="Last post">
+        {{- with .Last}}
+        <a class="last-title" href="{{path "p" (printf "%d" .ID)}}">{{.TopicTitle}}</a>
+        <span class="last-meta">by {{template "author" .Author}}</span>
+        <span class="last-time">{{time .At $.Loc}}</span>
+        {{- else}}
+        <span class="muted">No posts yet</span>
+        {{- end}}
+      </td>
+      {{- end}}
+    </tr>
+  {{- end}}
+  </tbody>
+</table>
+{{end}}
+
+{{define "toprow"}}
+<tr class="topic-row{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}">
+  <td class="forum-main topic-main">
+    {{- if .MovedTo}}
+    <span class="tag tag-moved">Moved:</span> <a class="topic-link" href="{{path "t" (printf "%d" .MovedTo)}}">{{.Title}}</a>
+    {{- else}}
+    {{- if eq .Kind "announce"}}<span class="tag tag-announce">Announcement</span> {{end}}
+    {{- if eq .Kind "global"}}<span class="tag tag-announce">Global</span> {{end}}
+    {{- if eq .Kind "sticky"}}<span class="tag tag-sticky">Sticky</span> {{end}}
+    {{- if eq .Visibility "unapproved"}}<span class="tag tag-warn">Waiting for approval</span> {{end}}
+    {{- if eq .Visibility "deleted"}}<span class="tag tag-warn">Deleted</span> {{end}}
+    <a class="topic-link" href="{{path "t" (printf "%d" .ID)}}">{{.Title}}</a>
+    {{- if .Locked}} <span class="tag">Locked</span>{{end}}
+    <p class="topic-meta">by {{template "author" .Author}}</p>
+    {{- end}}
+  </td>
+  {{- if .MovedTo}}
+  <td class="num moved-gap" colspan="3"><span class="muted">This topic moved.</span></td>
+  {{- else}}
+  <td class="num" data-label="Replies"><span class="forum-count">{{.Replies}}</span></td>
+  <td class="num" data-label="Views"><span class="forum-count">{{.Views}}</span></td>
+  <td class="last" data-label="Last post">
+    {{- if .Last.ID}}
+    <a class="last-title" href="{{path "p" (printf "%d" .Last.ID)}}">{{time .Last.At $.Loc}}</a>
+    <span class="last-meta">by {{template "author" .Last.Author}}</span>
+    {{- else}}
+    <span class="muted">No posts yet</span>
+    {{- end}}
+  </td>
+  {{- end}}
+</tr>
+{{end}}

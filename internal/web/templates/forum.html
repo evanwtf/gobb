@@ -1,0 +1,55 @@
+{{define "content"}}
+{{template "crumbs" .Data.Crumbs}}
+<header class="page-head">
+  <h1>{{.Data.Forum.Name}}{{if .Data.Forum.Locked}} <span class="tag">Locked</span>{{end}}</h1>
+  {{- if .Data.Forum.Description}}
+  <p class="page-sub">{{.Data.Forum.Description}}</p>
+  {{- end}}
+</header>
+
+{{- if .Data.Forum.Rules}}
+<section class="rules" aria-labelledby="rules-title">
+  <h2 id="rules-title">Forum rules</h2>
+  <p>{{.Data.Forum.Rules}}</p>
+</section>
+{{- end}}
+
+{{- if .Data.Subforums}}
+<section class="category" aria-labelledby="sub-title">
+  <div class="bar"><h2 id="sub-title">{{if .Data.IsCategory}}Forums{{else}}Subforums{{end}}</h2></div>
+  {{template "forumtable" rows .Data.Subforums .Viewer.Loc}}
+</section>
+{{- else if .Data.IsCategory}}
+<p class="empty standalone">There are no forums in this category.</p>
+{{- end}}
+
+{{- if not .Data.IsCategory}}
+{{template "pager" .Data.Pager}}
+<section class="category" aria-labelledby="topics-title">
+  <div class="bar"><h2 id="topics-title">Topics</h2></div>
+  {{- if or .Data.Pinned .Data.Topics}}
+  <table class="forums topics">
+    <thead>
+      <tr>
+        <th scope="col" class="col-forum">Topic</th>
+        <th scope="col" class="col-num">Replies</th>
+        <th scope="col" class="col-num">Views</th>
+        <th scope="col" class="col-last">Last post</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .Data.Pinned}}
+    {{template "toprow" .}}
+    {{- end}}
+    {{- range .Data.Topics}}
+    {{template "toprow" .}}
+    {{- end}}
+    </tbody>
+  </table>
+  {{- else}}
+  <p class="empty">There are no topics in this forum yet.</p>
+  {{- end}}
+</section>
+{{template "pager" .Data.Pager}}
+{{- end}}
+{{end}}

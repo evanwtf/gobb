@@ -16,6 +16,12 @@ type RenderContext struct {
 	// uses Alt as the alt text, and the code when Alt is empty. When the lookup
 	// fails, or Image fails the check, the renderer writes the code as text.
 	Smiley func(code string) (Smiley, bool)
+	// BasePath is the URL path prefix of the site, such as "/forum/". When it is
+	// set, the renderer puts it, minus its last "/", in front of every site path
+	// it writes: the href of a url element, the src of an img and the image of a
+	// smiley. A target with a scheme, such as http, https or mailto, does not
+	// change. Rendered.Text does not change either.
+	BasePath string
 }
 
 // Rendered is the result of [Render].
@@ -270,6 +276,16 @@ func (r *renderer) list(it renderItem) {
 	r.wrap(it, open, "</"+tag+">", true, attrs["tight"] == "true", false, it.quote)
 }
 
+// sitePath puts the base path of the site in front of v when v is a site path.
+// Any other target, such as an https URL or a mailto: address, stays as it is.
+func (r *renderer) sitePath(v string) string {
+	prefix := strings.TrimSuffix(r.rc.BasePath, "/")
+	if prefix == "" || !isSitePath(v) {
+		return v
+	}
+	return prefix + v
+}
+
 // cleanLinkTarget returns the value that CheckLinkURL checked, or false.
 func cleanLinkTarget(raw string) (string, bool) {
 	v, ok := cleanURL(raw)
@@ -304,7 +320,7 @@ func (r *renderer) link(it renderItem) {
 	if len(href) >= len("mailto:") && strings.EqualFold(href[:len("mailto:")], "mailto:") {
 		href = mailtoHref(href[len("mailto:"):])
 	}
-	open := `<a href="` + html.EscapeString(href) + `" rel="nofollow ugc noopener">`
+	open := `<a href="` + html.EscapeString(r.sitePath(href)) + `" rel="nofollow ugc noopener">`
 	if display := n.Attrs["display"]; display != "" {
 		r.html.WriteString(open + html.EscapeString(display) + "</a>")
 		// The display text is a shortened form of the link. The search text also
@@ -351,7 +367,7 @@ func (r *renderer) image(it renderItem) {
 		r.addText(alt, it.quote)
 		return
 	}
-	r.html.WriteString(`<img src="` + html.EscapeString(src) + `" alt="` + html.EscapeString(alt) +
+	r.html.WriteString(`<img src="` + html.EscapeString(r.sitePath(src)) + `" alt="` + html.EscapeString(alt) +
 		`" loading="lazy" class="post-img">`)
 	r.addText(alt, it.quote)
 }
@@ -367,7 +383,7 @@ func (r *renderer) smiley(it renderItem) {
 				if alt == "" {
 					alt = code
 				}
-				r.html.WriteString(`<img class="smiley" src="` + html.EscapeString(src) +
+				r.html.WriteString(`<img class="smiley" src="` + html.EscapeString(r.sitePath(src)) +
 					`" alt="` + html.EscapeString(alt) + `">`)
 				return
 			}

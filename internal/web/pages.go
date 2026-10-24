@@ -3,6 +3,7 @@ package web
 import (
 	"html/template"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/evanwtf/gobb/internal/board"
@@ -25,10 +26,14 @@ func (s *site) parseTemplates() error {
 		"date": func(t time.Time, loc *time.Location) template.HTML {
 			return timeTag(t, loc, dateLayout)
 		},
+		"rows":    func(rows []*board.Forum, loc *time.Location) forumRows { return forumRows{Rows: rows, Loc: loc} },
+		"initial": initial,
+		"plural":  plural,
+		"size":    size,
 	}
 	s.pages = map[string]*template.Template{}
 	for _, name := range pageFiles {
-		t, err := template.New(name).Funcs(funcs).ParseFS(templateFS, "templates/layout.html", "templates/"+name)
+		t, err := template.New(name).Funcs(funcs).ParseFS(templateFS, "templates/layout.html", "templates/partials.html", "templates/"+name)
 		if err != nil {
 			return err
 		}
@@ -97,4 +102,36 @@ func groupForums(top []*board.Forum) []*forumGroup {
 		loose.Rows = append(loose.Rows, f)
 	}
 	return groups
+}
+
+// forumRows is the data of the forum table partial: the rows and the zone in
+// which it shows times.
+type forumRows struct {
+	Rows []*board.Forum
+	Loc  *time.Location
+}
+
+// plural returns "1 thing" or "2 things".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
+}
+
+// size writes a byte count in the unit that fits: "512 B", "1.5 KB", "3.2 MB".
+func size(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return strconv.FormatInt(n, 10) + " B"
+	}
+	v, suffix := float64(n), ""
+	for _, s := range []string{"KB", "MB", "GB", "TB"} {
+		v /= unit
+		suffix = s
+		if v < unit {
+			break
+		}
+	}
+	return strconv.FormatFloat(v, 'f', 1, 64) + " " + suffix
 }

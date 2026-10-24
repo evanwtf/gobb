@@ -301,6 +301,266 @@ html:not(.js) .spoiler:focus {
 }
 .spoiler.shown a, html:not(.js) .spoiler:focus a { color: var(--link); }
 
+/* ---- Page heads, crumbs, rules ------------------------------------------ */
+
+.crumbs { margin: 0 0 0.75rem; font-size: 0.88rem; }
+.crumbs ol { display: flex; flex-wrap: wrap; gap: 0.15rem 0; margin: 0; padding: 0; list-style: none; }
+.crumbs li + li::before { content: "\203A"; margin: 0 0.5rem; color: var(--muted); }
+
+.page-head { margin: 0 0 1.25rem; }
+.page-head h1 { font-size: 1.65rem; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.page-sub { margin-top: 0.25rem; color: var(--muted); font-size: 0.95rem; }
+
+.rules {
+  margin: 0 0 1.25rem;
+  padding: 0.75rem 1rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+}
+.rules h2 { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.25rem; }
+.rules p { white-space: pre-line; }
+
+/* ---- Forum rows that the viewer may list but not open -------------------- */
+
+.icon-lock { vertical-align: -0.12em; }
+.forum-name-locked { font-size: 1.05rem; font-weight: 700; color: var(--muted); }
+.subforum-locked { color: var(--muted); }
+td.members-only { color: var(--muted); font-size: 0.92rem; vertical-align: middle; }
+
+/* ---- Topic lists ---------------------------------------------------------- */
+
+.topics .topic-link { font-size: 1.02rem; font-weight: 700; overflow-wrap: anywhere; }
+.topic-meta { margin-top: 0.1rem; color: var(--muted); font-size: 0.85rem; }
+.topics .last-title { white-space: normal; font-weight: 500; }
+.topics .col-last { width: 15rem; }
+.topics .col-num { width: 5.5rem; }
+.topic-moved .topic-link { font-weight: 500; }
+.topic-moved .forum-main::before { background: var(--muted); }
+.topic-sticky .forum-main::before { background: var(--link); }
+.topic-announce .forum-main::before, .topic-global .forum-main::before { background: var(--new); }
+.topic-announce, .topic-global { background: color-mix(in srgb, var(--accent) 7%, var(--row)); }
+.topic-moved td.moved-gap { text-align: left; vertical-align: middle; padding-top: 0.9rem; }
+
+.tag-sticky, .tag-announce { color: var(--text); border-color: var(--accent); }
+.tag-announce { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.tag-warn { color: var(--text); border-color: var(--new); }
+.tag-moved { border-style: dashed; }
+
+/* ---- Page links ---------------------------------------------------------- */
+
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; margin: 0 0 1rem; }
+.pager-where { color: var(--muted); font-size: 0.88rem; }
+.pager ul { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
+.pager a, .pager-gap {
+  display: inline-block;
+  min-width: 2.2rem;
+  padding: 0.3rem 0.65rem;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--row);
+  font-size: 0.9rem;
+}
+.pager-gap { border-color: transparent; background: none; color: var(--muted); min-width: 0; padding-left: 0.2rem; padding-right: 0.2rem; }
+.pager a:hover { text-decoration: none; border-color: var(--link); }
+.pager a.current { background: var(--bar); border-color: var(--bar); color: var(--bar-text); font-weight: 700; }
+
+/* ---- Polls --------------------------------------------------------------- */
+
+.poll {
+  margin: 0 0 1.25rem;
+  padding: 1rem 1.25rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+}
+.poll h2 { font-size: 1.15rem; }
+.poll-note { margin-top: 0.15rem; color: var(--muted); font-size: 0.88rem; }
+.poll-options { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.8rem; }
+.poll-label { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.25rem; }
+.poll-count { color: var(--muted); font-size: 0.9rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.poll-total { margin-top: 0.9rem; color: var(--muted); font-size: 0.9rem; }
+
+progress {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 0.7rem;
+  border: 0;
+  border-radius: 99px;
+  background: var(--line);
+  overflow: hidden;
+}
+progress::-webkit-progress-bar { background: var(--line); border-radius: 99px; }
+progress::-webkit-progress-value { background: var(--accent); border-radius: 99px; }
+progress::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
+
+/* ---- Posts ---------------------------------------------------------------- */
+
+.posts { display: grid; gap: 1rem; margin: 0 0 1rem; }
+
+.post {
+  display: grid;
+  grid-template-columns: 12.5rem minmax(0, 1fr);
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+  scroll-margin-top: 1rem;
+}
+.post:target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.post-unapproved, .post-deleted { border-style: dashed; }
+
+.post-author {
+  padding: 1.1rem 0.9rem;
+  text-align: center;
+  background: color-mix(in srgb, var(--text) 4%, var(--row));
+  border-right: 1px solid var(--line-soft);
+  min-width: 0;
+}
+.avatar { display: block; width: 96px; height: 96px; margin: 0 auto; border-radius: 10px; object-fit: cover; background: var(--page); }
+.avatar-none {
+  display: grid;
+  place-items: center;
+  background: var(--bar);
+  color: var(--bar-text);
+  font-size: 2.4rem;
+  font-weight: 700;
+}
+.author-name { margin-top: 0.7rem; font-size: 1.02rem; font-weight: 700; overflow-wrap: anywhere; }
+.author-rank { margin-top: 0.15rem; color: var(--muted); font-size: 0.85rem; }
+.rank-img { display: block; max-height: 1.6rem; width: auto; margin: 0.25rem auto; }
+.author-stat { margin-top: 0.1rem; color: var(--muted); font-size: 0.82rem; }
+.author-stat b { color: var(--text); font-weight: 600; }
+.author-rank:first-of-type { margin-top: 0.15rem; }
+
+.post-main { padding: 0.9rem 1.25rem 1rem; min-width: 0; display: flex; flex-direction: column; }
+
+.post-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.55rem;
+  margin-bottom: 0.85rem;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 0.85rem;
+}
+.post-title { min-width: 0; }
+.post-subject { display: inline; font-size: 1rem; font-weight: 700; }
+.permalink { color: var(--muted); margin-left: auto; }
+
+.post-body { overflow-wrap: anywhere; line-height: 1.6; min-width: 0; }
+.post-body > :first-child { margin-top: 0; }
+.post-body > :last-child { margin-bottom: 0; }
+.post-body p { margin: 0 0 0.85em; }
+.post-body h3, .post-body h4, .post-body h5, .post-body h6 { margin: 1.1em 0 0.4em; line-height: 1.3; }
+.post-body h3 { font-size: 1.25rem; }
+.post-body h4 { font-size: 1.12rem; }
+.post-body h5 { font-size: 1.02rem; }
+.post-body h6 { font-size: 0.95rem; }
+.post-body ul, .post-body ol { margin: 0 0 0.85em; padding-left: 1.6rem; }
+.post-body li > p { margin-bottom: 0.3em; }
+.post-body hr { border: 0; border-top: 1px solid var(--line); margin: 1.2em 0; }
+.post-body a { text-decoration: underline; text-underline-offset: 0.15em; text-decoration-thickness: 1px; }
+
+/* A quote: a card with a cite line above the quoted text. */
+.post-body blockquote {
+  margin: 0.9em 0;
+  padding: 0.55rem 0.95rem 0.7rem;
+  background: color-mix(in srgb, var(--text) 5%, var(--row));
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  color: color-mix(in srgb, var(--text) 88%, var(--row));
+  font-size: 0.95em;
+}
+.post-body blockquote::before {
+  content: "Quote";
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.post-body blockquote blockquote { font-size: 1em; }
+
+/* Code scrolls in its own box. */
+pre.code {
+  max-width: 100%;
+  margin: 0.9em 0;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 0.875rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  tab-size: 4;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+pre.code code { font: inherit; background: none; padding: 0; }
+:not(pre) > code {
+  padding: 0.1em 0.35em;
+  background: var(--page);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* Images fit the width of the post. */
+.post-img { display: block; max-width: 100%; height: auto; margin: 0.6em 0; border-radius: 4px; }
+img.smiley { display: inline; width: auto; height: 1.4em; max-width: none; vertical-align: -0.3em; }
+
+/* Embeds: video players at 16:9, audio players at their own height. */
+iframe.embed {
+  display: block;
+  width: 100%;
+  max-width: 44rem;
+  margin: 0.8em 0;
+  border: 0;
+  border-radius: 6px;
+  background: #000;
+  aspect-ratio: 16 / 9;
+}
+iframe.embed.tiktok { max-width: 22rem; aspect-ratio: 9 / 16; }
+iframe.embed.spotify { aspect-ratio: auto; height: 152px; max-width: 40rem; background: none; }
+iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; background: none; }
+
+/* Embeds that need a script from their provider show a plain link until it runs. */
+.post-body blockquote.twitter-tweet,
+.post-body blockquote.instagram-media,
+.post-body blockquote.reddit-embed-bq,
+.post-body blockquote.text-post-media { font-size: 0.95em; }
+.post-body blockquote.twitter-tweet::before,
+.post-body blockquote.instagram-media::before,
+.post-body blockquote.reddit-embed-bq::before,
+.post-body blockquote.text-post-media::before { content: "Embedded post"; }
+
+.attachments { margin-top: 1rem; padding-top: 0.6rem; border-top: 1px solid var(--line-soft); font-size: 0.9rem; }
+.attachments h3 { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.3rem; }
+.attachments ul { margin: 0; padding-left: 1.2rem; }
+.attach-comment { color: var(--muted); font-style: italic; }
+
+.edit-note { margin-top: 1rem; color: var(--muted); font-size: 0.8rem; }
+.signature {
+  margin-top: 1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.signature p { margin: 0; }
+.post-ip { margin-top: 0.6rem; color: var(--muted); font-size: 0.8rem; }
+
 /* ---- Phones: the four columns stack -------------------------------------- */
 
 @media (max-width: 699px) {
@@ -327,6 +587,7 @@ html:not(.js) .spoiler:focus {
   }
   .forums tbody tr:first-child { border-top: 0; }
   .forums td, .forums tbody tr:first-child td { padding: 0; border: 0; }
+  .forums td.members-only { margin-top: 0.4rem; grid-column: 1 / -1; }
   .forums tbody tr:hover td { background: none; }
 
   .forum-main { grid-column: 1 / -1; padding-left: 0.75rem !important; }
@@ -350,6 +611,33 @@ html:not(.js) .spoiler:focus {
   td.link-target { grid-column: 1 / -1; }
 
   .notice { margin: 1.5rem auto; padding: 1.25rem; }
+
+  .page-head h1 { font-size: 1.35rem; }
+  .poll { padding: 0.85rem 1rem; }
+  .poll-label { flex-direction: column; gap: 0; }
+
+  /* The author block becomes a compact row above the post. */
+  .post { display: block; }
+  .post-author {
+    display: grid;
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    column-gap: 0.7rem;
+    align-items: center;
+    padding: 0.6rem 0.85rem;
+    text-align: left;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .author-avatar { grid-row: 1 / span 2; }
+  .avatar { width: 2.75rem; height: 2.75rem; margin: 0; border-radius: 8px; }
+  .avatar-none { font-size: 1.25rem; }
+  .author-name { margin: 0; font-size: 0.98rem; }
+  .author-rank, .author-stat { display: inline; margin: 0; font-size: 0.8rem; }
+  .rank-img { display: inline; margin: 0 0.3rem 0 0; vertical-align: middle; max-height: 1.2rem; }
+  .author-rank, .author-stat { margin-right: 0.7rem; }
+  .post-author > .author-rank, .post-author > .author-stat { grid-column: 2; }
+  .post-main { padding: 0.75rem 0.9rem 0.9rem; }
+  .topics .col-last, .topics .col-num { width: auto; }
 }
 
 @media (min-width: 700px) and (max-width: 899px) {
