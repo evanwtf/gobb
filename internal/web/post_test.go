@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -926,8 +927,9 @@ func policyDirectives(policy string) map[string]string {
 // policyProblems compares the policy of a page with the policy of a page that
 // has no payloads (base), directive by directive. Without an embed the two must
 // be equal. With an embed, four directives may grow by what the embed needs and
-// nothing else: frame-src lists only origins of markup.EmbedOrigins(); script-src
-// and connect-src add https origins to 'self'; style-src may add 'unsafe-inline'.
+// nothing else: frame-src, script-src and connect-src add only origins of the
+// embed table (markup.EmbedOrigins, EmbedScriptOrigins, EmbedConnectOrigins) to
+// 'self'; style-src may add 'unsafe-inline'.
 // Every other directive stays as it is.
 func policyProblems(policy, base string, embeds bool) []string {
 	var out []string
@@ -949,9 +951,6 @@ func policyProblems(policy, base string, embeds bool) []string {
 	if !embeds {
 		return out
 	}
-	origin := func(src string) bool {
-		return strings.HasPrefix(src, "https://") && !strings.ContainsAny(src[len("https://"):], "/*'")
-	}
 	for _, src := range strings.Fields(got["frame-src"]) {
 		ok := src == "'none'"
 		for _, o := range markup.EmbedOrigins() {
@@ -961,14 +960,16 @@ func policyProblems(policy, base string, embeds bool) []string {
 			out = append(out, fmt.Sprintf("frame-src holds %q, which is no embed origin", src))
 		}
 	}
-	for _, name := range []string{"script-src", "connect-src"} {
+	// The origins that an embed adds to script-src and connect-src are the ones of
+	// the embed table, in the list of their own directive.
+	for name, table := range map[string][]string{"script-src": markup.EmbedScriptOrigins(), "connect-src": markup.EmbedConnectOrigins()} {
 		srcs := strings.Fields(got[name])
 		if len(srcs) == 0 || srcs[0] != "'self'" {
 			out = append(out, fmt.Sprintf("%s = %v", name, srcs))
 		}
 		for _, src := range srcs[min(1, len(srcs)):] {
-			if !origin(src) {
-				out = append(out, fmt.Sprintf("%s holds %q", name, src))
+			if !slices.Contains(table, src) {
+				out = append(out, fmt.Sprintf("%s holds %q, which is no origin of the embed table", name, src))
 			}
 		}
 	}

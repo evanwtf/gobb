@@ -94,7 +94,7 @@ func (s *site) guardPost(cop *http.CrossOriginProtection, limit int64, h, signed
 		if !session.CheckCSRF(id.secret(), r.PostForm.Get("csrf")) {
 			switch {
 			case expired:
-				s.fail(w, r, http.StatusForbidden, expiredHeading, expiredMessage)
+				s.failExpired(w, r)
 			case id.token == "" && signedOut != nil:
 				signedOut(w, r)
 			case id.ended:
@@ -112,7 +112,17 @@ func (s *site) guardPost(cop *http.CrossOriginProtection, limit int64, h, signed
 // denyExpired answers a posting form that http.CrossOriginProtection refused. It
 // echoes nothing.
 func (s *site) denyExpired(w http.ResponseWriter, r *http.Request) {
-	s.fail(w, r, http.StatusForbidden, expiredHeading, expiredMessage)
+	s.failExpired(w, r)
+}
+
+// failExpired writes the 403 of a posting form that cannot be trusted. The page
+// is built on [site.framePage], from the settings in memory: it echoes nothing of
+// the request, not the body, and not the path or the query either, which a page
+// built by begin writes into the scheme picker and the sign-in link.
+func (s *site) failExpired(w http.ResponseWriter, r *http.Request) {
+	p := s.framePage(r, expiredHeading)
+	p.Data = errorData{Status: http.StatusForbidden, Heading: expiredHeading, Message: expiredMessage}
+	s.render(w, http.StatusForbidden, "error.html", p)
 }
 
 // denyCrossOrigin answers a POST that http.CrossOriginProtection refused.

@@ -4,6 +4,7 @@ import (
 	"html"
 	"html/template"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -496,6 +497,42 @@ const (
 	originSoundCloud      = "https://w.soundcloud.com"
 )
 
+// The script and connect origins of the embed table. The rows of [embedHTML]
+// read these lists, and [EmbedScriptOrigins] and [EmbedConnectOrigins] export their
+// union, so a Content-Security-Policy can be checked against the table and the
+// table has one copy of each list.
+var (
+	// tweetScriptSrc: platform.x.com/widgets.js answers with a 302 to
+	// platform.twitter.com/widgets.js, so a policy needs both hosts.
+	tweetScriptSrc      = []string{originXFrame, originXHost}
+	tweetConnect        = []string{originXSyndication, originXCDNSyndication}
+	instagramScriptSrc  = []string{originInstagram}
+	threadsScriptSrc    = []string{originThreads}
+	embedScriptOrigins  = union(tweetScriptSrc, instagramScriptSrc, threadsScriptSrc)
+	embedConnectOrigins = union(tweetConnect)
+)
+
+// union returns the sorted union of the lists, with no duplicates.
+func union(lists ...[]string) []string {
+	var out []string
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	sort.Strings(out)
+	return slices.Compact(out)
+}
+
+// EmbedScriptOrigins returns the origins that the embed table adds to script-src,
+// sorted: the hosts of the provider scripts. [Rendered.ScriptSrc] holds only
+// origins of this list. The caller owns the result.
+func EmbedScriptOrigins() []string { return slices.Clone(embedScriptOrigins) }
+
+// EmbedConnectOrigins returns the origins that the embed table adds to
+// connect-src, sorted: the hosts that the provider scripts reach with fetch or
+// XHR. [Rendered.ConnectSrc] holds only origins of this list. The caller owns the
+// result.
+func EmbedConnectOrigins() []string { return slices.Clone(embedConnectOrigins) }
+
 // embedOut is one row of the embed table: the HTML of an embed and the origins
 // that the page needs for it in its Content-Security-Policy.
 type embedOut struct {
@@ -559,8 +596,8 @@ func embedHTML(tag, id string) embedOut {
 				closeTag("blockquote"),
 			frame:     originXFrame,
 			scripts:   []string{originXHost + "/widgets.js"},
-			scriptSrc: []string{originXFrame, originXHost},
-			connect:   []string{originXSyndication, originXCDNSyndication},
+			scriptSrc: tweetScriptSrc,
+			connect:   tweetConnect,
 		}
 	case "instagram":
 		// https://developers.facebook.com/docs/instagram-platform/oembed : a
@@ -573,7 +610,7 @@ func embedHTML(tag, id string) embedOut {
 				openTag("a", "href", link) + "View on Instagram" + closeTag("a") + closeTag("blockquote"),
 			frame:     originInstagram,
 			scripts:   []string{originInstagram + "/embed.js"},
-			scriptSrc: []string{originInstagram},
+			scriptSrc: instagramScriptSrc,
 		}
 	case "reddit":
 		// A plain link, with no script and no frame. Reddit publishes no embed page
@@ -609,7 +646,7 @@ func embedHTML(tag, id string) embedOut {
 				openTag("a", "href", link) + "View on Threads" + closeTag("a") + closeTag("blockquote"),
 			frame:     originThreads,
 			scripts:   []string{originThreads + "/embed.js"},
-			scriptSrc: []string{originThreads},
+			scriptSrc: threadsScriptSrc,
 		}
 	case "spotify":
 		// https://developer.spotify.com/documentation/embeds : the iframe src is

@@ -177,6 +177,44 @@ func TestEmbedOriginsCoverTheEmbedTable(t *testing.T) {
 	}
 }
 
+// The script and connect origins of the policy are the ones the renderer writes:
+// the render of every embed uses origins of the two lists and nothing else, and
+// each listed origin is used by some embed.
+func TestEmbedScriptAndConnectOriginsCoverTheEmbedTable(t *testing.T) {
+	r := richRender()
+	for name, c := range map[string]struct {
+		got, used []string
+	}{
+		"EmbedScriptOrigins":  {EmbedScriptOrigins(), r.ScriptSrc},
+		"EmbedConnectOrigins": {EmbedConnectOrigins(), r.ConnectSrc},
+	} {
+		if !slices.IsSorted(c.got) || len(slices.Compact(slices.Clone(c.got))) != len(c.got) || len(c.got) == 0 {
+			t.Errorf("%s = %v, want sorted, not empty and without duplicates", name, c.got)
+		}
+		for _, o := range c.got {
+			if !strings.HasPrefix(o, "https://") || strings.HasSuffix(o, "/") || strings.Contains(o[len("https://"):], "/") {
+				t.Errorf("%s: %q is not a bare https origin", name, o)
+			}
+			if !slices.Contains(c.used, o) {
+				t.Errorf("%s lists %q, which no embed of richSource uses", name, o)
+			}
+		}
+		for _, o := range c.used {
+			if !slices.Contains(c.got, o) {
+				t.Errorf("the render has the origin %q, which %s does not list", o, name)
+			}
+		}
+	}
+	// The caller owns the result.
+	o := EmbedScriptOrigins()
+	o[0] = "https://evil.example"
+	c := EmbedConnectOrigins()
+	c[0] = "https://evil.example"
+	if EmbedScriptOrigins()[0] == "https://evil.example" || EmbedConnectOrigins()[0] == "https://evil.example" {
+		t.Error("a change to the result reached the table")
+	}
+}
+
 // TestValuelessAttributeCannotBeForged covers the one way to write an attribute
 // with no value. A stored alt that equals the old marker string of the renderer
 // must come out as a normal quoted value, and no member text may change the shape

@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"fmt"
 	"html"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/bundletest"
 )
@@ -408,9 +406,6 @@ func TestPostPagesKeepThePolicy(t *testing.T) {
 	}
 }
 
-var _ = fmt.Sprintf
-var _ = bundle.Yes
-
 func TestPostBodiesSeesAStrayEnd(t *testing.T) {
 	good := `<article class="post"><div class="post-main"><div class="post-body"><p>x <b>y</b></p></div>
     <p class="edit-note">Edited.</p>
@@ -468,6 +463,12 @@ func TestPolicyProblems(t *testing.T) {
 		"form-action":      {"form-action 'self'", "form-action *"},
 		"script no self":   {"script-src 'self' https://platform.x.com", "script-src https://platform.x.com"},
 		"script with path": {"script-src 'self' https://platform.x.com", "script-src 'self' https://platform.x.com/a.js"},
+		// A bare https origin that the embed table does not hold (ruling T3 CSP).
+		"script evil origin":  {"script-src 'self' https://platform.x.com", "script-src 'self' https://platform.x.com https://evil.example"},
+		"connect evil origin": {"connect-src 'self' https://syndication.twitter.com", "connect-src 'self' https://syndication.twitter.com https://evil.example"},
+		// An origin of the table in the wrong list: a frame host is no script host.
+		"script frame-only origin":   {"script-src 'self' https://platform.x.com", "script-src 'self' https://www.youtube-nocookie.com"},
+		"connect script-only origin": {"connect-src 'self' https://syndication.twitter.com", "connect-src 'self' https://www.instagram.com"},
 	} {
 		weak := strings.Replace(withEmbed, change[0], change[1], 1)
 		if got := policyProblems(weak, wantBaseCSP, true); len(got) == 0 {
@@ -515,5 +516,42 @@ func TestAfterDeleteTarget(t *testing.T) {
 	}
 	if got := s.afterDeleteTarget(ctx, v, board.DeleteForm{PostID: 1, TopicID: 1}); got != "/" {
 		t.Errorf("no forum: %q", got)
+	}
+}
+
+// The "form expired" page echoes nothing of the request: not the body, and not
+// the path or the query either (they would land in the scheme picker and in the
+// sign-in link).
+func TestExpiredFormEchoesNoQuery(t *testing.T) {
+	h, _ := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", "example-password")
+	const marker = "query-marker-5521"
+	form := url.Values{"body": {"x"}, "csrf": {"wrong"}}
+	for name, cookies := range map[string][]*http.Cookie{"member": a, "guest": nil} {
+		for _, target := range []string{"/t/1/reply?x=" + marker, "/f/2/post?" + marker + "=1", "/p/1/edit?next=" + marker} {
+			rec := request(t, h, http.MethodPost, target, cookies, form)
+			page := bodyOf(t, rec)
+			if rec.Code != http.StatusForbidden || !strings.Contains(pageText(page), wantExpired) {
+				t.Errorf("%s POST %s: status %d, expired text present: %v", name, target, rec.Code, strings.Contains(pageText(page), wantExpired))
+			}
+			if strings.Contains(page, marker) {
+				t.Errorf("%s POST %s: the page echoes the query", name, target)
+			}
+			if strings.Contains(page, `action="/login`) || strings.Contains(page, `href="/login`) && strings.Contains(page, "next=") {
+				t.Errorf("%s POST %s: the page carries a return address", name, target)
+			}
+		}
+		// A cross-site request is the same page.
+		r := httptest.NewRequest(http.MethodPost, "/t/1/reply?x="+marker, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+		for _, c := range cookies {
+			r.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if page := bodyOf(t, rec); rec.Code != http.StatusForbidden || strings.Contains(page, marker) {
+			t.Errorf("%s cross-site: status %d, echoes the query: %v", name, rec.Code, strings.Contains(page, marker))
+		}
 	}
 }
