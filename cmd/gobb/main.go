@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,10 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/evanwtf/gobb/internal/acldb"
 	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/version"
 	"github.com/evanwtf/gobb/internal/web"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -33,6 +36,13 @@ const (
 
 type command func(ctx context.Context, args []string) error
 
+// errUsage is the error of a command that was called wrongly. It has printed
+// its own usage line, so run adds none and exits 2.
+var errUsage = errors.New("usage")
+
+// stdout receives the results of commands. The tests replace it.
+var stdout io.Writer = os.Stdout
+
 // commands maps a subcommand name to its handler.
 var commands = map[string]command{
 	"version": func(_ context.Context, _ []string) error {
@@ -40,6 +50,7 @@ var commands = map[string]command{
 		return nil
 	},
 	"migrate":     migrate,
+	"perms":       perms,
 	"serve":       serve,
 	"healthcheck": healthcheck,
 }
@@ -56,6 +67,38 @@ func migrate(ctx context.Context, _ []string) error {
 	}
 	defer pool.Close()
 	return applyMigrations(ctx, pool)
+}
+
+// perms runs a permissions subcommand. The only one is "export".
+func perms(ctx context.Context, args []string) error {
+	if len(args) != 1 || args[0] != "export" {
+		fmt.Fprintln(os.Stderr, "usage: gobb perms export")
+		return errUsage
+	}
+	cfg, err := config.FromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	pool, err := db.Open(ctx, cfg.DSN)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	// A read-only snapshot, so that the export is one view of the board. The
+	// command does not apply migrations: an unmigrated database is an error.
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var migrated bool
+	if err := tx.QueryRow(ctx, `select to_regclass('schema_migrations') is not null`).Scan(&migrated); err != nil {
+		return err
+	}
+	if !migrated {
+		return errors.New("perms export: the database has no schema; run gobb migrate first")
+	}
+	return acldb.Export(ctx, tx, stdout)
 }
 
 // applyMigrations runs the pending migrations and logs each file it applied.
@@ -168,6 +211,9 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if err := cmd(ctx, args[1:]); err != nil {
+		if errors.Is(err, errUsage) {
+			return 2
+		}
 		slog.Error("command failed", "command", args[0], "err", err)
 		return 1
 	}

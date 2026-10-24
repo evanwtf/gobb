@@ -102,3 +102,9 @@ that the pages stand on.
   signatures and static pages are parsed with `markup.Parse` and checked with
   `markup.Validate`, and an error names the file, the line and the ID. `db.DataTables`
   lists the tables that hold forum data.
+- Permissions from the database: `internal/acldb` loads an `acl.Subject` for a user
+  (or the guest, ID 0) in two queries. It adds the user's own grants and the grants of
+  each confirmed group, and expands a role into one grant per option. `gobb perms
+  export` writes the effective permissions of the guest and of every user as JSON
+  Lines, in a fixed order, from one read-only snapshot. A converter compares the
+  lines with the permissions of the source system. The command does not migrate.
