@@ -20,7 +20,7 @@ func phpassDigest(setting, input string) (string, bool) {
 		return "", false
 	}
 	logCount := strings.IndexByte(phpassAlphabet, setting[0])
-	if logCount < 7 || logCount > 30 {
+	if logCount < minPhpassIndex || logCount > 30 {
 		return "", false
 	}
 	salt := setting[1:phpassSettingLen]

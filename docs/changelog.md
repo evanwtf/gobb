@@ -30,6 +30,10 @@ that the pages stand on.
   argon2id and the chain format, with strict limits on cost) and hashes new passwords
   with gobb's own argon2id. `Verify` says when a hash needs a rehash. Input over 4,096
   bytes never matches, and gobb does no hash work on it.
+- Helpers for the importer: `password.Recognized` reports whether a stored hash
+  has a form and cost that `Verify` can check. It runs no hash work.
+  `account.CleanUsername` and `account.CleanEmail` give the comparison form of a
+  username and an email address.
 - Permissions: `internal/acl` holds the registry of 48 options and resolves YES, NO
   and NEVER, where NEVER always wins.
 - The `markup` package, public for converters. It has seven parts:

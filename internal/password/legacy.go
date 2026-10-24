@@ -25,6 +25,10 @@ const (
 	maxPhpassIndex = 18
 )
 
+// minPhpassIndex is the lowest count that the phpass format defines. phpassDigest
+// refuses a lower count.
+const minPhpassIndex = 7
+
 // Limits on the cost that a stored argon2id hash may demand. A stored hash must
 // not make a login use unbounded memory or time.
 const (
@@ -54,9 +58,7 @@ func VerifyLegacy(raw, stored string) bool {
 		return false
 	}
 	switch {
-	case strings.HasPrefix(stored, "$2y$"),
-		strings.HasPrefix(stored, "$2a$"),
-		strings.HasPrefix(stored, "$2b$"):
+	case isBcryptHash(stored):
 		return bcryptMatches(stored, form)
 	case strings.HasPrefix(stored, argonPrefix):
 		return argon2idMatches(stored, form)
@@ -64,6 +66,14 @@ func VerifyLegacy(raw, stored string) bool {
 		return chainMatches(strings.TrimPrefix(stored, chainPrefix), form)
 	}
 	return false
+}
+
+// isBcryptHash reports whether stored starts with a bcrypt marker that VerifyLegacy
+// reads: $2y$, $2a$ or $2b$.
+func isBcryptHash(stored string) bool {
+	return strings.HasPrefix(stored, "$2y$") ||
+		strings.HasPrefix(stored, "$2a$") ||
+		strings.HasPrefix(stored, "$2b$")
 }
 
 // bcryptMatches compares input with a bcrypt hash. It refuses a cost above
@@ -85,13 +95,13 @@ func bcryptCostOK(hash string) bool {
 }
 
 // phpassIndexOK reports whether the count character of a phpass setting is in the
-// alphabet, at an index of at most maxPhpassIndex. It runs no MD5 work.
+// alphabet, at an index from minPhpassIndex to maxPhpassIndex. It runs no MD5 work.
 func phpassIndexOK(setting string) bool {
 	if setting == "" {
 		return false
 	}
 	idx := strings.IndexByte(phpassAlphabet, setting[0])
-	return idx >= 0 && idx <= maxPhpassIndex
+	return idx >= minPhpassIndex && idx <= maxPhpassIndex
 }
 
 // normalizeBcryptPrefix changes a $2y$ prefix to $2a$. It changes nothing else.
@@ -111,19 +121,27 @@ func argon2idMatches(stored, form string) bool {
 	return subtle.ConstantTimeCompare(got, p.hash) == 1
 }
 
-// chainMatches checks the part of a chain hash after "$chain$phpass,". That part
-// is a 9-character portable-hash setting and a bcrypt hash of the portable-hash
-// digest. The digest covers the form, or the lowercase hex MD5 of the form.
-func chainMatches(rest, form string) bool {
+// chainShapeOK reports whether rest, the part of a chain hash after "$chain$phpass,",
+// has a portable-hash setting and a bcrypt hash, and both are within the caps. It
+// runs no MD5 or bcrypt work.
+func chainShapeOK(rest string) bool {
 	if len(rest) < phpassSettingLen || !strings.HasPrefix(rest[phpassSettingLen:], "$2") {
 		return false
 	}
 	setting, bc := rest[:phpassSettingLen], rest[phpassSettingLen:]
+	return phpassIndexOK(setting) && bcryptCostOK(bc)
+}
+
+// chainMatches checks the part of a chain hash after "$chain$phpass,". That part
+// is a 9-character portable-hash setting and a bcrypt hash of the portable-hash
+// digest. The digest covers the form, or the lowercase hex MD5 of the form.
+func chainMatches(rest, form string) bool {
 	// Refuse work above the limits, and a malformed bcrypt hash, before the
 	// portable-hash loop.
-	if !phpassIndexOK(setting) || !bcryptCostOK(bc) {
+	if !chainShapeOK(rest) {
 		return false
 	}
+	setting, bc := rest[:phpassSettingLen], rest[phpassSettingLen:]
 	sum := md5.Sum([]byte(form))
 	for _, in := range []string{form, hex.EncodeToString(sum[:])} {
 		d, ok := phpassDigest(setting, in)
