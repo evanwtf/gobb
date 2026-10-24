@@ -5,8 +5,11 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/acldb"
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/config"
@@ -94,5 +97,65 @@ func TestPermsExportRefusesWithoutSchema(t *testing.T) {
 	}
 	if got.Len() != 0 {
 		t.Errorf("wrote %q before it failed", got.String())
+	}
+}
+
+func TestImportCommand(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.NewEmpty(t)
+	dir := bundletest.Write(t, bundletest.Small())
+	data := t.TempDir()
+	t.Setenv("GOBB_DSN", dsnOf(t, pool))
+	t.Setenv("GOBB_DATA_DIR", data)
+
+	var got bytes.Buffer
+	old := stdout
+	stdout = &got
+	t.Cleanup(func() { stdout = old })
+
+	if code := run(ctx, []string{"import", dir}); code != 0 {
+		t.Fatalf("import exit = %d, want 0", code)
+	}
+	lines := strings.Split(strings.TrimRight(got.String(), "\n"), "\n")
+	if want := len(bundle.Files) + 1; len(lines) != want {
+		t.Fatalf("import printed %d lines, want %d:\n%s", len(lines), want, got.String())
+	}
+	if !regexp.MustCompile(`^posts +6$`).MatchString(lines[9]) {
+		t.Errorf("line 10 = %q, want posts and 6", lines[9])
+	}
+	for i, name := range bundle.Files {
+		if !strings.HasPrefix(lines[i], name+" ") {
+			t.Errorf("line %d = %q, want it to start with %q", i+1, lines[i], name)
+		}
+	}
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "files") {
+		t.Errorf("last line = %q, want it to start with files", last)
+	}
+
+	// A second import into the same database stops without --replace and
+	// works with it.
+	got.Reset()
+	if code := run(ctx, []string{"import", dir}); code != 1 {
+		t.Errorf("second import exit = %d, want 1", code)
+	}
+	if got.Len() != 0 {
+		t.Errorf("a failed import wrote %q to stdout", got.String())
+	}
+	if code := run(ctx, []string{"import", "--replace", dir}); code != 0 {
+		t.Errorf("import --replace exit = %d, want 0", code)
+	}
+}
+
+func TestImportCommandUsage(t *testing.T) {
+	ctx := context.Background()
+	for _, args := range [][]string{
+		{"import"},
+		{"import", "--replace"},
+		{"import", "a", "b"},
+		{"import", "--bogus", "a"},
+	} {
+		if code := run(ctx, args); code != 2 {
+			t.Errorf("run(%v) = %d, want 2", args, code)
+		}
 	}
 }

@@ -49,6 +49,8 @@ go test ./...                                                            # tests
 uvx pre-commit install --hook-type pre-commit --hook-type commit-msg     # once per clone
 uvx pre-commit run --all-files                                           # all hooks
 sh scripts/check-public.sh                                               # the public-repo guard alone
+./gobb import [--replace] <bundle>                                       # load a bundle (directory or .tar.gz) into an empty database
+./gobb perms export > perms.jsonl                                        # write the effective permissions as JSON Lines
 ```
 
 Tests that need PostgreSQL read `GOBB_TEST_DATABASE_URL` and skip when it is unset.

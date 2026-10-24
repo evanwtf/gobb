@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,14 +12,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
+	// The timezone database is compiled in, so that timezone checks work in the
+	// static image, which has no zoneinfo files.
+	_ "time/tzdata"
 
+	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/acldb"
 	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
+	"github.com/evanwtf/gobb/internal/importer"
 	"github.com/evanwtf/gobb/internal/version"
 	"github.com/evanwtf/gobb/internal/web"
 	"github.com/jackc/pgx/v5"
@@ -49,6 +56,7 @@ var commands = map[string]command{
 		fmt.Println("gobb " + version.Version)
 		return nil
 	},
+	"import":      importBundle,
 	"migrate":     migrate,
 	"perms":       perms,
 	"serve":       serve,
@@ -67,6 +75,46 @@ func migrate(ctx context.Context, _ []string) error {
 	}
 	defer pool.Close()
 	return applyMigrations(ctx, pool)
+}
+
+// importBundle loads a bundle into the database and the data directory. It
+// applies the pending migrations first. On success it prints the number of rows
+// it loaded from each data file, in bundle.Files order, then the number of files.
+func importBundle(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, "usage: gobb import [--replace] <bundle>") }
+	replace := fs.Bool("replace", false, "empty the database and move the old files aside first")
+	if err := fs.Parse(args); err != nil {
+		// The flag package has printed the message and the usage.
+		return errUsage
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return errUsage
+	}
+	cfg, err := config.FromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	pool, err := db.Open(ctx, cfg.DSN)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := applyMigrations(ctx, pool); err != nil {
+		return err
+	}
+	counts, err := importer.Run(ctx, pool, fs.Arg(0), importer.Options{DataDir: cfg.DataDir, Replace: *replace})
+	if err != nil {
+		return err
+	}
+	for _, name := range append(slices.Clone(bundle.Files), "files") {
+		if _, err := fmt.Fprintf(stdout, "%-14s %d\n", name, counts[name]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // perms runs a permissions subcommand. The only one is "export".

@@ -119,3 +119,7 @@ that the pages stand on.
   and a forum's `topic_count`, `post_count` and last post. A moved-topic marker has no
   last post. `Run` now counts all 23 data files. `bundletest.Large` builds a big board for
   the scale test: 35,000 posts import in about 36 s under `-race`.
+- `gobb import [--replace] <bundle>`: it applies the migrations, calls `importer.Run`
+  with the data directory from `GOBB_DATA_DIR`, and prints the row count of each data
+  file and the file count. `cmd/gobb` embeds the timezone database for the static image.
+  The README has an "Import a bundle" section for Docker Compose.

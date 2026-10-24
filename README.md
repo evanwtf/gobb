@@ -41,6 +41,48 @@ collides with another network, change the subnet in `compose.yaml` and
 To stop the stack and keep the data, run `docker compose down`. To delete the data
 too, run `docker compose down -v`.
 
+## Import a bundle
+
+`gobb import [--replace] <bundle>` loads a bundle into the database and the data
+volume. The bundle is a directory or a `.tar.gz` file. Put the flag before the path.
+The format is in [docs/bundle.md](docs/bundle.md), and
+[docs/example-bundle/](docs/example-bundle/) is a small example.
+
+Stop the server first. The import lock keeps two imports apart, but it does not stop
+the server from writing to the board during an import.
+
+```sh
+export BUNDLE=/path/to/bundle.tar.gz
+docker compose stop gobb
+docker compose run --rm -v "$BUNDLE:/import/bundle.tar.gz:ro" gobb import /import/bundle.tar.gz
+docker compose start gobb
+```
+
+The container runs as the `nonroot` user, so the bundle file must be readable by
+everyone (mode 0644). The command applies the pending migrations, then prints the
+number of rows it loaded from each data file, and the number of files it staged.
+
+The import refuses a database that holds data. `--replace` empties the database and
+moves the old files to `.replaced-<time>/` in the data volume. It deletes nothing on
+disk.
+
+A converter packs a bundle directory like this:
+
+```sh
+export DIR=/path/to/bundle-directory
+tar -C "$DIR" -czf bundle.tar.gz .
+```
+
+On macOS, write `COPYFILE_DISABLE=1 tar -C "$DIR" -czf bundle.tar.gz .`. Without it,
+macOS `tar` adds `._` files, and the importer refuses them.
+
+To check the permissions after an import, write them as JSON Lines to a file. The
+`-T` flag keeps Compose from adding a terminal, which would change the line endings.
+
+```sh
+docker compose run --rm -T gobb perms export > perms.jsonl
+```
+
 ## Status
 
 Plan 1, the foundation, is built. It ships the repo guards and CI, the configuration,
