@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 	// The timezone database is compiled in, so that a zone name loads in the
 	// static image, which has no zoneinfo files.
 	_ "time/tzdata"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/evanwtf/gobb/internal/acl"
 	"github.com/evanwtf/gobb/internal/acldb"
@@ -148,4 +151,48 @@ func Guest(ctx context.Context, q db.Querier, s Settings) (Viewer, error) {
 		scheme = Schemes[0]
 	}
 	return Viewer{Perms: acl.Resolve(subject), Loc: loc, Scheme: scheme}, nil
+}
+
+// Member returns the viewer for the active member userID: the grants of the
+// member's own rows and groups (a member does not hold the grants of the guests
+// group), the member's time zone and the member's color scheme. A zone or a
+// scheme that the row holds and gobb does not know falls back to the board's.
+// A user who does not exist, or is not active, gives [ErrNotFound].
+func Member(ctx context.Context, q db.Querier, userID int64, s Settings) (Viewer, error) {
+	var name, zone, scheme, state string
+	err := q.QueryRow(ctx, `select username, timezone, color_scheme, state from users where id = $1`, userID).
+		Scan(&name, &zone, &scheme, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Viewer{}, ErrNotFound
+	}
+	if err != nil {
+		return Viewer{}, fmt.Errorf("board: load member %d: %w", userID, err)
+	}
+	if state != "active" {
+		return Viewer{}, ErrNotFound
+	}
+	subject, err := acldb.Load(ctx, q, userID)
+	if err != nil {
+		if errors.Is(err, acldb.ErrUnknownUser) {
+			return Viewer{}, ErrNotFound
+		}
+		return Viewer{}, err
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		slog.Warn("board: a member has a time zone that gobb does not know; using the board zone", "user", userID, "zone", zone)
+		if loc, err = time.LoadLocation(s.Timezone); err != nil {
+			return Viewer{}, fmt.Errorf("board: setting \"timezone\": %w", err)
+		}
+	}
+	if !ValidScheme(scheme) {
+		scheme = s.DefaultScheme
+		if !ValidScheme(scheme) {
+			scheme = Schemes[0]
+		}
+	}
+	return Viewer{
+		UserID: userID, Name: name, Perms: acl.Resolve(subject),
+		Loc: loc, Scheme: scheme,
+	}, nil
 }

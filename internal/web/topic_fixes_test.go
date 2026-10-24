@@ -120,7 +120,7 @@ func TestListedNotReadableLooksMissing(t *testing.T) {
 				t.Errorf("%s: header %s = %q, missing page has %q", c.hidden, k, hid.Header().Get(k), mis.Header().Get(k))
 			}
 		}
-		if bodyOf(t, hid) != bodyOf(t, mis) {
+		if shape(bodyOf(t, hid), c.hidden) != shape(bodyOf(t, mis), c.missing) {
 			t.Errorf("%s: the page differs from the page of %s", c.hidden, c.missing)
 		}
 	}

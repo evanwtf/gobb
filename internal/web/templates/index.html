@@ -6,7 +6,7 @@
     {{- if .Title}}<h2 id="cat-{{.Forum.ID}}"><a href="{{path "f" (printf "%d" .Forum.ID)}}">{{.Title}}</a></h2>{{end -}}
   </div>
   {{- if .Rows}}
-  {{template "forumtable" rows .Rows $.Viewer.Loc}}
+  {{template "forumtable" rows .Rows $.Viewer}}
   {{- else}}
   <p class="empty">There are no forums here yet.</p>
   {{- end}}

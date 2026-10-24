@@ -265,6 +265,7 @@ func setup(ctx context.Context, cfg config.Config) (*pgxpool.Pool, http.Handler,
 		BasePath:       cfg.BasePath,
 		DataDir:        cfg.DataDir,
 		TrustedProxies: cfg.TrustedProxies,
+		CookieSecure:   cfg.CookieSecure,
 	})
 	if err != nil {
 		pool.Close()

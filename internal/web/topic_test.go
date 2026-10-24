@@ -165,7 +165,7 @@ func TestTopicNotFound(t *testing.T) {
 	if hidden.Code != http.StatusNotFound || missing.Code != http.StatusNotFound {
 		t.Fatalf("status %d and %d, want 404", hidden.Code, missing.Code)
 	}
-	if bodyOf(t, hidden) != bodyOf(t, missing) {
+	if shape(bodyOf(t, hidden), "/t/2") != shape(bodyOf(t, missing), "/t/99") {
 		t.Error("a hidden topic differs from a missing topic")
 	}
 	for _, p := range []string{"/t/abc", "/t/-1", "/t/0", "/f/abc", "/p/abc", "/a/abc", "/t/99999999999999999999"} {

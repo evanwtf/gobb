@@ -1,0 +1,32 @@
+{{define "content"}}
+<section class="auth-card" aria-labelledby="login-title">
+  <h1 id="login-title">Sign in</h1>
+  {{- if .Data.Error}}
+  <div class="form-error" role="alert" id="login-error">
+    <p class="form-error-text">{{.Data.Error}}</p>
+    {{- if .Data.Detail}}<p class="form-error-detail">{{.Data.Detail}}</p>{{end}}
+  </div>
+  {{- end}}
+  <form class="auth-form" method="post" action="{{path "login"}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="next" value="{{.Data.Next}}">
+    <div class="field">
+      <label for="login-name">Username or email address</label>
+      <input id="login-name" name="name" type="text" value="{{.Data.Name}}" required autofocus
+        autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+        {{- if .Data.Error}} aria-describedby="login-error"{{end}}>
+    </div>
+    <div class="field">
+      <label for="login-password">Password</label>
+      <input id="login-password" name="password" type="password" required autocomplete="current-password"
+        {{- if .Data.Error}} aria-describedby="login-error"{{end}}>
+    </div>
+    <div class="field-check">
+      <input id="login-remember" name="remember" type="checkbox" value="1" aria-describedby="login-remember-hint"{{if .Data.Remember}} checked{{end}}>
+      <label for="login-remember">Remember me</label>
+      <p class="hint" id="login-remember-hint">Stay signed in on this device for up to a year.</p>
+    </div>
+    <button class="button" type="submit">Sign in</button>
+  </form>
+</section>
+{{end}}

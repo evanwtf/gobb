@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/board"
+	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/session"
 )
 
 //go:embed templates/*.html
@@ -57,17 +59,22 @@ type site struct {
 	// assetVersion changes when the stylesheet or the script changes. Page links
 	// carry it, so a browser fetches the new file.
 	assetVersion string
+	// login checks the sign-ins.
+	login *login.Service
+	// crossOrigin guards every POST route.
+	crossOrigin *http.CrossOriginProtection
 }
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "error.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "login.html", "error.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
 // templates once, so a broken template fails here and not on a request.
 func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
-	s := &site{pool: pool, opt: opt}
+	s := &site{pool: pool, opt: opt, login: login.New(pool), crossOrigin: http.NewCrossOriginProtection()}
+	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	if s.opt.Now == nil {
 		s.opt.Now = time.Now
 	}
@@ -83,6 +90,10 @@ func New(_ context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, erro
 	inner.HandleFunc("GET /t/{id}", s.topic)
 	inner.HandleFunc("GET /p/{id}", s.post)
 	inner.HandleFunc("GET /a/{id}", s.attachment)
+	inner.HandleFunc("GET /login", s.loginPage)
+	inner.Handle("POST /login", s.protect(s.loginSubmit))
+	inner.Handle("POST /logout", s.protect(s.logout))
+	inner.Handle("POST /scheme", s.protect(s.setScheme))
 	inner.HandleFunc("GET /static/{name}", s.static)
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
 	// Without this, the mux would redirect /files/avatars to /files/avatars/.
@@ -174,6 +185,19 @@ type page struct {
 	Home string
 	// HeaderSrc is the site path of the header image, or empty.
 	HeaderSrc string
+	// Controls is true for a page that carries the forms of the layout: sign out
+	// and the scheme picker. render then gives it a csrf token.
+	Controls bool
+	// CSRF is the token for the forms of the page. render fills it in.
+	CSRF string
+	// Return is the site path that the forms of the layout send the visitor back
+	// to. LoginHref is the link of a guest to the sign-in page.
+	Return, LoginHref string
+	// Schemes are the buttons of the scheme picker.
+	Schemes []schemeChoice
+	// csrfSecret is the secret of the csrf token: the session token of a member,
+	// and the gobb_csrf cookie of a guest, which is empty for a guest who has none.
+	csrfSecret string
 	// Data holds the data of the page template.
 	Data any
 }
@@ -184,38 +208,95 @@ type navLink struct {
 	Current     bool
 }
 
-// begin loads what every page needs: the settings and the viewer. It also picks
+// begin loads what every page needs: the settings and the viewer. The viewer is
+// the member whose session cookie is live, and a guest otherwise. It also picks
 // the color scheme: a valid ?scheme= value for this one page, otherwise the
-// scheme of the viewer.
-func (s *site) begin(r *http.Request, title string, nav string) (*page, error) {
+// scheme of the viewer, which for a guest is the gobb_scheme cookie or else the
+// board default.
+//
+// For a member, begin records that the session is in use. It writes at most once
+// every five minutes, and then it also sends a remembered session's cookie
+// again, so that its year starts over.
+func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav string) (*page, error) {
 	ctx := r.Context()
 	settings, err := board.LoadSettings(ctx, s.pool)
 	if err != nil {
 		return nil, err
 	}
 	s.noDataLogged.Store(false)
-	v, err := board.Guest(ctx, s.pool, settings)
+	id, err := s.identify(r)
 	if err != nil {
 		return nil, err
+	}
+	var v board.Viewer
+	if id.token != "" {
+		v, err = board.Member(ctx, s.pool, id.sess.UserID, settings)
+		switch {
+		case errors.Is(err, board.ErrNotFound):
+			// The user is gone or no longer active: the session is worth nothing.
+			id.token = ""
+		case err != nil:
+			return nil, err
+		default:
+			s.touch(w, r, id.sess)
+		}
+	}
+	if id.token == "" {
+		if v, err = board.Guest(ctx, s.pool, settings); err != nil {
+			return nil, err
+		}
+		if c, err := r.Cookie(schemeCookie); err == nil && board.ValidScheme(c.Value) {
+			v.Scheme = c.Value
+		}
+	}
+	if id.dead {
+		http.SetCookie(w, s.cookie(sessionCookie, "", -1))
 	}
 	scheme := v.Scheme
 	if q := r.URL.Query().Get("scheme"); board.ValidScheme(q) {
 		scheme = q
 	}
+	ret := s.returnPath(r)
 	p := &page{
-		Title:    title,
-		Scheme:   scheme,
-		Settings: settings,
-		Viewer:   v,
-		CSS:      s.path("static", "gobb.css") + "?v=" + s.assetVersion,
-		JS:       s.path("static", "gobb.js") + "?v=" + s.assetVersion,
-		Home:     s.path(),
-		Nav:      []navLink{{Label: "Index", Href: s.path(), Current: nav == "index"}},
+		Title:      title,
+		Scheme:     scheme,
+		Settings:   settings,
+		Viewer:     v,
+		CSS:        s.path("static", "gobb.css") + "?v=" + s.assetVersion,
+		JS:         s.path("static", "gobb.js") + "?v=" + s.assetVersion,
+		Home:       s.path(),
+		Nav:        []navLink{{Label: "Index", Href: s.path(), Current: nav == "index"}},
+		Controls:   true,
+		Return:     ret,
+		Schemes:    choices(scheme),
+		csrfSecret: id.secret(),
+	}
+	if id.token == "" && nav != "login" {
+		p.LoginHref = s.loginHref(ret)
 	}
 	if settings.HeaderImage != "" {
 		p.HeaderSrc = s.path("files", settings.HeaderImage)
 	}
 	return p, nil
+}
+
+// touch records the use of a member's session. A failure is logged and does not
+// fail the page: the session is still good.
+func (s *site) touch(w http.ResponseWriter, r *http.Request, sess session.Session) {
+	now := s.opt.Now()
+	if !session.NeedsTouch(sess, now) {
+		return
+	}
+	if err := session.Touch(r.Context(), s.pool, sess, now); err != nil {
+		slog.Warn("cannot touch a session", "err", err)
+		return
+	}
+	if sess.Remember {
+		// The cookie ends a year after this visit, as the session does.
+		if c, err := r.Cookie(sessionCookie); err == nil {
+			http.SetCookie(w, s.cookie(sessionCookie, c.Value, rememberSeconds))
+		}
+	}
 }
 
 // render executes the page template into a buffer, so that a template error
@@ -226,6 +307,20 @@ func (s *site) render(w http.ResponseWriter, status int, name string, p *page) {
 		slog.Error("render: no such template", "name", name)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	if p.Controls {
+		secret := p.csrfSecret
+		if secret == "" {
+			// A guest with no secret yet gets one with the first page that has a form.
+			var err error
+			if secret, err = newCSRFSecret(); err != nil {
+				slog.Error("render: csrf secret", "err", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			http.SetCookie(w, s.cookie(csrfCookie, secret, 0))
+		}
+		p.CSRF = session.CSRFToken(secret)
 	}
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
@@ -250,7 +345,7 @@ type errorData struct {
 // fail writes the error page with the given status. When the settings cannot be
 // read, it falls back to plain text.
 func (s *site) fail(w http.ResponseWriter, r *http.Request, status int, heading, message string) {
-	p, err := s.begin(r, heading, "")
+	p, err := s.begin(w, r, heading, "")
 	if errors.Is(err, board.ErrNoSettings) {
 		p = s.emptyPage(r, heading)
 	} else if err != nil {

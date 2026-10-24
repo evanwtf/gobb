@@ -123,3 +123,35 @@ func TestFromEnvTrustedProxiesWrapsParseError(t *testing.T) {
 		t.Errorf("innermost error = %q, want the netip error %q", inner, perr)
 	}
 }
+
+func TestFromEnvCookieSecure(t *testing.T) {
+	for _, c := range []struct {
+		value string
+		set   bool
+		want  bool
+	}{
+		{set: false, want: true},
+		{value: "", set: true, want: true},
+		{value: "true", set: true, want: true},
+		{value: "false", set: true, want: false},
+		{value: " false ", set: true, want: false},
+	} {
+		m := map[string]string{"GOBB_DSN": "x"}
+		if c.set {
+			m["GOBB_COOKIE_SECURE"] = c.value
+		}
+		got, err := config.FromEnv(env(m))
+		if err != nil {
+			t.Fatalf("%+v: %v", c, err)
+		}
+		if got.CookieSecure != c.want {
+			t.Errorf("%+v: CookieSecure = %v, want %v", c, got.CookieSecure, c.want)
+		}
+	}
+	for _, bad := range []string{"nope", "0", "1", "yes", "TRUE"} {
+		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "x", "GOBB_COOKIE_SECURE": bad}))
+		if err == nil || !strings.Contains(err.Error(), "GOBB_COOKIE_SECURE") {
+			t.Errorf("%q: want an error that names GOBB_COOKIE_SECURE, got %v", bad, err)
+		}
+	}
+}

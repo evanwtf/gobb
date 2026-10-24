@@ -170,7 +170,7 @@ func TestListedNotReadable(t *testing.T) {
 	if locked.Code != http.StatusNotFound || missing.Code != http.StatusNotFound {
 		t.Fatalf("status %d and %d, want 404 and 404", locked.Code, missing.Code)
 	}
-	if bodyOf(t, locked) != bodyOf(t, missing) {
+	if shape(bodyOf(t, locked), "/f/4") != shape(bodyOf(t, missing), "/f/99") {
 		t.Error("the page of a locked forum differs from the page of a missing forum")
 	}
 }

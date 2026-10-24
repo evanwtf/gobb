@@ -60,7 +60,7 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		s.badPage(w, r)
 		return
 	}
-	p, err := s.begin(r, "", "index")
+	p, err := s.begin(w, r, "", "index")
 	if err != nil {
 		s.serverError(w, r, err)
 		return
@@ -142,7 +142,7 @@ func (s *site) post(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w, r)
 		return
 	}
-	p, err := s.begin(r, "", "")
+	p, err := s.begin(w, r, "", "")
 	if err != nil {
 		s.serverError(w, r, err)
 		return
@@ -175,7 +175,7 @@ func (s *site) attachment(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w, r)
 		return
 	}
-	p, err := s.begin(r, "", "")
+	p, err := s.begin(w, r, "", "")
 	if err != nil {
 		s.serverError(w, r, err)
 		return

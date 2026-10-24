@@ -1,9 +1,12 @@
 package web
 
 import (
+	"html/template"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -113,4 +116,122 @@ func rowOf(body, class, text string) string {
 		}
 	}
 	return ""
+}
+
+// csrfField finds the value of a hidden csrf field in a page.
+var csrfField = regexp.MustCompile(`name="csrf" value="([^"]*)"`)
+
+// withoutCSRF replaces the value of every csrf field in body, so that the pages
+// of two guests with no cookie can be compared byte for byte. A guest with no
+// cookie gets a new random secret, and so a new token, on every page.
+func withoutCSRF(body string) string {
+	return csrfField.ReplaceAllString(body, `name="csrf" value="TOKEN"`)
+}
+
+// shape returns body with the csrf tokens and the address that was asked for
+// masked out. The sign-in link and the scheme picker send a visitor back to the
+// page that he asked for, so the page of /t/2 holds "/t/2" and the page of
+// /t/99 holds "/t/99". Nothing else may differ between the 404 of a hidden
+// page and the 404 of a missing one.
+func shape(body, target string) string {
+	body = withoutCSRF(body)
+	for _, form := range []string{url.QueryEscape(target), template.HTMLEscapeString(target), target} {
+		body = strings.ReplaceAll(body, form, "REQUEST")
+	}
+	return body
+}
+
+// request sends one request to h with the given cookies and form values.
+func request(t *testing.T, h http.Handler, method, target string, cookies []*http.Cookie, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	r := httptest.NewRequest(method, target, body)
+	if form != nil {
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for _, c := range cookies {
+		r.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// getAs sends a GET request with cookies.
+func getAs(t *testing.T, h http.Handler, target string, cookies []*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	return request(t, h, http.MethodGet, target, cookies, nil)
+}
+
+// jar merges the cookies that rec sets into cookies. A cookie with a negative
+// MaxAge removes the cookie of the same name.
+func jar(cookies []*http.Cookie, rec *httptest.ResponseRecorder) []*http.Cookie {
+	out := append([]*http.Cookie(nil), cookies...)
+	for _, set := range rec.Result().Cookies() {
+		kept := out[:0]
+		for _, c := range out {
+			if c.Name != set.Name {
+				kept = append(kept, c)
+			}
+		}
+		out = kept
+		if set.MaxAge >= 0 && set.Value != "" {
+			out = append(out, &http.Cookie{Name: set.Name, Value: set.Value})
+		}
+	}
+	return out
+}
+
+// postAs sends a form with the cookies of a visitor. It fetches the index first
+// to learn the csrf token of the visitor, unless form holds one. The result is
+// the answer to the POST, and the cookies after both requests.
+func postAs(t *testing.T, h http.Handler, target string, cookies []*http.Cookie, form url.Values) (*httptest.ResponseRecorder, []*http.Cookie) {
+	t.Helper()
+	return postAsAt(t, h, "/", target, cookies, form)
+}
+
+// postAsAt is postAs for a site under a base path: home is its index.
+func postAsAt(t *testing.T, h http.Handler, home, target string, cookies []*http.Cookie, form url.Values) (*httptest.ResponseRecorder, []*http.Cookie) {
+	t.Helper()
+	if form.Get("csrf") == "" {
+		page := getAs(t, h, home, cookies)
+		cookies = jar(cookies, page)
+		m := csrfField.FindStringSubmatch(bodyOf(t, page))
+		if m == nil {
+			t.Fatal("the index has no csrf field")
+		}
+		form = cloneForm(form)
+		form.Set("csrf", m[1])
+	}
+	rec := request(t, h, http.MethodPost, target, cookies, form)
+	return rec, jar(cookies, rec)
+}
+
+func cloneForm(f url.Values) url.Values {
+	out := url.Values{}
+	for k, v := range f {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+// signIn signs name in with password and returns the cookies of the visitor,
+// the session cookie among them. It fails the test when the sign-in fails.
+func signIn(t *testing.T, h http.Handler, name, password string) []*http.Cookie {
+	t.Helper()
+	form := url.Values{"name": {name}, "password": {password}}
+	rec, cookies := postAs(t, h, "/login", nil, form)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("sign-in of %s: status %d\n%s", name, rec.Code, bodyOf(t, rec))
+	}
+	for _, c := range cookies {
+		if c.Name == "gobb_session" {
+			return cookies
+		}
+	}
+	t.Fatalf("sign-in of %s set no session cookie", name)
+	return nil
 }

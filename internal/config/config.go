@@ -21,6 +21,9 @@ type Config struct {
 	BasePath string
 	// TrustedProxies lists the proxies whose forwarding headers the server trusts.
 	TrustedProxies []netip.Prefix
+	// CookieSecure marks the cookies of the site Secure, so that a browser sends
+	// them only over HTTPS. It is true unless GOBB_COOKIE_SECURE is "false".
+	CookieSecure bool
 }
 
 const (
@@ -32,7 +35,8 @@ const (
 
 // FromEnv builds a Config from getenv. An unset or empty variable takes its
 // default, except GOBB_DSN, which is required. A GOBB_TRUSTED_PROXIES that is set
-// but holds no entry after trimming, such as ",", is an error.
+// but holds no entry after trimming, such as ",", is an error. GOBB_COOKIE_SECURE
+// is "true" (the default) or "false"; any other value is an error.
 func FromEnv(getenv func(string) string) (Config, error) {
 	or := func(key, def string) string {
 		if v := strings.TrimSpace(getenv(key)); v != "" {
@@ -56,6 +60,15 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("config: GOBB_TRUSTED_PROXIES: %w", err)
 	}
 	c.TrustedProxies = proxies
+
+	switch v := or("GOBB_COOKIE_SECURE", "true"); v {
+	case "true":
+		c.CookieSecure = true
+	case "false":
+		c.CookieSecure = false
+	default:
+		return Config{}, fmt.Errorf("config: GOBB_COOKIE_SECURE: %q is not %q or %q", v, "true", "false")
+	}
 	return c, nil
 }
 

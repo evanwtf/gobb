@@ -10,7 +10,7 @@ import (
 // schemeTokens are the custom properties that every scheme defines.
 var schemeTokens = []string{
 	"--page", "--row", "--bar", "--bar-text", "--header", "--header-text",
-	"--text", "--muted", "--link", "--accent", "--new",
+	"--text", "--muted", "--link", "--accent", "--on-accent", "--new",
 }
 
 // slateSpec is the Slate palette of spec 13.
@@ -112,6 +112,7 @@ func TestSchemesPassAA(t *testing.T) {
 			{"--text", "--row"}, {"--muted", "--row"},
 			{"--link", "--page"}, {"--link", "--row"},
 			{"--bar-text", "--bar"}, {"--header-text", "--header"},
+			{"--on-accent", "--accent"},
 		}
 		for _, p := range pairs {
 			fg, bg := tokens[p[0]], tokens[p[1]]

@@ -30,7 +30,7 @@ func checkBasePath(t *testing.T, where, body, base string) {
 func TestBasePathEverywhere(t *testing.T) {
 	b := linkBoard()
 	h, _ := newTestSite(t, b, Options{BasePath: "/forum/"})
-	pages := []string{"/forum/", "/forum/f/1", "/forum/f/2", "/forum/t/1", "/forum/t/5", "/forum/t/6"}
+	pages := []string{"/forum/", "/forum/f/1", "/forum/f/2", "/forum/t/1", "/forum/t/5", "/forum/t/6", "/forum/login"}
 	for _, p := range pages {
 		rec := get(t, h, p)
 		if rec.Code != http.StatusOK {

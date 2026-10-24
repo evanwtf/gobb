@@ -26,6 +26,17 @@
       {{- range .Nav}}
       <li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a></li>
       {{- end}}
+      {{- if .Viewer.UserID}}
+      <li class="nav-end"><span class="nav-who">Signed in as <bdi>{{.Viewer.Name}}</bdi></span></li>
+      <li class="nav-out">
+        <form method="post" action="{{path "logout"}}">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button type="submit" class="nav-button">Sign out</button>
+        </form>
+      </li>
+      {{- else if and .Controls .LoginHref}}
+      <li class="nav-end"><a href="{{.LoginHref}}">Sign in</a></li>
+      {{- end}}
     </ul>
   </nav>
 </header>
@@ -35,6 +46,16 @@
 <footer class="site-footer">
   <div class="wrap">
     <p>Times are shown in {{.Viewer.Loc}}.</p>
+    {{- if .Controls}}
+    <form class="scheme-picker" method="post" action="{{path "scheme"}}" aria-label="Color scheme">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="next" value="{{.Return}}">
+      <span class="scheme-label" aria-hidden="true">Color scheme</span>
+      {{- range .Schemes}}
+      <button type="submit" name="scheme" value="{{.Value}}" aria-pressed="{{if .Current}}true{{else}}false{{end}}">{{.Label}}</button>
+      {{- end}}
+    </form>
+    {{- end}}
   </div>
 </footer>
 </body>

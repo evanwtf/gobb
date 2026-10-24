@@ -76,7 +76,7 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		s.badPage(w, r)
 		return
 	}
-	p, err := s.begin(r, "", "index")
+	p, err := s.begin(w, r, "", "index")
 	if err != nil {
 		s.serverError(w, r, err)
 		return

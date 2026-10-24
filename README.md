@@ -150,6 +150,7 @@ The server reads these variables:
 | `GOBB_DATA_DIR` | Directory for avatars, smilies, ranks, the header image and attachments. | `/var/lib/gobb` |
 | `GOBB_BASE_PATH` | URL path prefix, such as `/forum/`. | `/` |
 | `GOBB_TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies to trust. | `127.0.0.1/32,::1/128` |
+| `GOBB_COOKIE_SECURE` | `true` or `false`. Mark the cookies Secure. | `true` |
 
 Run it from a clone, against a local database. The import uses the same variables:
 
@@ -166,6 +167,22 @@ curl -fsS "http://$GOBB_LISTEN/healthz"
 Open `http://127.0.0.1:8180/` in a browser. Add `?scheme=slate-deep` or
 `?scheme=slate-light` to the address to see one page in another color scheme. The
 board's `default_color_scheme` setting picks the scheme for everyone else.
+
+### Sign in over plain HTTP
+
+Members sign in at `/login`. The session cookie is `Secure` by default, and a browser
+sends a `Secure` cookie only over HTTPS. To try a private copy on `http://127.0.0.1`,
+turn the flag off for that run:
+
+```sh
+export GOBB_COOKIE_SECURE=false
+./gobb serve
+```
+
+Keep it `true` for any copy that people reach over a network. Every form post must come
+from the same origin: the browser's `Origin` or `Sec-Fetch-Site` header is checked
+against the `Host` header. A reverse proxy has to pass the `Host` header of the visitor
+on to gobb.
 
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 25 seconds. A second signal exits at once.

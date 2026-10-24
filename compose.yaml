@@ -29,6 +29,7 @@ services:
       GOBB_DSN: postgres://gobb:${POSTGRES_PASSWORD}@postgres:5432/gobb?sslmode=disable
       GOBB_BASE_PATH: ${GOBB_BASE_PATH:-/}
       GOBB_TRUSTED_PROXIES: ${GOBB_TRUSTED_PROXIES:-10.231.0.1/32}
+      GOBB_COOKIE_SECURE: ${GOBB_COOKIE_SECURE:-true}
     ports:
       - "127.0.0.1:${GOBB_PORT:-8080}:8080"
     volumes:

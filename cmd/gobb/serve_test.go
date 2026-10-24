@@ -180,7 +180,7 @@ func TestDocsNameEveryServeVariable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, v := range []string{"GOBB_DSN", "GOBB_LISTEN", "GOBB_DATA_DIR", "GOBB_BASE_PATH", "GOBB_TRUSTED_PROXIES"} {
+		for _, v := range []string{"GOBB_DSN", "GOBB_LISTEN", "GOBB_DATA_DIR", "GOBB_BASE_PATH", "GOBB_TRUSTED_PROXIES", "GOBB_COOKIE_SECURE"} {
 			if !strings.Contains(string(b), v) {
 				t.Errorf("%s does not name %s", file, v)
 			}

@@ -116,8 +116,9 @@ func TestSchemePreview(t *testing.T) {
 		if !strings.Contains(bodyOf(t, rec), c.want) {
 			t.Errorf("%s: body lacks %s", c.query, c.want)
 		}
-		if len(rec.Result().Cookies()) != 0 {
-			t.Errorf("%s: the preview set a cookie", c.query)
+		// The csrf cookie is for the forms of the page. The preview itself stores nothing.
+		if cookieNamed(rec, "gobb_scheme") != nil {
+			t.Errorf("%s: the preview set a scheme cookie", c.query)
 		}
 	}
 }
@@ -209,7 +210,7 @@ func TestHealthzAtRoot(t *testing.T) {
 // element, so that a strict content security policy can forbid them.
 func TestTemplatesAreCSPClean(t *testing.T) {
 	h, _ := smallSite(t)
-	for _, target := range []string{"/", "/nope"} {
+	for _, target := range []string{"/", "/nope", "/login"} {
 		body := strings.ToLower(bodyOf(t, get(t, h, target)))
 		if strings.Contains(body, "<style") || regexp.MustCompile(`\sstyle\s*=`).MatchString(body) {
 			t.Errorf("%s: inline style", target)

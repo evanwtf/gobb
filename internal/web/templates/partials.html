@@ -60,7 +60,7 @@
       {{- if eq .Kind "link"}}
       <td class="link-target" colspan="3"><span class="muted">Link:</span> <a href="{{path "f" (printf "%d" .ID)}}">{{.LinkURL}}</a></td>
       {{- else if not .Readable}}
-      <td class="members-only" colspan="3">{{template "lock"}} Members only</td>
+      <td class="members-only" colspan="3">{{template "lock"}} {{if $.Member}}No access{{else}}Members only{{end}}</td>
       {{- else}}
       <td class="num" data-label="Topics"><span class="forum-count">{{num .Topics}}</span></td>
       <td class="num" data-label="Posts"><span class="forum-count">{{num .Posts}}</span></td>

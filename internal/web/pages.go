@@ -27,7 +27,9 @@ func (s *site) parseTemplates() error {
 		"date": func(t time.Time, loc *time.Location) template.HTML {
 			return timeTag(t, loc, dateLayout)
 		},
-		"rows":    func(rows []*board.Forum, loc *time.Location) forumRows { return forumRows{Rows: rows, Loc: loc} },
+		"rows": func(rows []*board.Forum, v board.Viewer) forumRows {
+			return forumRows{Rows: rows, Loc: v.Loc, Member: v.UserID != 0}
+		},
 		"initial": initial,
 		"plural":  plural,
 		"size":    size,
@@ -58,7 +60,7 @@ func timeTag(t time.Time, loc *time.Location, layout string) template.HTML {
 
 // index serves the board index.
 func (s *site) index(w http.ResponseWriter, r *http.Request) {
-	p, err := s.begin(r, "", "index")
+	p, err := s.begin(w, r, "", "index")
 	if err != nil {
 		s.serverError(w, r, err)
 		return
@@ -107,11 +109,14 @@ func groupForums(top []*board.Forum) []*forumGroup {
 	return groups
 }
 
-// forumRows is the data of the forum table partial: the rows and the zone in
-// which it shows times.
+// forumRows is the data of the forum table partial: the rows, the zone in
+// which it shows times, and whether the viewer is a member. A forum that the
+// viewer may list and not read shows "Members only" to a guest and "No access"
+// to a member, for whom signing in would change nothing.
 type forumRows struct {
-	Rows []*board.Forum
-	Loc  *time.Location
+	Rows   []*board.Forum
+	Loc    *time.Location
+	Member bool
 }
 
 // plural returns "1 thing" or "2 things". A count over 999 has separators.

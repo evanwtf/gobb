@@ -2,7 +2,7 @@
    the page frame and the board index. */
 
 /* ---- Color schemes -------------------------------------------------------
-   Each scheme sets the same eleven tokens. The page uses the tokens and no
+   Each scheme sets the same twelve tokens. The page uses the tokens and no
    other color. The pairs text and muted on page and row, link on page and row,
    bar-text on bar, and header-text on header all reach WCAG AA (4.5:1); a test
    holds them to it. The "new" badge is a signal, not text, and is exempt. */
@@ -19,6 +19,7 @@
   --muted: #aebccd;
   --link: #4fc0ff;
   --accent: #009aff;
+  --on-accent: #04121f;
   --new: #ff0000;
 }
 
@@ -34,6 +35,7 @@
   --muted: #9fb0c4;
   --link: #5cc5ff;
   --accent: #009aff;
+  --on-accent: #04121f;
   --new: #ff0000;
 }
 
@@ -49,6 +51,7 @@
   --muted: #4c5e72;
   --link: #0a5ea8;
   --accent: #009aff;
+  --on-accent: #04121f;
   --new: #d90000;
 }
 
@@ -273,6 +276,132 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
 .notice h1 { font-size: 1.6rem; margin-bottom: 0.5rem; }
 .notice p + p { margin-top: 0.75rem; }
 .notice-status { color: var(--muted); font-weight: 600; letter-spacing: 0.08em; font-size: 0.85rem; }
+
+/* ---- Account controls: nav, sign-in card, scheme picker ----------------- */
+
+/* The sign-in and sign-out items sit at the right end of the nav bar, and wrap
+   under the links on a narrow screen. */
+.site-nav .nav-end { margin-left: auto; }
+.site-nav li { display: flex; align-items: stretch; }
+.nav-who {
+  align-self: center;
+  padding: 0 0.8rem;
+  font-size: 0.95rem;
+  color: var(--header-text);
+}
+.site-nav form { display: flex; margin: 0; }
+.nav-button {
+  appearance: none;
+  padding: 0.6rem 0.8rem;
+  margin: 0 0 -1px;
+  font: 600 0.95rem/1.5 var(--font);
+  color: var(--header-text);
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+}
+.nav-button:hover { background: rgb(255 255 255 / 0.1); }
+.nav-button:focus-visible { outline: 3px solid var(--header-text); outline-offset: -3px; }
+
+.auth-card {
+  max-width: 26rem;
+  margin: 2rem auto;
+  padding: 1.75rem;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+}
+.auth-card h1 { font-size: 1.5rem; margin-bottom: 1.1rem; }
+
+.form-error {
+  margin-bottom: 1.1rem;
+  padding: 0.7rem 0.9rem;
+  background: color-mix(in srgb, var(--new) 14%, var(--row));
+  border: 1px solid var(--new);
+  border-left-width: 5px;
+  border-radius: 6px;
+}
+.form-error-text { font-weight: 600; }
+.form-error-detail { margin-top: 0.25rem; }
+
+.field { margin-bottom: 1.1rem; }
+.field label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+.field input {
+  display: block;
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  background: var(--page);
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+}
+.field input:focus-visible, .field-check input:focus-visible {
+  outline: 3px solid var(--link);
+  outline-offset: 1px;
+  border-color: var(--link);
+}
+
+.field-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 0.65rem;
+  align-items: start;
+  margin-bottom: 1.4rem;
+}
+.field-check input { width: 1.25rem; height: 1.25rem; margin: 0.15rem 0 0; accent-color: var(--accent); }
+.field-check label { font-weight: 600; cursor: pointer; }
+.field-check .hint { grid-column: 2; color: var(--muted); font-size: 0.875rem; }
+
+.button {
+  display: block;
+  width: 100%;
+  padding: 0.7rem 1rem;
+  font: 600 1rem/1.4 var(--font);
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.button:hover { filter: brightness(1.1); }
+.button:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+
+.scheme-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.scheme-label { margin-right: 0.25rem; }
+.scheme-picker button {
+  padding: 0.3rem 0.75rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--muted);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.scheme-picker button:hover { background: var(--hover); }
+.scheme-picker button[aria-pressed="true"] {
+  color: var(--bar-text);
+  background: var(--bar);
+  border-color: var(--bar);
+  font-weight: 600;
+}
+.scheme-picker button:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+
+@media (max-width: 699px) {
+  .auth-card { margin: 1rem auto; padding: 1.25rem; }
+  .scheme-picker button { min-height: 2.5rem; }
+}
 
 /* ---- Footer -------------------------------------------------------------- */
 
