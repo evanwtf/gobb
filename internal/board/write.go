@@ -85,6 +85,19 @@ type Draft struct {
 	IP netip.Addr
 }
 
+// parseHook, when set, runs in [ParseBodyKeeping] just before the parse. A test
+// sets it to hold a parse open, and to show what the database does meanwhile. It
+// is nil in production.
+var parseHook func()
+
+// errStaleParse tells a write that what it parsed no longer matches the rows
+// that it locked. The write starts again with fresh rows. It never leaves the
+// package.
+var errStaleParse = errors.New("board: the parsed text is stale")
+
+// msgTryAgain is the answer to a write that the rows changed under twice.
+const msgTryAgain = "The post changed while you wrote. Try again."
+
 // ParseBody is the one path from member text to a stored tree. A post, an edit,
 // a signature and a preview all call it. It parses src and checks the tree with
 // [markup.Validate], and it returns the tree, its JSON and its plain text. It
@@ -134,6 +147,9 @@ func ParseBodyKeeping(ctx context.Context, q db.Querier, v Viewer, forumID int64
 			return Body{}, err
 		}
 		opt.SmileyList = list
+	}
+	if parseHook != nil {
+		parseHook()
 	}
 	tree := markup.Parse(src, opt)
 	if err := markup.Validate(tree); err != nil {
@@ -591,8 +607,22 @@ func NewTopic(ctx context.Context, pool *pgxpool.Pool, v Viewer, forumID int64, 
 	if !d.IP.IsValid() {
 		return 0, errors.New("board: a write needs the address of the writer")
 	}
+	// The parse costs the most of the write, so it runs before any row lock: a
+	// slow parse must not hold up the writers of the forum. The rights are those
+	// of v, read without a lock. The checks that decide whether the write may go
+	// on run here as well as in the transaction, so a writer who is refused does
+	// not pay for a parse. A parse error waits for its place in the transaction,
+	// so the order of the answers stays as it was.
+	kind, locked, err := readForum(ctx, pool, v, forumID, false)
+	if err != nil {
+		return 0, err
+	}
+	if !mayStart(v, forumID, kind, locked) {
+		return 0, ErrForbidden
+	}
+	body, parseErr := ParseBody(ctx, pool, v, forumID, d.Source, nil)
 	var postID int64
-	err := inTx(ctx, pool, func(tx pgx.Tx) error {
+	err = inTx(ctx, pool, func(tx pgx.Tx) error {
 		if err := lockAuthor(ctx, tx, v, d.IP); err != nil {
 			return err
 		}
@@ -611,9 +641,8 @@ func NewTopic(ctx context.Context, pool *pgxpool.Pool, v Viewer, forumID int64, 
 		if err != nil {
 			return err
 		}
-		body, err := ParseBody(ctx, tx, v, forumID, d.Source, nil)
-		if err != nil {
-			return err
+		if parseErr != nil {
+			return parseErr
 		}
 		if postID, err = findDuplicateTopic(ctx, tx, au, forumID, title, d.Source, now); err != nil || postID != 0 {
 			return err
@@ -710,6 +739,40 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 	if !d.IP.IsValid() {
 		return 0, errors.New("board: a write needs the address of the writer")
 	}
+	// As in [NewTopic], the parse runs before any row lock. The forum of the
+	// topic decides the flags, so the topic is read first, without a lock, and the
+	// transaction checks that the forum is the one that was parsed for. A topic
+	// does not change its forum, so the second try is for a race that cannot
+	// happen today.
+	for attempt := 0; ; attempt++ {
+		sc, err := newScope(ctx, pool, v)
+		if err != nil {
+			return 0, err
+		}
+		t, err := readTopic(ctx, pool, sc, topicID, false)
+		if err != nil {
+			return 0, err
+		}
+		if t.moved {
+			return 0, ErrNotFound
+		}
+		if !mayReplyTo(v, t.forumID, t.visibility) {
+			return 0, ErrForbidden
+		}
+		body, parseErr := ParseBody(ctx, pool, v, t.forumID, d.Source, nil)
+		postID, err := replyTx(ctx, pool, v, topicID, t.forumID, d, body, parseErr, now)
+		if errors.Is(err, errStaleParse) {
+			if attempt == 1 {
+				return 0, inputError("body", msgTryAgain)
+			}
+			continue
+		}
+		return postID, err
+	}
+}
+
+// replyTx is the transaction of [Reply]. body was parsed for forum parsedForum.
+func replyTx(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID, parsedForum int64, d Draft, body Body, parseErr error, now time.Time) (int64, error) {
 	var postID int64
 	err := inTx(ctx, pool, func(tx pgx.Tx) error {
 		if err := lockAuthor(ctx, tx, v, d.IP); err != nil {
@@ -744,9 +807,11 @@ func Reply(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, d D
 		if err != nil {
 			return err
 		}
-		body, err := ParseBody(ctx, tx, v, t.forumID, d.Source, nil)
-		if err != nil {
-			return err
+		if t.forumID != parsedForum {
+			return errStaleParse
+		}
+		if parseErr != nil {
+			return parseErr
 		}
 		if postID, err = findDuplicateReply(ctx, tx, au, topicID, d.Source, now); err != nil || postID != 0 {
 			return err
@@ -854,6 +919,67 @@ values ($1, $2, $3, $4, $5::jsonb, $6)`, nullID(v.UserID), action, targetType, t
 //
 // now is the time of the edit.
 func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d Draft, reason string, now time.Time) error {
+	// As in [NewTopic], the parse runs before any row lock. It needs the stored
+	// flags and the stored tree of the post, so they are read first, without a
+	// lock. The transaction reads edit_count under the lock on the post and
+	// compares it: an edit that committed in between changes it. The write then
+	// parses again, once, with the fresh values. A second change gives up.
+	for attempt := 0; ; attempt++ {
+		p, t, err := readPost(ctx, pool, v, postID, false)
+		if err != nil {
+			return err
+		}
+		if _, err := editRights(v, p, t); err != nil {
+			return err
+		}
+		stored, editCount, err := readStored(ctx, pool, postID)
+		if err != nil {
+			return err
+		}
+		body, parseErr := ParseBodyKeeping(ctx, pool, v, p.forumID, d.Source, &p.flags, stored)
+		err = editTx(ctx, pool, v, postID, d, reason, now, parsed{p: p, editCount: editCount, body: body, err: parseErr})
+		if errors.Is(err, errStaleParse) {
+			if attempt == 1 {
+				return inputError("body", msgTryAgain)
+			}
+			continue
+		}
+		return err
+	}
+}
+
+// parsed is a body that [EditPost] parsed before the transaction, with what it
+// was parsed from.
+type parsed struct {
+	p         postRef
+	editCount int64
+	body      Body
+	err       error // the parse error, which the transaction returns in its turn
+}
+
+// sameFlags reports whether two sets of post flags are equal. The smiley list
+// plays no part: a post row does not hold it.
+func sameFlags(a, b markup.Options) bool {
+	return a.Markdown == b.Markdown && a.Smilies == b.Smilies && a.Autolink == b.Autolink
+}
+
+// readStored reads the tree and the edit count of a post.
+func readStored(ctx context.Context, q db.Querier, postID int64) (*markup.Node, int64, error) {
+	var storedJSON []byte
+	var editCount int64
+	if err := q.QueryRow(ctx, `select body_tree, edit_count from posts where id = $1`, postID).Scan(&storedJSON, &editCount); err != nil {
+		return nil, 0, fmt.Errorf("board: read post %d: %w", postID, err)
+	}
+	stored, err := markup.Decode(storedJSON)
+	if err != nil {
+		return nil, 0, fmt.Errorf("board: read post %d: %w", postID, err)
+	}
+	return stored, editCount, nil
+}
+
+// editTx is the transaction of [EditPost]. It gives [errStaleParse] when the
+// post is not the one that pre was parsed from.
+func editTx(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d Draft, reason string, now time.Time, pre parsed) error {
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
 		p, t, err := lockPost(ctx, tx, v, postID)
 		if err != nil {
@@ -881,18 +1007,19 @@ func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d
 				return err
 			}
 		}
-		var storedJSON []byte
-		if err := tx.QueryRow(ctx, `select body_tree from posts where id = $1`, postID).Scan(&storedJSON); err != nil {
+		// The row lock on the post is held: nothing changes edit_count until the
+		// end of this transaction.
+		var editCount int64
+		if err := tx.QueryRow(ctx, `select edit_count from posts where id = $1`, postID).Scan(&editCount); err != nil {
 			return fmt.Errorf("board: read post %d: %w", postID, err)
 		}
-		stored, err := markup.Decode(storedJSON)
-		if err != nil {
-			return fmt.Errorf("board: read post %d: %w", postID, err)
+		if editCount != pre.editCount || p.forumID != pre.p.forumID || !sameFlags(p.flags, pre.p.flags) {
+			return errStaleParse
 		}
-		body, err := ParseBodyKeeping(ctx, tx, v, p.forumID, d.Source, &p.flags, stored)
-		if err != nil {
-			return err
+		if pre.err != nil {
+			return pre.err
 		}
+		body := pre.body
 		_, err = tx.Exec(ctx, `
 update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
        edit_count = edit_count + 1, edited_at = $5, edited_by = $6,
@@ -902,11 +1029,8 @@ update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
 			return fmt.Errorf("board: edit post %d: %w", postID, err)
 		}
 		if p.first {
-			if _, err := tx.Exec(ctx, `update posts set subject = $2 where id = $1`, postID, title); err != nil {
-				return fmt.Errorf("board: edit post %d: %w", postID, err)
-			}
-			if _, err := tx.Exec(ctx, `update topics set title = $2 where id = $1`, t.id, title); err != nil {
-				return fmt.Errorf("board: edit topic %d: %w", t.id, err)
+			if err := retitle(ctx, tx, t.id, postID, title); err != nil {
+				return err
 			}
 		}
 		if moderated {
@@ -914,6 +1038,40 @@ update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
 		}
 		return nil
 	})
+}
+
+// retitle gives topic topicID the title. Its first post, firstPostID, takes the
+// title as its subject. The old title must leave every place that holds a copy
+// of it, because a moderator may rename a topic to remove text from it:
+//   - a reply whose subject is "Re: " and the old title takes "Re: " and the
+//     new one. A reply with another subject is the writer's own and stays;
+//   - a moved-topic marker that points at the topic takes the new title.
+//
+// The search column of a post follows its subject, so search no longer finds the
+// old words. The caller holds the lock on the topic and on the first post.
+func retitle(ctx context.Context, tx pgx.Tx, topicID, firstPostID int64, title string) error {
+	var old string
+	if err := tx.QueryRow(ctx, `select title from topics where id = $1`, topicID).Scan(&old); err != nil {
+		return fmt.Errorf("board: read topic %d: %w", topicID, err)
+	}
+	if _, err := tx.Exec(ctx, `update posts set subject = $2 where id = $1`, firstPostID, title); err != nil {
+		return fmt.Errorf("board: edit post %d: %w", firstPostID, err)
+	}
+	if _, err := tx.Exec(ctx, `update topics set title = $2 where id = $1`, topicID, title); err != nil {
+		return fmt.Errorf("board: edit topic %d: %w", topicID, err)
+	}
+	if old == title {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+update posts set subject = 'Re: ' || $3
+ where topic_id = $1 and id <> $2 and subject = 'Re: ' || $4`, topicID, firstPostID, title, old); err != nil {
+		return fmt.Errorf("board: rename the replies of topic %d: %w", topicID, err)
+	}
+	if _, err := tx.Exec(ctx, `update topics set title = $2 where moved_to_topic_id = $1`, topicID, title); err != nil {
+		return fmt.Errorf("board: rename the markers of topic %d: %w", topicID, err)
+	}
+	return nil
 }
 
 // QuoteSource returns the Markdown of a quote of post postID, in the form

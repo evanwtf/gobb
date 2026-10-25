@@ -833,6 +833,24 @@ func TestConcurrentWritesKeepCountersExact(t *testing.T) {
 		topics = append(topics, readPost(t, pool, pid).TopicID)
 	}
 	for round := range 4 {
+		// The posts to delete are chosen before the writers start. Chosen by each
+		// goroutine, as a count from the front, they depended on how many of the
+		// other deletes had committed, and a late goroutine found no row.
+		var targets []int64
+		rows, err := pool.Query(ctx, `select id from posts where forum_id = 2 and visibility = 'approved' order by id limit 6`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			targets = append(targets, id)
+		}
+		if err := rows.Err(); err != nil || len(targets) != 6 {
+			t.Fatalf("round %d: %d posts to delete (%v), want 6", round, len(targets), err)
+		}
 		var wg sync.WaitGroup
 		errs := make(chan error, 64)
 		start := make(chan struct{})
@@ -860,12 +878,7 @@ func TestConcurrentWritesKeepCountersExact(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				var id int64
-				err := pool.QueryRow(ctx, `select id from posts where forum_id = 2 and visibility = 'approved' order by id offset $1 limit 1`, i).Scan(&id)
-				if err != nil {
-					errs <- err
-					return
-				}
+				id := targets[i]
 				at := t0.Add(time.Duration(round*100+50+i) * time.Second)
 				if err := board.DeletePost(ctx, pool, m, id, at); err != nil {
 					errs <- err

@@ -113,6 +113,8 @@ func TestLockButtons(t *testing.T) {
 		t.Fatal(err)
 	}
 	want("author, locked by the author", a, false, true)
+	// A moderator may lock over the lock of the author: Lock and Unlock both show.
+	want("moderator, locked by the author", m, true, true)
 	if err := board.SetTopicLock(ctx, pool, a, 1, false, t0.Add(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +122,7 @@ func TestLockButtons(t *testing.T) {
 		t.Fatal(err)
 	}
 	want("author, locked by a moderator", a, false, false)
+	want("moderator, locked by a moderator", m, false, true)
 	// Bob wrote none of topic 1's rows, and holds no lock_own: only mod.lock counts.
 	grantOpts(t, pool, carol, 2, "topic.lock_own")
 	want("lock_own, not the author", viewerFor(t, pool, carol), false, false)

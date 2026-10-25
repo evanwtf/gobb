@@ -220,17 +220,31 @@ func lockRights(ctx context.Context, q db.Querier, v Viewer, t topicRef, locked 
 	if !t.locked || locked || mod {
 		return nil
 	}
+	actor, err := latestLockActor(ctx, q, t.id)
+	if err != nil {
+		return err
+	}
+	if actor != v.UserID {
+		return ErrForbidden
+	}
+	return nil
+}
+
+// latestLockActor returns the actor of the latest topic.lock row of the topic: 0
+// when that row has no actor (a command-line action) or when there is no row (a
+// topic that was imported locked).
+func latestLockActor(ctx context.Context, q db.Querier, topicID int64) (int64, error) {
 	var actor *int64
 	err := q.QueryRow(ctx, `
 select actor_id from mod_log where target_type = 'topic' and target_id = $1 and action = 'topic.lock'
- order by id desc limit 1`, t.id).Scan(&actor)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (actor == nil || *actor != v.UserID)) {
-		return ErrForbidden
+ order by id desc limit 1`, topicID).Scan(&actor)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && actor == nil) {
+		return 0, nil
 	}
 	if err != nil {
-		return fmt.Errorf("board: read the lock of topic %d: %w", t.id, err)
+		return 0, fmt.Errorf("board: read the lock of topic %d: %w", topicID, err)
 	}
-	return nil
+	return *actor, nil
 }
 
 // lockOffers sets CanLock and CanUnlock of a topic page by [lockRights].
@@ -240,6 +254,16 @@ func lockOffers(ctx context.Context, q db.Querier, v Viewer, out *TopicPage) err
 	switch {
 	case err == nil:
 		out.CanLock, out.CanUnlock = !t.locked, t.locked
+		// A moderator may lock over the lock of the topic's author: the author can
+		// undo that lock, and the moderator's lock cannot be undone by the author.
+		// [SetTopicLock] writes the log row that makes it so.
+		if t.locked && v.Perms.Has("mod.lock", t.forumID) && t.authorID != 0 && t.authorID != v.UserID {
+			actor, err := latestLockActor(ctx, q, t.id)
+			if err != nil {
+				return err
+			}
+			out.CanLock = actor == t.authorID
+		}
 	case errors.Is(err, ErrForbidden):
 	default:
 		return err

@@ -199,7 +199,10 @@ func countOf(visibility string) int {
 // topic.lock_own for the author of the topic. A topic that v cannot see is
 // [ErrNotFound]; a guest, and anyone else, gets [ErrForbidden], and so does a
 // moved-topic marker. A topic that is already in the state asked for is left
-// alone. A change writes one mod_log row, whoever makes it.
+// alone. A change writes one mod_log row, whoever makes it. A holder of mod.lock
+// who locks a topic that is locked already, when the latest topic.lock row does
+// not name the holder, writes a topic.lock row and changes nothing else: the lock
+// of the author can no longer be undone by the author.
 //
 // An author who holds topic.lock_own and not mod.lock may unlock the topic only
 // when the latest topic.lock row of the topic names the author as actor. A topic
@@ -219,6 +222,20 @@ func SetTopicLock(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int
 			return err
 		}
 		if t.locked == locked {
+			// A moderator who locks a topic that is locked already may have found
+			// the lock of its author. The author can undo that lock, so the
+			// moderator's lock must be on record as the latest: the topic stays
+			// locked, and only the log row is new. A moderator whose lock is the
+			// latest one has nothing to add.
+			if locked && v.Perms.Has("mod.lock", t.forumID) {
+				actor, err := latestLockActor(ctx, tx, t.id)
+				if err != nil {
+					return err
+				}
+				if actor != v.UserID {
+					return logMod(ctx, tx, v, "topic.lock", "topic", t.id, "{}", now)
+				}
+			}
 			return nil
 		}
 		if _, err := tx.Exec(ctx, `update topics set locked = $2 where id = $1`, t.id, locked); err != nil {
