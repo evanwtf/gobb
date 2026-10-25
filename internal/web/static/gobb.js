@@ -327,6 +327,32 @@
     });
   }
 
+  // A closed list fires change on each arrow-key step in some browsers. A list
+  // waits until it is quiet for SELECT_QUIET ms, so one save goes out. A radio
+  // button, a check box, a file and a text box save at once. pending holds the
+  // units that wait, so that leaving the page can send them.
+  var SELECT_QUIET = 400;
+  var timers = new WeakMap();
+  var pending = new Set();
+
+  function saveSoon(unit) {
+    clearTimeout(timers.get(unit));
+    pending.add(unit);
+    timers.set(unit, setTimeout(function () {
+      pending.delete(unit);
+      save(unit, false);
+    }, SELECT_QUIET));
+  }
+
+  // flushPending sends every unit that waits, at once.
+  function flushPending() {
+    pending.forEach(function (unit) {
+      clearTimeout(timers.get(unit));
+      save(unit, true);
+    });
+    pending.clear();
+  }
+
   Array.prototype.forEach.call(forms, function (form) {
     Array.prototype.forEach.call(form.querySelectorAll("input, textarea"), function (el) {
       if (isText(el)) {
@@ -336,7 +362,11 @@
     form.addEventListener("change", function (event) {
       var el = event.target;
       if (el instanceof HTMLElement && (el.name || el.type === "file") && el.name !== "csrf") {
-        save(unitOf(el), false);
+        if (el instanceof HTMLSelectElement) {
+          saveSoon(unitOf(el));
+        } else {
+          save(unitOf(el), false);
+        }
       }
     });
     // Enter in a one-line box saves that box. It does not send the whole form.
@@ -388,9 +418,11 @@
     });
   }
 
-  // On leaving the page, a text box that still has focus and holds a change that
-  // has not gone out is sent now: the browser fires no change event for it.
+  // On leaving the page, a list that waits for its quiet time is sent now. So is a
+  // text box that still has focus and holds a change that has not gone out: the
+  // browser fires no change event for it.
   window.addEventListener("pagehide", function () {
+    flushPending();
     var el = document.activeElement;
     if (el && isText(el) && el.form && el.form.hasAttribute("data-autosave") && el.value !== lastSent.get(el)) {
       save(unitOf(el), true);

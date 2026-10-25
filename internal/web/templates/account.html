@@ -1,7 +1,7 @@
 {{define "content"}}
 <header class="page-head">
   <h1>Your account</h1>
-  <p class="page-sub">Changes save as you make them. <a href="{{path "u" (printf "%d" .Viewer.UserID)}}">Your public profile</a></p>
+  <p class="page-sub"><span class="save-auto">Changes save as you make them.</span><span class="save-manual">Save each section with its button.</span> <a href="{{path "u" (printf "%d" .Viewer.UserID)}}">Your public profile</a></p>
 </header>
 
 {{- with .Data.Done}}

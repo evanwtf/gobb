@@ -766,7 +766,8 @@ func TestAccountPageSettingsSections(t *testing.T) {
 		`id="timezone-status"`, `id="dateformat-status"`, `id="location-status"`, `id="website-status"`,
 		`id="birthday-status"`, `id="avatar-status"`, `id="signature-status"`,
 		`role="status" aria-live="polite"`, `save-fallback`, `data-autosave`,
-		"Changes save as you make them.", `href="/u/1"`,
+		`<span class="save-auto">Changes save as you make them.</span>`,
+		`<span class="save-manual">Save each section with its button.</span>`, `href="/u/1"`,
 		`<option value="3" selected>March</option>`, `<option value="1984" selected>1984</option>`,
 		"Leave out the year if you don't want your age shown.",
 		"A PNG, JPEG or GIF of at most 1 MB.",
@@ -849,6 +850,51 @@ func TestAccountGuest(t *testing.T) {
 	}
 }
 
+// The line "Changes save as you make them." needs script, so without script the page
+// shows "Save each section with its button." instead. Both are plain classes: the
+// stylesheet hides the first by default and shows it under .js, and hides the second
+// under .js. The line and its text carry no inline style.
+func TestAccountSaveLineNeedsScript(t *testing.T) {
+	h, _ := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	page := bodyOf(t, getAs(t, h, "/account", a))
+	for _, want := range []string{
+		`<span class="save-auto">Changes save as you make them.</span>`,
+		`<span class="save-manual">Save each section with its button.</span>`,
+	} {
+		if strings.Count(page, want) != 1 {
+			t.Errorf("the account page does not hold %s once", want)
+		}
+	}
+	// "Changes save as you make them." sits only inside .save-auto.
+	if strings.Count(page, "Changes save as you make them.") != 1 {
+		t.Error("the save line appears outside .save-auto")
+	}
+	head := page[strings.Index(page, `class="page-head"`):]
+	head = head[:strings.Index(head, "</header>")]
+	if strings.Contains(head, "style=") {
+		t.Errorf("the page head carries an inline style:\n%s", head)
+	}
+
+	css, err := fs.ReadFile(staticFS, "static/gobb.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range []string{
+		".save-auto { display: none; }",
+		".js .save-auto { display: inline; }",
+		".js .save-manual { display: none; }",
+	} {
+		if !bytes.Contains(css, []byte(rule)) {
+			t.Errorf("gobb.css lacks %q", rule)
+		}
+	}
+	if bytes.Contains(css, []byte(".save-manual { display: none; }")) &&
+		!bytes.Contains(css, []byte(".js .save-manual { display: none; }")) {
+		t.Error("the manual line is hidden without script")
+	}
+}
+
 func TestScriptHasNoHTMLSinks(t *testing.T) {
 	src, err := fs.ReadFile(staticFS, "static/gobb.js")
 	if err != nil {
@@ -859,7 +905,7 @@ func TestScriptHasNoHTMLSinks(t *testing.T) {
 			t.Errorf("gobb.js holds %s", sink)
 		}
 	}
-	for _, want := range []string{"X-Gobb-Save", "credentials", "keepalive", "pagehide", "data-autosave"} {
+	for _, want := range []string{"X-Gobb-Save", "credentials", "keepalive", "pagehide", "data-autosave", "SELECT_QUIET = 400"} {
 		if !bytes.Contains(src, []byte(want)) {
 			t.Errorf("gobb.js lacks %s", want)
 		}
@@ -1386,7 +1432,7 @@ func TestAvatarOneUploadInFlightPerMember(t *testing.T) {
 	a, b := signIn(t, h, "alice", testPassword), signIn(t, h, "bob", testPassword)
 	a2 := signIn(t, h, "alice", testPassword) // a second session of the same member
 	token, token2 := accountToken(t, h, a), accountToken(t, h, a2)
-	if a[0].Value == a2[0].Value || token == token2 {
+	if sessionValue(a) == "" || sessionValue(a) == sessionValue(a2) || token == token2 {
 		t.Fatal("the two sessions of alice share a cookie or a token")
 	}
 

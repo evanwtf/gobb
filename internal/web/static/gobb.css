@@ -1161,6 +1161,9 @@ fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
 .save-status { min-height: 1.4em; margin-top: 0.25rem; font-weight: 600; color: var(--muted); }
 .save-status:empty { min-height: 0; margin: 0; }
 .js .save-fallback { display: none; }
+.save-auto { display: none; }
+.js .save-auto { display: inline; }
+.js .save-manual { display: none; }
 .avatar-img { width: 96px; height: 96px; border-radius: 4px; object-fit: cover; }
 .birthday-row select { width: auto; display: inline-block; margin-right: 0.4rem; }
 
