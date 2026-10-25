@@ -48,6 +48,7 @@ const (
 	msgTooManyUploads = "Too many uploads. Wait an hour and try again."
 	msgAvatarFormat   = "Pick a PNG, JPEG or GIF."
 	msgAvatarPixels   = "That image is too large. Use one of at most 8,000 pixels a side."
+	msgAvatarMemory   = "That image needs too much memory to process. Use a smaller one."
 	msgBirthdayForm   = "Pick a day, a month and a year from the lists."
 	msgNoRight        = "You cannot make this change."
 	msgNotSaved       = "Not saved. Reload the page and try again."
@@ -463,6 +464,9 @@ func (s *site) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, avatar.ErrDimensions):
 		refuse(http.StatusBadRequest, msgAvatarPixels)
+		return
+	case errors.Is(err, avatar.ErrTooMuchMemory):
+		refuse(http.StatusBadRequest, msgAvatarMemory)
 		return
 	case errors.Is(err, login.ErrBusy):
 		w.Header().Set("Retry-After", strconv.Itoa(busyRetrySeconds))

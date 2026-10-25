@@ -1612,3 +1612,38 @@ func TestAvatarUploadWithoutTheRightTakesNoSlot(t *testing.T) {
 		t.Errorf("upload after the right is back = %d, want 200", rec.Code)
 	}
 }
+
+// An image within the limits of side and pixels, but over the memory budget of the
+// gate, gets its own text; the limits keep theirs. The gate is small here, so a
+// PNG of 1000 x 1000 (about 5,100 KiB) is over its budget of 4,096 KiB.
+func TestAvatarRefusalTexts(t *testing.T) {
+	gate := login.NewGate(4096)
+	h, pool, dataDir := postingSiteOpts(t, Options{LoginGate: gate})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	before := avatarOf(t, pool, 1)
+
+	cases := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"over the memory budget", testPNG(t, 1000, 1000), "That image needs too much memory to process. Use a smaller one."},
+		{"over the side limit", testPNG(t, 50000, 1), "That image is too large. Use one of at most 8,000 pixels a side."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := uploadWithToken(t, h, a, token, tc.data, saveHeader)
+			if got := answerJSON(t, rec); rec.Code != http.StatusBadRequest || got["message"] != tc.want || got["field"] != "avatar" {
+				t.Errorf("as JSON = %d %v, want 400 and %q", rec.Code, got, tc.want)
+			}
+			rec = uploadWithToken(t, h, a, token, tc.data, nil)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(bodyOf(t, rec), tc.want) {
+				t.Errorf("as a page = %d, want 400 and %q", rec.Code, tc.want)
+			}
+		})
+	}
+	if avatarOf(t, pool, 1) != before || len(avatarFiles(t, dataDir, 1)) != 0 {
+		t.Error("a refusal changed the avatar")
+	}
+}

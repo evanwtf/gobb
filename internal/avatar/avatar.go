@@ -61,6 +61,10 @@ var (
 	// ErrDimensions means a side is over [MaxSide], or the pixels are over
 	// [MaxPixels].
 	ErrDimensions = errors.New("avatar: the image is too large in pixels")
+	// ErrTooMuchMemory means the decode needs more memory than the whole budget of
+	// the gate, although the side and the pixels are within the limits. A JPEG of
+	// 3000 x 2500 can be one.
+	ErrTooMuchMemory = errors.New("avatar: the image needs too much memory to decode")
 )
 
 type format int
@@ -95,7 +99,7 @@ func sniff(b []byte) format {
 //     side is over [MaxSide] or the pixels are over [MaxPixels].
 //  4. It works out the memory of the decode (see [chargeKiB]; the figures depend
 //     on the format and on the color model or bit depth) and returns
-//     [ErrDimensions] when that is more than the whole budget of gate. Else it
+//     [ErrTooMuchMemory] when that is more than the whole budget of gate. Else it
 //     takes the memory from gate, waiting up to wait, and returns [login.ErrBusy]
 //     when the wait ends (or the error of ctx when ctx ends first). It gives the
 //     memory back before it returns.
@@ -143,7 +147,7 @@ func decodeSquare(ctx context.Context, data []byte, gate *login.Gate, wait time.
 	if kib > gate.Budget() {
 		// The gate would run this decode alone, and it needs more than the budget:
 		// the process could run out of memory. Refuse it before any allocation.
-		return nil, ErrDimensions
+		return nil, ErrTooMuchMemory
 	}
 	release, err := gate.AcquireCollected(ctx, kib, wait)
 	if err != nil {

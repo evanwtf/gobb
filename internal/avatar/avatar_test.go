@@ -321,21 +321,22 @@ func pngHeaderDepth(w, h uint32, depth, colorType byte) []byte {
 func TestMakeRefusesOverBudget(t *testing.T) {
 	// A progressive JPEG header of 4000 x 4000 charges 12 bytes a pixel, about
 	// 187,500 KiB + 1,024, over the 131,072 KiB production budget. A held gate shows
-	// that Make does not wait for it: the answer is ErrDimensions, not ErrBusy.
+	// that Make does not wait for it: the answer is ErrTooMuchMemory, not ErrBusy,
+	// and it is not ErrDimensions, which is for the limits of side and pixels.
 	prod := login.NewGate(128 * 1024)
 	rel, err := prod.Acquire(context.Background(), 128*1024, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(4000, 4000)), prod, 250*time.Millisecond)
-	if !errors.Is(err, avatar.ErrDimensions) {
-		t.Errorf("4000x4000 JPEG, gate full: error = %v, want ErrDimensions", err)
+	if !errors.Is(err, avatar.ErrTooMuchMemory) || errors.Is(err, avatar.ErrDimensions) {
+		t.Errorf("4000x4000 JPEG, gate full: error = %v, want ErrTooMuchMemory only", err)
 	}
 	rel()
 	// The same on an idle gate: no acquire, so the gate is free afterward.
 	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(4000, 4000)), prod, wait)
-	if !errors.Is(err, avatar.ErrDimensions) {
-		t.Errorf("4000x4000 JPEG, idle gate: error = %v, want ErrDimensions", err)
+	if !errors.Is(err, avatar.ErrTooMuchMemory) || errors.Is(err, avatar.ErrDimensions) {
+		t.Errorf("4000x4000 JPEG, idle gate: error = %v, want ErrTooMuchMemory only", err)
 	}
 	if rel, err = prod.Acquire(context.Background(), 128*1024, 0); err != nil {
 		t.Errorf("the gate is held after a refusal: %v", err)
@@ -344,7 +345,7 @@ func TestMakeRefusesOverBudget(t *testing.T) {
 	}
 	// A JPEG of 2000 x 2000 charges 12*4M/1024 + 1024 = 47,898 KiB: under the budget.
 	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(2000, 2000)), prod, wait)
-	if errors.Is(err, avatar.ErrDimensions) {
+	if errors.Is(err, avatar.ErrTooMuchMemory) {
 		t.Errorf("2000x2000 JPEG: error = %v, want it past the charge check", err)
 	}
 
@@ -352,8 +353,8 @@ func TestMakeRefusesOverBudget(t *testing.T) {
 	// 4 (16,649 KiB). A gate of 20,000 KiB refuses the first and admits the second.
 	small := login.NewGate(20000)
 	_, err = avatar.Make(context.Background(), bytes.NewReader(pngHeaderDepth(2000, 2000, 16, 2)), small, wait)
-	if !errors.Is(err, avatar.ErrDimensions) {
-		t.Errorf("16-bit PNG: error = %v, want ErrDimensions", err)
+	if !errors.Is(err, avatar.ErrTooMuchMemory) {
+		t.Errorf("16-bit PNG: error = %v, want ErrTooMuchMemory", err)
 	}
 	_, err = avatar.Make(context.Background(), bytes.NewReader(pngHeaderDepth(2000, 2000, 8, 2)), small, wait)
 	if !errors.Is(err, avatar.ErrFormat) {
@@ -361,8 +362,8 @@ func TestMakeRefusesOverBudget(t *testing.T) {
 	}
 	// A 16-bit gray PNG is charged like any 16-bit PNG (the decoder gives 16 bits).
 	_, err = avatar.Make(context.Background(), bytes.NewReader(pngHeaderDepth(2000, 2000, 16, 0)), small, wait)
-	if !errors.Is(err, avatar.ErrDimensions) {
-		t.Errorf("16-bit gray PNG: error = %v, want ErrDimensions", err)
+	if !errors.Is(err, avatar.ErrTooMuchMemory) {
+		t.Errorf("16-bit gray PNG: error = %v, want ErrTooMuchMemory", err)
 	}
 }
 
@@ -611,7 +612,8 @@ func FuzzMake(f *testing.F) {
 				t.Fatalf("output is %v", b)
 			}
 		case errors.Is(err, avatar.ErrTooLarge), errors.Is(err, avatar.ErrFormat),
-			errors.Is(err, avatar.ErrDimensions), errors.Is(err, login.ErrBusy):
+			errors.Is(err, avatar.ErrDimensions), errors.Is(err, avatar.ErrTooMuchMemory),
+			errors.Is(err, login.ErrBusy):
 		default:
 			t.Fatalf("unnamed error: %v", err)
 		}

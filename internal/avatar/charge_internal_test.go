@@ -38,7 +38,7 @@ func progressiveJPEGScans(w, h int, comps [][2]int, adobe int, perComponent bool
 	var b bytes.Buffer
 	b.Write([]byte{0xFF, 0xD8})
 	if adobe >= 0 {
-		b.Write([]byte{0xFF, 0xEE, 0, 14, 'A', 'd', 'o', 'b', 'e', 0, 0, 0x64, 0, 0, 0, 0, byte(adobe)})
+		b.Write([]byte{0xFF, 0xEE, 0, 14, 'A', 'd', 'o', 'b', 'e', 0, 0, 0x64, 0, 0, 0, byte(adobe)})
 	}
 	b.Write([]byte{0xFF, 0xDB, 0, 67, 0})
 	b.Write(bytes.Repeat([]byte{1}, 64))
@@ -85,7 +85,7 @@ func lateAdobe(base []byte) []byte {
 		panic("no end of image")
 	}
 	out := append([]byte{}, base[:len(base)-2]...)
-	out = append(out, 0xFF, 0xEE, 0, 14, 'A', 'd', 'o', 'b', 'e', 0, 0, 0x64, 0, 0, 0, 0, 0)
+	out = append(out, 0xFF, 0xEE, 0, 14, 'A', 'd', 'o', 'b', 'e', 0, 0, 0x64, 0, 0, 0, 0)
 	return append(out, 0xFF, 0xD9)
 }
 
@@ -338,7 +338,7 @@ func TestMakeRefusesPaddedJPEGOverBudget(t *testing.T) {
 	}
 	defer rel()
 	_, err = Make(context.Background(), bytes.NewReader(data), g, 250*time.Millisecond)
-	if !errors.Is(err, ErrDimensions) {
-		t.Errorf("error = %v, want ErrDimensions", err)
+	if !errors.Is(err, ErrTooMuchMemory) {
+		t.Errorf("error = %v, want ErrTooMuchMemory", err)
 	}
 }
