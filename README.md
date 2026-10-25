@@ -288,14 +288,17 @@ board's `default_color_scheme` setting picks the scheme for everyone else.
 
 ### The build line
 
-The footer of every page ends with one line in small type. A page that answers 2xx shows
-`Rendered in 0.02 s with 5 queries · gobb 0.1.0 · build 0f0f0fac`. Any other page (an
-error, or a page that redirects) shows `gobb 0.1.0 · build 0f0f0fac`, so the 404 of a
+The footer of every page ends with one line in small type. A 2xx answer to a GET or HEAD
+request shows `Rendered in 0.02 s · gobb 0.1.0 · build 0f0f0fac`. An admin (the
+board-wide admin right) also sees the count of database statements:
+`Rendered in 0.02 s with 5 queries · gobb 0.1.0 · build 0f0f0fac`. The count is exact,
+so only an admin sees it: on the page of a failed sign-in it would tell a stranger
+whether a username exists. Every answer to a POST, and every answer that is not 2xx (an
+error, or a page that redirects), shows `gobb 0.1.0 · build 0f0f0fac`, so the 404 of a
 hidden topic looks the same as the 404 of a missing one. The time runs from the moment
-the request enters the server until the footer is written, rounded up to the next 10
-ms. The count is the number of statements that the request ran on the database. The
-line holds no member name, host name, address, memory figure or timing of a query, and
-guests, members and crawlers see the same thing.
+the request enters the server until just before the last run of the page template,
+rounded up to the next 10 ms. The line holds no member name, host name, address, memory
+figure or timing of a query. Guests, members and crawlers see the same thing.
 
 The build is the first 8 hex characters of the commit. The image build takes it from the
 `GOBB_COMMIT` build argument, and CI and the release workflow pass the commit SHA. To

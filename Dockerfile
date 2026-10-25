@@ -13,10 +13,13 @@ RUN go mod download
 COPY . .
 # The commit that the page footer shows. CI and the release workflow pass the
 # commit SHA. It is declared here, after the source, so a new commit rebuilds
-# only this step. The runtime stage never sees it. The binary checks the value:
-# anything but 7 to 40 hex characters shows as "unknown".
+# only this step. The runtime stage never sees it. The build refuses a value
+# that is not hex (an empty value is allowed), so a build argument cannot add
+# linker flags. The binary also checks the value: anything but 7 to 40 hex
+# characters shows as "unknown".
 ARG GOBB_COMMIT
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+RUN case "$GOBB_COMMIT" in *[!0-9a-fA-F]*) echo "GOBB_COMMIT is not hex" >&2; exit 1;; esac \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags="-s -w -X github.com/evanwtf/gobb/internal/version.Commit=${GOBB_COMMIT}" \
       -o /out/gobb ./cmd/gobb \
  && mkdir -p /out/data

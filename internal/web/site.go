@@ -630,9 +630,10 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		after()
 	}
 	s.addNav(p)
-	// The last step before the footer is written: the count and the time hold
-	// every statement of the page.
-	p.Footer = footerLine(p.ctx, status)
+	// The last step before the footer is written: the count holds every
+	// statement of the page, and the time stops here, about one template run
+	// (a millisecond) before the page is written.
+	p.Footer = footerLine(p.ctx, status, p.Viewer.Perms.IsAdmin())
 	var buf bytes.Buffer
 	layoutBuilds.Add(1)
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {

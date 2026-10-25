@@ -267,8 +267,8 @@ jobs:
             { echo "want a charge of 65536 KiB, two checks at once"; exit 1; }
 
       # The build line of a page names the commit that CI built: the first 8
-      # characters of github.sha. /t/99 is a 404, which shows the build and no
-      # time or query count.
+      # characters of github.sha. A guest sees the time and no query count (only an
+      # admin sees the count). /t/99 is a 404, which shows the build only.
       - name: The footer names the commit
         run: |
           port=$(docker compose port gobb 8080)
@@ -284,12 +284,23 @@ jobs:
               *" · build $want") ;;
               *) echo "$path: the build line does not end with build $want"; exit 1 ;;
             esac
+            case "$line" in
+              *quer*) echo "$path: a guest sees a query count"; exit 1 ;;
+            esac
+            if [ "$path" = /t/99 ]; then
+              # A 404 shows the plain line: no time.
+              case "$line" in
+                "gobb "*) ;;
+                *) echo "$path: a 404 shows a time"; exit 1 ;;
+              esac
+            else
+              # A 2xx GET shows the time, and no count, to a guest.
+              case "$line" in
+                "Rendered in "*" s · gobb "*) ;;
+                *) echo "$path: a guest page shows no time"; exit 1 ;;
+              esac
+            fi
           done
-          # The last path, /t/99, is a 404: no time and no query count.
-          case "$line" in
-            "gobb "*) ;;
-            *) echo "a 404 shows a time or a query count"; exit 1 ;;
-          esac
 
       - name: Serve pages under the memory cap
         run: |

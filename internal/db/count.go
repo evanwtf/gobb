@@ -89,5 +89,7 @@ func (CountTracer) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, _ pgx.Tr
 // TraceCopyFromEnd does nothing.
 func (CountTracer) TraceCopyFromEnd(context.Context, *pgx.Conn, pgx.TraceCopyFromEndData) {}
 
-// Trace sets the counting tracer on cfg. Open calls it for every pool.
+// Trace sets the counting tracer on cfg. Open calls it for every pool. It
+// replaces any tracer that cfg already holds: a second tracer would need a
+// multi-tracer that calls both.
 func Trace(cfg *pgx.ConnConfig) { cfg.Tracer = CountTracer{} }
