@@ -37,8 +37,10 @@ var (
 
 // The limits of the "About you" fields.
 const (
-	// MaxLocation is the longest location or occupation, in characters.
+	// MaxLocation is the longest location, in characters.
 	MaxLocation = 100
+	// MaxOccupation is the longest occupation, in characters.
+	MaxOccupation = 100
 	// MaxInterests is the longest interests text, in characters.
 	MaxInterests = 200
 	// MaxWebsite is the longest website, in bytes.
@@ -50,15 +52,15 @@ const (
 	MinAge = 19
 )
 
-// CheckProfileText checks a plain-text profile field: valid UTF-8, at most max
+// CheckProfileText checks a plain-text profile field: valid UTF-8, at most limit
 // characters (runes, not bytes), and no control character. A line break, a tab
 // and U+0000 are control characters. It returns nil, [ErrNotUTF8], [ErrTooLong]
 // or [ErrControl]. It does not trim s: a caller that trims does so first.
-func CheckProfileText(s string, max int) error {
+func CheckProfileText(s string, limit int) error {
 	switch {
 	case !utf8.ValidString(s):
 		return ErrNotUTF8
-	case utf8.RuneCountInString(s) > max:
+	case utf8.RuneCountInString(s) > limit:
 		return ErrTooLong
 	case strings.IndexFunc(s, unicode.IsControl) >= 0:
 		return ErrControl

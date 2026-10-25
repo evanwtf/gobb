@@ -384,7 +384,7 @@ func (u User) check() []*Error {
 	v.enum("color_scheme", u.ColorScheme, colorSchemes)
 	v.enum("date_format", u.DateFormat, dateFormats)
 	v.profileText("location", u.Location, account.MaxLocation)
-	v.profileText("occupation", u.Occupation, account.MaxLocation)
+	v.profileText("occupation", u.Occupation, account.MaxOccupation)
 	v.profileText("interests", u.Interests, account.MaxInterests)
 	v.website("website", u.Website)
 	v.birthday(u)
@@ -392,13 +392,13 @@ func (u User) check() []*Error {
 }
 
 // profileText checks a plain-text profile field with account.CheckProfileText.
-func (v *vet) profileText(field, s string, max int) {
+func (v *vet) profileText(field, s string, limit int) {
 	if !v.text(field, s) {
 		return
 	}
-	switch err := account.CheckProfileText(s, max); {
+	switch err := account.CheckProfileText(s, limit); {
 	case errors.Is(err, account.ErrTooLong):
-		v.add(field, "is longer than %d characters", max)
+		v.add(field, "is longer than %d characters", limit)
 	case errors.Is(err, account.ErrControl):
 		v.add(field, "holds a control character or a line break")
 	}

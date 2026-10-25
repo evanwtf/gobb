@@ -402,6 +402,63 @@ func TestVersion1Refused(t *testing.T) {
 	}
 }
 
+// v1Bundle returns the directory of a bundle that has the true layout of format
+// version 1: version 1, all 23 data files, and the two count keys and the two
+// files that version 2 dropped.
+func v1Bundle(t *testing.T) string {
+	t.Helper()
+	dir := newBundle(t)
+	editJSON(t, dir, "manifest.json", func(m map[string]any) {
+		m["version"] = 1
+		counts := m["counts"].(map[string]any)
+		counts["topic_watches"], counts["bookmarks"] = 0, 0
+	})
+	for _, name := range []string{"topic_watches.jsonl", "bookmarks.jsonl"} {
+		writeFile(t, filepath.Join(dir, name), "")
+	}
+	return dir
+}
+
+// TestVersion1LayoutRefusedByVersion pins that a real version 1 bundle, which
+// holds the two files that version 2 dropped, gets the version message and not
+// "is not part of the bundle layout". The version check runs before the layout
+// check, for a directory and for an archive.
+func TestVersion1LayoutRefusedByVersion(t *testing.T) {
+	const want = "manifest.json: version: bundle format version 1; this gobb reads version 2. " +
+		"Build the bundle again with a converter for version 2."
+	t.Run("directory", func(t *testing.T) {
+		if _, err := Open(v1Bundle(t)); err == nil || err.Error() != want {
+			t.Errorf("Open = %v, want %q", err, want)
+		}
+	})
+	t.Run("archive", func(t *testing.T) {
+		archive := filepath.Join(t.TempDir(), "b.tar.gz")
+		if err := Pack(v1Bundle(t), archive); err != nil {
+			t.Fatal(err)
+		}
+		dest := filepath.Join(t.TempDir(), "out")
+		if err := Extract(archive, dest); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(dest); err == nil || err.Error() != want {
+			t.Errorf("Open = %v, want %q", err, want)
+		}
+	})
+	t.Run("manifest that is not a regular file keeps the layout error", func(t *testing.T) {
+		dir := v1Bundle(t)
+		if err := os.Remove(filepath.Join(dir, "manifest.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "manifest.json"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		const layout = "bookmarks.jsonl: is not part of the bundle layout"
+		if _, err := Open(dir); err == nil || err.Error() != layout {
+			t.Errorf("Open = %v, want %q", err, layout)
+		}
+	})
+}
+
 // TestWatchFilesUnknown pins that version 2 has no file for watches or bookmarks.
 func TestWatchFilesUnknown(t *testing.T) {
 	for _, name := range []string{"topic_watches.jsonl", "bookmarks.jsonl"} {

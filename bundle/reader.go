@@ -23,7 +23,8 @@ type Reader struct {
 }
 
 // Open opens the bundle in dir. It reads and checks manifest.json and
-// settings.json. Open refuses a top-level entry that is not in the layout, a
+// settings.json. It reads the format and the version first, so a bundle of an
+// older version gets the version message, not a layout error. Open refuses a top-level entry that is not in the layout, a
 // missing manifest, settings file or data file, an unknown or
 // missing key in the two JSON files, and a wrong format or version. It refuses
 // a counts object that lacks a data file or names an extra one.
@@ -33,6 +34,17 @@ func Open(dir string) (*Reader, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
+	}
+	// Read the version first. A bundle of an older version holds files that this
+	// version does not know, and the version message tells the converter author
+	// more than the first unknown entry does. A manifest that is not a regular
+	// file falls through to the layout check.
+	for _, e := range entries {
+		if e.Name() == "manifest.json" && e.Type().IsRegular() {
+			if err := checkFormatVersion(dir); err != nil {
+				return nil, err
+			}
+		}
 	}
 	want := map[string]bool{"manifest.json": false, "settings.json": false, "files": true}
 	for _, f := range Files {
@@ -63,9 +75,6 @@ func Open(dir string) (*Reader, error) {
 	}
 
 	r := &Reader{dir: dir}
-	if err := checkFormatVersion(dir); err != nil {
-		return nil, err
-	}
 	if r.manifest, err = readJSON[Manifest](dir, "manifest.json"); err != nil {
 		return nil, err
 	}
