@@ -59,7 +59,8 @@ func TestBasePathEverywhere(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `update users set last_visit_at = '2019-06-01T00:00:00Z', last_mark_at = null where id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"/forum/", "/forum/f/2", "/forum/f/1", "/forum/new", "/forum/t/1", "/forum/u/1", "/forum/members", "/forum/team", "/forum/search?q=example"} {
+	for _, p := range []string{"/forum/", "/forum/f/2", "/forum/f/1", "/forum/new", "/forum/t/1", "/forum/u/1", "/forum/members", "/forum/team", "/forum/search?q=example",
+		"/forum/messages", "/forum/messages/sent", "/forum/messages/1", "/forum/messages/new?to=bob", "/forum/messages/1/reply?quote=1"} {
 		rec := getAs(t, h, p, alice)
 		if rec.Code != http.StatusOK {
 			t.Errorf("member %s: status %d", p, rec.Code)
@@ -218,6 +219,45 @@ func TestBasePathEverywhere(t *testing.T) {
 		"/account/dateformat", "/account/about", "/account/avatar", "/account/avatar/remove"} {
 		if rec := request(t, h, http.MethodPost, p, alice, url.Values{}); rec.Code != http.StatusNotFound {
 			t.Errorf("POST %s without the prefix: status %d, want 404", p, rec.Code)
+		}
+	}
+
+	// The message pages, their guests' redirects and their answers keep the prefix.
+	if rec := get(t, h, "/forum/messages/1"); rec.Header().Get("Location") != "/forum/login?next=%2Fforum%2Fmessages%2F1" {
+		t.Errorf("guest /forum/messages/1 = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec, _ = postAsAt(t, h, "/forum/", "/forum/messages/new", alice, url.Values{"to": {"bob"}, "subject": {"Base"}, "body": {"Some **text**."}, "preview": {"1"}})
+	if body := bodyOf(t, rec); rec.Code != http.StatusOK || !strings.Contains(body, "<strong>text</strong>") || !strings.Contains(body, `action="/forum/messages/new"`) {
+		t.Errorf("message preview = %d", rec.Code)
+	} else {
+		checkBasePath(t, "message preview", body, "/forum/")
+	}
+	rec, _ = postAsAt(t, h, "/forum/", "/forum/messages/new", alice, url.Values{"to": {"nobody"}, "subject": {"Base"}, "body": {"Text"}})
+	if body := bodyOf(t, rec); rec.Code != http.StatusBadRequest {
+		t.Errorf("refused message = %d", rec.Code)
+	} else {
+		checkBasePath(t, "refused message", body, "/forum/")
+	}
+	rec, _ = postAsAt(t, h, "/forum/", "/forum/messages/new", alice, url.Values{"to": {"bob"}, "subject": {"Base"}, "body": {"Made under a base path."}})
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/forum/messages/") {
+		t.Errorf("POST /forum/messages/new = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if _, err := pool.Exec(t.Context(), `insert into acl_user_grants (user_id, forum_id, option, setting) values (1, 0, 'pm.delete', 3)`); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = postAsAt(t, h, "/forum/", "/forum/messages/1/delete", alice, url.Values{})
+	if body := bodyOf(t, rec); rec.Code != http.StatusOK || !strings.Contains(body, `action="/forum/messages/1/delete"`) {
+		t.Errorf("message delete, first step = %d", rec.Code)
+	} else {
+		checkBasePath(t, "message confirm", body, "/forum/")
+	}
+	rec, _ = postAsAt(t, h, "/forum/", "/forum/messages/1/delete", alice, url.Values{"confirm": {"1"}})
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/forum/messages/sent" {
+		t.Errorf("message delete = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	for _, p := range []string{"/messages", "/messages/1"} {
+		if rec := getAs(t, h, p, alice); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s without the prefix: status %d, want 404", p, rec.Code)
 		}
 	}
 

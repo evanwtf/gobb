@@ -1,0 +1,52 @@
+{{define "content"}}
+{{- with .Data}}
+<header class="page-head">
+  <h1>Messages: {{if .Inbox}}Inbox{{else}}Sent{{end}}</h1>
+  {{- if .UnreadText}}
+  <p class="page-sub">{{.UnreadText}}</p>
+  {{- end}}
+  <div class="toolbar">
+    <nav class="msg-tabs" aria-label="Message folders">
+      <a class="button-quiet button-link" href="{{.InboxHref}}"{{if .Inbox}} aria-current="page"{{end}}>Inbox</a>
+      <a class="button-quiet button-link" href="{{.SentHref}}"{{if not .Inbox}} aria-current="page"{{end}}>Sent</a>
+    </nav>
+    {{- if .CanSend}}
+    <a class="button-quiet button-link" href="{{.NewHref}}">New message</a>
+    {{- end}}
+  </div>
+</header>
+{{template "pager" pagerAt .Pager "Pages, top"}}
+{{- if .List.Rows}}
+<section class="category" aria-labelledby="list-title">
+  <div class="bar"><h2 id="list-title">{{if .Inbox}}Inbox{{else}}Sent{{end}}</h2></div>
+  <table class="forums topics tracks">
+    <thead>
+      <tr>
+        <th scope="col" class="col-forum">Message</th>
+        <th scope="col" class="col-last">Date</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .List.Rows}}
+      <tr class="topic-row{{if .Unread}} row-new{{end}}">
+        <td class="forum-main topic-main">
+          {{- if .Unread}}{{template "newbadge"}} {{end}}
+          <a class="topic-link" href="{{path "messages" (printf "%d" .ID)}}">{{if .Unread}}{{template "newtext"}}{{end}}{{or .Subject "(no subject)"}}</a>
+          {{- if $.Data.Inbox}}
+          <p class="topic-meta">from {{template "author" .From}}</p>
+          {{- else}}
+          <p class="topic-meta">to {{range $i, $a := .To}}{{if $i}}, {{end}}{{template "author" $a}}{{else}}<span class="muted">blind copy only</span>{{end}}</p>
+          {{- end}}
+        </td>
+        <td class="last" data-label="Date"><a class="last-title" href="{{path "messages" (printf "%d" .ID)}}">{{time .At $.Clock}}</a></td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+{{- else}}
+<p class="muted">{{if .Inbox}}Your inbox is empty.{{else}}You have sent no messages.{{end}}</p>
+{{- end}}
+{{template "pager" pagerAt .Pager "Pages, bottom"}}
+{{- end}}
+{{end}}

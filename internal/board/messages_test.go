@@ -1067,3 +1067,34 @@ func TestLongestMemberName(t *testing.T) {
 	_, err := board.SendMessage(ctx, pool, viewerFor(t, pool, alice), board.MessageDraft{To: long + "y", Subject: "S", Source: "x", IP: ip1}, t0)
 	wantInput(t, err, "to", "")
 }
+
+func TestPeekMessageWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	b := viewerFor(t, pool, bob)
+	// bob's copy of message 1 is unread after loadMessages.
+	m, err := board.PeekMessage(ctx, pool, b, 1)
+	if err != nil || m.Subject != "Welcome aboard" {
+		t.Fatalf("PeekMessage = %q, %v", m.Subject, err)
+	}
+	if n, _ := board.UnreadMessages(ctx, pool, b); n != 1 {
+		t.Errorf("unread after a peek = %d, want 1", n)
+	}
+	// A non-party gets ErrNotFound, and a member without pm.read ErrForbidden.
+	_, err = board.PeekMessage(ctx, pool, viewerFor(t, pool, carol), 2)
+	wantIs(t, err, board.ErrNotFound, "carol peeks at message 2")
+	if err := board.MarkMessageRead(ctx, pool, viewerFor(t, pool, carol), 2); err != nil {
+		t.Errorf("MarkMessageRead by a non-party: %v", err)
+	}
+	if n, _ := board.UnreadMessages(ctx, pool, viewerFor(t, pool, carol)); n != 1 {
+		t.Errorf("carol unread = %d, want 1 (message 1, blind copy)", n)
+	}
+	if err := board.MarkMessageRead(ctx, pool, b, 1); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := board.UnreadMessages(ctx, pool, b); n != 0 {
+		t.Errorf("unread after the mark = %d, want 0", n)
+	}
+	denyOpts(t, pool, bob, 0, "pm.read")
+	wantIs(t, board.MarkMessageRead(ctx, pool, viewerFor(t, pool, bob), 1), board.ErrForbidden, "mark without pm.read")
+}

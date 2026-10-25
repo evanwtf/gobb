@@ -25,6 +25,9 @@ type profileData struct {
 	// FindHref is the link to the posts of the member, or empty for a viewer
 	// without account.search, whom search would refuse.
 	FindHref string
+	// MessageHref is the link to the compose form for this member, or empty when
+	// the viewer may not message the member.
+	MessageHref string
 }
 
 // websiteText returns the host and the path of a website address, without the
@@ -100,6 +103,9 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 	d := profileData{ProfilePage: pp, WebsiteText: websiteText(pp.Website)}
 	if p.Viewer.Perms.Has("account.search", 0) {
 		d.FindHref = s.path("search") + "?" + url.Values{"author": {pp.Card.Name}}.Encode()
+	}
+	if pp.CanMessage {
+		d.MessageHref = s.messageHref(pp.Card.Name)
 	}
 	if pp.Signature != nil {
 		html, err := s.renderTree(r, p, pp.Signature, true)

@@ -724,6 +724,8 @@ var tokenRows = []tokenRow{
 	{"/account/about", "alice", url.Values{"location": {"No token."}}, ""},
 	{"/account/avatar", "alice", url.Values{}, ""},
 	{"/account/avatar/remove", "alice", url.Values{}, ""},
+	{"/messages/new", "alice", url.Values{"to": {"bob"}, "subject": {"No token"}, "body": {"No token."}}, ""},
+	{"/messages/1/delete", "bob", url.Values{"confirm": {"1"}}, `insert into acl_user_grants (user_id, forum_id, option, setting) values (2, 0, 'pm.delete', 3)`},
 	{"/login", "", url.Values{"name": {"alice"}, "password": {testPassword}}, ""},
 	{"/logout", "alice", url.Values{}, ""},
 	{"/scheme", "alice", url.Values{"scheme": {"slate-deep"}}, ""},
@@ -1411,7 +1413,7 @@ func TestCSPStrictEverywhere(t *testing.T) {
 	}
 	// The form pages hold no inline script and no style attribute either. They
 	// are real pages for alice, not the 404 that every missing path would give.
-	for _, p := range []string{"/f/2/post", "/t/1/reply", "/t/1/reply?quote=1", "/p/1/edit"} {
+	for _, p := range []string{"/f/2/post", "/t/1/reply", "/t/1/reply?quote=1", "/p/1/edit", "/messages/new", "/messages/1/reply?quote=1"} {
 		rec := getAs(t, h, p, a)
 		body := bodyOf(t, rec)
 		if rec.Code != http.StatusOK || !strings.Contains(body, `<form class="post-form"`) {

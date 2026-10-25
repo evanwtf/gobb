@@ -1,0 +1,53 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>New message</h1>
+</header>
+
+{{- if .Notice}}
+<div class="form-error" role="alert">
+  <p class="form-error-text">{{.Notice}}</p>
+</div>
+{{- end}}
+
+{{- with .Preview}}
+<section class="preview" aria-labelledby="preview-title">
+  <h2 id="preview-title">Preview</h2>
+  <p class="hint">Nothing is sent yet. Check the text, then send it.</p>
+  <div class="posts">
+    {{template "post" postItem . $ "" 0}}
+  </div>
+</section>
+{{- end}}
+
+<form class="post-form" method="post" action="{{.Action}}">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <div class="field">
+    <label for="msg-to">To</label>
+    <input id="msg-to" name="to" type="text" value="{{.To}}" autocomplete="off" aria-describedby="msg-to-hint{{if .Err.To}} msg-to-error{{end}}"
+      {{- if .Err.To}} aria-invalid="true"{{end}}>
+    {{- if .Err.To}}<p class="field-error" id="msg-to-error" role="alert">{{.Err.To}}</p>{{end}}
+    <p class="hint" id="msg-to-hint">One or more member names, separated by commas.</p>
+  </div>
+  <div class="field">
+    <label for="msg-subject">Subject</label>
+    <input id="msg-subject" name="subject" type="text" value="{{.Subject}}"
+      {{- if .Err.Subject}} aria-invalid="true" aria-describedby="msg-subject-error"{{end}}>
+    {{- if .Err.Subject}}<p class="field-error" id="msg-subject-error" role="alert">{{.Err.Subject}}</p>{{end}}
+  </div>
+  <div class="field">
+    <label for="msg-body">Message</label>
+    <textarea id="msg-body" name="body" rows="10" aria-describedby="msg-body-hint{{if .Err.Body}} msg-body-error{{end}}"
+      {{- if .Err.Body}} aria-invalid="true"{{end}}>{{textareaValue .Source}}</textarea>
+    {{- if .Err.Body}}<p class="field-error" id="msg-body-error" role="alert">{{.Err.Body}}</p>{{end}}
+    <p class="hint" id="msg-body-hint">{{template "mdhelp"}}</p>
+  </div>
+  <div class="form-actions">
+    <button class="button button-inline" type="submit">Send</button>
+    <button class="button-quiet" type="submit" name="preview" value="1">Preview</button>
+    <a class="button-quiet button-link" href="{{.Cancel}}">Cancel</a>
+  </div>
+</form>
+{{- end}}
+{{end}}

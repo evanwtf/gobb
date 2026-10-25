@@ -67,6 +67,8 @@ type confirmData struct {
 	// First is true when the post is the first of its topic: deleting it deletes
 	// the topic.
 	First bool
+	// Message is true for the delete of a private message.
+	Message bool
 }
 
 // textareaValue writes s as the content of a textarea, so that a browser reads

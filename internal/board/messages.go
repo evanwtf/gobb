@@ -263,6 +263,32 @@ select p.id, coalesce(p.author_id, 0), coalesce(au.username, p.author_name), p.s
 // Bcc holds every blind-copy recipient for the author, only the viewer for a
 // blind-copy recipient, and nothing for anyone else.
 func ReadMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64) (Message, error) {
+	return readMessage(ctx, pool, v, id, true)
+}
+
+// PeekMessage is [ReadMessage] that writes nothing. A page that a person opens
+// calls it, and then [MarkMessageRead] once the page is built. A request that is
+// not a person opening the page (an image load, a prefetch) calls only this one.
+func PeekMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64) (Message, error) {
+	return readMessage(ctx, pool, v, id, false)
+}
+
+// MarkMessageRead marks message id read for v, when v is a recipient who has not
+// deleted it. It does nothing for any other viewer, and gives [ErrForbidden] to a
+// member without pm.read.
+func MarkMessageRead(ctx context.Context, q db.Querier, v Viewer, id int64) error {
+	if !mayRead(v) {
+		return ErrForbidden
+	}
+	_, err := q.Exec(ctx, `update pm_recipients set is_read = true where pm_id = $1 and user_id = $2 and not is_deleted and not is_read`,
+		id, v.UserID)
+	if err != nil {
+		return fmt.Errorf("board: mark message %d read: %w", id, err)
+	}
+	return nil
+}
+
+func readMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64, mark bool) (Message, error) {
 	if !mayRead(v) {
 		return Message{}, ErrForbidden
 	}
@@ -315,11 +341,9 @@ select r.kind, u.id, u.username
 			}
 		}
 	}
-	if m.asRecipient {
-		_, err := pool.Exec(ctx, `update pm_recipients set is_read = true where pm_id = $1 and user_id = $2 and not is_read`,
-			id, v.UserID)
-		if err != nil {
-			return Message{}, fmt.Errorf("board: mark message %d read: %w", id, err)
+	if mark && m.asRecipient {
+		if err := MarkMessageRead(ctx, pool, v, id); err != nil {
+			return Message{}, err
 		}
 	}
 	return out, nil

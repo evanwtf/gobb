@@ -58,7 +58,7 @@
     <textarea id="post-body" name="body" rows="14" aria-describedby="post-body-hint{{if .Data.Err.Body}} post-body-error{{end}}"
       {{- if .Data.Err.Body}} aria-invalid="true"{{end}}>{{textareaValue .Data.Source}}</textarea>
     {{- if .Data.Err.Body}}<p class="field-error" id="post-body-error" role="alert">{{.Data.Err.Body}}</p>{{end}}
-    <p class="hint" id="post-body-hint">Markdown works here: **bold**, *italic*, [link](https://example.com), &gt; quote.</p>
+    <p class="hint" id="post-body-hint">{{template "mdhelp"}}</p>
   </div>
   {{- if .Data.ShowReason}}
   <div class="field">

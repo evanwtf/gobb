@@ -217,7 +217,9 @@ func TestMarkReadOnPage(t *testing.T) {
 }
 
 func TestMarkReadForms(t *testing.T) {
-	const badge = `badge-new`
+	// The row badge. The nav pill of an unread message has the class too, and
+	// carol has one unread message (the blind copy of message 1).
+	const badge = `<span class="badge-new" aria-hidden="true">New</span>`
 	for _, c := range []struct{ name, target string }{
 		{"forum", "/f/2/read"},
 		{"all", "/read"},

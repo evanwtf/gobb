@@ -67,6 +67,9 @@ type Options struct {
 	// may make in ten minutes. Zero means the default (120). A test that saves a
 	// lot raises it.
 	MemberSaves int
+	// MessageSends is the count of messages that each member may send in ten
+	// minutes. Zero means the default (10). A test that sends a lot raises it.
+	MessageSends int
 	// LoginGateWait is how long a password check waits for the gate. Zero means
 	// the default of 5 seconds. Tests set it small.
 	LoginGateWait time.Duration
@@ -106,6 +109,8 @@ type site struct {
 	postLimits postLimits
 	// saves counts the saves of the settings and the avatar uploads of each member.
 	saves saveLimits
+	// messageSends counts the messages that each member sends.
+	messageSends *ratelimit.Limiter
 	// gate is the memory gate of the password checks. An avatar decode takes its
 	// share from the same gate, so one budget covers both.
 	gate *login.Gate
@@ -137,7 +142,7 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -151,7 +156,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		lo.Gate = opt.LoginGate
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
-		saves: newSaveLimits(opt), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
+		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
@@ -223,6 +228,13 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /team", s.team)
 	inner.HandleFunc("GET /pages/{slug}", s.staticPage)
 	inner.HandleFunc("GET /account", s.account)
+	inner.HandleFunc("GET /messages", s.messageList(true))
+	inner.HandleFunc("GET /messages/sent", s.messageList(false))
+	inner.HandleFunc("GET /messages/new", s.messageNew)
+	inner.Handle("POST /messages/new", s.protectPosting(maxPostingBody, s.messageSubmit))
+	inner.HandleFunc("GET /messages/{id}", s.messageShow)
+	inner.HandleFunc("GET /messages/{id}/reply", s.messageReply)
+	inner.Handle("POST /messages/{id}/delete", s.protect(maxPostBody, s.messageDelete))
 	inner.HandleFunc("GET /search", s.search)
 	inner.HandleFunc("GET /login", s.loginPage)
 	inner.Handle("POST /login", s.protect(maxLoginBody, s.loginSubmit))
@@ -570,6 +582,7 @@ func (s *site) addNav(p *page) {
 		p.Nav = append(p.Nav, navLink{Label: "Members", Href: s.path("members"), Current: p.navKey == "members"})
 	}
 	p.Nav = append(p.Nav, navLink{Label: "Team", Href: s.path("team"), Current: p.navKey == "team"})
+	s.addMessagesLink(p)
 	if p.Viewer.Perms.Has("account.search", 0) {
 		p.SearchHref, p.SearchCurrent = s.path("search"), p.navKey == "search"
 	}

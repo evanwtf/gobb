@@ -1,0 +1,63 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>{{or .Msg.Subject "(no subject)"}}</h1>
+</header>
+<dl class="message-meta">
+  <dt>From</dt><dd>{{template "author" .Msg.From}}</dd>
+  <dt>To</dt><dd>{{range $i, $a := .Msg.To}}{{if $i}}, {{end}}{{template "author" $a}}{{else}}<span class="muted">No one</span>{{end}}</dd>
+  {{- if .Msg.Bcc}}
+  <dt>Bcc</dt><dd>{{range $i, $a := .Msg.Bcc}}{{if $i}}, {{end}}{{template "author" $a}}{{end}}</dd>
+  {{- end}}
+</dl>
+<div class="posts">
+<article class="post message">
+  <div class="post-author">
+    {{- if .Card}}
+    <div class="author-avatar">
+      {{- if .Card.AvatarPath}}<img class="avatar" src="{{path "files" .Card.AvatarPath}}" alt="" width="96" height="96" loading="lazy">
+      {{- else}}<span class="avatar avatar-none" aria-hidden="true">{{initial .Card.Name}}</span>{{end -}}
+    </div>
+    <p class="author-name">{{template "author" .Msg.From}}</p>
+    {{- if or .Card.RankTitle .Card.RankImage}}
+    <p class="author-rank">{{if .Card.RankImage}}<img class="rank-img" src="{{path "files" .Card.RankImage}}" alt="">{{end}}{{if .Card.RankTitle}}<span>{{.Card.RankTitle}}</span>{{end}}</p>
+    {{- end}}
+    <p class="author-stat">Joined: {{date .Card.Joined $.Clock}}</p>
+    <p class="author-stat">Posts: <b>{{num .Card.PostCount}}</b></p>
+    {{- else}}
+    <div class="author-avatar"><span class="avatar avatar-none" aria-hidden="true">{{initial .Msg.From.Name}}</span></div>
+    <p class="author-name">{{template "author" .Msg.From}}</p>
+    {{- end}}
+  </div>
+  <div class="post-main">
+    <header class="post-head">
+      <div class="post-title"><h2 class="visually-hidden">Message from <bdi>{{.Msg.From.Name}}</bdi></h2></div>
+      <span class="permalink">{{time .Msg.At $.Clock}}</span>
+    </header>
+    <div class="post-body">{{.HTML}}</div>
+    {{- if .SigHTML}}
+    <div class="signature">{{.SigHTML}}</div>
+    {{- end}}
+    {{- if or .CanReply .CanDelete}}
+    <div class="post-actions">
+      {{- if .CanReply}}
+      <a class="button-quiet button-link" href="{{.ReplyHref}}">Reply</a>
+      <a class="button-quiet button-link" href="{{.QuoteHref}}">Quote</a>
+      {{- end}}
+      {{- if .CanDelete}}
+      <form class="mark-form" method="post" action="{{.DeleteHref}}">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button type="submit" class="button-quiet">Delete</button>
+      </form>
+      {{- end}}
+    </div>
+    {{- end}}
+  </div>
+</article>
+</div>
+{{- if .CanDelete}}
+<p class="muted">Delete removes the message from your view only. The other people keep their copy.</p>
+{{- end}}
+{{- end}}
+{{end}}

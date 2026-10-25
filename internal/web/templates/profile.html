@@ -40,8 +40,11 @@
     <div class="post-body">{{.SigHTML}}</div>
   </section>
   {{- end}}
-  {{- if .FindHref}}
-  <p class="profile-actions"><a class="button-quiet button-link" href="{{.FindHref}}">Find posts by this user</a></p>
+  {{- if or .FindHref .MessageHref}}
+  <p class="profile-actions">
+    {{- if .MessageHref}}<a class="button-quiet button-link" href="{{.MessageHref}}">Send a message</a>{{end}}
+    {{- if .FindHref}}{{if .MessageHref}} {{end}}<a class="button-quiet button-link" href="{{.FindHref}}">Find posts by this user</a>{{end -}}
+  </p>
   {{- end}}
 </article>
 {{- end}}

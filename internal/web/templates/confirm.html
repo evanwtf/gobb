@@ -1,10 +1,15 @@
 {{define "content"}}
 <section class="notice" aria-labelledby="notice-title">
+  {{- if .Data.Message}}
+  <h1 id="notice-title">Delete this message?</h1>
+  <p>The message leaves your view only. The other people keep their copy.</p>
+  {{- else}}
   <h1 id="notice-title">Delete this post?</h1>
   {{- if .Data.First}}
   <p>This is the first post of its topic. Deleting it deletes the topic.</p>
   {{- else}}
   <p>The post leaves the topic. A moderator can bring it back.</p>
+  {{- end}}
   {{- end}}
   <form class="confirm-form" method="post" action="{{.Data.Action}}">
     <input type="hidden" name="csrf" value="{{.CSRF}}">

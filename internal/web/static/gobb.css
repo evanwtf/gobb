@@ -1165,3 +1165,11 @@ fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
 .birthday-row select { width: auto; display: inline-block; margin-right: 0.4rem; }
 
 .birthdays { margin: 1rem 0 0; }
+
+/* ---- Messages: folder tabs and the header lines of one message ------------ */
+
+.msg-tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.msg-tabs a[aria-current="page"] { border-color: var(--accent); box-shadow: inset 0 -3px 0 var(--accent); font-weight: 600; }
+.message-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0 0 1rem; }
+.message-meta dt { color: var(--muted); font-weight: 600; }
+.message-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }

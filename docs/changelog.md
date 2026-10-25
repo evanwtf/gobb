@@ -130,6 +130,22 @@
   fails; and a member who went inactive during a refused upload or a 429 page gets 404
   with the neutral text in place of 500.
 
+- The message pages: `/messages` (inbox), `/messages/sent`, `/messages/{id}`,
+  `/messages/new` (with `?to=` to fill the To field), `/messages/{id}/reply` (with
+  `?quote=1` to quote), and `POST /messages/{id}/delete`, which asks first, as a post does.
+  A guest goes to `/login` and comes back; a guest POST gets 403. The pages carry `noindex`
+  and `Cache-Control: private, no-store`. The nav shows "Messages" after Team for a member
+  with `pm.read`, with a `badge-new` pill "N new" when unread messages wait; a count that
+  fails logs a WARN line and shows no pill. A profile shows "Send a message" to a viewer
+  who may message the member. A message page shows the subject, From, To, Bcc (to the
+  author, and to a blind-copy recipient for the own name), the time, the body, the
+  signature, and Reply, Quote and Delete each only with its right. Only a person who opens
+  the page (a top-level navigation) marks the message read: `board.PeekMessage` reads with
+  no write and `board.MarkMessageRead` marks, so an image that points at a message address
+  changes nothing. A member sends at most 10 messages in 10 minutes (`Options.MessageSends`
+  in tests); a refused send does not count, and a preview or a send also counts against the
+  posting limit. The compose form keeps every value on a refusal (400) and on a limit (429).
+
 ## 0.1.0 (2026-10-25)
 
 The first release. gobb is one Go server for a forum, backed by PostgreSQL 16 or later
