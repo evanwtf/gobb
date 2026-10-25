@@ -342,10 +342,10 @@ func TestUserCommandsLogTheMatchedMember(t *testing.T) {
 	userBoard(t)
 	for _, args := range [][]string{
 		{"user", "ban", "  ALICE ", "-reason", "x"},
-		{"user", "ban", "ALICE"},             // already banned: a no-op
-		{"user", "unban", "Alice"},           // lifts the ban
-		{"user", "unban", "alice"},           // no ban: a no-op
-		{"user", "reset-password", "a​lice"}, // a zero-width space is folded away
+		{"user", "ban", "ALICE"},                  // already banned: a no-op
+		{"user", "unban", "Alice"},                // lifts the ban
+		{"user", "unban", "alice"},                // no ban: a no-op
+		{"user", "reset-password", "a\u200blice"}, // a zero-width space is folded away
 	} {
 		code, _, errOut := runUser(t, args...)
 		if code != 0 {
