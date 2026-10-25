@@ -37,12 +37,14 @@
   without the scheme; the text drops the query, the fragment and Unicode format
   characters, and the link keeps the address as stored. It carries
   `rel="nofollow ugc noopener"`. The board index lists "Birthdays today" for a viewer with
-  `account.view_profiles`: active members whose day and month are today in the viewer's
-  zone, with the age when the member gave a year. `board.Profile` takes the current time,
-  and `ProfilePage.CanMessage` tells whether the viewer may send the member a message.
+  `account.view_profiles`, at the end of the index: active members whose day and month
+  are today in the viewer's zone, with the age when the member gave a year.
+  `board.Profile` takes the current time, and `ProfilePage.CanMessage` tells whether the
+  viewer may send the member a message.
   The "About you" text and the website refuse format characters (Unicode category Cf,
-  such as U+202E and U+200B) and the line and paragraph separators, and the website
-  refuses them after percent-decoding too. The bundle check applies the same rule.
+  such as U+202E and U+200B, with three exceptions in the small fixes below) and the
+  line and paragraph separators, and the website refuses them after percent-decoding
+  too. The bundle check applies the same rule.
 
 - The member's links move into the header, at the right of the board name: "Signed in
   as {name}" and Sign out, or a guest's Sign in link. The name links to `/account`, and
@@ -64,11 +66,12 @@
   `avatar.Make` turns an upload into a new 128 x 128 PNG. It reads at most 1 MiB, takes
   the format from the first bytes (PNG, JPEG or GIF; WebP is refused), reads the size
   from the header and refuses more than 8,000 pixels a side or 16,000,000 in all before
-  it decodes, charges the decode's memory to the login gate by format (JPEG 19 for three components (a late Adobe segment turns YCbCr into RGB after the header), 24
-  or 5 bytes a pixel by color model, on sides padded to 32; PNG 4, or 8 for 16 bits,
-  doubled when interlaced; GIF 4; plus 1 MiB) and refuses with the size error a decode
-  that is more than the whole budget (`Gate.Budget` is new), so none runs alone and
-  breaks the memory limit of the container. The share goes back through
+  it decodes, charges the decode's memory to the login gate by format (JPEG 19 bytes a
+  pixel for three components (a late Adobe segment turns YCbCr into RGB after the
+  header), 24 or 5 by color model, on sides padded to 32; PNG 4, or 8 for 16 bits,
+  doubled when interlaced; GIF 4; plus 1 MiB) and refuses with `ErrTooMuchMemory` a
+  decode that is more than the whole budget (`Gate.Budget` is new), so none runs alone
+  and breaks the memory limit of the container. The share goes back through
   `Gate.AcquireCollected`, which runs a garbage collection first, as the sign-in does
   (the sign-in now uses it too). It decodes the first frame, crops the center square,
   and resamples it (area average to shrink, nearest pixel to grow; the pixels are read
@@ -124,11 +127,25 @@
   bytes a pixel: the decoder reads an Adobe segment that comes after the first scan,
   which `jpeg.DecodeConfig` never sees, and then decodes as RGB. An upload needs
   `account.avatar` before the server takes a slot or reads the body. One member has
-  one avatar upload in flight (a second gets 503); a refused upload looks a dead session up once; the no-script signature counts as
-  a save before the page reads; the 429 page of "About you" and of the signature shows
-  the values that were sent; an input message stays when the other write of "About you"
-  fails; and a member who went inactive during a refused upload or a 429 page gets 404
-  with the neutral text in place of 500.
+  one avatar upload in flight (a second gets 503); a refused upload looks a dead
+  session up once; the no-script signature counts as a save before the page reads; the
+  429 page of "About you" and of the signature shows the values that were sent; an input
+  message stays when the other write of "About you" fails; and a member who went
+  inactive during a refused upload or a 429 page gets 404 with the neutral text in place
+  of 500.
+
+- More small fixes. The "About you" text and the website now allow the zero width joiner
+  (U+200D), the zero width non-joiner (U+200C) and the tag characters U+E0020 to
+  U+E007F, so "👨‍💻 Dev", a subdivision flag and Persian text with a ZWNJ pass; every
+  other format character, and every line and paragraph separator, stays refused. The
+  website check also decodes the query and the fragment, so `?q=%E2%80%AE` is refused
+  and `?q=%20a&b=%2F` passes. When a hidden formatting character is the cause, the
+  bundle check says "holds a hidden formatting character" and the "About you" field
+  says "Remove the hidden formatting character." An image that is within the limits of
+  side and pixels but over the memory budget gets `avatar.ErrTooMuchMemory` and the
+  text "That image needs too much memory to process. Use a smaller one." The 429 pages
+  of the time zone and the date format show the value that was sent, and a settings
+  refusal page for a member who went inactive is 404 with the neutral text.
 
 - The message pages: `/messages` (inbox), `/messages/sent`, `/messages/{id}`,
   `/messages/new` (with `?to=` to fill the To field), `/messages/{id}/reply` (with
