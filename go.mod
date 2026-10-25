@@ -9,7 +9,7 @@ tool (
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/yuin/goldmark v1.8.6
+	github.com/yuin/goldmark v1.8.6 // the definition bound rests on its facts: read markup/spanscan.go and run markup/refbound_test.go before an upgrade
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/text v0.43.0
