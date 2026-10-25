@@ -417,6 +417,30 @@ func LoadDelete(ctx context.Context, q db.Querier, v Viewer, postID int64) (Dele
 	return DeleteForm{PostID: postID, TopicID: t.id, ForumID: p.forumID, First: p.first}, nil
 }
 
+// DeletedOwnPost says where post postID stood when v wrote it and it is deleted.
+// A second click on a confirmed delete meets such a post: [LoadDelete] cannot see
+// it any more. The author already knows that the post exists (spec 14), so the
+// handler answers as for a success. The second result is false for every other
+// case: a guest, a post of another author, a post that is not deleted, and a post
+// that does not exist. The caller then keeps the answer that it had. It writes
+// nothing and takes no lock.
+func DeletedOwnPost(ctx context.Context, q db.Querier, v Viewer, postID int64) (DeleteForm, bool, error) {
+	if v.UserID == 0 {
+		return DeleteForm{}, false, nil
+	}
+	d := DeleteForm{PostID: postID}
+	err := q.QueryRow(ctx, `
+select topic_id, forum_id from posts
+ where id = $1 and author_id = $2 and visibility = 'deleted'`, postID, v.UserID).Scan(&d.TopicID, &d.ForumID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeleteForm{}, false, nil
+	}
+	if err != nil {
+		return DeleteForm{}, false, fmt.Errorf("board: read deleted post %d: %w", postID, err)
+	}
+	return d, true, nil
+}
+
 // Card returns the author card of member userID, as a post shows it. A user who
 // does not exist gives [ErrNotFound]. A preview uses it for the writer.
 func Card(ctx context.Context, q db.Querier, userID int64) (UserCard, error) {

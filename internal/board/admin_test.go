@@ -212,6 +212,66 @@ func TestBanUser(t *testing.T) {
 	}
 }
 
+// TestBanUserDropsTrustedAddresses: a ban removes the addresses that the member
+// used (spec 10), so an unban does not bring back trust that the member had before.
+// Another member keeps the addresses. A refused ban (the member is banned
+// already) writes nothing, so it removes nothing.
+func TestBanUserDropsTrustedAddresses(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	count := func(id int64) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `select count(*) from user_ips where user_id = $1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	seed := func() {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+insert into user_ips (user_id, ip, last_seen_at) values
+  ($1, '10.1.2.3', $3), ($1, '2001:db8::1', $3), ($2, '10.1.2.3', $3)
+on conflict do nothing`, alice, bob, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed()
+	if a, b := count(alice), count(bob); a != 2 || b != 1 {
+		t.Fatalf("fixture: %d addresses of alice and %d of bob, want 2 and 1", a, b)
+	}
+
+	if err := board.BanUser(ctx, pool, alice, "spam run", t0); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(alice); n != 0 {
+		t.Errorf("alice has %d addresses after the ban, want 0", n)
+	}
+	if n := count(bob); n != 1 {
+		t.Errorf("bob has %d addresses, want 1: a ban touches the banned member only", n)
+	}
+
+	// A second ban is refused and writes nothing.
+	seed()
+	if err := board.BanUser(ctx, pool, alice, "again", t0); !errors.Is(err, board.ErrAlreadyBanned) {
+		t.Fatalf("second ban = %v, want ErrAlreadyBanned", err)
+	}
+	if n := count(alice); n != 2 {
+		t.Errorf("alice has %d addresses after a refused ban, want 2: a refusal writes nothing", n)
+	}
+
+	// An unban does not bring the addresses back.
+	if _, err := pool.Exec(ctx, `delete from user_ips where user_id = $1`, alice); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.UnbanUser(ctx, pool, alice, t0); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(alice); n != 0 {
+		t.Errorf("alice has %d addresses after the unban, want 0", n)
+	}
+}
+
 func TestBanUserRefusals(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())

@@ -555,7 +555,8 @@ func (s *site) renderContext(ctx context.Context, v board.Viewer, forumID int64)
 
 // deletePost serves POST /p/{id}/delete. A POST without confirm=1 changes
 // nothing: it answers with a page that asks "Delete this post?" and holds the
-// second form. A POST with confirm=1 deletes.
+// second form. A POST with confirm=1 deletes. A repeated confirm, from the
+// author of a post that is deleted already, answers the same 303 as the first.
 func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
@@ -569,11 +570,26 @@ func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idText := strconv.FormatInt(id, 10)
+	confirmed := r.PostForm.Get("confirm") == "1"
 	dt, err := board.LoadDelete(ctx, s.pool, p.Viewer, id)
+	if confirmed && errors.Is(err, board.ErrNotFound) {
+		// A second click on Delete: the post is gone for its author, who knows
+		// that it existed. The answer is the success of the first click. Every
+		// other viewer, and every other missing post, keeps the 404.
+		gone, own, derr := board.DeletedOwnPost(ctx, s.pool, p.Viewer, id)
+		if derr != nil {
+			s.serverError(w, r, derr)
+			return
+		}
+		if own {
+			http.Redirect(w, r, s.fallbackTarget(ctx, p.Viewer, gone.TopicID, gone.ForumID), http.StatusSeeOther)
+			return
+		}
+	}
 	if s.deleteFailed(w, r, p, err) {
 		return
 	}
-	if r.PostForm.Get("confirm") != "1" {
+	if !confirmed {
 		p.Title = "Delete this post?"
 		p.Data = confirmData{Action: s.path("p", idText, "delete"), Cancel: s.path("p", idText), First: dt.First}
 		s.render(w, http.StatusOK, "confirm.html", p)

@@ -155,8 +155,9 @@ update users set password_hash = $2, password_scheme = 'gobb', password_epoch = 
 }
 
 // BanUser adds a user ban with no end date for member userID, ends every session
-// of the member and writes one mod_log row ("user.ban", null actor,
-// {"via":"cli"}), all in one transaction under FOR UPDATE on the user row.
+// of the member, removes the addresses that the member used (user_ips, spec 10)
+// and writes one mod_log row ("user.ban", null actor, {"via":"cli"}), all in one
+// transaction under FOR UPDATE on the user row.
 // reason is for staff (the column reason); the banned member is not shown it.
 //
 // A member who does not exist is [ErrNotFound]. A member whom a user ban that has
@@ -187,6 +188,9 @@ func BanUser(ctx context.Context, pool *pgxpool.Pool, userID int64, reason strin
 		}
 		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
 			return err
+		}
+		if _, err := tx.Exec(ctx, `delete from user_ips where user_id = $1`, userID); err != nil {
+			return fmt.Errorf("board: remove the addresses of %d: %w", userID, err)
 		}
 		return logMod(ctx, tx, Viewer{}, "user.ban", "user", userID, viaCLI, now)
 	})

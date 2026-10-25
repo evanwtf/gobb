@@ -377,8 +377,9 @@ no member has exits 1 with `no member named <name>` on stderr, and changes nothi
   the account page. The password is never an argument, so it is not in the shell
   history. It is in no log and in no row of the moderation log. To keep it out of the
   scrollback too, capture it: `PW=$(docker compose exec -T gobb gobb user reset-password "$NAME")`.
-- **`ban`** adds a ban with no end date and ends every session of the member. The
-  member cannot sign in. `-reason` is for staff: the banned member does not see it.
+- **`ban`** adds a ban with no end date, ends every session of the member and removes
+  the addresses that the member used (the trusted addresses), so an unban does not
+  bring that trust back. The member cannot sign in. `-reason` is for staff: the banned member does not see it.
   The flag may come before or after the name. A member who is banned already gets no
   second ban: the command exits 0 and says so on stderr.
 - **`unban`** removes the bans on the member that have not ended. A member with no
