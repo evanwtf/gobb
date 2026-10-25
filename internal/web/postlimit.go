@@ -21,14 +21,16 @@ const (
 	defaultMemberPosts = 60 // POSTs for each member in postWindow
 	defaultGuestPosts  = 20 // POSTs for each guest address in postWindow
 	defaultNameChecks  = 10 // guest-name checks for each guest address in postWindow
-	postLimitMaxKeys   = 100_000
+	// postLimitMaxKeys is the most keys that one limiter holds. The production
+	// container has 256 MiB, and a guest key can hold 20 timestamps, so 10,000
+	// keys are a few megabytes for each limiter. A member who posts is one key; a
+	// board with 10,000 members and guests inside ten minutes is a busy board.
+	postLimitMaxKeys = 10_000
 )
 
-// The texts of the limits.
-const (
-	msgPostingTooFast    = "You are posting too fast. Wait a few minutes and try again."
-	msgNameChecksTooFast = "You are checking names too fast. Wait a few minutes and try again."
-)
+// msgPostingTooFast is the text of both limits. A guest over the name-check limit
+// sees it too: the text says nothing about names.
+const msgPostingTooFast = "You are posting too fast. Wait a few minutes and try again."
 
 // postLimits holds the limiters of the posting forms.
 type postLimits struct {

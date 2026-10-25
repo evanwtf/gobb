@@ -206,6 +206,15 @@ func TestGuestNameChecksAreLimited(t *testing.T) {
 		}
 	}
 	tp, fp := bodyOf(t, taken), bodyOf(t, free)
+	// M3: the guest reads the text of the posting limit, not a text about names.
+	for name, body := range map[string]string{"member": tp, "free": fp} {
+		if !strings.Contains(body, tooFast) {
+			t.Errorf("%s: the answer over the name-check limit does not say %q", name, tooFast)
+		}
+		if strings.Contains(body, "checking names") {
+			t.Errorf("%s: the answer over the name-check limit mentions names being checked", name)
+		}
+	}
 	if strings.Contains(tp, "belongs to a member") || strings.Contains(fp, "belongs to a member") {
 		t.Error("an answer over the limit says whether the name belongs to a member")
 	}

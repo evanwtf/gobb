@@ -552,15 +552,17 @@ values ($1, $2, case when $1 = 'ip' then '10.1.2.3/32'::cidr end, $3, $4)`, kind
 func TestLookupReadsTheBanIndex(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	ctx := t.Context()
-	conn, err := pool.Acquire(ctx)
+	// SET LOCAL ends with the transaction, so the setting never reaches the
+	// connection that goes back to the pool.
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Release()
-	if _, err := conn.Exec(ctx, `set enable_seqscan = off`); err != nil {
+	defer tx.Rollback(ctx) //nolint:errcheck // the rollback ends the SET LOCAL
+	if _, err := tx.Exec(ctx, `set local enable_seqscan = off`); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := conn.Query(ctx, `explain select 1 from bans b where b.kind = 'user' and b.user_id = $1 and (b.ends_at is null or b.ends_at > $2)`, int64(1), t0)
+	rows, err := tx.Query(ctx, `explain select 1 from bans b where b.kind = 'user' and b.user_id = $1 and (b.ends_at is null or b.ends_at > $2)`, int64(1), t0)
 	if err != nil {
 		t.Fatal(err)
 	}
