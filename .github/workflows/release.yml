@@ -136,7 +136,7 @@ jobs:
             (cd dist && sha256sum "$name" > "$name.sha256")
             info=$(go version -m "dist/$name")
             for want in "CGO_ENABLED=0" "-trimpath=true" "GOOS=$os" "GOARCH=$arch"; do
-              echo "$info" | grep -q -F "$want" || { echo "$name: build info lacks $want"; exit 1; }
+              echo "$info" | grep -q -F -- "$want" || { echo "$name: build info lacks $want"; exit 1; }
             done
           done
           (cd dist && sha256sum -c ./*.sha256)
