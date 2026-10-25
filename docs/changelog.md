@@ -97,6 +97,15 @@
   minutes (the signature form counts too) and 10 uploads in an hour for each member. The
   "About you" form runs its text fields and its birthday as two writes, so a refusal of
   one never drops what was sent for the other, and the page shows every sent value.
+- Private messages in the board (no page yet): `Inbox`, `Sent`, `ReadMessage`,
+  `UnreadMessages`, `SendMessage`, `DeleteMessage` and `ReplyDraft`. A message that the
+  viewer did not write or receive gives `ErrNotFound`, the same as a missing one, and a
+  blind-copy recipient shows only to the author and to that recipient. A send takes 1 to
+  10 members (more than one needs `pm.send_many`), a subject of 1 to 120 characters and a
+  body of up to 60,000 bytes. The text goes through `ParseMessage`, which uses the one
+  parser with `pm.markdown`, `pm.smilies` and `pm.images`. A message that the author sent
+  twice within 60 seconds is stored once. A delete hides the message from the viewer's own
+  view and removes no row.
 
 ## 0.1.0 (2026-10-25)
 

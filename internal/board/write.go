@@ -41,6 +41,7 @@ const duplicateWindow = 60 * time.Second
 const (
 	msgNoImages       = "You may not post images in this forum."
 	msgNoSigImages    = "You may not use images in a signature."
+	msgNoMsgImages    = "You may not put images in messages."
 	msgGuestNameChars = "Use letters, digits, spaces and common punctuation only."
 	msgGuestNameTaken = "That name belongs to a member. Sign in, or choose another name."
 	msgGuestName      = "Enter a name of 1 to 40 characters, with no line breaks."
@@ -123,7 +124,42 @@ func ParseBody(ctx context.Context, q db.Querier, v Viewer, forumID int64, src s
 // may keep the images that stored holds, by address, and may add none: the
 // refusal is the same [*InputError]. A writer with the right is not limited.
 func ParseBodyKeeping(ctx context.Context, q db.Querier, v Viewer, forumID int64, src string, flags *markup.Options, stored *markup.Node) (Body, error) {
-	signature := forumID == 0
+	kind := textPost
+	if forumID == 0 {
+		kind = textSignature
+	}
+	return parseText(ctx, q, v, kind, forumID, src, flags, stored)
+}
+
+// textKind says what a text is for. The kind picks the limit, the flags and the
+// image rule. Every kind goes through [parseText], so one function turns member
+// text into a stored tree.
+type textKind int
+
+const (
+	// textPost is a post: the rights of the forum decide the flags and the
+	// images.
+	textPost textKind = iota
+	// textSignature is a signature: the stored flags of the member apply.
+	textSignature
+	// textMessage is a private message: pm.markdown and pm.smilies set the flags,
+	// and pm.images decides on images. No forum applies.
+	textMessage
+)
+
+// ParseMessage is the path from the text of a private message to a stored tree.
+// It is [ParseBody] with the rights of messages: the flags are pm.markdown and
+// pm.smilies with URL linking on, an image needs pm.images, and the limit is
+// 60,000 bytes. A fault gives an [*InputError] on the field "body". It stores
+// nothing.
+func ParseMessage(ctx context.Context, q db.Querier, v Viewer, src string) (Body, error) {
+	return parseText(ctx, q, v, textMessage, 0, src, nil, nil)
+}
+
+// parseText is the one function behind [ParseBody], [ParseBodyKeeping] and
+// [ParseMessage]. forumID applies to textPost only.
+func parseText(ctx context.Context, q db.Querier, v Viewer, kind textKind, forumID int64, src string, flags *markup.Options, stored *markup.Node) (Body, error) {
+	signature := kind == textSignature
 	if signature && flags == nil {
 		return Body{}, errors.New("board: a signature needs its stored flags")
 	}
@@ -131,9 +167,16 @@ func ParseBodyKeeping(ctx context.Context, q db.Querier, v Viewer, forumID int64
 		return Body{}, err
 	}
 	var opt markup.Options
-	if flags != nil {
+	switch {
+	case flags != nil:
 		opt = *flags
-	} else {
+	case kind == textMessage:
+		opt = markup.Options{
+			Markdown: v.Perms.Has("pm.markdown", 0),
+			Smilies:  v.Perms.Has("pm.smilies", 0),
+			Autolink: true,
+		}
+	default:
 		opt = markup.Options{
 			Markdown: v.Perms.Has("post.markdown", forumID),
 			Smilies:  v.Perms.Has("post.smilies", forumID),
@@ -157,14 +200,17 @@ func ParseBodyKeeping(ctx context.Context, q db.Querier, v Viewer, forumID int64
 	}
 	if images := imageSources(tree); len(images) > 0 {
 		var may bool
-		if signature {
+		switch kind {
+		case textSignature:
 			// No forum applies to a signature. A member who may post images in some
 			// forum may have them in the signature.
 			var err error
 			if may, err = mayPostImagesAnywhere(ctx, q, v); err != nil {
 				return Body{}, err
 			}
-		} else {
+		case textMessage:
+			may = v.Perms.Has("pm.images", 0)
+		default:
 			may = v.Perms.Has("post.images", forumID)
 		}
 		if !may {
@@ -174,8 +220,11 @@ func ParseBodyKeeping(ctx context.Context, q db.Querier, v Viewer, forumID int64
 			}
 			for _, src := range images {
 				if !kept[src] {
-					if signature {
+					switch kind {
+					case textSignature:
 						return Body{}, inputError("body", msgNoSigImages)
+					case textMessage:
+						return Body{}, inputError("body", msgNoMsgImages)
 					}
 					return Body{}, inputError("body", msgNoImages)
 				}
