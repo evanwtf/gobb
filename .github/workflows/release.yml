@@ -1,0 +1,305 @@
+name: release
+
+# A tag vX.Y.Z publishes a release. A manual run with dry_run true (the default)
+# builds every artifact and smoke-runs the local image, but pushes nothing and
+# creates no release. A manual run with dry_run false publishes only from a tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and test everything, but push no image and create no release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Every other job needs this one. It decides, and it is the only job that does.
+  # The output `publish` is true only for a tag push, or for a manual run from a
+  # tag with dry_run false; scripts/releasecheck refuses a ref that is not vX.Y.Z.
+  releasecheck:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Scope the Go caches to this run
+        run: |
+          {
+            echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check the tag, the changelog and the version
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # An unknown event, or a manual run with no dry_run value, is refused.
+          case "$EVENT:$DRY_RUN" in
+            workflow_dispatch:true) mode=dry ;;
+            workflow_dispatch:false | push:*) mode=tag ;;
+            *) echo "refused: event $EVENT, dry_run '$DRY_RUN'"; exit 1 ;;
+          esac
+          if [ "$mode" = dry ]; then
+            version=$(go run ./scripts/releasecheck -dry-run)
+            publish=false
+          else
+            [ "$REF_TYPE" = tag ] || { echo "refused: publishing runs only from a tag, not from the $REF_TYPE $REF_NAME"; exit 1; }
+            version=$(go run ./scripts/releasecheck "$REF_NAME")
+            publish=true
+          fi
+          echo "mode $mode, version $version, publish $publish"
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+      # The module cache is read-only; make it writable so rm can remove it.
+      - name: Clean up
+        if: always()
+        run: |
+          chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
+          rm -rf "$GOMODCACHE" "$GOCACHE"
+
+  # Builds every artifact. It pushes nothing and holds no registry credentials, so
+  # a dry run is the whole of it.
+  build:
+    needs: releasecheck
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.releasecheck.outputs.version }}
+      # Every name carries the run ID and the attempt: the runner is shared.
+      IMAGE: gobb:release-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Scope the Go caches and the Docker config to this run
+        run: |
+          {
+            echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "BUILDER=gobb-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+          # The Docker CLI looks for its plugins (buildx) in the config folder first,
+          # so the new folder links to the plugins of the runner user.
+          mkdir -p "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          chmod 700 "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          [ ! -d "$HOME/.docker/cli-plugins" ] || ln -s "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cli-plugins"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Fail here, in a dry run, if the runner lacks a tool that a later job needs.
+      - name: Check the tools
+        run: |
+          docker buildx version
+          gh --version
+          sha256sum --version | head -n 1
+
+      - name: Build the binaries and their sums
+        run: |
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="gobb_${VERSION}_${os}_${arch}"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" -o "dist/$name" ./cmd/gobb
+            # A sum file names the binary without a directory, so `sha256sum -c` works next to it.
+            (cd dist && sha256sum "$name" > "$name.sha256")
+            info=$(go version -m "dist/$name")
+            for want in "CGO_ENABLED=0" "-trimpath=true" "GOOS=$os" "GOARCH=$arch"; do
+              echo "$info" | grep -q -F "$want" || { echo "$name: build info lacks $want"; exit 1; }
+            done
+          done
+          (cd dist && sha256sum -c ./*.sha256)
+          ls -l dist
+          out=$("dist/gobb_${VERSION}_linux_amd64" version)
+          echo "$out"
+          [ "$out" = "gobb $VERSION" ]
+
+      - uses: actions/upload-artifact@v7
+        if: needs.releasecheck.outputs.publish == 'true'
+        with:
+          name: binaries
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+      # The same builder and commands as the push job, with no login and no push.
+      # The build stage runs on the runner and cross-compiles, so no emulation is
+      # needed (and none is installed). The local output holds the root files of
+      # each platform, which proves the arm64 image carries an arm64 binary.
+      - name: Build both images, with no emulation
+        run: |
+          docker buildx create --name "$BUILDER" --driver docker-container
+          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 \
+            --output "type=local,dest=$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID" .
+          for arch in amd64 arm64; do
+            bin="$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID/linux_$arch/usr/bin/gobb"
+            go version -m "$bin" | grep -q -F "GOARCH=$arch" || { echo "the $arch image holds a binary for another CPU"; exit 1; }
+            [ -d "$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID/linux_$arch/var/lib/gobb" ] || { echo "the $arch image lacks /var/lib/gobb"; exit 1; }
+          done
+          docker buildx build --builder "$BUILDER" --platform linux/amd64 --load -t "$IMAGE" .
+
+      # Only the amd64 image runs: the runner is amd64.
+      - name: Smoke-run the local amd64 image
+        run: |
+          out=$(docker run --rm "$IMAGE" version)
+          echo "$out"
+          [ "$out" = "gobb $VERSION" ]
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker buildx rm --force "$BUILDER" || true
+          docker image rm "$IMAGE" || true
+          chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
+          rm -rf "$GOMODCACHE" "$GOCACHE" "$DOCKER_CONFIG" "$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID" dist
+
+  # The only job that holds registry credentials. They live in a Docker config
+  # folder under the run's temp folder, and the last step removes it.
+  push:
+    needs: [releasecheck, build]
+    if: needs.releasecheck.outputs.publish == 'true' && github.ref_type == 'tag'
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.releasecheck.outputs.version }}
+      REPO_IMAGE: ghcr.io/evanwtf/gobb
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Scope the Docker config to this run
+        run: |
+          {
+            echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "BUILDER=gobb-push-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          chmod 700 "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          [ ! -d "$HOME/.docker/cli-plugins" ] || ln -s "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cli-plugins"
+
+      - name: Log in to the registry
+        if: needs.releasecheck.outputs.publish == 'true' && github.ref_type == 'tag'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push the image for amd64 and arm64
+        if: needs.releasecheck.outputs.publish == 'true' && github.ref_type == 'tag'
+        run: |
+          docker buildx create --name "$BUILDER" --driver docker-container
+          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 \
+            --provenance=false \
+            --tag "$REPO_IMAGE:$VERSION" --tag "$REPO_IMAGE:latest" --push .
+
+      # Pull the image back from the registry and run it. The runner is amd64.
+      - name: Smoke-run the pushed image
+        run: |
+          docker pull "$REPO_IMAGE:$VERSION"
+          out=$(docker run --rm "$REPO_IMAGE:$VERSION" version)
+          echo "$out"
+          [ "$out" = "gobb $VERSION" ]
+          # :latest is the same image, and the manifest lists both platforms.
+          a=$(docker buildx imagetools inspect "$REPO_IMAGE:$VERSION" --raw | sha256sum)
+          b=$(docker buildx imagetools inspect "$REPO_IMAGE:latest" --raw | sha256sum)
+          [ "$a" = "$b" ] || { echo ":latest and :$VERSION differ"; exit 1; }
+          raw=$(docker buildx imagetools inspect "$REPO_IMAGE:$VERSION" --raw)
+          echo "$raw" | grep -q '"architecture": *"amd64"' || { echo "no amd64 image"; exit 1; }
+          echo "$raw" | grep -q '"architecture": *"arm64"' || { echo "no arm64 image"; exit 1; }
+
+      - name: Log out and remove the credentials
+        if: always()
+        run: |
+          docker logout ghcr.io || true
+          docker buildx rm --force "$BUILDER" || true
+          docker image rm "$REPO_IMAGE:$VERSION" "$REPO_IMAGE:latest" || true
+          rm -rf "$DOCKER_CONFIG"
+
+  # Last: a release exists only after the image is pushed and has run. The notes
+  # come from docs/changelog.md, never from the message of the tag.
+  release:
+    needs: [releasecheck, build, push]
+    if: needs.releasecheck.outputs.publish == 'true' && github.ref_type == 'tag'
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.releasecheck.outputs.version }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Scope the Go caches to this run
+        run: |
+          {
+            echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries
+          path: dist
+
+      - name: Write the release notes from the changelog
+        run: |
+          got=$(go run ./scripts/releasecheck -notes "$RUNNER_TEMP/notes-$GITHUB_RUN_ID.md" "$TAG")
+          [ "$got" = "$VERSION" ] || { echo "releasecheck says $got, the first job said $VERSION"; exit 1; }
+
+      - name: Create the release
+        if: needs.releasecheck.outputs.publish == 'true' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          (cd dist && sha256sum -c ./*.sha256)
+          gh release create "$TAG" --verify-tag --title "gobb $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes-$GITHUB_RUN_ID.md" dist/*
+
+      - name: Clean up
+        if: always()
+        run: |
+          chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
+          rm -rf "$GOMODCACHE" "$GOCACHE" dist "$RUNNER_TEMP/notes-$GITHUB_RUN_ID.md"

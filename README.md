@@ -134,6 +134,81 @@ If the command fails, it writes its error into the file and exits with a code ot
 docker compose run --rm -T gobb perms export > "$WORK/perms.jsonl" || echo "perms export failed; do not use perms.jsonl"
 ```
 
+## Back up and upgrade
+
+Back up before every upgrade. The backup is two files: a dump of the database and an
+archive of the data volume. Run these commands in the folder of `compose.yaml`.
+
+A dump and an archive hold real member data. Keep them on the server, in a folder
+outside this clone and outside the image build, and do not commit them or send them
+to a service that you do not run. Copy them to another machine only over a link that
+you control.
+
+```sh
+export BACKUP_DIR="$HOME/gobb-backups"
+export STAMP=$(date +%Y%m%d-%H%M%S)
+umask 077
+mkdir -p "$BACKUP_DIR"
+```
+
+1. **Dump the database.** `pg_dump -Fc` writes the compressed custom format. Run it in
+   the `postgres` container, and write the file on the host. The `-T` flag keeps
+   Compose from adding a terminal, which would change the bytes:
+
+   ```sh
+   docker compose exec -T postgres pg_dump -U gobb -d gobb -Fc > "$BACKUP_DIR/gobb-$STAMP.dump" || echo "pg_dump failed; do not upgrade"
+   ```
+
+2. **Archive the data volume.** The gobb image has no shell, so a container that has
+   `tar` reads the volume of the running gobb container, read-only:
+
+   ```sh
+   docker run --rm --volumes-from "$(docker compose ps -q gobb):ro" -v "$BACKUP_DIR:/backup" \
+     --entrypoint sh postgres:16 \
+     -c 'tar czf "/backup/$1" -C /var/lib/gobb . && chown "$2" "/backup/$1" && chmod 600 "/backup/$1"' \
+     sh "gobb-data-$STAMP.tar.gz" "$(id -u):$(id -g)" || echo "tar failed; do not upgrade"
+   ```
+
+3. **Check the files before you upgrade.** A dump that is a few kilobytes for a board
+   with members means that something failed. Compare its size with the last dump, and
+   list its contents:
+
+   ```sh
+   ls -l "$BACKUP_DIR/gobb-$STAMP.dump" "$BACKUP_DIR/gobb-data-$STAMP.tar.gz"
+   docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$STAMP.dump" | wc -l
+   ```
+
+4. **Upgrade.** Set `GOBB_VERSION` in `.env` to the new release tag, or leave it at
+   `latest`. Pull the image and start the stack. gobb applies the new migrations at
+   start. A migration is not undone when you go back to an older image, so to go back
+   you restore the dump (below).
+
+   ```sh
+   docker compose pull && docker compose up -d --wait
+   curl -fsS http://127.0.0.1:8080/healthz
+   ```
+
+To restore, stop gobb. Restore the database from the dump, then the data volume from
+the archive. `--clean --if-exists` drops each table of the dump and creates it again,
+so a restore over a newer schema returns the old one. The first command below picks
+the newest dump in `$BACKUP_DIR`. To restore an older one, set `STAMP` to its date:
+
+```sh
+export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p' | tail -n 1)
+docker compose stop gobb
+docker compose exec -T postgres pg_restore -U gobb -d gobb --clean --if-exists --exit-on-error < "$BACKUP_DIR/gobb-$STAMP.dump"
+docker run --rm --volumes-from "$(docker compose ps -aq gobb)" -v "$BACKUP_DIR:/backup:ro" \
+  --entrypoint sh postgres:16 \
+  -c 'find /var/lib/gobb -mindepth 1 -delete && tar xzf "/backup/gobb-data-$1.tar.gz" -C /var/lib/gobb' sh "$STAMP"
+```
+
+Then set `GOBB_VERSION` back to the version that wrote the backup and run
+`docker compose up -d --wait`. gobb reads the legacy routes and the stored password
+hashes once at start, so always start it after a restore.
+
+CI runs the dump and the restore on every push. It restores the dump into a new
+database and compares the row count of every table (`scripts/rowcounts`).
+
 ## Run the server
 
 `gobb serve` needs a PostgreSQL database and a data directory. It applies the pending
@@ -353,6 +428,43 @@ WARN line stays, because the gate never holds more than 128 MiB.
 
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 20 seconds. A second signal exits at once.
+
+## Release
+
+A release is a tag `vX.Y.Z`. The release workflow publishes binaries for `linux/amd64`,
+`linux/arm64` and `darwin/arm64` with a SHA-256 sum for each, the image
+`ghcr.io/evanwtf/gobb` as `:X.Y.Z` and `:latest` for `linux/amd64` and `linux/arm64`,
+and a GitHub release. The release notes are the section of `docs/changelog.md` for the
+version, never the message of the tag.
+
+1. In `docs/changelog.md`, change the date of the first section from `(unreleased)` to
+   the release date, as `## X.Y.Z (YYYY-MM-DD)`. `internal/version` must hold `X.Y.Z`.
+2. Check it, and commit and push to `main`:
+
+   ```sh
+   export TAG=v0.1.0
+   go run ./scripts/releasecheck "$TAG"
+   ```
+
+3. Tag and push the tag:
+
+   ```sh
+   git tag -a "$TAG" -m "gobb $TAG" && git push origin "$TAG"
+   ```
+
+`releasecheck` is the first job of the workflow. It refuses a tag that is not `vX.Y.Z`,
+a first section that is not exactly `X.Y.Z` and a date, a version in `internal/version`
+that differs from the tag, and an empty section. Nothing builds or publishes after a
+refusal.
+
+To try the workflow without a release, run it by hand with `dry_run` true, which is the
+default. It builds every artifact and runs the local image, and it pushes nothing and
+creates no release. The dry run accepts `(unreleased)` as the date. A manual run with
+`dry_run` false refuses unless the ref is a `vX.Y.Z` tag.
+
+```sh
+gh workflow run release.yml --ref main -f dry_run=true
+```
 
 ## Status
 

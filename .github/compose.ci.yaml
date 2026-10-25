@@ -1,6 +1,10 @@
 # CI override for compose.yaml. The runner is shared, so a run must not claim a
 # fixed host port or the pinned subnet.
 services:
+  postgres:
+    # The round-trip step of CI counts rows from the runner, over localhost.
+    ports:
+      - "127.0.0.1::5432"
   gobb:
     ports: !override
       - "127.0.0.1::8080"
