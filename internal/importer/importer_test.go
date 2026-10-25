@@ -691,3 +691,43 @@ func TestCopyVerifiedRefusesChangedFile(t *testing.T) {
 		t.Error("a symlink was copied")
 	}
 }
+
+// The route kinds messages and message reach the database as written.
+func TestImportMessageRoutes(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	id := "id"
+	dir := writeBoard(t, func(b *bundletest.Board) {
+		b.LegacyRoutes = append(b.LegacyRoutes,
+			bundle.LegacyRoute{Path: "old/inbox.cgi", Match: map[string]string{}, TargetKind: "messages", Position: 4},
+			bundle.LegacyRoute{Path: "old/pm.cgi", Match: map[string]string{}, IDParam: &id, TargetKind: "message", Position: 5},
+		)
+	})
+	mustRun(t, pool, dir, t.TempDir(), false)
+	rows, err := pool.Query(ctx,
+		`select path, target_kind, id_param from legacy_routes where target_kind in ('messages', 'message') order by path`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var path, kind string
+		var param *string
+		if err := rows.Scan(&path, &kind, &param); err != nil {
+			t.Fatal(err)
+		}
+		p := "-"
+		if param != nil {
+			p = *param
+		}
+		got = append(got, path+" "+kind+" "+p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"old/inbox.cgi messages -", "old/pm.cgi message id"}
+	if !slices.Equal(got, want) {
+		t.Errorf("routes = %v, want %v", got, want)
+	}
+}

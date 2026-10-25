@@ -218,6 +218,12 @@ func TestCheckRefuses(t *testing.T) {
 				TargetID: p(int64(99)), Position: 4,
 			})
 		}, "legacy_routes.jsonl:4: target_id: no row in topics.jsonl has id 99"},
+		{"message route to a missing message", func(b *bundletest.Board) {
+			b.LegacyRoutes = append(b.LegacyRoutes, bundle.LegacyRoute{
+				Path: "old/pm.cgi", Match: map[string]string{}, TargetKind: "message",
+				TargetID: p(int64(99)), Position: 4,
+			})
+		}, "legacy_routes.jsonl:4: target_id: no row in pms.jsonl has id 99"},
 		{"route twice", func(b *bundletest.Board) {
 			r := b.LegacyRoutes[0]
 			r.Position = 9
@@ -311,6 +317,20 @@ func TestCheckRoutesDifferByIDParam(t *testing.T) {
 	r := b.LegacyRoutes[0]
 	r.IDParam, r.TargetKind, r.OffsetParam, r.Position = p("post"), "post", nil, 9
 	b.LegacyRoutes = append(b.LegacyRoutes, r)
+	if err := checkBoard(t, b); err != nil {
+		t.Fatalf("Check = %v; want nil", err)
+	}
+}
+
+// The kinds messages and message are in the format: the first has no ID, the
+// second names a message by a parameter or by a fixed ID that exists.
+func TestCheckMessageRoutes(t *testing.T) {
+	b := bundletest.Small()
+	b.LegacyRoutes = append(b.LegacyRoutes,
+		bundle.LegacyRoute{Path: "old/inbox.cgi", Match: map[string]string{}, TargetKind: "messages", Position: 4},
+		bundle.LegacyRoute{Path: "old/pm.cgi", Match: map[string]string{}, IDParam: p("id"), TargetKind: "message", Position: 5},
+		bundle.LegacyRoute{Path: "old/pm1.cgi", Match: map[string]string{}, TargetKind: "message", TargetID: p(int64(2)), Position: 6},
+	)
 	if err := checkBoard(t, b); err != nil {
 		t.Fatalf("Check = %v; want nil", err)
 	}

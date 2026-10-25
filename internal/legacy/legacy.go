@@ -24,7 +24,7 @@ type Route struct {
 	// OffsetParam names the query parameter that holds an item offset, or is nil.
 	OffsetParam *string
 	// Kind is the target kind: home, forum, topic, post, user, members, team,
-	// attachment, avatar, search, account or page.
+	// attachment, avatar, search, account, page, messages or message.
 	Kind string
 	// TargetID is a fixed target ID, or nil.
 	TargetID *int64

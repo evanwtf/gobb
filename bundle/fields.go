@@ -52,9 +52,9 @@ var (
 	banKinds       = []string{"user", "email", "ip"}
 	routeKinds     = []string{
 		"home", "forum", "topic", "post", "user", "members", "team",
-		"attachment", "avatar", "search", "account", "page",
+		"attachment", "avatar", "search", "account", "page", "messages", "message",
 	}
-	routeKindsWithID = []string{"forum", "topic", "post", "user", "attachment", "avatar"}
+	routeKindsWithID = []string{"forum", "topic", "post", "user", "attachment", "avatar", "message"}
 	routeKindsOffset = []string{"forum", "topic"}
 	legacyFileDirs   = []string{"smilies", "ranks"}
 	settingValues    = []string{string(Yes), string(No), string(Never)}

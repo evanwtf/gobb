@@ -594,19 +594,21 @@ A row maps an old URL of the source system to a gobb page.
 | `path` | string | 1 to 255 bytes. No leading `/`, no `?` and no `#`. gobb stores it decoded, with no percent escapes, and matches it against the request path decoded once. |
 | `match` | object | Up to 10 pairs. Each key is a param, and each value is a label. |
 | `id_param`? | param | The query parameter that holds the ID. |
-| `target_kind` | string | `home`, `forum`, `topic`, `post`, `user`, `members`, `team`, `attachment`, `avatar`, `search`, `account` or `page`. |
+| `target_kind` | string | `home`, `forum`, `topic`, `post`, `user`, `members`, `team`, `attachment`, `avatar`, `search`, `account`, `page`, `messages` or `message`. |
 | `target_id`? | id | A fixed ID. |
 | `target_slug`? | slug | The slug of a static page. |
 | `offset_param`? | param | The query parameter that holds the offset into a list. |
 | `position` | int | |
 
-The kinds `forum`, `topic`, `post`, `user`, `attachment` and `avatar` need exactly one
+The kinds `forum`, `topic`, `post`, `user`, `attachment`, `avatar` and `message` need exactly one
 of `id_param` and `target_id`. The kind `page` needs `target_slug`, which names a row of
 `static_pages.jsonl`, and nothing else. The other kinds need neither `id_param` nor
 `target_id`. Only `forum` and `topic` may set `offset_param`. A fixed `target_id`
-names a row that exists: a forum, a topic, a post, a user or an attachment, by kind. For
-`avatar` it names a user. A fixed `user` route target may also name a gone user: a row of
-`gone_users.jsonl`. The triple (`path`, `match`, `id_param`) is unique.
+names a row that exists: a forum, a topic, a post, a user, an attachment or a private
+message (`pms.jsonl`), by kind. For `avatar` it names a user. A fixed `user` route target
+may also name a gone user: a row of `gone_users.jsonl`. The kind `message` sends the
+visitor to the message page, and that page lets only the parties of the message read it.
+The triple (`path`, `match`, `id_param`) is unique.
 
 A route applies to a request when the request's path is `path`, every `match` pair
 equals a query parameter of the request, and the request has the `id_param` parameter

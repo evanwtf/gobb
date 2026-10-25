@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -637,5 +638,64 @@ func TestLegacyAvatarDirectory(t *testing.T) {
 	}
 	if rec := get(t, h, "/old/k/avatar?id=2"); rec.Code != 301 || location(rec) != "/files/avatars/1.png" {
 		t.Errorf("avatar in avatars/: %d %q", rec.Code, location(rec))
+	}
+}
+
+// The old links to private messages send a visitor to /messages and
+// /messages/{id}. The redirect checks nothing about the message: the page does,
+// so a member who is no party gets the 404 of a missing message and a guest gets
+// the sign-in redirect.
+func TestLegacyMessageRoutes(t *testing.T) {
+	b := bundletest.Small()
+	b.LegacyRoutes = append(b.LegacyRoutes,
+		legacyRoute("old/inbox.cgi", "messages", nil, nil, 4),
+		legacyRoute("old/pm.cgi", "message", ptr("id"), nil, 5),
+		legacyRoute("old/pm-one.cgi", "message", nil, ptr(int64(1)), 6),
+	)
+	h, pool := siteWithPool(t, b, Options{})
+	// Alice's copy of message 2 is in her inbox again, as in messageSite.
+	exec(t, pool, `update pm_recipients set is_deleted = false where pm_id = 2 and user_id = 1`)
+	alice := signIn(t, h, "alice", testPassword)
+	carol := signIn(t, h, "carol", testPassword)
+
+	for _, tc := range []struct{ target, loc string }{
+		{"/old/inbox.cgi", "/messages"},
+		{"/old/inbox.cgi?id=7", "/messages"},
+		{"/old/pm.cgi?id=1", "/messages/1"},
+		{"/old/pm.cgi?id=99", "/messages/99"},
+		{"/old/pm-one.cgi", "/messages/1"},
+	} {
+		rec := get(t, h, tc.target)
+		if rec.Code != http.StatusMovedPermanently || location(rec) != tc.loc {
+			t.Errorf("GET %s = %d %q, want 301 %q", tc.target, rec.Code, location(rec), tc.loc)
+		}
+	}
+	for _, target := range []string{"/old/pm.cgi", "/old/pm.cgi?id=x", "/old/pm.cgi?id=0"} {
+		if rec := get(t, h, target); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", target, rec.Code)
+		}
+	}
+
+	// Alice is a party to message 2, and carol is not. Each follows the redirect.
+	rec := getAs(t, h, "/old/pm.cgi?id=2", alice)
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("alice: %d", rec.Code)
+	}
+	if page := getAs(t, h, location(rec), alice); page.Code != http.StatusOK {
+		t.Errorf("a party follows to %d, want 200", page.Code)
+	}
+	rec = getAs(t, h, "/old/pm.cgi?id=2", carol)
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("carol: %d", rec.Code)
+	}
+	page := getAs(t, h, location(rec), carol)
+	if page.Code != http.StatusNotFound || strings.Contains(bodyOf(t, page), "Thanks, alice.") {
+		t.Errorf("a non-party follows to %d, want 404", page.Code)
+	}
+	// A guest follows the redirect to the sign-in page, which returns here.
+	rec = get(t, h, "/old/pm.cgi?id=2")
+	page = get(t, h, location(rec))
+	if want := "/login?next=" + url.QueryEscape("/messages/2"); page.Code != http.StatusFound || location(page) != want {
+		t.Errorf("a guest follows to %d %q, want 302 %q", page.Code, location(page), want)
 	}
 }

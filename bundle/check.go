@@ -787,6 +787,8 @@ func (w *whole) route(line int, r LegacyRoute) {
 		w.ref(file, line, "target_id", w.posts, id, "posts.jsonl")
 	case "attachment":
 		w.ref(file, line, "target_id", w.attachments, id, "attachments.jsonl")
+	case "message":
+		w.ref(file, line, "target_id", w.pms, id, "pms.jsonl")
 	case "avatar":
 		w.ref(file, line, "target_id", w.users, id, "users.jsonl")
 	case "user":

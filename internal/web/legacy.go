@@ -61,13 +61,23 @@ func (s *site) legacyFile(w http.ResponseWriter, r *http.Request, dir, rest stri
 // legacyRoute answers a request that matched route rt. The kinds with a plain
 // target go to the page, which checks the viewer itself. The kinds with an ID
 // run the check of their own page first, so a target the viewer cannot see gets
-// the 404 of a missing one before any redirect.
+// the 404 of a missing one before any redirect. The kind "message" is the exception:
+// the message page checks the viewer on arrival, so the old link does not.
 func (s *site) legacyRoute(w http.ResponseWriter, r *http.Request, rt legacy.Route, query url.Values) {
 	switch rt.Kind {
 	case "home":
 		s.moved(w, r, s.path())
-	case "members", "team", "search", "account":
+	case "members", "team", "search", "account", "messages":
 		s.moved(w, r, s.path(rt.Kind))
+	case "message":
+		// The page checks the party rule, so a member who is no party gets its
+		// 404, and a guest gets its sign-in redirect. The old link checks nothing.
+		id, ok := legacyID(rt, query)
+		if !ok {
+			s.notFound(w, r)
+			return
+		}
+		s.moved(w, r, s.path("messages", strconv.FormatInt(id, 10)))
 	case "page":
 		if rt.TargetSlug == nil {
 			s.notFound(w, r)

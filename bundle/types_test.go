@@ -576,6 +576,31 @@ func TestCheckFields(t *testing.T) {
 			return r
 		}(), "id_param"},
 		{"route post no id", func() Row { r := validRoute(); r.TargetKind, r.IDParam = "post", nil; return r }(), "id_param"},
+		{"route message no id", func() Row {
+			r := validRoute()
+			r.TargetKind, r.IDParam, r.OffsetParam = "message", nil, nil
+			return r
+		}(), "id_param"},
+		{"route message both ids", func() Row {
+			r := validRoute()
+			r.TargetKind, r.OffsetParam, r.TargetID = "message", nil, ptr(int64(4))
+			return r
+		}(), "id_param"},
+		{"route messages with id_param", func() Row {
+			r := validRoute()
+			r.TargetKind, r.OffsetParam = "messages", nil
+			return r
+		}(), "id_param"},
+		{"route messages with target_id", func() Row {
+			r := validRoute()
+			r.TargetKind, r.IDParam, r.OffsetParam, r.TargetID = "messages", nil, nil, ptr(int64(1))
+			return r
+		}(), "target_id"},
+		{"route offset on message", func() Row {
+			r := validRoute()
+			r.TargetKind = "message"
+			return r
+		}(), "offset_param"},
 		{"route home with id_param", func() Row {
 			r := validRoute()
 			r.TargetKind, r.OffsetParam = "home", nil
