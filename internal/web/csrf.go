@@ -10,7 +10,9 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"sync"
 
+	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/session"
 )
 
@@ -80,18 +82,26 @@ const (
 // not multipart is read as a urlencoded form, so a request with no file reaches
 // the handler, which refuses it.
 //
-// The body is read before the token is checked, as in [site.protect]: the cap
-// holds the cost. The cross-origin check runs before any read.
+// The cross-origin check runs before any read. Then the session is resolved
+// before the body: a guest, or a visitor whose session ended, gets 403 and the
+// server reads nothing. So does a member who lacks the right account.avatar,
+// which is checked on the rights of the member before any slot is taken. The
+// uploads in flight are capped twice, and a request
+// over either cap gets 503 at once, before any read: the server takes
+// maxUploadsInFlight at one time, and one member has one upload in flight at a
+// time. After the read, the token is checked, as in [site.protect]: the cap of
+// the body holds the cost.
 func (s *site) protectUpload(limit int64, h http.HandlerFunc) http.Handler {
-	g := guard{limit: limit, tooBig: msgFileTooLarge, member: true, slots: func() chan struct{} { return s.uploadSlots }, parse: func(r *http.Request) error {
-		// ParseMultipartForm drops the error of a body that is not multipart (it
-		// returns ErrNotMultipart instead), and a body over the cap is one such
-		// error. So the content type picks the parser.
-		if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "multipart/form-data" {
-			return r.ParseForm()
-		}
-		return r.ParseMultipartForm(limit)
-	}}
+	g := guard{limit: limit, tooBig: msgFileTooLarge, member: true,
+		option: "account.avatar", denied: "You do not have the right to change your avatar.", slots: func() chan struct{} { return s.uploadSlots }, oneEach: &s.uploading, parse: func(r *http.Request) error {
+			// ParseMultipartForm drops the error of a body that is not multipart (it
+			// returns ErrNotMultipart instead), and a body over the cap is one such
+			// error. So the content type picks the parser.
+			if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "multipart/form-data" {
+				return r.ParseForm()
+			}
+			return r.ParseMultipartForm(limit)
+		}}
 	return s.guardWith(s.crossOrigin, g, h, nil)
 }
 
@@ -119,6 +129,14 @@ type guard struct {
 	// for the upload, whose body is read into memory.
 	member bool
 	slots  func() chan struct{}
+	// oneEach, when set with member, holds the IDs of the members who have a
+	// request in the guard and the handler. A second request of the same member
+	// gets 503 at once.
+	oneEach *sync.Map
+	// option, when set with member, is the right that the member needs. A member
+	// without it gets 403 with the text denied, before a slot is taken and before
+	// the body is read.
+	option, denied string
 }
 
 // The header that tells the server a request comes from gobb.js. The answer is
@@ -181,6 +199,9 @@ func (s *site) guardWith(cop *http.CrossOriginProtection, g guard, h, signedOut 
 				s.identifyFailed(w, r, err)
 				return
 			}
+			// The identity goes into the request first, so the page of a refusal
+			// does not look the session up a second time.
+			r = r.WithContext(context.WithValue(r.Context(), identityKey{}, id))
 			if id.token == "" {
 				msg := "Sign in to upload a file."
 				if id.ended {
@@ -189,7 +210,29 @@ func (s *site) guardWith(cop *http.CrossOriginProtection, g guard, h, signedOut 
 				s.guardRefused(w, r, http.StatusForbidden, "Form not accepted", msg)
 				return
 			}
-			r = r.WithContext(context.WithValue(r.Context(), identityKey{}, id))
+			if g.option != "" {
+				settings, err := board.LoadSettings(r.Context(), s.pool)
+				var v board.Viewer
+				if err == nil {
+					v, err = board.Member(r.Context(), s.pool, id.sess.UserID, settings)
+				}
+				switch {
+				case errors.Is(err, board.ErrNotFound) || (err == nil && !v.Perms.Has(g.option, 0)):
+					s.guardRefused(w, r, http.StatusForbidden, "Form not accepted", g.denied)
+					return
+				case err != nil:
+					s.identifyFailed(w, r, err)
+					return
+				}
+			}
+			if g.oneEach != nil {
+				if _, busy := g.oneEach.LoadOrStore(id.sess.UserID, struct{}{}); busy {
+					w.Header().Set("Retry-After", strconv.Itoa(busyRetrySeconds))
+					s.guardRefused(w, r, http.StatusServiceUnavailable, "Server busy", msgBusy)
+					return
+				}
+				defer g.oneEach.Delete(id.sess.UserID)
+			}
 			if g.slots != nil {
 				slots := g.slots()
 				select {

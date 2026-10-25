@@ -198,7 +198,7 @@ func TestHeaderUser(t *testing.T) {
 
 	// On the account page the name link is the current page.
 	top, _ = headerParts(t, bodyOf(t, getAs(t, h, "/account", cookies)))
-	if !strings.Contains(top, `<a href="/account" aria-current="page"><bdi>alice</bdi></a>`) {
+	if !strings.Contains(top, `<a href="/account" title="alice" aria-current="page"><bdi>alice</bdi></a>`) {
 		t.Errorf("the name link lacks aria-current on /account:\n%s", top)
 	}
 

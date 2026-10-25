@@ -505,6 +505,12 @@ func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := r.PostForm.Get("signature")
+	// The signature counts as a save, whether it comes from gobb.js or from a form.
+	// The try is counted first, as every other setting counts it, before any read
+	// of the database for the page.
+	if !s.takeSave(w, r, s.saves.saves, msgTooManySaves, func(d *accountData) { d.Signature = text }) {
+		return
+	}
 	p, err := s.begin(w, r, "Account", "account")
 	if err != nil {
 		slog.Error("account: page", "path", r.URL.Path, "err", err)
@@ -529,13 +535,6 @@ func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Signature = text
-	// The signature counts as a save, whether it comes from gobb.js or from a form.
-	if ok, wait := s.saves.saves.Take(strconv.FormatInt(p.Viewer.UserID, 10), s.opt.Now()); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(wait)))
-		d.Err.Notice = msgTooManySaves
-		s.renderAccount(w, http.StatusTooManyRequests, p, d)
-		return
-	}
 	err = board.SetSignature(r.Context(), s.pool, p.Viewer, text, s.opt.Now())
 	var in *board.InputError
 	switch {

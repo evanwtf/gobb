@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/boardtest"
@@ -1331,5 +1332,283 @@ func TestAccountZoneHint(t *testing.T) {
 	want := `Right now it is <span id="timezone-now">Oct 25, 2026, 1:44 pm</span> in <span id="timezone-city">Los Angeles</span>.`
 	if !strings.Contains(page, want) {
 		t.Errorf("the hint is not %q", want)
+	}
+}
+
+// sessionLookups counts the queries that look a session up.
+type sessionLookups struct{ n atomic.Int64 }
+
+func (c *sessionLookups) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(d.SQL, "from sessions s join users u") {
+		c.n.Add(1)
+	}
+	return ctx
+}
+
+func (*sessionLookups) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// A refused upload of a visitor with a dead session cookie looks the cookie up once:
+// the refusal page uses the identity that the guard found.
+func TestRefusedUploadLooksTheSessionUpOnce(t *testing.T) {
+	pool, dataDir := boardtest.Load(t, postingBoard())
+	cfg := pool.Config()
+	count := &sessionLookups{}
+	cfg.ConnConfig.Tracer = count
+	counted, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(counted.Close)
+	h, err := New(t.Context(), counted, Options{DataDir: dataDir, LoginFloor: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := []*http.Cookie{{Name: sessionCookie, Value: "no-such-session"}}
+	for _, hdr := range []map[string]string{nil, saveHeader} {
+		before := count.n.Load()
+		rec := uploadWithToken(t, h, dead, "x", testPNG(t, 8, 8), hdr)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("upload with a dead session = %d, want 403", rec.Code)
+		}
+		if got := count.n.Load() - before; got != 1 {
+			t.Errorf("header %v: the dead cookie was looked up %d times, want 1", hdr != nil, got)
+		}
+	}
+}
+
+// One member has one upload in flight. A second upload of the same member gets 503
+// at once, as JSON for gobb.js; another member is not affected; and the member can
+// upload again when the first one ends.
+func TestAvatarOneUploadInFlightPerMember(t *testing.T) {
+	h, pool, _ := postingSiteWithData(t)
+	a, b := signIn(t, h, "alice", testPassword), signIn(t, h, "bob", testPassword)
+	token := accountToken(t, h, a)
+
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	held := httptest.NewRequest(http.MethodPost, "/account/avatar", io.MultiReader(strings.NewReader("--x\r\n"),
+		readerFunc(func([]byte) (int, error) {
+			once.Do(func() { close(started) })
+			<-release
+			return 0, io.EOF
+		})))
+	held.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+	held.Header.Set("X-Gobb-Save", "1")
+	for _, c := range a {
+		held.AddCookie(c)
+	}
+	done := make(chan *httptest.ResponseRecorder)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, held)
+		done <- rec
+	}()
+	<-started
+
+	before := avatarOf(t, pool, 1)
+	for _, hdr := range []map[string]string{saveHeader, nil} {
+		rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), hdr)
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "5" {
+			t.Errorf("second upload of the member (header %v) = %d, Retry-After %q, want 503 and 5", hdr != nil, rec.Code, rec.Header().Get("Retry-After"))
+		}
+		if hdr != nil {
+			if got := answerJSON(t, rec); got["message"] != msgBusy {
+				t.Errorf("the JSON 503 = %v, want the busy text", got)
+			}
+		}
+	}
+	if avatarOf(t, pool, 1) != before {
+		t.Error("a refused upload changed the avatar")
+	}
+	if rec := upload(t, h, b, testPNG(t, 20, 20), saveHeader); rec.Code != http.StatusOK {
+		t.Errorf("another member's upload = %d, want 200", rec.Code)
+	}
+	close(release)
+	<-done
+	if rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), saveHeader); rec.Code != http.StatusOK {
+		t.Errorf("an upload after the first ended = %d, want 200", rec.Code)
+	}
+}
+
+// A refused text box and a failed birthday write give one page with both: the
+// input message beside the field and the notice of the failure.
+func TestAboutInputErrorSurvivesAFailedWrite(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	// A write of the birthday day 15 fails with an error that is not an input error.
+	exec(t, pool, `create function refuse_day() returns trigger language plpgsql as
+		$$ begin raise exception 'test failure'; end $$`)
+	exec(t, pool, `create trigger refuse_day before update of birth_day on users
+		for each row when (new.birth_day = 15) execute function refuse_day()`)
+	rec := postWith(t, h, "/account/about", a, url.Values{"website": {"nope"}, "bday": {"15"}, "bmonth": {"3"}, "byear": {"1984"}}, nil)
+	page := bodyOf(t, rec)
+	const msgSite = "Enter an address that starts with https:// or http://."
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(page, msgSite) {
+		t.Error("the message of the refused website is lost")
+	}
+	if !strings.Contains(page, msgWriteFailed) {
+		t.Error("the notice of the failed write is missing")
+	}
+	if got, _ := inputValue(page, "website"); got != "nope" {
+		t.Errorf("website box = %q, want the value that was sent", got)
+	}
+}
+
+// A page that answers a refusal for a member who went inactive during the request
+// is 404 with the neutral text, not 500: the upload page and the 429 page.
+func TestRefusalPagesForAMemberWhoIsGone(t *testing.T) {
+	gone := func(pool *pgxpool.Pool) func() {
+		return func() { exec(t, pool, `update users set state = 'inactive' where id = 1`) }
+	}
+	t.Cleanup(func() { afterBegin = nil })
+
+	t.Run("upload", func(t *testing.T) {
+		h, pool := siteWithPool(t, postingBoard(), Options{})
+		a := signIn(t, h, "alice", testPassword)
+		token := accountToken(t, h, a)
+		afterBegin = gone(pool)
+		rec := uploadWithToken(t, h, a, token, png8(t), nil) // avatar.Make refuses it
+		if rec.Code != http.StatusNotFound || !strings.Contains(bodyOf(t, rec), msgNotSaved) {
+			t.Errorf("refused upload of a member who is gone = %d, want 404 with the neutral text", rec.Code)
+		}
+	})
+
+	t.Run("429", func(t *testing.T) {
+		h, pool := siteWithPool(t, postingBoard(), Options{MemberSaves: 1})
+		a := signIn(t, h, "alice", testPassword)
+		token := accountToken(t, h, a)
+		afterBegin = nil
+		if rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Asia/Tokyo"}, "csrf": {token}}, saveHeader); rec.Code != http.StatusNoContent {
+			t.Fatalf("the one save = %d", rec.Code)
+		}
+		afterBegin = gone(pool)
+		rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Asia/Tokyo"}, "csrf": {token}}, nil)
+		if rec.Code != http.StatusNotFound || !strings.Contains(bodyOf(t, rec), msgNotSaved) {
+			t.Errorf("429 page of a member who is gone = %d, want 404 with the neutral text", rec.Code)
+		}
+	})
+}
+
+// The no-script signature counts as a save before the page reads anything, as every
+// other setting does: a try that fails on the read still counts.
+func TestSignatureFormIsCountedFirst(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{MemberSaves: 1})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	afterBegin = func() { exec(t, pool, `update users set state = 'inactive' where id = 1`) }
+	t.Cleanup(func() { afterBegin = nil })
+	rec := postWith(t, h, "/account/signature", a, url.Values{"signature": {"First."}, "csrf": {token}}, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("the signature of a member who is gone = %d, want 404", rec.Code)
+	}
+	afterBegin = nil
+	exec(t, pool, `update users set state = 'active' where id = 1`)
+	rec = postWith(t, h, "/account/signature", a, url.Values{"signature": {"Second."}, "csrf": {token}}, nil)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("the next signature = %d, want 429: the first try counted", rec.Code)
+	}
+	if body := bodyOf(t, rec); !strings.Contains(body, "Second.</textarea>") || strings.Contains(body, "First.") {
+		t.Error("the 429 page does not show the signature that was sent")
+	}
+}
+
+// The 429 page of the no-script "About you" shows the values that the member sent.
+func TestAbout429ShowsTheSentValues(t *testing.T) {
+	h, _ := siteWithPool(t, postingBoard(), Options{MemberSaves: 1})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	if rec := postWith(t, h, "/account/dateformat", a, url.Values{"dateformat": {"iso"}, "csrf": {token}}, saveHeader); rec.Code != http.StatusNoContent {
+		t.Fatalf("the one save = %d", rec.Code)
+	}
+	rec := postWith(t, h, "/account/about", a, url.Values{"location": {"Sent place"}, "website": {"https://sent.example"},
+		"bday": {"14"}, "bmonth": {"3"}, "byear": {"1984"}, "csrf": {token}}, nil)
+	page := bodyOf(t, rec)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(page, msgTooManySaves) {
+		t.Fatalf("about over the limit = %d", rec.Code)
+	}
+	if got, _ := inputValue(page, "location"); got != "Sent place" {
+		t.Errorf("location box = %q, want the value that was sent", got)
+	}
+	if got, _ := inputValue(page, "website"); got != "https://sent.example" {
+		t.Errorf("website box = %q, want the value that was sent", got)
+	}
+	if !strings.Contains(page, `<option value="14" selected>14</option>`) || !strings.Contains(page, `<option value="3" selected>March</option>`) {
+		t.Error("the page does not show the birthday that was sent")
+	}
+}
+
+// A member without account.avatar gets 403 before the server reads the body and
+// before the upload takes a slot: such a member cannot hold the slots of the others.
+func TestAvatarUploadWithoutTheRightTakesNoSlot(t *testing.T) {
+	var s *site
+	onNew = func(got *site) { s = got }
+	t.Cleanup(func() { onNew = nil })
+	h, pool, _ := postingSiteWithData(t)
+	onNew = nil
+	s.uploadSlots = make(chan struct{}, 1)
+	a, b := signIn(t, h, "alice", testPassword), signIn(t, h, "bob", testPassword)
+	exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (1, 0, 'account.avatar', 2)`)
+	token := accountToken(t, h, a)
+
+	// Bob holds the one slot with a body that has not ended.
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	held := httptest.NewRequest(http.MethodPost, "/account/avatar", io.MultiReader(strings.NewReader("--x\r\n"),
+		readerFunc(func([]byte) (int, error) {
+			once.Do(func() { close(started) })
+			<-release
+			return 0, io.EOF
+		})))
+	held.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+	held.Header.Set("X-Gobb-Save", "1")
+	for _, c := range b {
+		held.AddCookie(c)
+	}
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(httptest.NewRecorder(), held)
+		close(done)
+	}()
+	<-started
+
+	// Alice lacks the right: 403, not 503, and the server does not read her body.
+	for _, hdr := range []map[string]string{saveHeader, nil} {
+		body, ctype := multipartBody(t, token, "me.png", testPNG(t, 20, 20))
+		var reads atomic.Int32
+		r := httptest.NewRequest(http.MethodPost, "/account/avatar", readerFunc(func(p []byte) (int, error) {
+			reads.Add(1)
+			return body.Read(p)
+		}))
+		r.Header.Set("Content-Type", ctype)
+		for k, v := range hdr {
+			r.Header.Set(k, v)
+		}
+		for _, c := range a {
+			r.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("upload without the right (header %v) = %d, want 403", hdr != nil, rec.Code)
+		}
+		if hdr != nil && answerJSON(t, rec)["message"] == "" {
+			t.Error("the JSON 403 has no message")
+		}
+		if n := reads.Load(); n != 0 {
+			t.Errorf("the server read the body of a member without the right %d times", n)
+		}
+	}
+	// Her refusals left no mark: when Bob's upload ends, the slot is free.
+	close(release)
+	<-done
+	if avatarOf(t, pool, 1) != "avatars/1.png" {
+		t.Error("a refused upload changed the avatar")
+	}
+	exec(t, pool, `delete from acl_user_grants where user_id = 1 and option = 'account.avatar'`)
+	if rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), saveHeader); rec.Code != http.StatusOK {
+		t.Errorf("upload after the right is back = %d, want 200", rec.Code)
 	}
 }

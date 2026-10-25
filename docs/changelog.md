@@ -61,7 +61,7 @@
   `avatar.Make` turns an upload into a new 128 x 128 PNG. It reads at most 1 MiB, takes
   the format from the first bytes (PNG, JPEG or GIF; WebP is refused), reads the size
   from the header and refuses more than 8,000 pixels a side or 16,000,000 in all before
-  it decodes, charges the decode's memory to the login gate by format (JPEG 15, 19, 24
+  it decodes, charges the decode's memory to the login gate by format (JPEG 19 for three components (a late Adobe segment turns YCbCr into RGB after the header), 24
   or 5 bytes a pixel by color model, on sides padded to 32; PNG 4, or 8 for 16 bits,
   doubled when interlaced; GIF 4; plus 1 MiB) and refuses with the size error a decode
   that is more than the whole budget (`Gate.Budget` is new), so none runs alone and
@@ -108,6 +108,24 @@
   parser with `pm.markdown`, `pm.smilies` and `pm.images`. A message that the author sent
   twice within 60 seconds is stored once. A delete hides the message from the viewer's own
   view and removes no row.
+
+- Small fixes to the work above. The bundle check takes the latest birth year from
+  `account.CheckBirthday`. A relative time more than a minute ahead keeps the layout of
+  its call (a date stays a date), the month-end rule of "N months ago" is documented
+  and tested, and "posts since" on the new-posts page shows the standard time for a
+  member whose format is relative. In the header, the member's links hide in print, the
+  focus ring of those links and of the board name uses the header text color, a long
+  member name ends in an ellipsis (the full name is the link's `title`), and a guest's
+  Sign in link has the padding and the hover of Sign out. `avatar.Make` reuses the
+  buffers of one PNG encoder, and it charges every JPEG of three components at 19
+  bytes a pixel: the decoder reads an Adobe segment that comes after the first scan,
+  which `jpeg.DecodeConfig` never sees, and then decodes as RGB. An upload needs
+  `account.avatar` before the server takes a slot or reads the body. One member has
+  one avatar upload in flight (a second gets 503); a refused upload looks a dead session up once; the no-script signature counts as
+  a save before the page reads; the 429 page of "About you" and of the signature shows
+  the values that were sent; an input message stays when the other write of "About you"
+  fails; and a member who went inactive during a refused upload or a 429 page gets 404
+  with the neutral text in place of 500.
 
 ## 0.1.0 (2026-10-25)
 

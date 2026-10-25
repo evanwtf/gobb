@@ -122,8 +122,10 @@ func deniedText(p *page, action string) string {
 }
 
 // tooMany answers a request that is over its limit: 429 with Retry-After, as JSON
-// for gobb.js and as the account page with a notice for any other.
-func (s *site) tooMany(w http.ResponseWriter, r *http.Request, wait time.Duration, msg string) {
+// for gobb.js and as the account page with a notice for any other. echo, when
+// set, puts the values that the member sent into the page, as the other refusals
+// of a form do.
+func (s *site) tooMany(w http.ResponseWriter, r *http.Request, wait time.Duration, msg string, echo func(*accountData)) {
 	w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(wait)))
 	if saveRequested(r) {
 		saveMessage(w, http.StatusTooManyRequests, msg)
@@ -131,12 +133,30 @@ func (s *site) tooMany(w http.ResponseWriter, r *http.Request, wait time.Duratio
 	}
 	p, err := s.begin(w, r, "Account", "account")
 	if err == nil {
+		if afterBegin != nil {
+			afterBegin()
+		}
 		var d accountData
 		if d, err = s.accountData(r, p); err == nil {
+			if echo != nil {
+				echo(&d)
+			}
 			d.Err.Notice = msg
 			s.renderAccount(w, http.StatusTooManyRequests, p, d)
 			return
 		}
+	}
+	s.pageFailed(w, r, err)
+}
+
+// pageFailed answers the failure of the data of the account page, for a request
+// that wants a page. A member who is gone (inactive since the request began) gets
+// 404 and the neutral text, as a save from gobb.js does; any other failure is a
+// server error.
+func (s *site) pageFailed(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, board.ErrNotFound) {
+		s.fail(w, r, http.StatusNotFound, "Not saved", msgNotSaved)
+		return
 	}
 	s.serverError(w, r, err)
 }
@@ -146,7 +166,7 @@ func (s *site) tooMany(w http.ResponseWriter, r *http.Request, wait time.Duratio
 // request may go on. The try is never given back: a refusal costs as much as a
 // success. A visitor with no session is not counted here; the checks of the
 // handler refuse the visitor.
-func (s *site) takeSave(w http.ResponseWriter, r *http.Request, lim *ratelimit.Limiter, msg string) bool {
+func (s *site) takeSave(w http.ResponseWriter, r *http.Request, lim *ratelimit.Limiter, msg string, echo func(*accountData)) bool {
 	id, err := s.identify(w, r)
 	if err != nil {
 		s.identifyFailed(w, r, err)
@@ -156,7 +176,7 @@ func (s *site) takeSave(w http.ResponseWriter, r *http.Request, lim *ratelimit.L
 		return true
 	}
 	if ok, wait := lim.Take(strconv.FormatInt(id.sess.UserID, 10), s.opt.Now()); !ok {
-		s.tooMany(w, r, wait, msg)
+		s.tooMany(w, r, wait, msg, echo)
 		return false
 	}
 	return true
@@ -166,10 +186,11 @@ func (s *site) takeSave(w http.ResponseWriter, r *http.Request, lim *ratelimit.L
 // then the rights: it answers and reports false for a member over the limit, for
 // a guest, for a member who lacks option ("" asks for none), and for a page that
 // cannot be built. Otherwise it returns the page. A request from gobb.js gets
-// JSON; any other gets the page. The data of the account page is read only when
+// JSON; any other gets the page, and echo puts the values that the member sent
+// into the 429 page. The data of the account page is read only when
 // the answer is a page ([site.settingResult]).
-func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, option, action string, lim *ratelimit.Limiter, msg string) (*page, bool) {
-	if !s.takeSave(w, r, lim, msg) {
+func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, option, action string, lim *ratelimit.Limiter, msg string, echo func(*accountData)) (*page, bool) {
+	if !s.takeSave(w, r, lim, msg, echo) {
 		return nil, false
 	}
 	p, err := s.begin(w, r, "Account", "account")
@@ -181,6 +202,9 @@ func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, option, act
 			s.serverError(w, r, err)
 		}
 		return nil, false
+	}
+	if afterBegin != nil {
+		afterBegin()
 	}
 	if p.Viewer.UserID == 0 || (option != "" && !p.Viewer.Perms.Has(option, 0)) {
 		if saveRequested(r) {
@@ -227,20 +251,22 @@ func (s *site) settingResult(w http.ResponseWriter, r *http.Request, p *page, er
 		echo(&d)
 	}
 	notice := func(d *accountData, m string) { d.Err.Notice = m }
-	var inputs []*board.InputError
+	// Every input message goes beside its field first. A failure of another write
+	// then answers with the same page, so the member sees both.
+	var failed error
 	for _, err := range errs {
 		var in *board.InputError
 		switch {
 		case err == nil:
 		case errors.As(err, &in):
-			inputs = append(inputs, in)
-		default:
-			s.writeRefused(w, r, p, d, err, field, notice, action)
-			return
+			field(&d, in)
+		case failed == nil:
+			failed = err
 		}
 	}
-	for _, in := range inputs {
-		field(&d, in)
+	if failed != nil {
+		s.writeRefused(w, r, p, d, failed, field, notice, action)
+		return
 	}
 	s.renderAccount(w, http.StatusBadRequest, p, d)
 }
@@ -248,7 +274,7 @@ func (s *site) settingResult(w http.ResponseWriter, r *http.Request, p *page, er
 // setTimezone serves POST /account/timezone.
 func (s *site) setTimezone(w http.ResponseWriter, r *http.Request) {
 	const action = "change your time zone"
-	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves)
+	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, nil)
 	if !ok {
 		return
 	}
@@ -260,7 +286,7 @@ func (s *site) setTimezone(w http.ResponseWriter, r *http.Request) {
 // setDateFormat serves POST /account/dateformat.
 func (s *site) setDateFormat(w http.ResponseWriter, r *http.Request) {
 	const action = "change your date format"
-	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves)
+	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, nil)
 	if !ok {
 		return
 	}
@@ -280,31 +306,14 @@ var aboutFields = []string{"location", "occupation", "interests", "website"}
 // own field, and the page shows every value that was sent.
 func (s *site) setAbout(w http.ResponseWriter, r *http.Request) {
 	const action = "change your profile"
-	p, ok := s.settingsStart(w, r, "account.profile", action, s.saves.saves, msgTooManySaves)
-	if !ok {
-		return
-	}
 	form := r.PostForm
-	var c board.AboutChange
-	texts := map[string]**string{"location": &c.Location, "occupation": &c.Occupation, "interests": &c.Interests, "website": &c.Website}
-	hasText := false
-	for _, name := range aboutFields {
-		if form.Has(name) {
-			v := form.Get(name)
-			*texts[name] = &v
-			hasText = true
-		}
-	}
-	var textErr, birthdayErr error
-	if hasText {
-		textErr = board.SetAbout(r.Context(), s.pool, p.Viewer, c)
-	}
+	// The birthday is read first, so that every refusal, the 429 page included,
+	// shows the values that the member sent.
 	var b board.Birthday
+	var birthdayErr error
 	hasBirthday := form.Has("bday") && form.Has("bmonth") && form.Has("byear")
 	if hasBirthday {
-		if b, birthdayErr = parseBirthday(form.Get("bday"), form.Get("bmonth"), form.Get("byear")); birthdayErr == nil {
-			birthdayErr = board.SetBirthday(r.Context(), s.pool, p.Viewer, b, s.opt.Now().UTC())
-		}
+		b, birthdayErr = parseBirthday(form.Get("bday"), form.Get("bmonth"), form.Get("byear"))
 	}
 	echo := func(d *accountData) {
 		for name, dst := range map[string]*string{"location": &d.Location, "occupation": &d.Occupation, "interests": &d.Interests, "website": &d.Website} {
@@ -315,6 +324,27 @@ func (s *site) setAbout(w http.ResponseWriter, r *http.Request) {
 		if hasBirthday {
 			d.BirthDay, d.BirthMonth, d.BirthYear = b.Day, b.Month, b.Year
 		}
+	}
+	p, ok := s.settingsStart(w, r, "account.profile", action, s.saves.saves, msgTooManySaves, echo)
+	if !ok {
+		return
+	}
+	var c board.AboutChange
+	texts := map[string]**string{"location": &c.Location, "occupation": &c.Occupation, "interests": &c.Interests, "website": &c.Website}
+	hasText := false
+	for _, name := range aboutFields {
+		if form.Has(name) {
+			v := form.Get(name)
+			*texts[name] = &v
+			hasText = true
+		}
+	}
+	var textErr error
+	if hasText {
+		textErr = board.SetAbout(r.Context(), s.pool, p.Viewer, c)
+	}
+	if hasBirthday && birthdayErr == nil {
+		birthdayErr = board.SetBirthday(r.Context(), s.pool, p.Viewer, b, s.opt.Now().UTC())
 	}
 	s.settingResult(w, r, p, []error{textErr, birthdayErr}, "", "about", action, echo, func(d *accountData, in *board.InputError) {
 		switch in.Field {
@@ -366,7 +396,7 @@ var beforeSetAvatar func()
 // removeAvatar serves POST /account/avatar/remove.
 func (s *site) removeAvatar(w http.ResponseWriter, r *http.Request) {
 	const action = "change your avatar"
-	p, ok := s.settingsStart(w, r, "account.avatar", action, s.saves.saves, msgTooManySaves)
+	p, ok := s.settingsStart(w, r, "account.avatar", action, s.saves.saves, msgTooManySaves, nil)
 	if !ok {
 		return
 	}
@@ -393,7 +423,7 @@ func (s *site) removeAvatar(w http.ResponseWriter, r *http.Request) {
 // A request from gobb.js gets 200 and {"src": the site path of the new file}.
 func (s *site) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 	const action = "change your avatar"
-	p, ok := s.settingsStart(w, r, "account.avatar", action, s.saves.uploads, msgTooManyUploads)
+	p, ok := s.settingsStart(w, r, "account.avatar", action, s.saves.uploads, msgTooManyUploads, nil)
 	if !ok {
 		return
 	}
@@ -410,7 +440,7 @@ func (s *site) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 		}
 		d, err := s.accountData(r, p)
 		if err != nil {
-			s.serverError(w, r, err)
+			s.pageFailed(w, r, err)
 			return
 		}
 		d.Err.Avatar = msg
@@ -536,7 +566,7 @@ func (s *site) deleteAvatarFile(userID int64, path string) {
 // [site.changeSignature], with a JSON answer.
 func (s *site) saveSignature(w http.ResponseWriter, r *http.Request) {
 	const action = "change your signature"
-	p, ok := s.settingsStart(w, r, "account.signature", action, s.saves.saves, msgTooManySaves)
+	p, ok := s.settingsStart(w, r, "account.signature", action, s.saves.saves, msgTooManySaves, nil)
 	if !ok {
 		return
 	}

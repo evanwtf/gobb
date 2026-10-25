@@ -17,6 +17,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -112,6 +113,9 @@ type site struct {
 	// one holds up to a megabyte of body in memory before the decode takes its
 	// share of the gate. A test makes it smaller.
 	uploadSlots chan struct{}
+	// uploading holds the IDs of the members who have an avatar upload in flight:
+	// a member has one at a time.
+	uploading sync.Map
 	// patterns lists every pattern registered on the muxes of the site, for a test
 	// that checks the routes against its tables.
 	patterns []string
