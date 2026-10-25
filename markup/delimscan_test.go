@@ -96,6 +96,9 @@ func hostileShapes() []shape {
 		{"definitions behind a tab, in a quote", func(size int) string { return ledShape("> [x]:\n", "\t[x]:\n", size) }},
 		{"definitions behind five spaces", func(size int) string { return ledShape("[x]: /u\n", "     [x]: /u\n", size) }},
 		{"definitions behind eight spaces, in a list", func(size int) string { return ledShape("- [x]: /u\n", "        [x]: /u\n", size) }},
+		// A definition may start in the middle of a line: after a title on the
+		// line below its destination, goldmark parses the next "[" on that line.
+		{"definitions after a title", func(size int) string { return ledShape("[x]: /u\n", "\"t\" [x]: /u\n", size) }},
 		// The link parser reads the text of each bracket, and goldmark finds the
 		// line of that text by a walk back from the last line.
 		{"shortcut references", func(size int) string { return repeatTo("[x]\n", size) }},
@@ -235,29 +238,56 @@ func TestSpanAndDefinitionBudgetsKeepNaturalPosts(t *testing.T) {
 	}
 }
 
-// TestRefusedParagraphLeavesTheBudget: a long paragraph of "[" lines costs more
+// TestRefusedParagraphLeavesTheBudget: a long paragraph of "]:" lines costs more
 // than the definition budget and keeps its definitions as text. A later,
 // short paragraph with a definition and a link that uses it still works.
 func TestRefusedParagraphLeavesTheBudget(t *testing.T) {
-	log := strings.Repeat("[12:00] name: text\n", 2500)
-	tree := Parse("[a]: /first\n"+log+"\n[k]: /second\nsee [k]", allOn)
+	log := strings.Repeat("[12:00]: name: text\n", 2500)
+	tree := Parse("[a]: /first\n"+log+"\n[k]: /second\nsee [k] and [a]", allOn)
 	if err := Validate(tree); err != nil {
 		t.Fatal(err)
 	}
-	var hrefs []string
-	var walk func(n *Node)
-	walk = func(n *Node) {
-		if n.Kind == Element && n.Name == "url" {
-			hrefs = append(hrefs, n.Attrs["href"])
-		}
-		for _, c := range n.Children {
-			walk(c)
-		}
+	if got := hrefs(tree); len(got) != 1 || got[0] != "/second" {
+		t.Errorf("links after the refused paragraph = %q, want [/second]", got)
 	}
-	walk(tree)
-	if len(hrefs) != 1 || hrefs[0] != "/second" {
-		t.Errorf("links after the refused paragraph = %q, want [/second]", hrefs)
+}
+
+// TestLogWithoutLabelEndsKeepsItsDefinition: a pasted log of "[12:00] name:"
+// lines holds no "]:", so it costs nothing, and the definition before it in the
+// same paragraph stays a definition.
+func TestLogWithoutLabelEndsKeepsItsDefinition(t *testing.T) {
+	log := strings.Repeat("[12:00] name: text\n", 2500)
+	tree := Parse("[a]: /first\n"+log+"\nsee [a]", allOn)
+	if err := Validate(tree); err != nil {
+		t.Fatal(err)
 	}
+	if got := hrefs(tree); len(got) != 1 || got[0] != "/first" {
+		t.Errorf("links after the log = %q, want [/first]", got)
+	}
+}
+
+// TestDefinitionLabelOnTwoLines: a label that spans two lines holds its "]:" on
+// the second line. The count of "]:" sees it, and the definition resolves.
+func TestDefinitionLabelOnTwoLines(t *testing.T) {
+	tree := Parse("[a\nb]: /two\n\nsee [a b]", allOn)
+	if err := Validate(tree); err != nil {
+		t.Fatal(err)
+	}
+	if got := hrefs(tree); len(got) != 1 || got[0] != "/two" {
+		t.Errorf("links = %q, want [/two]", got)
+	}
+}
+
+// hrefs returns the targets of the links of the tree, in order.
+func hrefs(n *Node) []string {
+	var got []string
+	if n.Kind == Element && n.Name == "url" {
+		got = append(got, n.Attrs["href"])
+	}
+	for _, c := range n.Children {
+		got = append(got, hrefs(c)...)
+	}
+	return got
 }
 
 // TestSpanAndDefinitionBudgetsEndAtTheEnd: past the budget, a run of backticks
@@ -346,7 +376,7 @@ func TestBoundedParsersChangeNothingBelowTheBudget(t *testing.T) {
 		plain[i] = newEngineWith(i >= 2, i%2 == 1, false)
 	}
 	// Lines that begin inside a tab have padding, which a value must keep.
-	fixed := []string{">\t[x]\n>\t[x]\n", ">\t[x]\n>\t[x][y]\n>  [x]: /u\n", "- a\n\t[x]\n\t[x]\n", "-\t[x]\n  [x]\n", "> - \t[x]\n>   [x]\n", ">\t[a\n>\tb]\n>\t[x]", ">\t[\n>\tx]\n>\t[x]: /u", "[\nx]\n[\ny]\n[x]"}
+	fixed := []string{">\t[x]\n>\t[x]\n", ">\t[x]\n>\t[x][y]\n>  [x]: /u\n", "- a\n\t[x]\n\t[x]\n", "-\t[x]\n  [x]\n", "> - \t[x]\n>   [x]\n", ">\t[a\n>\tb]\n>\t[x]", ">\t[\n>\tx]\n>\t[x]: /u", "[\nx]\n[\ny]\n[x]", "[a\nb]: /u\n\n[a b]", "[x]: /u\n\"t\" [y]: /v\n[y]"}
 	rng := rand.New(rand.NewSource(7))
 	for i := 0; i < 30000+len(fixed); i++ {
 		var sb strings.Builder

@@ -1,6 +1,8 @@
 package markup
 
 import (
+	"bytes"
+
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
@@ -118,18 +120,20 @@ func boundCodeSpans(list []util.PrioritizedValue) []util.PrioritizedValue {
 //
 // refBudget bounds the work. It is a count, kept for one parse in the parser
 // context. It starts at refBudgetPerByte for each byte of the source, plus
-// refBudgetBase. A paragraph spends the number of its lines whose first byte
-// that is not a space or a tab is "[" (the most definitions it can hold) times
-// the number of its lines. When the paragraph costs more than is left, no
-// definition of that paragraph is taken: its lines stay text, and the budget
-// stays as it was for the paragraphs that follow. A paragraph of "[" lines that
-// are not definitions, such as a pasted log, costs the same as one of definitions.
-// A paragraph of 1,000 definitions costs 1,000,000 and fits; a natural post has
-// a few.
+// refBudgetBase. A paragraph spends the number of times "]:" occurs in its lines
+// (the most definitions it can hold) times the number of its lines. When the
+// paragraph costs more than is left, no definition of that paragraph is taken:
+// its lines stay text, and the budget stays as it was for the paragraphs that
+// follow. A paragraph of "]:" that are not definitions costs the same as one of
+// definitions. A paragraph of 1,000 definitions costs 1,000,000 and fits; a
+// natural post has a few.
 const (
 	refBudgetPerByte = 16
 	refBudgetBase    = 1 << 20
 )
+
+// labelEnd ends the label of every definition: the "]", then the ":".
+var labelEnd = []byte("]:")
 
 // refBudgetKey is the context key of the definition budget of one parse.
 var refBudgetKey = parser.NewContextKey()
@@ -150,26 +154,32 @@ func (t boundedRefTransformer) Transform(node *ast.Paragraph, reader text.Reader
 	}
 	lines := node.Lines()
 	src := reader.Source()
-	// Count every line of the paragraph whose first byte that is not a space or
-	// a tab is "[". goldmark runs this transformer before it trims the lines, and
-	// its definition parser skips any amount of white space, so a line led by a
-	// tab or by five spaces can start a definition. The count does not stop at a
-	// line that has no "[": a destination or a title may sit on the next line.
-	starts := 0
+	// Count the occurrences of "]:" in the lines of the paragraph. Each
+	// definition holds one, so the count is an upper bound on the definitions,
+	// wherever a definition starts: at the start of a line, behind white space,
+	// or after the title of the one before. The argument, from goldmark v1.8.6:
+	//   - parser/link_ref.go:79 finds the "]" that closes the label, and
+	//     text/reader.go:671 moves the read position past it (the options in
+	//     parser/link.go:255-259 keep the move).
+	//   - parser/link_ref.go:95 refuses the definition unless the next byte is
+	//     ":". No white space can come between.
+	//   - That ":" is in the same line as the "]". Each line ends in a newline
+	//     (text/reader.go:263-268), except the last line of the source. A "]"
+	//     before the newline is not the last byte of its line, so the move past
+	//     it stays in that line (text/reader.go:452-466). A "]" at the end of
+	//     the source has no next byte.
+	//   - The definitions of a paragraph are read in order, and each one reads
+	//     past its ":", so no two share a "]:". A label can span lines, but its
+	//     "]" and the ":" cannot.
+	// An escaped "\]:" counts too, which only makes the bound larger.
+	defs := 0
 	for i := range lines.Len() {
 		seg := lines.At(i)
-		line := src[seg.Start:seg.Stop]
-		j := 0
-		for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
-			j++
-		}
-		if j < len(line) && line[j] == '[' {
-			starts++
-		}
+		defs += bytes.Count(src[seg.Start:seg.Stop], labelEnd)
 	}
 	// The product cannot overflow: both factors are at most the size of the
 	// source, and the budget is far below the square of the size limit.
-	cost := starts * lines.Len()
+	cost := defs * lines.Len()
 	if cost > *budget {
 		// This paragraph keeps its definitions as text. The budget stays as it
 		// is: a later paragraph spends from what is left, and the total stays
