@@ -684,7 +684,7 @@ It may run the server and attack it. Its Critical and Important findings get one
 **Files:**
 - Modify: `docs/changelog.md` (date the `0.2.0` section), `internal/version/version.go`, `README.md` (the bundle version, the account page and messages)
 
-- [ ] **Step 1: Bump the version.** Set `internal/version` to `0.2.0`, and date the changelog section. Run `go run ./scripts/releasecheck v0.2.0 -dry-run`. Expected: it passes.
+- [ ] **Step 1: Bump the version.** Set `internal/version` to `0.2.0`, and date the changelog section. Run `go run ./scripts/releasecheck -dry-run`. Expected: it passes. With a tag, the command takes the flags first: `go run ./scripts/releasecheck v0.2.0`. Go stops flag parsing at the first argument.
 - [ ] **Step 2: Commit and push.** `git commit -m "release: 0.2.0"`
 - [ ] **Step 3: Tag `v0.2.0`, with the owner's go-ahead at the time.** Watch the release workflow until the image smoke-runs and prints `0.2.0`.
 

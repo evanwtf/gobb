@@ -86,8 +86,9 @@ Sizes from a dump taken 2026-10-23. The import and the pages must handle them.
 - Plugins, extensions, uploadable themes or templates, a theme editor, language packs.
   English only. **(owner,** on themes)
 - Warnings, karma, friends and foes, PM folders and rules, drafts, post reports, custom
-  profile fields, OAuth login, Jabber, feeds, birthdays, age checks. **(designer's call:**
-  each is unused or nearly so on the first board.)
+  profile fields, OAuth login, Jabber, feeds. **(designer's call:** each is unused or
+  nearly so on the first board.) Birthdays and the age check are not non-goals: section
+  17 adds them.
 - A JSON API, real-time updates, a mobile app.
 - Converters for other forum software in this repo. Any converter can write a bundle.
 - Several gobb processes on one database. Sign-in counts, Defensive Mode and the
@@ -159,13 +160,15 @@ Data comes into gobb as a bundle: a directory, or a `.tar.gz` of one. **(designe
 call)** The format is gobb's own and is documented in this repo, so any converter can
 write it.
 
-- `manifest.json`: the format name `gobb-bundle`, the format version (1), the creation
+- `manifest.json`: the format name `gobb-bundle`, the format version (2), the creation
   time, a free-text source label, and the row count of every data file.
 - One JSON Lines file per entity: users, gone users, groups, group members, roles,
   grants, forums, topics, posts, polls, poll votes, attachments, private messages,
-  watches, bookmarks, read marks, bans, ranks, smilies, legacy routes,
-  legacy file paths, static pages, member addresses (section 10, "Trusted
-  addresses"). Board settings are in `settings.json`.
+  read marks, bans, ranks, smilies, legacy routes, legacy file paths, static pages,
+  member addresses (section 10, "Trusted addresses"). Board settings are in
+  `settings.json`. Format version 2 has no file for watches or bookmarks, because gobb
+  has no page for them. `docs/bundle.md` is the reference for the format.
+  Version 1 is refused.
 - `files/`: attachments, avatars, smilies, rank images, the header image. Every row that
   names a file gives its path under `files/`, its size and its SHA-256.
 
