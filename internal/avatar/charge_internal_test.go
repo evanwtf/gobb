@@ -76,6 +76,19 @@ func progressiveJPEGScans(w, h int, comps [][2]int, adobe int, perComponent bool
 	return b.Bytes()
 }
 
+// lateAdobe puts an Adobe APP14 segment (transform 0) just before the end of image,
+// after the scans. jpeg.DecodeConfig stops at the first scan and never sees it, so
+// the header says YCbCr. The decoder reads the segment, and at the end it decides
+// that the three components are RGB.
+func lateAdobe(base []byte) []byte {
+	if !bytes.HasSuffix(base, []byte{0xFF, 0xD9}) {
+		panic("no end of image")
+	}
+	out := append([]byte{}, base[:len(base)-2]...)
+	out = append(out, 0xFF, 0xEE, 0, 14, 'A', 'd', 'o', 'b', 'e', 0, 0, 0x64, 0, 0, 0, 0, 0)
+	return append(out, 0xFF, 0xD9)
+}
+
 func pngChunk(b *bytes.Buffer, typ string, data []byte) {
 	_ = binary.Write(b, binary.BigEndian, uint32(len(data)))
 	body := append([]byte(typ), data...)
@@ -203,6 +216,8 @@ func TestChargeCoversAllocation(t *testing.T) {
 		{"jpeg progressive YCbCr 4:2:0", progressiveJPEG(w, h, [][2]int{{2, 2}, {1, 1}, {1, 1}}, -1)},
 		{"jpeg progressive YCbCr 4:4:4", progressiveJPEG(w, h, s11, -1)},
 		{"jpeg progressive RGB (Adobe)", progressiveJPEG(w, h, s11, 0)},
+		// The header reads as YCbCr, the decode gives RGBA (19 bytes a pixel).
+		{"jpeg progressive 4:4:4, Adobe after the scan", lateAdobe(progressiveJPEG(w, h, s11, -1))},
 		{"jpeg progressive CMYK", progressiveJPEG(w, h, [][2]int{{1, 1}, {1, 1}, {1, 1}, {1, 1}}, 0)},
 		{"jpeg gray", gj.Bytes()},
 		{"png 8-bit", encodePNG(t, bandedRGBA(w, h))},
@@ -249,7 +264,10 @@ func TestChargeByHeader(t *testing.T) {
 		data []byte
 		want uint64
 	}{
-		{"jpeg YCbCr", progressiveJPEG(w, h, [][2]int{{1, 1}, {1, 1}, {1, 1}}, -1), kib(15, 1, 1)},
+		// Three components charge at the RGB rate, whatever the header says: a late
+		// Adobe segment turns YCbCr into RGB after the header is read.
+		{"jpeg YCbCr", progressiveJPEG(w, h, [][2]int{{1, 1}, {1, 1}, {1, 1}}, -1), kib(19, 1, 1)},
+		{"jpeg YCbCr, Adobe after the scan", lateAdobe(progressiveJPEG(w, h, [][2]int{{1, 1}, {1, 1}, {1, 1}}, -1)), kib(19, 1, 1)},
 		{"jpeg RGB", progressiveJPEG(w, h, [][2]int{{1, 1}, {1, 1}, {1, 1}}, 0), kib(19, 1, 1)},
 		{"jpeg CMYK", progressiveJPEG(w, h, [][2]int{{1, 1}, {1, 1}, {1, 1}, {1, 1}}, -1), kib(24, 1, 1)},
 		{"jpeg gray", progressiveJPEG(w, h, [][2]int{{1, 1}}, -1), kib(5, 1, 1)},
@@ -270,7 +288,7 @@ func TestChargeByHeader(t *testing.T) {
 	}
 	// A side is rounded up to a multiple of 32 for a JPEG: 1601 x 1601 charges as 1632 x 1632.
 	_, got, err := inspect(progressiveJPEG(1601, 1601, [][2]int{{1, 1}, {1, 1}, {1, 1}}, -1))
-	if want := uint64(1632*1632*15)/1024 + 1024; err != nil || got != want {
+	if want := uint64(1632*1632*19)/1024 + 1024; err != nil || got != want {
 		t.Errorf("padded jpeg: charge = %d KiB (%v), want %d", got, err, want)
 	}
 }
@@ -301,8 +319,8 @@ func configOf(data []byte) (image.Config, error) {
 
 // A frame that the budget cannot hold is refused, whatever its sampling. A header of
 // 7984 x 1104 with the factors 2 x 4 in all three components pads to 8000 x 1120
-// and charges 132,274 KiB, over the 131,072 KiB of a 128 MiB gate. With a charge
-// that pads to 16 it was admitted (130,141 KiB) and allocated more than the whole
+// and charges 167,274 KiB (19 bytes a pixel), over the 131,072 KiB of a 128 MiB gate. With a charge
+// that pads to 16 it was admitted (130,141 KiB at 15 bytes a pixel) and allocated more than the whole
 // budget. The held gate shows that Make does not wait.
 func TestMakeRefusesPaddedJPEGOverBudget(t *testing.T) {
 	data := progressiveJPEGScans(7984, 1104, [][2]int{{2, 4}, {2, 4}, {2, 4}}, -1, true)
@@ -310,7 +328,7 @@ func TestMakeRefusesPaddedJPEGOverBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := uint64(8000*1120*15)/1024 + 1024; kib != want {
+	if want := uint64(8000*1120*19)/1024 + 1024; kib != want {
 		t.Errorf("charge = %d KiB, want %d", kib, want)
 	}
 	g := login.NewGate(128 * 1024)

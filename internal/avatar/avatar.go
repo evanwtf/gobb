@@ -212,9 +212,14 @@ func inspect(data []byte) (format, uint64, error) {
 //   - JPEG: by color model, on sides rounded up to a multiple of 32. The decoder
 //     pads each plane to whole MCUs of 8 x the largest sampling factor, and a
 //     factor may be 4 (a frame with a scan for each component can give all three
-//     components 4 x 2 or 2 x 4), so the MCU is up to 32 x 32 pixels. CMYK 24 bytes a pixel, RGB (Adobe) 19,
-//     YCbCr 15, gray 5, and 24 for any other model. A progressive file keeps 32-bit
-//     coefficients for each component.
+//     components 4 x 2 or 2 x 4), so the MCU is up to 32 x 32 pixels. Gray 5 bytes
+//     a pixel, any file of three components 19, and 24 for CMYK and any other
+//     model. Three components charge as RGB whatever the header says: the
+//     decoder reads an Adobe segment anywhere before the end of the image, and it
+//     decides between YCbCr (15) and RGB (19) at the end, but
+//     [jpeg.DecodeConfig] stops at the first scan and cannot see a segment that
+//     comes after it. A progressive file keeps 32-bit coefficients for each
+//     component.
 //   - PNG: 8 bytes a pixel for a 16-bit file, else 4; twice that for an
 //     interlaced file (Adam7), where the decoder allocates an image for each
 //     pass besides the final image. The passes are garbage once merged, but the
@@ -229,9 +234,7 @@ func chargeKiB(f format, cfg image.Config, interlaced bool) uint64 {
 		switch cfg.ColorModel {
 		case color.GrayModel:
 			perPixel = 5
-		case color.YCbCrModel:
-			perPixel = 15
-		case color.RGBAModel:
+		case color.YCbCrModel, color.RGBAModel:
 			perPixel = 19
 		default: // CMYK and anything else
 			perPixel = 24
