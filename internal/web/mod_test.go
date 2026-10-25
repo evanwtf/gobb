@@ -634,6 +634,52 @@ func TestModeratorEditReason(t *testing.T) {
 	}
 }
 
+// TestEditNoteReasonFollowsLastEditor: the edit note names the last editor, and
+// the reason it shows is that editor's. A moderator's reason does not stay under
+// the author's name after the author edits again, and an imported reason does not
+// stay either.
+func TestEditNoteReasonFollowsLastEditor(t *testing.T) {
+	h, pool := modSite(t)
+	b := signIn(t, h, "bob", "example-password")
+	c := signIn(t, h, "carol", "example-password")
+	note := func(id int) string {
+		t.Helper()
+		page := bodyOf(t, getAs(t, h, "/t/1", b))
+		_, rest, ok := strings.Cut(articleOf(page, id), `<p class="edit-note">`)
+		if !ok {
+			t.Fatalf("post %d has no edit note", id)
+		}
+		n, _, _ := strings.Cut(rest, "</p>")
+		return plainText(n)
+	}
+
+	// Post 3 is carol's. Bob edits it with a reason, and the note shows it.
+	rec := send(t, h, "/p/3/edit", b, url.Values{"body": {"Moderated."}, "reason": {"removed a slur"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("moderator edit = %d", rec.Code)
+	}
+	if got := note(3); !strings.Contains(got, "Reason: removed a slur") {
+		t.Fatalf("the note after the moderator's edit reads %q", got)
+	}
+
+	// Carol edits her own post. The note names her and shows no reason.
+	rec = send(t, h, "/p/3/edit", c, url.Values{"body": {"Carol edits again."}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("own edit = %d", rec.Code)
+	}
+	got := note(3)
+	if strings.Contains(got, "Reason") || strings.Contains(got, "removed a slur") {
+		t.Errorf("the note after the author's edit reads %q, want no reason", got)
+	}
+	if !strings.Contains(got, "carol") {
+		t.Errorf("the note after the author's edit reads %q, want carol", got)
+	}
+	var stored string
+	if err := pool.QueryRow(t.Context(), `select edit_reason from posts where id = 3`).Scan(&stored); err != nil || stored != "" {
+		t.Errorf("stored reason = %q (%v)", stored, err)
+	}
+}
+
 // button matches the button with the given text inside a form with the given
 // action.
 func hasButton(page, action, text string) bool {

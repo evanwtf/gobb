@@ -619,6 +619,7 @@ func TestEditPost(t *testing.T) {
 	a := viewerFor(t, pool, alice)
 
 	// Post 1 is the first post of topic 1 and was edited once, with the reason "typo".
+	// That reason belongs to the old edit.
 	if err := board.EditPost(ctx, pool, a, 1, board.Draft{Title: "  Renamed topic ", Source: "Edited **text**", IP: ip2}, "ignored", t0); err != nil {
 		t.Fatal(err)
 	}
@@ -626,8 +627,8 @@ func TestEditPost(t *testing.T) {
 	if p.EditCount != 2 || p.EditedAt == nil || !p.EditedAt.Equal(t0) || p.EditedBy != alice {
 		t.Errorf("edit fields = %d %v %d", p.EditCount, p.EditedAt, p.EditedBy)
 	}
-	if p.EditReason != "typo" {
-		t.Errorf("edit_reason = %q: an author's own edit leaves it alone", p.EditReason)
+	if p.EditReason != "" {
+		t.Errorf("edit_reason = %q: an author's own edit clears the old reason", p.EditReason)
 	}
 	if p.Source != "Edited **text**" || p.Text != "Edited text" || p.Subject != "Renamed topic" {
 		t.Errorf("post = %+v", p)
@@ -1105,8 +1106,8 @@ func TestOwnPostLog(t *testing.T) {
 		if len(l) != 1 || l[0].Action != "post.edit" || l[0].Target != 1 || l[0].Actor != alice {
 			t.Fatalf("log = %+v, want one post.edit of post 1", l)
 		}
-		if got := readPost(t, pool, 1).EditReason; got != "typo" {
-			t.Errorf("edit_reason = %q: the reason belongs to another member's post only", got)
+		if got := readPost(t, pool, 1).EditReason; got != "" {
+			t.Errorf("edit_reason = %q: the reason belongs to another member's post only, and the last edit gave none", got)
 		}
 		// Another member's post: always a row.
 		if err := board.EditPost(ctx, pool, a, 2, board.Draft{Source: "bob's", IP: ip1}, "r", t0.Add(2*time.Minute)); err != nil {

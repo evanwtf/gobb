@@ -914,8 +914,10 @@ values ($1, $2, $3, $4, $5::jsonb, $6)`, nullID(v.UserID), action, targetType, t
 //   - A moderator's edit writes a mod_log row. When the post belongs to another
 //     member, the row holds the reason and the post stores it. A moderator who
 //     edits the own post by mod.edit alone gives no reason: it is not checked,
-//     stored or logged. An author's own edit writes no row and keeps edit_reason
-//     as it is.
+//     stored or logged. An author's own edit writes no row.
+//   - edit_reason always belongs to the last editor. An edit that gives no
+//     reason clears the old one, so a moderator's reason, or one that the import
+//     brought, never shows under the name of a later editor.
 //
 // now is the time of the edit.
 func EditPost(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d Draft, reason string, now time.Time) error {
@@ -1023,8 +1025,8 @@ func editTx(ctx context.Context, pool *pgxpool.Pool, v Viewer, postID int64, d D
 		_, err = tx.Exec(ctx, `
 update posts set body_source = $2, body_tree = $3::jsonb, body_text = $4,
        edit_count = edit_count + 1, edited_at = $5, edited_by = $6,
-       edit_reason = case when $7 then $8 else edit_reason end
- where id = $1`, postID, d.Source, string(body.JSON), body.Text, now, v.UserID, askReason, reason)
+       edit_reason = $7
+ where id = $1`, postID, d.Source, string(body.JSON), body.Text, now, v.UserID, reason)
 		if err != nil {
 			return fmt.Errorf("board: edit post %d: %w", postID, err)
 		}
