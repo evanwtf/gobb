@@ -718,6 +718,23 @@ designer's call):
       for children. The profile shows the age when the year is set, and the board
       index lists the birthdays of the day;
     - links to the account page and to the messages in the header;
+    - **settings save when they change (owner, 2026-10-25).** The account page has no
+      Save button for a setting:
+      - a list, a choice or a file saves at once. A text box saves when the member
+        leaves it. The birthday saves when it has a day and a month, or neither;
+      - a line next to the setting says "Saving…", then "Saved" or the error. A
+        refused value stays in its box, marked, and the old value stays saved;
+      - the password and the email address keep their button. Each change needs the
+        current password, and a half-typed password must not save. **(designer's
+        call)**
+      - without JavaScript, each section shows a Save button and the page works as
+        before (section 13). **(designer's call)**
+      - the script sends only the setting that changed, to the handler that the
+        button uses, with the same CSRF token, checks and rate limit. The handler
+        leaves a setting that is not in the request as it is. **(designer's call)**
+      - one save at a time for each setting, and the latest value wins. A save that
+        has started finishes when the member leaves the page, and a changed text box
+        that still has focus saves then too. **(designer's call)**
   - private messages, added by the owner on 2026-10-25: the inbox and the sent list,
     with the imported messages; send, reply and quote, to one or more members; delete a
     message from one's own view; and an unread count in the header;
