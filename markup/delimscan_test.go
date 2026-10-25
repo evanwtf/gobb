@@ -77,13 +77,26 @@ func TestParseDelimiterShapesAreLinear(t *testing.T) {
 	}})
 	for _, sh := range shapes {
 		t.Run(sh.name, func(t *testing.T) {
-			small := bestOf(5, sh.gen(60000))
-			large := bestOf(5, sh.gen(120000))
-			t.Logf("60,000 bytes: %v, 120,000 bytes: %v", small, large)
-			if limit := 50 * time.Millisecond * raceSlowdown; small > limit {
-				t.Errorf("60,000 bytes took %v, want under %v", small, limit)
+			// The ratio is a wall-clock measure, and a busy machine (the CI runner
+			// runs other packages at the same time) can slow one of the two runs.
+			// A quadratic parse gives a ratio of 4 on every attempt, so the test
+			// fails only when all three attempts show a ratio of 3 or more.
+			var small, large time.Duration
+			linear := false
+			for range 3 {
+				small = bestOf(5, sh.gen(60000))
+				large = bestOf(5, sh.gen(120000))
+				t.Logf("60,000 bytes: %v, 120,000 bytes: %v", small, large)
+				if limit := 50 * time.Millisecond * raceSlowdown; small > limit {
+					t.Errorf("60,000 bytes took %v, want under %v", small, limit)
+					return
+				}
+				if large < 3*max(small, 2*time.Millisecond) {
+					linear = true
+					break
+				}
 			}
-			if large >= 3*max(small, 2*time.Millisecond) {
+			if !linear {
 				t.Errorf("120,000 bytes took %v and 60,000 took %v: three times as long or more", large, small)
 			}
 		})
