@@ -9,8 +9,8 @@ setting as it changes: a time zone (a place, with its daylight saving time), a d
 have an inbox and a sent list, and members send, reply, quote and delete. The header shows
 the count of unread messages.
 
-Operators: a 0.1.0 database migrates in place (migration 0012) when the server starts.
-Bundle format version 2 is required, and gobb refuses a bundle of version 1, so a
+Operators: a 0.1.0 database migrates in place (migrations 0012 and 0013) when the server
+starts. Bundle format version 2 is required, and gobb refuses a bundle of version 1, so a
 converter must move to version 2. Topic watches and bookmarks that a 0.1.0 import loaded
 stay in the database, and gobb has no page for them.
 
@@ -98,6 +98,10 @@ stay in the database, and gobb has no page for them.
 
 ### Security
 
+- **No third-party scripts.** X, Instagram and Threads links show as plain links in every
+  place: posts, previews, signatures, messages and static pages. So no page loads a script
+  from another site. YouTube, Vimeo, TikTok, Spotify and SoundCloud stay embedded in
+  frames. Stored posts do not change, because the choice is made when a page renders.
 - **Hidden formatting characters.** "About you", the website, topic titles, post subjects
   and message subjects refuse Unicode format characters (category Cf) and the line and
   paragraph separators, with three exceptions: the zero width joiner (U+200D), the zero

@@ -550,11 +550,11 @@ designer's call):
 |---|---|---|
 | `youtube` | a YouTube video, short or live stream | a privacy-enhanced player |
 | `vimeo` | a Vimeo video | Vimeo's player |
-| `tweet` | a post on X | the post, through X's embed script |
-| `instagram` | an Instagram post or reel | the post, through Instagram's embed script |
+| `tweet` | a post on X | a plain link **(owner, 2026-10-25:** no third-party script runs in the board's pages) |
+| `instagram` | an Instagram post or reel | a plain link **(owner, 2026-10-25)** |
 | `reddit` | a Reddit post | a plain link: "View post on Reddit" (no script, no frame) |
 | `tiktok` | a TikTok video | TikTok's player |
-| `threads` | a Threads post | the post, through Threads' embed script |
+| `threads` | a Threads post | a plain link **(owner, 2026-10-25)** |
 | `spotify` | a Spotify track, album, playlist, episode or show | Spotify's player |
 | `soundcloud` | a SoundCloud track or playlist | SoundCloud's player |
 
