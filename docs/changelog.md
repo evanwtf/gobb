@@ -106,18 +106,22 @@ stay in the database, and gobb has no page for them.
   and message subjects refuse Unicode format characters (category Cf) and the line and
   paragraph separators, with three exceptions: the zero width joiner (U+200D), the zero
   width non-joiner (U+200C) and the tag characters U+E0020 to U+E007F. So "👨‍💻 Dev", a
-  subdivision flag and Persian text pass, and U+202E, U+200B and U+FEFF do not. The website
-  check also decodes the path, the query and the fragment, and refuses a bare `%`. The
-  bundle check applies the same rule and says "holds a hidden formatting character"; the
-  "About you" field says "Remove the hidden formatting character." Pages isolate every
-  title and subject in `<bdi>`, so a bidirectional control cannot reorder the text around
-  it.
-- **Mark read on a visit only.** A message or a topic is marked read only when the request
-  is a top-level navigation (`Sec-Fetch-Dest: document`, or `Accept: text/html` when the
-  browser sends no fetch metadata) and not a prefetch. When the browser sends
-  `Sec-Fetch-Site`, it must be `same-origin` or `none`. `board.PeekMessage` reads with no
-  write, and `board.MarkMessageRead` marks. An image, or a link on another site, that
-  points at a message address changes nothing.
+  subdivision flag and Persian text pass, and U+202E, U+200B and U+FEFF do not. The
+  website check also decodes the path, the query and the fragment, and refuses a bare
+  `%`. The bundle check applies the same rule and says "holds a hidden formatting
+  character"; the "About you" field says "Remove the hidden formatting character." A
+  title or subject with U+2028 or U+2029 gets the message of a control character or line
+  break. Pages isolate every title and subject in `<bdi>`, so a bidirectional control
+  cannot reorder the text around it.
+- **Views, visits and read marks.** A topic view and a visit count on any top-level
+  navigation (`Sec-Fetch-Dest: document`, or `Accept: text/html` when the browser sends no
+  fetch metadata) that is not a prefetch, whoever started it. A message or a topic is
+  marked read only when the member started the navigation: the browser sends no
+  `Sec-Fetch-Site`, or sends `same-origin` (a click on this site) or `none` (a typed
+  address or a bookmark). A link on another site opens the page and counts the view and
+  the visit, but sets no mark. `board.PeekMessage` reads with no write, and
+  `board.MarkMessageRead` marks. An image that points at a topic or message address
+  changes nothing.
 - **Pages behind sign-in.** The account and message pages carry `noindex` and
   `Cache-Control: private, no-store`. The redirect of a guest from `/account` carries
   `noindex` and `private, no-cache`.
@@ -131,10 +135,11 @@ stay in the database, and gobb has no page for them.
   components (a late Adobe segment turns YCbCr into RGB after the header), 24 or 5 by
   color model otherwise, on sides padded to 32; PNG 4, or 8 for 16 bits, doubled when
   interlaced; GIF 4; plus 1 MiB. A decode that is more than the whole budget
-  (`Gate.Budget`) is refused with `avatar.ErrTooMuchMemory` and the text "That image needs too
-  much memory to process. Use a smaller one.", so none runs alone and breaks the memory
-  limit of the container. The share goes back through `Gate.AcquireCollected`, which runs
-  a garbage collection first. The sign-in uses it too.
+  (`Gate.Budget`) is refused with `avatar.ErrTooMuchMemory` and the text "That image
+  needs too much memory to process. Use a smaller one.", so none runs alone and breaks
+  the memory limit of the container. The share goes back through
+  `Gate.AcquireCollected`, which runs a garbage collection first. The sign-in uses it
+  too.
 - **Refusals.** A member who went inactive during a refused upload or a 429 page gets 404
   with the neutral text. The 429 pages of the time zone, the date format, "About you" and
   the signature show the values that were sent.
@@ -147,6 +152,10 @@ stay in the database, and gobb has no page for them.
   the length limits and the birthday pairing. It adds three indexes for the birthday list,
   the inbox and the sent list. `gobb serve` applies it at start, and `gobb migrate`
   applies it alone.
+- Migration `0013_legacy_message_routes.sql` widens the check on
+  `legacy_routes.target_kind` to the kinds `messages` and `message`, for the old links to
+  private messages that bundle format 2 carries. A database that has applied migration
+  0001 keeps its record. `gobb serve` applies 0013 at start.
 - The importer writes the new columns. It no longer loads `topic_watches.jsonl` or
   `bookmarks.jsonl` and no longer writes `notify_on_post`. The tables `topic_watches` and
   `bookmarks` stay in the schema, and they stay empty after an import.
