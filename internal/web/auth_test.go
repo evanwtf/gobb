@@ -181,7 +181,7 @@ func TestHeaderUser(t *testing.T) {
 	if user == "" {
 		t.Fatalf("the header row of a member has no .header-user:\n%s", top)
 	}
-	if !strings.Contains(user, `Signed in as <a href="/account"><bdi>alice</bdi></a>`) {
+	if !strings.Contains(user, `Signed in as <a href="/account" title="alice"><bdi>alice</bdi></a>`) {
 		t.Errorf("the name of a member is no link to the account page:\n%s", user)
 	}
 	if strings.Contains(user, "aria-current") {

@@ -160,3 +160,19 @@ func TestCSSHidesRegisteredThreadsFallback(t *testing.T) {
 		t.Error("a rule hides an Instagram element; its script removes the fallback itself")
 	}
 }
+
+// The member's links in the header are hidden in print, and their focus ring
+// uses the header text color: --link has little contrast on the header.
+func TestCSSHeaderLinks(t *testing.T) {
+	b, err := fs.ReadFile(staticFS, "static/gobb.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := cssComment.ReplaceAllString(string(b), "")
+	if !regexp.MustCompile(`@media print\s*\{[^@]*\.header-user[^{]*\{\s*display:\s*none`).MatchString(css) {
+		t.Error("the print rule does not hide .header-user")
+	}
+	if !regexp.MustCompile(`\.header-user a:focus-visible,\s*\.brand:focus-visible\s*\{\s*outline-color:\s*var\(--header-text\)`).MatchString(css) {
+		t.Error("the focus ring of .header-user a and .brand does not use --header-text")
+	}
+}

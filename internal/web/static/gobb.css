@@ -157,13 +157,31 @@ p { margin: 0; }
 .header-user { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; }
 .header-user a { color: var(--header-text); font-weight: 600; }
 .header-user .nav-who { padding: 0; white-space: nowrap; }
-.header-user .nav-who a { text-decoration: underline; text-underline-offset: 3px; }
+.header-user .nav-who a {
+  display: inline-block;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .header-user .nav-who a[aria-current="page"] {
   text-decoration-color: var(--accent);
   text-decoration-thickness: 3px;
 }
 .header-user form { display: flex; margin: 0; }
 .header-user .nav-button { margin: 0; border-radius: 6px; }
+/* A guest's Sign in link is the same size and has the same hover as Sign out. */
+.header-user > a {
+  padding: 0.6rem 0.8rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  border-radius: 6px;
+}
+.header-user > a:hover { text-decoration: none; background: rgb(255 255 255 / 0.1); }
+/* The default ring uses --link, which has little contrast on the header. */
+.header-user a:focus-visible, .brand:focus-visible { outline-color: var(--header-text); }
 
 .brand {
   display: inline-flex;
@@ -1085,7 +1103,7 @@ mark {
 }
 
 @media print {
-  .site-nav, .skip-link { display: none; }
+  .site-nav, .header-user, .skip-link { display: none; }
   body { background: #fff; color: #000; }
 }
 

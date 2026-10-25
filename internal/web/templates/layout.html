@@ -26,7 +26,7 @@
     </a>
     {{- if .Viewer.UserID}}
     <div class="header-user">
-      <span class="nav-who">Signed in as <a href="{{.AccountHref}}"{{if .AccountCurrent}} aria-current="page"{{end}}><bdi>{{.Viewer.Name}}</bdi></a></span>
+      <span class="nav-who">Signed in as <a href="{{.AccountHref}}" title="{{.Viewer.Name}}"{{if .AccountCurrent}} aria-current="page"{{end}}><bdi>{{.Viewer.Name}}</bdi></a></span>
       <form method="post" action="{{path "logout"}}">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <button type="submit" class="nav-button">Sign out</button>
