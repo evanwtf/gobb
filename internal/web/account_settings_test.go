@@ -1376,13 +1376,19 @@ func TestRefusedUploadLooksTheSessionUpOnce(t *testing.T) {
 	}
 }
 
-// One member has one upload in flight. A second upload of the same member gets 503
-// at once, as JSON for gobb.js; another member is not affected; and the member can
-// upload again when the first one ends.
+// One member has one upload in flight, keyed by the member and not by the session.
+// A second upload of the same member, from a second session with its own token, gets
+// 503 at once, as JSON for gobb.js; another member is not affected; a member who
+// lost the right while she holds her slot gets 403, not 503 (the right is checked
+// before the slot); and the member can upload again when the first one ends.
 func TestAvatarOneUploadInFlightPerMember(t *testing.T) {
 	h, pool, _ := postingSiteWithData(t)
 	a, b := signIn(t, h, "alice", testPassword), signIn(t, h, "bob", testPassword)
-	token := accountToken(t, h, a)
+	a2 := signIn(t, h, "alice", testPassword) // a second session of the same member
+	token, token2 := accountToken(t, h, a), accountToken(t, h, a2)
+	if a[0].Value == a2[0].Value || token == token2 {
+		t.Fatal("the two sessions of alice share a cookie or a token")
+	}
 
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -1407,9 +1413,9 @@ func TestAvatarOneUploadInFlightPerMember(t *testing.T) {
 
 	before := avatarOf(t, pool, 1)
 	for _, hdr := range []map[string]string{saveHeader, nil} {
-		rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), hdr)
+		rec := uploadWithToken(t, h, a2, token2, testPNG(t, 20, 20), hdr)
 		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "5" {
-			t.Errorf("second upload of the member (header %v) = %d, Retry-After %q, want 503 and 5", hdr != nil, rec.Code, rec.Header().Get("Retry-After"))
+			t.Errorf("second upload of the member, second session (header %v) = %d, Retry-After %q, want 503 and 5", hdr != nil, rec.Code, rec.Header().Get("Retry-After"))
 		}
 		if hdr != nil {
 			if got := answerJSON(t, rec); got["message"] != msgBusy {
@@ -1423,6 +1429,15 @@ func TestAvatarOneUploadInFlightPerMember(t *testing.T) {
 	if rec := upload(t, h, b, testPNG(t, 20, 20), saveHeader); rec.Code != http.StatusOK {
 		t.Errorf("another member's upload = %d, want 200", rec.Code)
 	}
+	// Alice loses account.avatar while she holds her slot: the right is checked
+	// first, so she gets 403 and not 503.
+	exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (1, 0, 'account.avatar', 2)`)
+	for _, hdr := range []map[string]string{saveHeader, nil} {
+		if rec := uploadWithToken(t, h, a2, token2, testPNG(t, 20, 20), hdr); rec.Code != http.StatusForbidden {
+			t.Errorf("upload without the right while she holds a slot (header %v) = %d, want 403", hdr != nil, rec.Code)
+		}
+	}
+	exec(t, pool, `delete from acl_user_grants where user_id = 1 and option = 'account.avatar'`)
 	close(release)
 	<-done
 	if rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), saveHeader); rec.Code != http.StatusOK {
@@ -1645,5 +1660,53 @@ func TestAvatarRefusalTexts(t *testing.T) {
 	}
 	if avatarOf(t, pool, 1) != before || len(avatarFiles(t, dataDir, 1)) != 0 {
 		t.Error("a refusal changed the avatar")
+	}
+}
+
+// A refusal page of a setting for a member who went inactive during the request is
+// 404 with the neutral text, as the other refusal pages are.
+func TestSettingRefusalPageForAMemberWhoIsGone(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	afterBegin = func() { exec(t, pool, `update users set state = 'inactive' where id = 1`) }
+	t.Cleanup(func() { afterBegin = nil })
+	// A zone that is not in the list is an input error, so the page is built from
+	// the data of the account, which the member who is gone no longer has.
+	rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Mars/Base"}, "csrf": {token}}, nil)
+	if rec.Code != http.StatusNotFound || !strings.Contains(bodyOf(t, rec), msgNotSaved) {
+		t.Errorf("refusal page of a member who is gone = %d, want 404 with the neutral text", rec.Code)
+	}
+}
+
+// The no-script 429 pages of the time zone and the date format show the value that
+// the member sent, as "About you" does, and not the stored one.
+func TestZoneAndFormat429ShowTheSentValue(t *testing.T) {
+	h, _ := siteWithPool(t, postingBoard(), Options{MemberSaves: 1})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	if rec := postWith(t, h, "/account/dateformat", a, url.Values{"dateformat": {"iso"}, "csrf": {token}}, saveHeader); rec.Code != http.StatusNoContent {
+		t.Fatalf("the one save = %d", rec.Code)
+	}
+	rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Asia/Tokyo"}, "csrf": {token}}, nil)
+	page := bodyOf(t, rec)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(page, msgTooManySaves) {
+		t.Fatalf("time zone over the limit = %d", rec.Code)
+	}
+	if !strings.Contains(page, `<option value="Asia/Tokyo" selected>`) {
+		t.Error("the page does not select the time zone that was sent")
+	}
+	rec = postWith(t, h, "/account/dateformat", a, url.Values{"dateformat": {"relative"}, "csrf": {token}}, nil)
+	page = bodyOf(t, rec)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("date format over the limit = %d", rec.Code)
+	}
+	if !strings.Contains(page, `id="dateformat-relative" value="relative" checked`) || strings.Contains(page, `value="iso" checked`) {
+		t.Error("the page does not check the date format that was sent")
+	}
+	// A value that the list does not offer is not shown as a choice.
+	rec = postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Mars/Base"}, "csrf": {token}}, nil)
+	if page = bodyOf(t, rec); strings.Contains(page, "Mars/Base") {
+		t.Error("the 429 page shows a time zone that the list does not offer")
 	}
 }

@@ -80,9 +80,10 @@ var beforeNewSession func()
 // password of the member at that point.
 var beforeEmailChange func()
 
-// afterBegin, when set, runs in the signature form after the page of the member
-// is built and before the stored values are read. A test uses it to remove the
-// member at that point.
+// afterBegin, when set, runs after the page of the member is built and before the
+// stored values are read: in the signature form, in settingsStart (every settings
+// POST, the upload included) and in tooMany (the 429 page). A test uses it to remove
+// the member at that point.
 var afterBegin func()
 
 // passwordErr, emailErr and signatureErr are the messages of the three forms.

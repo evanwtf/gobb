@@ -18,6 +18,7 @@ import (
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/ratelimit"
+	"github.com/evanwtf/gobb/internal/tz"
 )
 
 // The settings of the account page: the time zone, the date format, "About you"
@@ -240,12 +241,8 @@ func (s *site) settingResult(w http.ResponseWriter, r *http.Request, p *page, er
 		return
 	}
 	d, err := s.accountData(r, p)
-	if errors.Is(err, board.ErrNotFound) {
-		s.notFound(w, r)
-		return
-	}
 	if err != nil {
-		s.serverError(w, r, err)
+		s.pageFailed(w, r, err)
 		return
 	}
 	if echo != nil {
@@ -275,24 +272,37 @@ func (s *site) settingResult(w http.ResponseWriter, r *http.Request, p *page, er
 // setTimezone serves POST /account/timezone.
 func (s *site) setTimezone(w http.ResponseWriter, r *http.Request) {
 	const action = "change your time zone"
-	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, nil)
+	// The sent zone goes back into the select only when the list offers it.
+	echo := func(d *accountData) {
+		if zone := r.PostForm.Get("timezone"); tz.Known(zone) {
+			d.Timezone = zone
+		}
+	}
+	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, echo)
 	if !ok {
 		return
 	}
 	err := board.SetTimezone(r.Context(), s.pool, p.Viewer, r.PostForm.Get("timezone"))
-	s.settingResult(w, r, p, []error{err}, "timezone", "timezone", action, nil,
+	s.settingResult(w, r, p, []error{err}, "timezone", "timezone", action, echo,
 		func(d *accountData, in *board.InputError) { d.Err.Zone = in.Message })
 }
 
 // setDateFormat serves POST /account/dateformat.
 func (s *site) setDateFormat(w http.ResponseWriter, r *http.Request) {
 	const action = "change your date format"
-	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, nil)
+	// The sent format goes back into the radio buttons only when it is one of them.
+	echo := func(d *accountData) {
+		switch f := r.PostForm.Get("dateformat"); f {
+		case "standard", "relative", "iso":
+			d.DateFormat = f
+		}
+	}
+	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, echo)
 	if !ok {
 		return
 	}
 	err := board.SetDateFormat(r.Context(), s.pool, p.Viewer, r.PostForm.Get("dateformat"))
-	s.settingResult(w, r, p, []error{err}, "dateformat", "dateformat", action, nil,
+	s.settingResult(w, r, p, []error{err}, "dateformat", "dateformat", action, echo,
 		func(d *accountData, in *board.InputError) { d.Err.Format = in.Message })
 }
 
