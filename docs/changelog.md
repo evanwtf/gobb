@@ -1,9 +1,30 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-25)
 
-Plan 1, the foundation. gobb has no forum pages yet; this release ships the pieces
-that the pages stand on.
+The first release. gobb is one Go server for a forum, backed by PostgreSQL 16 or later
+(the Compose stack runs PostgreSQL 18). It can take over an existing board from an
+import bundle, with every member's password intact.
+
+- Members read the board, search it, post new topics, reply, quote, preview, and edit
+  or delete their own posts. They change their password, email and signature on the
+  account page.
+- Moderators delete and restore posts, edit them with a reason, lock and unlock topics,
+  and approve held posts, on the page itself. Admins reset passwords and ban or unban
+  members from the command line.
+- Every piece of member text goes through one parser and one renderer. Pages run under
+  a strict Content Security Policy. CI runs a corpus of script-injection payloads,
+  fuzzes the parser, and checks that the parse time of each known hostile shape grows
+  in step with the size of the post.
+- The release ships a container image for amd64 and arm64, and binaries for Linux and
+  macOS. The README's backup, upgrade and restore steps run in CI on every push.
+
+Later releases add private messages, polls, attachment uploads, topic watches, email,
+password reset by email, open sign-up and the admin panel.
+
+The entries below follow the work plan by plan.
+
+Plan 1, the foundation: the pieces that the pages stand on.
 
 - Repo guards: `scripts/check-public.sh` refuses private addresses (LAN and
   carrier-grade NAT ranges), home-directory paths, private and tailnet host names, and
