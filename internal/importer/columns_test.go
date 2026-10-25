@@ -612,3 +612,105 @@ func TestImportIsAllOrNothing(t *testing.T) {
 		t.Errorf("the data directory holds %s", e.Name())
 	}
 }
+
+// TestImportVersion2Fields covers the columns that bundle format version 2 adds
+// to users.
+func TestImportVersion2Fields(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	mustRun(t, pool, writeBoard(t, nil), t.TempDir(), false)
+
+	type row struct {
+		format, location, occupation, interests, website string
+		day, month, year                                 *int
+	}
+	read := func(name string) row {
+		t.Helper()
+		var r row
+		err := pool.QueryRow(ctx,
+			`select date_format, location, occupation, interests, website,
+			        birth_day::int, birth_month::int, birth_year::int
+			 from users where username = $1`, name).
+			Scan(&r.format, &r.location, &r.occupation, &r.interests, &r.website,
+				&r.day, &r.month, &r.year)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return r
+	}
+
+	alice := read("alice")
+	if alice.location != "Lake Placid, NY" || alice.website != "https://example.com/alice" {
+		t.Errorf("alice location, website = %q, %q", alice.location, alice.website)
+	}
+	if alice.day == nil || *alice.day != 14 || alice.month == nil || *alice.month != 3 ||
+		alice.year == nil || *alice.year != 1984 {
+		t.Errorf("alice birthday = %v/%v/%v, want 14/3/1984", alice.day, alice.month, alice.year)
+	}
+	if alice.format != "standard" {
+		t.Errorf("alice date_format = %q, want standard", alice.format)
+	}
+
+	bob := read("bob")
+	if bob.day == nil || *bob.day != 2 || bob.month == nil || *bob.month != 7 {
+		t.Errorf("bob birthday = %v/%v, want 2/7", bob.day, bob.month)
+	}
+	if bob.year != nil {
+		t.Errorf("bob birth_year = %d, want null", *bob.year)
+	}
+
+	if got := read("carol").format; got != "relative" {
+		t.Errorf("carol date_format = %q, want relative", got)
+	}
+}
+
+// TestImportNoWatches checks that an import leaves topic_watches and bookmarks
+// empty: version 2 bundles carry neither.
+func TestImportNoWatches(t *testing.T) {
+	pool := dbtest.New(t)
+	mustRun(t, pool, writeBoard(t, nil), t.TempDir(), false)
+	for _, table := range []string{"topic_watches", "bookmarks"} {
+		if n := count(t, pool, table); n != 0 {
+			t.Errorf("%s has %d rows, want 0", table, n)
+		}
+	}
+}
+
+// TestMigrationChecks covers the constraints that migration 0012 adds to users.
+func TestMigrationChecks(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	mustRun(t, pool, writeBoard(t, nil), t.TempDir(), false)
+
+	for _, tc := range []struct{ name, set string }{
+		{"year with no day", "birth_day = null, birth_month = null, birth_year = 1990"},
+		{"day with no month", "birth_day = 5, birth_month = null, birth_year = null"},
+		{"month with no day", "birth_day = null, birth_month = 5, birth_year = null"},
+		{"day 0", "birth_day = 0, birth_month = 5"},
+		{"day 32", "birth_day = 32, birth_month = 5"},
+		{"month 13", "birth_day = 5, birth_month = 13"},
+		{"year 1899", "birth_day = 5, birth_month = 5, birth_year = 1899"},
+		{"unknown date format", "date_format = 'x'"},
+		{"location too long", "location = repeat('a', 101)"},
+		{"occupation too long", "occupation = repeat('a', 101)"},
+		{"interests too long", "interests = repeat('a', 201)"},
+		{"website too long", "website = repeat('a', 201)"},
+	} {
+		// The update is a literal from the test.
+		_, err := pool.Exec(ctx, "update users set "+tc.set+" where username = 'carol'")
+		if err == nil {
+			t.Errorf("%s: update succeeded, want a check failure", tc.name)
+		}
+	}
+	for _, set := range []string{
+		"date_format = 'iso'",
+		"location = repeat('a', 100), occupation = repeat('a', 100)",
+		"interests = repeat('a', 200), website = repeat('a', 200)",
+		"birth_day = 29, birth_month = 2, birth_year = 2000",
+		"birth_day = null, birth_month = null, birth_year = null",
+	} {
+		if _, err := pool.Exec(ctx, "update users set "+set+" where username = 'carol'"); err != nil {
+			t.Errorf("update %q: %v", set, err)
+		}
+	}
+}

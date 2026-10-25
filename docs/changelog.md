@@ -14,6 +14,12 @@
   `internal/account/profile.go`, for the bundle check now and for the settings page
   later. The importer no longer loads the two dropped files and no longer writes
   `notify_on_post`; the new columns come with the next migration.
+- Migration `0012_settings_messages.sql` adds the member settings to `users`:
+  `date_format` (`standard`, `relative` or `iso`), `location`, `occupation`,
+  `interests`, `website`, and the birthday as `birth_day`, `birth_month` and
+  `birth_year`. Checks hold the length limits and the birthday pairing. It adds three
+  indexes for the birthday list, the inbox and the sent list. The importer writes the
+  new columns, and `topic_watches` and `bookmarks` stay empty after an import.
 
 ## 0.1.0 (2026-10-25)
 
