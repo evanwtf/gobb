@@ -162,7 +162,8 @@ jobs:
           sh scripts/fuzz.sh 60s \
             "./markup/ FuzzParse" \
             "./markup/ FuzzRender" \
-            "./internal/password/ FuzzVerifyLegacy"
+            "./internal/password/ FuzzVerifyLegacy" \
+            "./internal/avatar/ FuzzMake"
 
       - name: Upload the failing inputs
         if: failure()
@@ -172,6 +173,7 @@ jobs:
           path: |
             markup/testdata/fuzz
             internal/password/testdata/fuzz
+            internal/avatar/testdata/fuzz
           if-no-files-found: ignore
 
       # The module cache is read-only; make it writable so rm can remove it.

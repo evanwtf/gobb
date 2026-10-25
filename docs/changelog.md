@@ -37,6 +37,21 @@
   `.birthday-row` and `.avatar-img`; the checkbox labels of the account page are regular
   weight.
 
+- Settings writes in the board, and the avatar maker (no page yet). `SetTimezone` takes a
+  zone from `internal/tz` and `SetDateFormat` takes `standard`, `relative` or `iso`; both
+  need a signed-in member and no option. `SetAbout` (location, occupation, interests,
+  website; a nil field stays as it is) and `SetBirthday` need `account.profile`, trim and
+  check each value with the rules in `internal/account/profile.go`, and refuse with a
+  message beside the field. `SetAvatar` and `RemoveAvatar` need `account.avatar` and
+  return the path they replaced, so the caller deletes that file after the commit.
+  `avatar.Make` turns an upload into a new 128 x 128 PNG. It reads at most 1 MiB, takes
+  the format from the first bytes (PNG, JPEG or GIF; WebP is refused), reads the size
+  from the header and refuses more than 8,000 pixels a side or 16,000,000 in all before
+  it decodes, takes the decode's memory from the login gate, decodes the first frame,
+  crops the center square, and resamples it (area average to shrink, nearest pixel to
+  grow). Only pixels reach the output, so metadata and trailing bytes do not survive.
+  `FuzzMake` joins the CI fuzz job.
+
 ## 0.1.0 (2026-10-25)
 
 The first release. gobb is one Go server for a forum, backed by PostgreSQL 16 or later
