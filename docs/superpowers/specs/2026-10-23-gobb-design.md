@@ -705,7 +705,11 @@ designer's call):
   - posting: a new topic, a reply, a quote, and the edit and delete of one's own posts;
   - the profile: change the password, the email address and the signature, and pick a
     color scheme. Added by the owner on 2026-10-25:
-    - the time zone;
+    - the time zone. Every zone is a place, with its daylight saving time: the
+      picker lists the zones of the tz database's `zone.tab`, and offers no fixed
+      offset and no bare UTC **(owner, 2026-10-25)**. A bundle may hold only those
+      zones, so a converter maps a fixed offset to a city, for example UTC−4 to
+      `America/New_York`;
     - the date format: the current one ("Oct 25, 2026, 5:07 pm"), relative ("just
       now", "92 seconds ago", "98 minutes ago", "39 hours ago", "96 days ago", "14
       months ago", "3 years ago"), or ISO 8601 in the member's zone with the offset
