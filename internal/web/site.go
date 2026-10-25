@@ -433,6 +433,10 @@ type page struct {
 	// list when the page already knows it. addNewLink then asks the database for
 	// nothing.
 	navUnread *int
+	// UnreadMessages is the count of unread messages in the inbox of the viewer,
+	// which addMessagesLink reads for the nav. It is 0 when the viewer has none
+	// or the count failed. The inbox page prints it from here.
+	UnreadMessages int
 	// policy is the Content-Security-Policy of the page. A handler that renders
 	// posts adds the embeds of each one with addRendered.
 	policy policy

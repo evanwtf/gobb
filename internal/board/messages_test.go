@@ -139,8 +139,8 @@ func TestListsNeedPMRead(t *testing.T) {
 	if _, err := board.Sent(ctx, pool, b, 1); !errors.Is(err, board.ErrForbidden) {
 		t.Errorf("Sent = %v, want ErrForbidden", err)
 	}
-	if _, err := board.ReadMessage(ctx, pool, b, 1); !errors.Is(err, board.ErrForbidden) {
-		t.Errorf("ReadMessage = %v, want ErrForbidden", err)
+	if _, err := openMessage(ctx, pool, b, 1); !errors.Is(err, board.ErrForbidden) {
+		t.Errorf("openMessage = %v, want ErrForbidden", err)
 	}
 	if _, err := board.ReplyDraft(ctx, pool, b, 1, false); !errors.Is(err, board.ErrForbidden) {
 		t.Errorf("ReplyDraft = %v, want ErrForbidden", err)
@@ -181,7 +181,7 @@ func TestReadMarksRead(t *testing.T) {
 	if n := unread(); n != 1 {
 		t.Fatalf("unread after the inbox = %d, want 1", n)
 	}
-	m, err := board.ReadMessage(ctx, pool, b, 1)
+	m, err := openMessage(ctx, pool, b, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestReadMarksRead(t *testing.T) {
 		t.Errorf("unread after reading = %d, want 0", n)
 	}
 	// The author's read does not touch the recipients' marks.
-	if _, err := board.ReadMessage(ctx, pool, viewerFor(t, pool, alice), 1); err != nil {
+	if _, err := openMessage(ctx, pool, viewerFor(t, pool, alice), 1); err != nil {
 		t.Fatal(err)
 	}
 	var read bool
@@ -218,12 +218,12 @@ func TestMessageNotFoundForOthers(t *testing.T) {
 		name string
 		v    board.Viewer
 	}{{"carol", c}, {"bob, the author who deleted it", b}} {
-		m, err := board.ReadMessage(ctx, pool, who.v, 2)
+		m, err := openMessage(ctx, pool, who.v, 2)
 		if !errors.Is(err, board.ErrNotFound) {
-			t.Errorf("%s: ReadMessage = %v, want ErrNotFound", who.name, err)
+			t.Errorf("%s: openMessage = %v, want ErrNotFound", who.name, err)
 		}
 		if m.Subject != "" || m.Tree != nil {
-			t.Errorf("%s: ReadMessage returned text: %+v", who.name, m)
+			t.Errorf("%s: openMessage returned text: %+v", who.name, m)
 		}
 		if err := board.DeleteMessage(ctx, pool, who.v, 2); !errors.Is(err, board.ErrNotFound) {
 			t.Errorf("%s: DeleteMessage = %v, want ErrNotFound", who.name, err)
@@ -237,11 +237,11 @@ func TestMessageNotFoundForOthers(t *testing.T) {
 		}
 	}
 	// A message that does not exist gives the same answer.
-	if _, err := board.ReadMessage(ctx, pool, c, 999); !errors.Is(err, board.ErrNotFound) {
+	if _, err := openMessage(ctx, pool, c, 999); !errors.Is(err, board.ErrNotFound) {
 		t.Errorf("missing message: %v, want ErrNotFound", err)
 	}
 	// Dave is not active, but he is no party to message 1 either.
-	if _, err := board.ReadMessage(ctx, pool, viewerFor(t, pool, dave), 1); !errors.Is(err, board.ErrNotFound) {
+	if _, err := openMessage(ctx, pool, viewerFor(t, pool, dave), 1); !errors.Is(err, board.ErrNotFound) {
 		t.Errorf("dave: %v, want ErrNotFound", err)
 	}
 	// The failed deletes changed nothing.
@@ -261,7 +261,7 @@ func TestBccHidden(t *testing.T) {
 	}
 	read := func(id int64) board.Message {
 		t.Helper()
-		m, err := board.ReadMessage(ctx, pool, viewerFor(t, pool, id), 1)
+		m, err := openMessage(ctx, pool, viewerFor(t, pool, id), 1)
 		if err != nil {
 			t.Fatalf("user %d: %v", id, err)
 		}
@@ -297,7 +297,7 @@ func TestBccHidden(t *testing.T) {
 	if _, err := pool.Exec(ctx, `update pms set author_deleted = true where id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := board.ReadMessage(ctx, pool, viewerFor(t, pool, alice), 1); !errors.Is(err, board.ErrNotFound) {
+	if _, err := openMessage(ctx, pool, viewerFor(t, pool, alice), 1); !errors.Is(err, board.ErrNotFound) {
 		t.Errorf("alice after deleting: %v, want ErrNotFound", err)
 	}
 	if got := authorIDs(read(carol).Bcc); !slices.Equal(got, []int64{carol}) {
@@ -312,7 +312,7 @@ func TestGoneAuthorHasNoLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := viewerFor(t, pool, alice)
-	m, err := board.ReadMessage(ctx, pool, a, 2)
+	m, err := openMessage(ctx, pool, a, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,14 @@ func TestSendRules(t *testing.T) {
 		wantInput(t, send(a, strings.Join(names, ","), "S", "x"), "to", "Send to at most 10 members.")
 	})
 	t.Run("many without the right", func(t *testing.T) {
-		wantIs(t, send(viewerFor(t, pool, carol), "alice, bob", "S", "x"), board.ErrForbidden, "carol to two")
+		err := send(viewerFor(t, pool, carol), "alice, bob", "S", "x")
+		wantIs(t, err, board.ErrForbidden, "carol to two")
+		// The refusal says why, so a caller can tell it from the other refusals.
+		wantIs(t, err, board.ErrSendMany, "carol to two")
+		if err := send(viewerFor(t, pool, carol), "alice", "One recipient", "x"); err != nil {
+			t.Errorf("one recipient: %v", err)
+		}
+		before++
 	})
 	t.Run("the same name twice is one", func(t *testing.T) {
 		// Carol lacks pm.send_many, and "Bob" and "bob" are one member.
@@ -501,7 +508,7 @@ func TestSendStores(t *testing.T) {
 			t.Errorf("user %d sees To %v, want [bob carol]", id2, got)
 		}
 	}
-	m, err := board.ReadMessage(ctx, pool, a, id)
+	m, err := openMessage(ctx, pool, a, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +621,7 @@ func TestMessagePayloadsSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := board.ReadMessage(ctx, pool, viewerFor(t, pool, bob), id)
+	m, err := openMessage(ctx, pool, viewerFor(t, pool, bob), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +655,7 @@ func TestDeleteOwnView(t *testing.T) {
 	if len(in.Rows) != 0 {
 		t.Errorf("bob inbox = %v, want empty", messageIDs(in))
 	}
-	if _, err := board.ReadMessage(ctx, pool, b, 1); !errors.Is(err, board.ErrNotFound) {
+	if _, err := openMessage(ctx, pool, b, 1); !errors.Is(err, board.ErrNotFound) {
 		t.Errorf("bob reads a deleted message: %v, want ErrNotFound", err)
 	}
 	if n, err := board.UnreadMessages(ctx, pool, b); err != nil || n != 0 {
@@ -868,7 +875,7 @@ func TestReplyDraftSends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := board.ReadMessage(ctx, pool, viewerFor(t, pool, alice), id)
+	m, err := openMessage(ctx, pool, viewerFor(t, pool, alice), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,10 +1129,12 @@ func TestDeleteByANonPartyLocksNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Build the viewer before the timer starts: viewerFor reads the database.
+	stranger := viewerFor(t, pool, carol)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	start := time.Now()
-	err = board.DeleteMessage(ctx, pool, viewerFor(t, pool, carol), 2)
+	err = board.DeleteMessage(ctx, pool, stranger, 2)
 	if !errors.Is(err, board.ErrNotFound) {
 		t.Errorf("delete by a non-party = %v, want ErrNotFound", err)
 	}

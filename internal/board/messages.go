@@ -31,10 +31,14 @@ const (
 	msgToSelf           = "You cannot send a message to yourself."
 )
 
+// ErrSendMany is an [ErrForbidden] that says why: the member named more than one
+// recipient and does not hold pm.send_many.
+var ErrSendMany = fmt.Errorf("%w: more than one recipient needs pm.send_many", ErrForbidden)
+
 // The rights, in short. Every right is board-wide.
 //
 //   - pm.read lets a member open the inbox, the sent list and one message.
-//     Without it [Inbox], [Sent], [ReadMessage] and [ReplyDraft] give
+//     Without it [Inbox], [Sent], [PeekMessage] and [ReplyDraft] give
 //     [ErrForbidden], and [UnreadMessages] gives 0.
 //   - pm.send lets a member send, and reply. Without it [SendMessage] and
 //     [ReplyDraft] give [ErrForbidden]. pm.send_many allows more than one
@@ -256,21 +260,19 @@ select p.id, coalesce(p.author_id, 0), coalesce(au.username, p.author_name), p.s
 	return m, nil
 }
 
-// ReadMessage returns message id to a party and marks it read for the viewer,
-// when the viewer is a recipient. A viewer who is not a party gets [ErrNotFound].
-// A member without pm.read gets [ErrForbidden], whatever the ID.
+// PeekMessage returns message id to a party and writes nothing. A viewer who is
+// not a party gets [ErrNotFound]. A member without pm.read gets [ErrForbidden],
+// whatever the ID. A page that a person opens calls it, and then
+// [MarkMessageRead] once the page is built. A request that is not a person opening
+// the page (an image load, a prefetch) calls only this one.
 //
 // Bcc holds every blind-copy recipient for the author, only the viewer for a
 // blind-copy recipient, and nothing for anyone else.
-func ReadMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64) (Message, error) {
-	return readMessage(ctx, pool, v, id, true)
-}
-
-// PeekMessage is [ReadMessage] that writes nothing. A page that a person opens
-// calls it, and then [MarkMessageRead] once the page is built. A request that is
-// not a person opening the page (an image load, a prefetch) calls only this one.
 func PeekMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64) (Message, error) {
-	return readMessage(ctx, pool, v, id, false)
+	if !mayRead(v) {
+		return Message{}, ErrForbidden
+	}
+	return readMessage(ctx, pool, v, id)
 }
 
 // MarkMessageRead marks message id read for v, when v is a recipient who has not
@@ -288,10 +290,7 @@ func MarkMessageRead(ctx context.Context, q db.Querier, v Viewer, id int64) erro
 	return nil
 }
 
-func readMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64, mark bool) (Message, error) {
-	if !mayRead(v) {
-		return Message{}, ErrForbidden
-	}
+func readMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64) (Message, error) {
 	m, err := loadParty(ctx, pool, v, id, false)
 	if err != nil {
 		return Message{}, err
@@ -339,11 +338,6 @@ select r.kind, u.id, u.username
 			if n := decodeTree(sig, "signature of user", m.authorID); len(n.Children) > 0 {
 				out.Signature = n
 			}
-		}
-	}
-	if mark && m.asRecipient {
-		if err := MarkMessageRead(ctx, pool, v, id); err != nil {
-			return Message{}, err
 		}
 	}
 	return out, nil
@@ -513,7 +507,7 @@ func shownName(s string) string {
 // a row of kind "to". Nobody is stored as a blind copy by this function.
 //
 // The checks, in order: the right to send (pm.send, else [ErrForbidden]); the To
-// field (field "to"; more than one name without pm.send_many is [ErrForbidden]);
+// field (field "to"; more than one name without pm.send_many is [ErrSendMany], an [ErrForbidden]);
 // the subject (field "subject"); then the body (field "body"; see
 // [ParseMessage]). A message whose author, recipients, subject and text equal
 // those of one that the author sent less than 60 seconds before now, and kept,
@@ -535,7 +529,7 @@ func SendMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, d MessageDra
 	case len(names) > maxRecipients:
 		return 0, inputError("to", msgTooManyRecipient)
 	case len(names) > 1 && !v.Perms.Has("pm.send_many", 0):
-		return 0, ErrForbidden
+		return 0, ErrSendMany
 	}
 	// The parse costs the most, so it runs before the lock. Its error waits for
 	// its place in the order of the answers.

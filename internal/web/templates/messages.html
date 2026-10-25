@@ -2,8 +2,8 @@
 {{- with .Data}}
 <header class="page-head">
   <h1>Messages: {{if .Inbox}}Inbox{{else}}Sent{{end}}</h1>
-  {{- if .UnreadText}}
-  <p class="page-sub">{{.UnreadText}}</p>
+  {{- if and .Inbox $.UnreadMessages}}
+  <p class="page-sub">{{num $.UnreadMessages}} unread.</p>
   {{- end}}
   <div class="toolbar">
     <nav class="msg-tabs" aria-label="Message folders">

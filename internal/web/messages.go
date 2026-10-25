@@ -42,6 +42,7 @@ const (
 	noticeMessageBanned  = "You cannot send messages because you are banned. Your text is below."
 	noticeMessageNoRight = "You do not have the right to send messages. Your text is below."
 	noticeMessageRefused = "This message cannot be sent. Your text is below."
+	msgOneAtATime        = "You can send a message to one member at a time."
 )
 
 // newMessageSends returns the limiter of the sends.
@@ -56,11 +57,9 @@ func newMessageSends(opt Options) *ratelimit.Limiter {
 // messagesData is the data of messages.html.
 type messagesData struct {
 	// Inbox is true for the inbox and false for the sent list.
-	Inbox bool
-	List  board.MessageList
-	Pager *pager
-	// UnreadText says how many messages wait in the inbox, or is empty.
-	UnreadText                   string
+	Inbox                        bool
+	List                         board.MessageList
+	Pager                        *pager
 	InboxHref, SentHref, NewHref string
 	CanSend                      bool
 }
@@ -114,13 +113,6 @@ func (s *site) messagesMember(w http.ResponseWriter, r *http.Request, title stri
 	return nil, false
 }
 
-// messageFailed answers a rights failure of a message page and reports whether it
-// did: 404 for a message that the viewer is no party to, 403 for a right that the
-// viewer lacks, 500 for anything else.
-func (s *site) messageFailed(w http.ResponseWriter, r *http.Request, p *page, err error, action string) bool {
-	return s.actionFailed(w, r, p, err, action)
-}
-
 // messageList serves GET /messages and GET /messages/sent.
 func (s *site) messageList(inbox bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +136,7 @@ func (s *site) messageList(inbox bool) http.HandlerFunc {
 		} else {
 			list, err = board.Sent(ctx, s.pool, p.Viewer, n)
 		}
-		if s.messageFailed(w, r, p, err, "read messages") {
+		if s.actionFailed(w, r, p, err, "read messages") {
 			return
 		}
 		d := messagesData{Inbox: inbox, List: list, CanSend: p.Viewer.Perms.Has("pm.send", 0),
@@ -154,14 +146,6 @@ func (s *site) messageList(inbox bool) http.HandlerFunc {
 			base = d.SentHref
 		}
 		d.Pager = newPager(base, list.Page, list.Pages)
-		if inbox {
-			switch unread, err := board.UnreadMessages(ctx, s.pool, p.Viewer); {
-			case err != nil:
-				slog.Warn("cannot count the unread messages", "err", err)
-			case unread > 0:
-				d.UnreadText = num(unread) + " unread."
-			}
-		}
 		p.Data = d
 		s.render(w, http.StatusOK, "messages.html", p)
 	}
@@ -180,7 +164,7 @@ func (s *site) messageShow(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	m, err := board.PeekMessage(ctx, s.pool, p.Viewer, id)
-	if s.messageFailed(w, r, p, err, "read messages") {
+	if s.actionFailed(w, r, p, err, "read messages") {
 		return
 	}
 	rc, err := s.renderContext(ctx, p.Viewer, 0)
@@ -277,7 +261,7 @@ func (s *site) messageReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	draft, err := board.ReplyDraft(r.Context(), s.pool, p.Viewer, id, r.URL.Query().Get("quote") == "1")
-	if s.messageFailed(w, r, p, err, "send messages") {
+	if s.actionFailed(w, r, p, err, "send messages") {
 		return
 	}
 	d := s.composeFrame(s.path("messages", strconv.FormatInt(id, 10)))
@@ -345,6 +329,7 @@ func (s *site) messageTooFast(w http.ResponseWriter, p *page, d composeData, wai
 
 // messageSendFailed answers the failure of a preview or a send with the form:
 //   - an [*board.InputError]: 400 and the message beside its field;
+//   - [board.ErrSendMany]: 400 and a message beside the To field;
 //   - [board.ErrForbidden]: 403 and a notice;
 //   - any other error: 500 (503 for a timeout) and a fixed notice that carries no
 //     detail.
@@ -360,6 +345,9 @@ func (s *site) messageSendFailed(w http.ResponseWriter, r *http.Request, p *page
 		default:
 			d.Err.Body = in.Message
 		}
+		s.renderCompose(w, http.StatusBadRequest, p, d)
+	case errors.Is(err, board.ErrSendMany):
+		d.Err.To = msgOneAtATime
 		s.renderCompose(w, http.StatusBadRequest, p, d)
 	case errors.Is(err, board.ErrBanned):
 		d.Notice = noticeMessageBanned
@@ -422,7 +410,7 @@ func (s *site) messageDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	m, err := board.PeekMessage(ctx, s.pool, p.Viewer, id)
-	if s.messageFailed(w, r, p, err, "delete this message") {
+	if s.actionFailed(w, r, p, err, "delete this message") {
 		return
 	}
 	if !p.Viewer.Perms.Has("pm.delete", 0) {
@@ -436,7 +424,7 @@ func (s *site) messageDelete(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, "confirm.html", p)
 		return
 	}
-	if s.messageFailed(w, r, p, board.DeleteMessage(ctx, s.pool, p.Viewer, id), "delete this message") {
+	if s.actionFailed(w, r, p, board.DeleteMessage(ctx, s.pool, p.Viewer, id), "delete this message") {
 		return
 	}
 	target := s.path("messages")
@@ -452,8 +440,9 @@ func (s *site) messageHref(name string) string {
 }
 
 // addMessagesLink adds "Messages" to the nav of a member who may read messages,
-// with the count of unread ones as a note. A failure to count is logged and the
-// link shows no note.
+// with the count of unread ones as a note. It keeps the count in
+// [page.UnreadMessages], so the inbox page reuses it and counts once. A failure to
+// count is logged and the link shows no note.
 func (s *site) addMessagesLink(p *page) {
 	if p.Viewer.UserID == 0 || !p.Viewer.Perms.Has("pm.read", 0) {
 		return
@@ -461,9 +450,10 @@ func (s *site) addMessagesLink(p *page) {
 	link := navLink{Label: "Messages", Href: s.path("messages"), Current: p.navKey == "messages"}
 	switch n, err := board.UnreadMessages(p.ctx, s.pool, p.Viewer); {
 	case err != nil:
-		slog.Warn("cannot count the unread messages", "err", err)
+		slog.Warn("cannot count the unread messages", "user", p.Viewer.UserID, "err", err)
 	case n > 0:
 		link.Badge = num(n) + " new"
+		p.UnreadMessages = n
 	}
 	p.Nav = append(p.Nav, link)
 }

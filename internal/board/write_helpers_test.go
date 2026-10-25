@@ -86,6 +86,20 @@ func moderator(t *testing.T, pool *pgxpool.Pool, id int64) board.Viewer {
 	return viewerFor(t, pool, id)
 }
 
+// openMessage reads message id as a person who opens its page does: it peeks, and
+// then marks the message read for the viewer (see board.PeekMessage and
+// board.MarkMessageRead).
+func openMessage(ctx context.Context, pool *pgxpool.Pool, v board.Viewer, id int64) (board.Message, error) {
+	m, err := board.PeekMessage(ctx, pool, v, id)
+	if err != nil {
+		return board.Message{}, err
+	}
+	if err := board.MarkMessageRead(ctx, pool, v, id); err != nil {
+		return board.Message{}, err
+	}
+	return m, nil
+}
+
 func wantIs(t *testing.T, err, target error, what string) {
 	t.Helper()
 	if !errors.Is(err, target) {

@@ -356,7 +356,8 @@ func TestMessageFormKeepsText(t *testing.T) {
 		{"no subject", "bob", "  ", "Some text", "Enter a subject.", "msg-subject-error"},
 		{"no recipient", "", "Hi", "Some text", "Add at least one member.", "msg-to-error"},
 		{"self", "alice", "Hi", "Some text", "You cannot send a message to yourself.", "msg-to-error"},
-		{"no body", "bob", "Hi", "  ", "", "msg-body-error"},
+		{"no body", "bob", "Hi", "  ", "Write some text first.", "msg-body-error"},
+		{"several without pm.send_many", "bob, carol", "Hi", "Some text", "You can send a message to one member at a time.", "msg-to-error"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rec := sendMessage(t, h, alice, c.to, c.subject, c.body)
@@ -502,7 +503,8 @@ func TestMessageNavCountFails(t *testing.T) {
 	}
 	warned := false
 	for _, l := range logs.lines() {
-		warned = warned || (strings.Contains(l, "level=WARN") && strings.Contains(l, "unread messages"))
+		// The line names the member, so an operator can tell whose count failed.
+		warned = warned || (strings.Contains(l, "level=WARN") && strings.Contains(l, "unread messages") && strings.Contains(l, "user=1 "))
 	}
 	if !warned {
 		t.Errorf("no WARN line for the failed count:\n%s", strings.Join(logs.lines(), "\n"))
@@ -524,6 +526,9 @@ func TestMessageSendLimit(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("the 11th send = %d (Retry-After %q)\n%s", rec.Code, rec.Header().Get("Retry-After"), body)
 	}
+	if to, _ := inputValue(body, "to"); to != "bob" {
+		t.Errorf("To = %q", to)
+	}
 	if sub, _ := inputValue(body, "subject"); sub != "One too many" {
 		t.Errorf("subject = %q", sub)
 	}
@@ -540,6 +545,61 @@ func TestMessageSendLimit(t *testing.T) {
 	// Another member has a count of her own.
 	bob := signIn(t, h, "bob", testPassword)
 	sentID(t, sendMessage(t, h, bob, "alice", "Mine", "Text"))
+}
+
+// The posting limit answers 429 on the compose form with every value the member
+// sent, and stores nothing.
+func TestMessagePostingLimitKeepsValues(t *testing.T) {
+	h, pool := messageSite(t, Options{MemberPosts: 1})
+	alice := signIn(t, h, "alice", testPassword)
+	sentID(t, sendMessage(t, h, alice, "bob", "First", "Text"))
+	before := dumpData(t, pool)
+	rec := sendMessage(t, h, alice, "bob, carol", "Second <one>", "Some **text** </textarea>")
+	body := bodyOf(t, rec)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("the second POST = %d (Retry-After %q)\n%s", rec.Code, rec.Header().Get("Retry-After"), body)
+	}
+	if !strings.Contains(body, msgPostingTooFast) {
+		t.Errorf("the page lacks %q", msgPostingTooFast)
+	}
+	if to, _ := inputValue(body, "to"); to != "bob, carol" {
+		t.Errorf("To = %q", to)
+	}
+	if sub, _ := inputValue(body, "subject"); sub != "Second <one>" {
+		t.Errorf("subject = %q", sub)
+	}
+	if got, _ := textareaOf(t, body, "body"); got != "Some **text** </textarea>" {
+		t.Errorf("body = %q", got)
+	}
+	if diff := diffTables(before, dumpData(t, pool)); len(diff) != 0 {
+		t.Errorf("a refused POST changed %v", diff)
+	}
+}
+
+// The "Send a message" link of a profile escapes the name of the member: a name
+// with &, a space and # arrives whole in the To field.
+func TestProfileMessageLinkEscapesTheName(t *testing.T) {
+	const name = "R&D #1 team"
+	h, pool := messageSite(t, Options{})
+	exec(t, pool, `update users set username = '`+name+`', username_clean = lower('`+name+`') where id = 2`)
+	alice := signIn(t, h, "alice", testPassword)
+	profile := bodyOf(t, getAs(t, h, "/u/2", alice))
+	m := regexp.MustCompile(`href="([^"]*)">Send a message</a>`).FindStringSubmatch(profile)
+	if m == nil {
+		t.Fatalf("the profile has no \"Send a message\" link:\n%s", profile)
+	}
+	href := html.UnescapeString(m[1])
+	u, err := url.Parse(href)
+	if err != nil {
+		t.Fatalf("the link %q: %v", href, err)
+	}
+	if u.Path != "/messages/new" || u.Fragment != "" || u.Query().Get("to") != name {
+		t.Errorf("the link %q gives path %q, fragment %q, to %q; want to %q", href, u.Path, u.Fragment, u.Query().Get("to"), name)
+	}
+	form := bodyOf(t, getAs(t, h, href, alice))
+	if to, ok := inputValue(form, "to"); !ok || to != name {
+		t.Errorf("the To field holds %q, %v; want %q", to, ok, name)
+	}
 }
 
 func TestMessageRefusalsDoNotUseTheSendLimit(t *testing.T) {
@@ -713,5 +773,33 @@ func TestMessageEmbedIsAPlainLink(t *testing.T) {
 		if got := rec.Header().Get("Content-Security-Policy"); got != wantBaseCSP {
 			t.Errorf("%s: Content-Security-Policy = %q\nwant %q", name, got, wantBaseCSP)
 		}
+	}
+}
+
+// The inbox page takes the unread count from the nav and does not ask for it a
+// second time. Alice is an admin, so her footer shows the count of queries. Her
+// inbox and her sent list run the same queries, and so the inbox runs no more.
+func TestInboxCountsUnreadOnce(t *testing.T) {
+	h, _ := messageSite(t, Options{})
+	alice := signIn(t, h, "alice", testPassword)
+	bob := signIn(t, h, "bob", testPassword)
+	sentID(t, sendMessage(t, h, bob, "alice", "Unread", "Waiting for alice."))
+	queries := func(target string) int {
+		t.Helper()
+		line := buildLine(t, bodyOf(t, getWith(t, h, target, alice, asImage)))
+		m := adminLine.FindStringSubmatch(line)
+		if m == nil {
+			t.Fatalf("%s: the line %q has no count", target, line)
+		}
+		n, _ := strconv.Atoi(m[3])
+		return n
+	}
+	inbox, sent := queries("/messages"), queries("/messages/sent")
+	if inbox != sent {
+		t.Errorf("the inbox runs %d queries and the sent list %d; want the same", inbox, sent)
+	}
+	// The page still says how many messages wait.
+	if body := bodyOf(t, getAs(t, h, "/messages", alice)); !strings.Contains(body, `<p class="page-sub">1 unread.</p>`) {
+		t.Errorf("the inbox does not say 1 unread:\n%s", body)
 	}
 }
