@@ -84,12 +84,12 @@ func TestIsNavigation(t *testing.T) {
 		{"no header, image accept", "GET", map[string]string{"Accept": "image/avif,image/*"}, false},
 		{"head", "HEAD", map[string]string{"Sec-Fetch-Dest": "document"}, false},
 		{"prefetch", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Purpose": "prefetch"}, false},
-		// Ruling R45: a navigation that another site started does not count.
-		{"document, cross-site", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "cross-site"}, false},
-		{"document, same-site", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-site"}, false},
+		// Ruling R51: Sec-Fetch-Site does not matter here (see isOwnNavigation).
+		{"document, cross-site", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "cross-site"}, true},
+		{"document, same-site", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-site"}, true},
 		{"document, same-origin", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"}, true},
 		{"document, none", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "none"}, true},
-		{"site without dest, cross-site, html", "GET", map[string]string{"Sec-Fetch-Site": "cross-site", "Accept": "text/html"}, false},
+		{"site without dest, cross-site, html", "GET", map[string]string{"Sec-Fetch-Site": "cross-site", "Accept": "text/html"}, true},
 		{"site without dest, same-origin, html", "GET", map[string]string{"Sec-Fetch-Site": "same-origin", "Accept": "text/html"}, true},
 	} {
 		r := httptest.NewRequest(c.method, "/t/1", nil)
@@ -133,6 +133,89 @@ func TestTopicMarkNeedsAnOwnNavigation(t *testing.T) {
 	getWith(t, h, "/t/1", carol, map[string]string{"Accept": "text/html"})
 	if n := marks(); n != 1 {
 		t.Errorf("an older browser left %d topic marks, want 1", n)
+	}
+}
+
+// Ruling R51: a view and a visit count on any top-level navigation. Only the
+// topic mark needs a navigation that the member started.
+func TestViewAndVisitCountOnAnyNavigation(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	ctx := context.Background()
+	carol := signIn(t, h, "carol", "example-password")
+	views := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `select view_count from topics where id = 1`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	marks := func() int {
+		t.Helper()
+		return countRows(t, pool, `select count(*) from topic_marks where user_id = 3`)
+	}
+	visited := func() bool {
+		t.Helper()
+		var a *time.Time
+		if err := pool.QueryRow(ctx, `select last_active_at from users where id = 3`).Scan(&a); err != nil {
+			t.Fatal(err)
+		}
+		return a != nil
+	}
+	for _, c := range []struct {
+		site          string
+		wantViews     int
+		wantMarks     int
+		wantVisit     bool
+		viewsBeforeGo int
+	}{
+		{"cross-site", 43, 0, true, 42},
+		{"same-site", 44, 0, true, 43},
+		{"same-origin", 45, 1, true, 44},
+	} {
+		exec(t, pool, `update users set last_active_at = null where id = 3`)
+		exec(t, pool, `delete from topic_marks where user_id = 3`)
+		if got := views(); got != c.viewsBeforeGo {
+			t.Fatalf("%s: views before = %d, want %d", c.site, got, c.viewsBeforeGo)
+		}
+		hdr := map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": c.site}
+		if rec := getWith(t, h, "/t/1", carol, hdr); rec.Code != http.StatusOK {
+			t.Fatalf("GET /t/1 (%s): %d", c.site, rec.Code)
+		}
+		if got := views(); got != c.wantViews {
+			t.Errorf("%s: view_count = %d, want %d", c.site, got, c.wantViews)
+		}
+		if got := marks(); got != c.wantMarks {
+			t.Errorf("%s: topic marks = %d, want %d", c.site, got, c.wantMarks)
+		}
+		if got := visited(); got != c.wantVisit {
+			t.Errorf("%s: visit recorded = %v, want %v", c.site, got, c.wantVisit)
+		}
+	}
+}
+
+// isOwnNavigation is isNavigation plus the Sec-Fetch-Site rule (ruling R51).
+func TestIsOwnNavigation(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		hdr  map[string]string
+		want bool
+	}{
+		{"document, cross-site", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "cross-site"}, false},
+		{"document, same-site", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-site"}, false},
+		{"document, same-origin", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"}, true},
+		{"document, none", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "none"}, true},
+		{"older client", map[string]string{"Accept": "text/html"}, true},
+		{"image, same-origin", map[string]string{"Sec-Fetch-Dest": "image", "Sec-Fetch-Site": "same-origin"}, false},
+		{"prefetch, same-origin", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin", "Sec-Purpose": "prefetch"}, false},
+	} {
+		r := httptest.NewRequest("GET", "/t/1", nil)
+		for k, v := range c.hdr {
+			r.Header.Set(k, v)
+		}
+		if got := isOwnNavigation(r); got != c.want {
+			t.Errorf("%s: isOwnNavigation = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

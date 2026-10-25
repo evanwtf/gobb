@@ -22,11 +22,9 @@ import (
 // A client that sends none counts when it asks for HTML. A prefetch does not
 // count: the person has not opened the page yet.
 //
-// A browser also sends Sec-Fetch-Site. Only "same-origin" (a click on this site)
-// and "none" (a typed address, a bookmark) count. A link on another site, and a
-// script that opens the page in a window, send "cross-site" or "same-site", and
-// the page they open writes nothing (ruling R45). A client that sends no
-// Sec-Fetch-Site is judged on the other headers alone.
+// Sec-Fetch-Site does not matter here: a view and a visit count on any
+// top-level navigation, whoever started it (ruling R51). A read mark needs more
+// (see [isOwnNavigation]).
 //
 // Any other GET writes nothing, with one accepted exception that is not
 // bookkeeping: a GET whose cookie names a dead session (expired, or of a user
@@ -41,18 +39,30 @@ func isNavigation(r *http.Request) bool {
 			return false
 		}
 	}
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
-		return false
-	}
 	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" {
 		return dest == "document"
 	}
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
+// isOwnNavigation reports whether r is a [isNavigation] that the member started.
+// A browser sends Sec-Fetch-Site, and only "same-origin" (a click on this site)
+// and "none" (a typed address, a bookmark) count. A link on another site, and a
+// script that opens the page in a window, send "cross-site" or "same-site": the
+// page they open counts a view and a visit but sets no read mark (rulings R45 and
+// R51). A client that sends no Sec-Fetch-Site is judged on the other headers
+// alone.
+func isOwnNavigation(r *http.Request) bool {
+	if !isNavigation(r) {
+		return false
+	}
+	site := r.Header.Get("Sec-Fetch-Site")
+	return site == "" || site == "same-origin" || site == "none"
+}
+
 // countView does the bookkeeping of a topic page that a person opened: it adds
-// a view, and for a member it marks the topic read up to the newest post on the
-// page. A page that shows only old posts leaves the newer posts unread. The
+// a view, and for a member who opened it from this site (see [isOwnNavigation]) it
+// marks the topic read up to the newest post on the page. A page that shows only old posts leaves the newer posts unread. The
 // caller runs it after the page is built (see [site.renderThen]). A failure is
 // logged; the page still shows.
 func (s *site) countView(r *http.Request, v board.Viewer, tp *board.TopicPage) {
@@ -60,7 +70,7 @@ func (s *site) countView(r *http.Request, v board.Viewer, tp *board.TopicPage) {
 	if err := board.CountView(ctx, s.pool, tp.Topic.ID); err != nil {
 		slog.Warn("cannot count a view", "topic", tp.Topic.ID, "err", err)
 	}
-	if v.UserID == 0 || len(tp.Posts) == 0 {
+	if v.UserID == 0 || len(tp.Posts) == 0 || !isOwnNavigation(r) {
 		return
 	}
 	newest := tp.Posts[0].At

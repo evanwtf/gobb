@@ -714,11 +714,20 @@ func TestMessageMarkNeedsAnOwnNavigation(t *testing.T) {
 		t.Helper()
 		return countRows(t, pool, fmt.Sprintf(`select count(*) from pm_recipients where pm_id = %d and user_id = 2 and is_read`, id)) == 1
 	}
-	send := func() int64 {
-		return sentID(t, sendMessage(t, h, alice, "bob", "Hello", "A short note."))
+	// Each case sends its own subject: the 60-second duplicate rule would
+	// otherwise return the same message for every send.
+	var prev int64
+	send := func(subject string) int64 {
+		t.Helper()
+		id := sentID(t, sendMessage(t, h, alice, "bob", subject, "A short note."))
+		if id == prev {
+			t.Fatalf("send %q returned message %d again", subject, id)
+		}
+		prev = id
+		return id
 	}
 	for _, site := range []string{"cross-site", "same-site"} {
-		id := send()
+		id := send("Hello " + site)
 		hdr := map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": site}
 		if rec := getWith(t, h, fmt.Sprintf("/messages/%d", id), bob, hdr); rec.Code != http.StatusOK {
 			t.Fatalf("GET (%s): %d", site, rec.Code)
@@ -727,17 +736,20 @@ func TestMessageMarkNeedsAnOwnNavigation(t *testing.T) {
 			t.Errorf("a %s navigation marked message %d read", site, id)
 		}
 	}
-	for name, hdr := range map[string]map[string]string{
-		"same-origin":  {"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"},
-		"none":         {"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "none"},
-		"older client": {"Accept": "text/html"},
+	for _, c := range []struct {
+		name string
+		hdr  map[string]string
+	}{
+		{"same-origin", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"}},
+		{"none", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "none"}},
+		{"older client", map[string]string{"Accept": "text/html"}},
 	} {
-		id := send()
-		if rec := getWith(t, h, fmt.Sprintf("/messages/%d", id), bob, hdr); rec.Code != http.StatusOK {
-			t.Fatalf("GET (%s): %d", name, rec.Code)
+		id := send("Hello " + c.name)
+		if rec := getWith(t, h, fmt.Sprintf("/messages/%d", id), bob, c.hdr); rec.Code != http.StatusOK {
+			t.Fatalf("GET (%s): %d", c.name, rec.Code)
 		}
 		if !read(id) {
-			t.Errorf("a %s navigation did not mark message %d read", name, id)
+			t.Errorf("a %s navigation did not mark message %d read", c.name, id)
 		}
 	}
 }

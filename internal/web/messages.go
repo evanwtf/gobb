@@ -21,8 +21,8 @@ import (
 //
 // GET and HEAD change nothing. The one exception is the read mark: a person who
 // opens a message marks it read, as opening a topic marks it read. Only a
-// top-level navigation does that (see [isNavigation]); an image load or a
-// prefetch of the same address reads the message and writes nothing.
+// navigation that the member started does that (see [isOwnNavigation]); an image
+// load or a prefetch of the same address reads the message and writes nothing.
 
 // The limit on sending. A send costs a parse of up to 60,000 bytes and fills the
 // inboxes of other members, so each member gets a count of sends in a sliding
@@ -207,7 +207,7 @@ func (s *site) messageShow(w http.ResponseWriter, r *http.Request) {
 	// Only a person who opens the page marks the message read, and only once the
 	// page is built. The nav count comes after the mark.
 	var after func()
-	if isNavigation(r) {
+	if isOwnNavigation(r) {
 		after = func() {
 			if err := board.MarkMessageRead(ctx, s.pool, p.Viewer, id); err != nil {
 				slog.Warn("cannot mark a message read", "message", id, "err", err)
