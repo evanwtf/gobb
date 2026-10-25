@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/evanwtf/gobb/bundle"
+	"github.com/evanwtf/gobb/internal/account"
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/dbtest"
@@ -618,7 +620,16 @@ func TestImportIsAllOrNothing(t *testing.T) {
 func TestImportVersion2Fields(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t)
-	mustRun(t, pool, writeBoard(t, nil), t.TempDir(), false)
+	// The fixture leaves occupation and interests empty, so set both for dave.
+	dir := writeBoard(t, func(b *bundletest.Board) {
+		for i := range b.Users {
+			if b.Users[i].Username == "dave" {
+				b.Users[i].Occupation = "Surveyor"
+				b.Users[i].Interests = "Maps, kayaks and tide tables"
+			}
+		}
+	})
+	mustRun(t, pool, dir, t.TempDir(), false)
 
 	type row struct {
 		format, location, occupation, interests, website string
@@ -643,12 +654,23 @@ func TestImportVersion2Fields(t *testing.T) {
 	if alice.location != "Lake Placid, NY" || alice.website != "https://example.com/alice" {
 		t.Errorf("alice location, website = %q, %q", alice.location, alice.website)
 	}
+	if alice.occupation != "" || alice.interests != "" {
+		t.Errorf("alice occupation, interests = %q, %q, want empty", alice.occupation, alice.interests)
+	}
 	if alice.day == nil || *alice.day != 14 || alice.month == nil || *alice.month != 3 ||
 		alice.year == nil || *alice.year != 1984 {
 		t.Errorf("alice birthday = %v/%v/%v, want 14/3/1984", alice.day, alice.month, alice.year)
 	}
 	if alice.format != "standard" {
 		t.Errorf("alice date_format = %q, want standard", alice.format)
+	}
+
+	dave := read("dave")
+	if dave.occupation != "Surveyor" || dave.interests != "Maps, kayaks and tide tables" {
+		t.Errorf("dave occupation, interests = %q, %q", dave.occupation, dave.interests)
+	}
+	if dave.location != "" || dave.website != "" {
+		t.Errorf("dave location, website = %q, %q, want empty", dave.location, dave.website)
 	}
 
 	bob := read("bob")
@@ -677,35 +699,56 @@ func TestImportNoWatches(t *testing.T) {
 }
 
 // TestMigrationChecks covers the constraints that migration 0012 adds to users.
+// The limits come from package account, so the test fails when Go and the
+// database disagree.
 func TestMigrationChecks(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t)
 	mustRun(t, pool, writeBoard(t, nil), t.TempDir(), false)
 
-	for _, tc := range []struct{ name, set string }{
-		{"year with no day", "birth_day = null, birth_month = null, birth_year = 1990"},
-		{"day with no month", "birth_day = 5, birth_month = null, birth_year = null"},
-		{"month with no day", "birth_day = null, birth_month = 5, birth_year = null"},
-		{"day 0", "birth_day = 0, birth_month = 5"},
-		{"day 32", "birth_day = 32, birth_month = 5"},
-		{"month 13", "birth_day = 5, birth_month = 13"},
-		{"year 1899", "birth_day = 5, birth_month = 5, birth_year = 1899"},
-		{"unknown date format", "date_format = 'x'"},
-		{"location too long", "location = repeat('a', 101)"},
-		{"occupation too long", "occupation = repeat('a', 101)"},
-		{"interests too long", "interests = repeat('a', 201)"},
-		{"website too long", "website = repeat('a', 201)"},
+	rep := func(s string, n int) string { return strings.Repeat(s, n) }
+	// "é" is 2 bytes and 1 character.
+	website200 := rep("é", account.MaxWebsite/2)
+	website201 := website200 + "a"
+	if len(website200) != account.MaxWebsite || len([]rune(website200)) >= account.MaxWebsite {
+		t.Fatalf("website200 has %d bytes and %d characters", len(website200), len([]rune(website200)))
+	}
+
+	type bad struct{ name, set, constraint string }
+	for _, tc := range []bad{
+		{"year with no day", "birth_day = null, birth_month = null, birth_year = 1990", "users_birthday_check"},
+		{"day with no month", "birth_day = 5, birth_month = null, birth_year = null", "users_birthday_check"},
+		{"month with no day", "birth_day = null, birth_month = 5, birth_year = null", "users_birthday_check"},
+		{"day 0", "birth_day = 0, birth_month = 5", "users_birthday_check"},
+		{"day 32", "birth_day = 32, birth_month = 5", "users_birthday_check"},
+		{"month 13", "birth_day = 5, birth_month = 13", "users_birthday_check"},
+		{"year before the minimum",
+			"birth_day = 5, birth_month = 5, birth_year = " + strconv.Itoa(account.MinBirthYear-1),
+			"users_birthday_check"},
+		{"unknown date format", "date_format = 'x'", "users_date_format_check"},
+		{"location too long", "location = '" + rep("a", account.MaxLocation+1) + "'", "users_location_check"},
+		{"occupation too long", "occupation = '" + rep("a", account.MaxOccupation+1) + "'", "users_occupation_check"},
+		{"interests too long", "interests = '" + rep("a", account.MaxInterests+1) + "'", "users_interests_check"},
+		{"website too long", "website = '" + rep("a", account.MaxWebsite+1) + "'", "users_website_check"},
+		{"website over the byte limit with fewer characters", "website = '" + website201 + "'", "users_website_check"},
 	} {
-		// The update is a literal from the test.
+		// The update is built from literals in the test.
 		_, err := pool.Exec(ctx, "update users set "+tc.set+" where username = 'carol'")
-		if err == nil {
-			t.Errorf("%s: update succeeded, want a check failure", tc.name)
+		var pgErr *pgconn.PgError
+		switch {
+		case !errors.As(err, &pgErr):
+			t.Errorf("%s: err = %v, want a check violation", tc.name, err)
+		case pgErr.Code != "23514" || pgErr.ConstraintName != tc.constraint:
+			t.Errorf("%s: SQLSTATE %s, constraint %q; want 23514, %q",
+				tc.name, pgErr.Code, pgErr.ConstraintName, tc.constraint)
 		}
 	}
 	for _, set := range []string{
 		"date_format = 'iso'",
-		"location = repeat('a', 100), occupation = repeat('a', 100)",
-		"interests = repeat('a', 200), website = repeat('a', 200)",
+		"location = '" + rep("a", account.MaxLocation) + "', occupation = '" + rep("a", account.MaxOccupation) + "'",
+		"interests = '" + rep("a", account.MaxInterests) + "', website = '" + rep("a", account.MaxWebsite) + "'",
+		"website = '" + website200 + "'",
+		"birth_day = 5, birth_month = 5, birth_year = " + strconv.Itoa(account.MinBirthYear),
 		"birth_day = 29, birth_month = 2, birth_year = 2000",
 		"birth_day = null, birth_month = null, birth_year = null",
 	} {

@@ -4,10 +4,12 @@
 alter table users add column date_format text not null default 'standard'
 	check (date_format in ('standard', 'relative', 'iso'));
 
--- The "About you" fields are plain text. The character limits below are the
--- values of account.MaxLocation, account.MaxOccupation, account.MaxInterests and
--- account.MaxWebsite in internal/account/profile.go. SQL cannot import the Go
--- constants, so a change to one needs the same change here, in a new migration.
+-- The "About you" fields are plain text. The limits below are the values of
+-- account.MaxLocation, account.MaxOccupation, account.MaxInterests and
+-- account.MaxWebsite in internal/account/profile.go. The first three count
+-- characters, as account.CheckProfileText does. The website counts bytes, as
+-- account.CheckWebsite does. SQL cannot import the Go constants, so a change to
+-- one needs the same change here, in a new migration.
 alter table users add column location text not null default ''
 	check (char_length(location) <= 100);
 alter table users add column occupation text not null default ''
@@ -15,7 +17,7 @@ alter table users add column occupation text not null default ''
 alter table users add column interests text not null default ''
 	check (char_length(interests) <= 200);
 alter table users add column website text not null default ''
-	check (char_length(website) <= 200);
+	check (octet_length(website) <= 200);
 
 -- The birthday. The day and the month are set together, and the year needs both.
 -- Go checks that the date exists and the age rule (account.CheckBirthday); this
