@@ -235,9 +235,11 @@ func ownAvatarPath(userID int64, p string) bool {
 }
 
 // SetAvatar stores path as the avatar of member v and returns the path it
-// replaced ("" when there was none). It needs account.avatar. path is a site path
-// that gobb made for this member ("avatars/u{id}-{16 hex}.png"); any other value
-// is an error of the caller. The caller deletes the old file after the commit, so
+// replaced ("" when there was none, and also "" when another member's row still
+// names the old path: a bundle lets several rows share one file, so the file is
+// not the caller's to delete). It needs account.avatar. path is a site path that
+// gobb made for this member ("avatars/u{id}-{16 hex}.png"); any other value is an
+// error of the caller. The caller deletes the returned file after the commit, so
 // that a failed write never loses the current avatar.
 func SetAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer, path string) (old string, err error) {
 	if err := mayAccount(v, "account.avatar"); err != nil {
@@ -250,8 +252,9 @@ func SetAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer, path string) (
 }
 
 // RemoveAvatar clears the avatar of member v and returns the path it removed ("" when
-// there was none). It needs account.avatar. The caller deletes the file after the
-// commit.
+// there was none, and also "" when another member's row still names that path; see
+// [SetAvatar]). It needs account.avatar. The caller deletes the returned file after
+// the commit.
 func RemoveAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer) (old string, err error) {
 	if err := mayAccount(v, "account.avatar"); err != nil {
 		return "", err
@@ -259,9 +262,13 @@ func RemoveAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer) (old string
 	return swapAvatar(ctx, pool, v, "")
 }
 
-// swapAvatar stores path (NULL when empty) and returns the previous value. It
-// reads the old value under a row lock, so that two writes in parallel each
-// return a different old path and no file is left behind.
+// swapAvatar stores path (NULL when empty) and returns the previous value, or ""
+// when another row still names it. It reads the old value under a row lock, so
+// that two writes by one member each return a different old path. The check for
+// another row runs in the same transaction, after the update. Two members who
+// share a path and leave it at the same moment can each see the other still on
+// it, and then the file stays: a file that is kept by mistake costs a few
+// kilobytes, and a file that is deleted by mistake is somebody's avatar.
 func swapAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer, path string) (string, error) {
 	var old string
 	err := inTx(ctx, pool, func(tx pgx.Tx) error {
@@ -280,7 +287,15 @@ func swapAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer, path string) 
 		if _, err := tx.Exec(ctx, `update users set avatar_path = $2 where id = $1`, v.UserID, next); err != nil {
 			return fmt.Errorf("board: store the avatar of %d: %w", v.UserID, err)
 		}
-		if prev != nil {
+		if prev == nil {
+			return nil
+		}
+		var shared bool
+		err = tx.QueryRow(ctx, `select exists (select 1 from users where avatar_path = $1 and id <> $2)`, *prev, v.UserID).Scan(&shared)
+		if err != nil {
+			return fmt.Errorf("board: look for other users of an avatar file: %w", err)
+		}
+		if !shared {
 			old = *prev
 		}
 		return nil

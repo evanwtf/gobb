@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/evanwtf/gobb/internal/account"
@@ -99,6 +100,10 @@ type settingsErr struct {
 }
 
 // accountData is the data of account.html.
+//
+// The embedded AccountPage holds the stored settings. On a failed POST of "About
+// you", the values that the member sent replace them. The time zone and the date
+// format keep the stored value.
 type accountData struct {
 	board.AccountPage
 	// Done is the fixed notice of a change that succeeded, or empty.
@@ -112,14 +117,11 @@ type accountData struct {
 	Sig              signatureErr
 	// Err holds the messages of the settings forms.
 	Err settingsErr
-	// The embedded AccountPage holds the stored settings. On a failed POST of a
-	// settings form, the fields that the member sent replace them, except the
-	// time zone and the date format, which keep the stored value.
-
 	// Samples are the three date formats made with the clock of the viewer.
 	Samples dateSamples
-	// NowText is the time now in the zone of the viewer.
-	NowText string
+	// NowText is the time now in the zone of the viewer, in the standard format,
+	// and NowCity is the city of that zone.
+	NowText, NowCity string
 	// LatestYear is the latest year that the birthday accepts.
 	LatestYear int
 	// Common and Zones are the choices of the time zone list.
@@ -232,7 +234,8 @@ func (s *site) accountData(r *http.Request, p *page) (accountData, error) {
 	}
 	d := accountData{AccountPage: ap, Email: ap.Email, Signature: ap.Signature, Common: tz.Common, Zones: tz.Zones}
 	d.LatestYear = now.UTC().Year() - account.MinAge
-	d.NowText = now.In(loc).Format(nowLayout)
+	d.NowText = now.In(loc).Format(timeLayout)
+	d.NowCity = zoneCity(loc.String())
 	d.Samples = dateSamples{
 		Standard: now.In(loc).Format(timeLayout),
 		Relative: []string{
@@ -245,9 +248,12 @@ func (s *site) accountData(r *http.Request, p *page) (accountData, error) {
 	return d, nil
 }
 
-// nowLayout is the layout of the time that the time zone hint shows. gobb.js
-// makes the same text for a zone that the member picks.
-const nowLayout = "Mon, Jan 2, 2006, 3:04 pm"
+// zoneCity names the city of a zone: the last element of its name, with spaces
+// for underscores ("America/New_York" is "New York"). gobb.js makes the same text.
+func zoneCity(zone string) string {
+	city := zone[strings.LastIndex(zone, "/")+1:]
+	return strings.ReplaceAll(city, "_", " ")
+}
 
 // renderAccount writes the account page. The forms of the layout return to the
 // account page, not to the address of a POST.
@@ -523,6 +529,13 @@ func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Signature = text
+	// The signature counts as a save, whether it comes from gobb.js or from a form.
+	if ok, wait := s.saves.saves.Take(strconv.FormatInt(p.Viewer.UserID, 10), s.opt.Now()); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(wait)))
+		d.Err.Notice = msgTooManySaves
+		s.renderAccount(w, http.StatusTooManyRequests, p, d)
+		return
+	}
 	err = board.SetSignature(r.Context(), s.pool, p.Viewer, text, s.opt.Now())
 	var in *board.InputError
 	switch {

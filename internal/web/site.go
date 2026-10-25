@@ -62,6 +62,10 @@ type Options struct {
 	// address, and guest-name checks for each address. Zero means the default
 	// (60, 20 and 10). Tests that post a lot raise them.
 	MemberPosts, GuestPosts, NameChecks int
+	// MemberSaves is the count of saves of the account settings that each member
+	// may make in ten minutes. Zero means the default (120). A test that saves a
+	// lot raises it.
+	MemberSaves int
 	// LoginGateWait is how long a password check waits for the gate. Zero means
 	// the default of 5 seconds. Tests set it small.
 	LoginGateWait time.Duration
@@ -104,6 +108,10 @@ type site struct {
 	// gate is the memory gate of the password checks. An avatar decode takes its
 	// share from the same gate, so one budget covers both.
 	gate *login.Gate
+	// uploadSlots is the semaphore of the avatar uploads that are in flight: each
+	// one holds up to a megabyte of body in memory before the decode takes its
+	// share of the gate. A test makes it smaller.
+	uploadSlots chan struct{}
 	// patterns lists every pattern registered on the muxes of the site, for a test
 	// that checks the routes against its tables.
 	patterns []string
@@ -139,7 +147,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		lo.Gate = opt.LoginGate
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
-		saves: newSaveLimits(), gate: lo.Gate}
+		saves: newSaveLimits(opt), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))

@@ -197,10 +197,10 @@
     });
   }
 
-  // nowIn writes the time now in a zone, in the layout of the server's hint.
+  // nowIn writes the time now in a zone, in the standard format of the server.
   function nowIn(zone) {
     var text = new Intl.DateTimeFormat("en-US", {
-      weekday: "short", month: "short", day: "numeric", year: "numeric",
+      month: "short", day: "numeric", year: "numeric",
       hour: "numeric", minute: "2-digit", timeZone: zone
     }).format(new Date());
     return text.replace(/[\s ](AM|PM)$/, function (m, half) {
@@ -252,9 +252,13 @@
         line.textContent = "Times are shown in " + unit.value + ".";
       }
       var now = document.getElementById("timezone-now");
+      var city = document.getElementById("timezone-city");
       if (now) {
         try {
           now.textContent = nowIn(unit.value);
+          if (city) {
+            city.textContent = unit.value.slice(unit.value.lastIndexOf("/") + 1).replace(/_/g, " ");
+          }
         } catch (e) {
           // A zone that this browser does not know: the hint keeps its text.
         }
@@ -360,17 +364,26 @@
       show(remove, "Saving…", false);
       var body = new URLSearchParams();
       body.append("csrf", tokenOf(remove));
-      post(remove.action, {body: body.toString(), text: true}).then(function (res) {
+      // An upload that was picked while the remove ran goes next, with its latest
+      // file, as after any other save.
+      function next() {
         st.busy = false;
+        if (st.again) {
+          st.again = false;
+          save(picker, false);
+        }
+      }
+      post(remove.action, {body: body.toString(), text: true}).then(function (res) {
         if (res.ok) {
           hideAvatar();
           show(remove, "Removed.", false);
         } else {
           show(remove, res.data.message || "Not saved. Try again in a moment.", true);
         }
+        next();
       }, function () {
-        st.busy = false;
         show(remove, "Not saved: the server could not be reached. Try again.", true);
+        next();
       });
     });
   }

@@ -79,9 +79,14 @@
   multipart upload of at most 1 MiB, through `protectUpload`) and `/account/avatar/remove`.
   The handler writes the new PNG as `avatars/u{id}-{16 hex}.png` through an `os.Root` with
   `O_EXCL`, deletes it when the database write fails, and deletes the old file after the
-  write commits only when `board.ValidAvatarPath` accepts its path. The decode takes its
-  memory from the sign-in gate. Limits: 120 saves in 10 minutes and 10 uploads in an hour
-  for each member.
+  write commits only when `board.ValidAvatarPath` accepts its path and no other member
+  names it (a bundle lets several rows share one file; `board.SetAvatar` and
+  `board.RemoveAvatar` return no old path then). The decode takes its memory from the
+  sign-in gate. An upload needs a signed-in member before the server reads its body, and
+  the server takes four uploads at a time; the fifth gets 503. Limits: 120 saves in 10
+  minutes (the signature form counts too) and 10 uploads in an hour for each member. The
+  "About you" form runs its text fields and its birthday as two writes, so a refusal of
+  one never drops what was sent for the other, and the page shows every sent value.
 
 ## 0.1.0 (2026-10-25)
 

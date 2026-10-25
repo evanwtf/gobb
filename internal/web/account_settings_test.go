@@ -2,10 +2,13 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -16,12 +19,16 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/boardtest"
+	"github.com/evanwtf/gobb/internal/login"
 )
 
 // The tests of the settings on the account page: the forms as a browser without
@@ -35,8 +42,15 @@ var saveHeader = map[string]string{"X-Gobb-Save": "1"}
 // directory too.
 func postingSiteWithData(t *testing.T) (http.Handler, *pgxpool.Pool, string) {
 	t.Helper()
+	return postingSiteOpts(t, Options{})
+}
+
+// postingSiteOpts is postingSiteWithData with options; the data directory is set.
+func postingSiteOpts(t *testing.T, opt Options) (http.Handler, *pgxpool.Pool, string) {
+	t.Helper()
 	pool, dataDir := boardtest.Load(t, postingBoard())
-	h, err := New(t.Context(), pool, Options{DataDir: dataDir, LoginFloor: time.Millisecond})
+	opt.DataDir, opt.LoginFloor = dataDir, time.Millisecond
+	h, err := New(t.Context(), pool, opt)
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
@@ -777,7 +791,7 @@ func TestAccountPageSettingsSections(t *testing.T) {
 	if len(years) < 100 || years[len(years)-1][1] != "1900" {
 		t.Errorf("year list: %d entries, last %v", len(years), years[len(years)-1])
 	}
-	wantTop := time.Now().Year() - 19
+	wantTop := time.Now().UTC().Year() - 19
 	if years[0][1] != strconv.Itoa(wantTop) {
 		t.Errorf("first year = %s, want %d", years[0][1], wantTop)
 	}
@@ -878,5 +892,444 @@ func TestAvatarUploadSrcUnderBasePath(t *testing.T) {
 	}
 	if rec := getAs(t, h, "/forum/files/"+stored, a); rec.Code != http.StatusOK {
 		t.Errorf("GET of the src = %d", rec.Code)
+	}
+}
+
+// avatarFiles lists the files of member id in the avatars folder.
+func avatarFiles(t *testing.T, dataDir string, id int) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dataDir, "avatars"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "u"+strconv.Itoa(id)+"-") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// An imported file can be the avatar of several members. A change by one of them
+// leaves the file; the change of the last one deletes it.
+func TestAvatarSharedFileStays(t *testing.T) {
+	h, pool, dataDir := postingSiteWithData(t)
+	a, b := signIn(t, h, "alice", testPassword), signIn(t, h, "bob", testPassword)
+	shared := filepath.Join(dataDir, "avatars", "shared.png")
+	for _, remove := range []bool{false, true} {
+		if err := os.WriteFile(shared, testPNG(t, 8, 8), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		exec(t, pool, `update users set avatar_path = 'avatars/shared.png' where id in (1, 2)`)
+		change := func(c []*http.Cookie) *httptest.ResponseRecorder {
+			if remove {
+				return postWith(t, h, "/account/avatar/remove", c, url.Values{}, saveHeader)
+			}
+			return upload(t, h, c, testPNG(t, 30, 30), saveHeader)
+		}
+		if rec := change(a); rec.Code >= 300 {
+			t.Fatalf("alice (remove=%v) = %d", remove, rec.Code)
+		}
+		if !fileExists(shared) {
+			t.Fatalf("remove=%v: the shared file was deleted while bob still names it", remove)
+		}
+		if got := avatarOf(t, pool, 2); got != "avatars/shared.png" {
+			t.Errorf("remove=%v: bob's avatar = %q", remove, got)
+		}
+		if rec := change(b); rec.Code >= 300 {
+			t.Fatalf("bob (remove=%v) = %d", remove, rec.Code)
+		}
+		if fileExists(shared) {
+			t.Errorf("remove=%v: the shared file stays after the last member changed away", remove)
+		}
+	}
+}
+
+// A refusal of one part of the About you form never drops what was sent for the
+// other. Each message sits beside its field, and the page shows every sent value.
+func TestAboutKeepsEverythingSent(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	exec(t, pool, `update users set location = 'Old place', website = '', birth_day = null, birth_month = null, birth_year = null where id = 1`)
+	const msgSite = "Enter an address that starts with https:// or http://."
+	selected := func(page, value, label string) bool {
+		return strings.Contains(page, `<option value="`+value+`" selected>`+label+`</option>`)
+	}
+
+	// Good text, bad birthday: the text is stored, and the birthday shows as sent.
+	rec := postWith(t, h, "/account/about", a, url.Values{"location": {"Nowhere"}, "bday": {"31"}, "bmonth": {"2"}, "byear": {"1990"}}, nil)
+	page := bodyOf(t, rec)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(page, "February 1990 has no day 31.") && !strings.Contains(page, "February has no day 31.") {
+		t.Fatalf("good text, bad birthday = %d", rec.Code)
+	}
+	if got := userCol(t, pool, 1, "location"); got != "Nowhere" {
+		t.Errorf("the good text was not stored: %q", got)
+	}
+	if !selected(page, "31", "31") || !selected(page, "2", "February") || !selected(page, "1990", "1990") {
+		t.Error("the page does not show the birthday that was sent")
+	}
+	if colOrEmpty(t, pool, 1, "birth_day") != "" {
+		t.Error("a refused birthday was stored")
+	}
+
+	// Bad website, good birthday: the birthday is stored, and the text shows as sent.
+	rec = postWith(t, h, "/account/about", a, url.Values{"location": {"Kept in the box"}, "website": {"ftp://x.example"},
+		"bday": {"14"}, "bmonth": {"3"}, "byear": {"1984"}}, nil)
+	page = bodyOf(t, rec)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(page, msgSite) {
+		t.Fatalf("bad website, good birthday = %d", rec.Code)
+	}
+	if colOrEmpty(t, pool, 1, "birth_day") != "14" || colOrEmpty(t, pool, 1, "birth_year") != "1984" {
+		t.Error("the good birthday was dropped")
+	}
+	if got, _ := inputValue(page, "website"); got != "ftp://x.example" {
+		t.Errorf("website box = %q", got)
+	}
+	if got, _ := inputValue(page, "location"); got != "Kept in the box" {
+		t.Errorf("location box = %q", got)
+	}
+	if got := userCol(t, pool, 1, "location"); got != "Nowhere" {
+		t.Errorf("a refused text save stored a location: %q", got)
+	}
+	if !selected(page, "3", "March") {
+		t.Error("the page does not show the stored birthday")
+	}
+
+	// Both bad: both messages.
+	rec = postWith(t, h, "/account/about", a, url.Values{"website": {"nope"}, "bday": {"30"}, "bmonth": {"2"}, "byear": {""}}, nil)
+	page = bodyOf(t, rec)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(page, msgSite) || !strings.Contains(page, "February has no day 30.") {
+		t.Errorf("both bad = %d; want both messages", rec.Code)
+	}
+	if colOrEmpty(t, pool, 1, "birth_day") != "14" {
+		t.Error("a refused birthday changed the stored one")
+	}
+
+	// A birthday that is not numbers is refused beside the birthday, and the text still goes.
+	rec = postWith(t, h, "/account/about", a, url.Values{"location": {"Third"}, "bday": {"x"}, "bmonth": {"3"}, "byear": {""}}, nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(bodyOf(t, rec), msgBirthdayForm) || userCol(t, pool, 1, "location") != "Third" {
+		t.Errorf("a birthday of letters = %d", rec.Code)
+	}
+}
+
+// readerFunc is an io.Reader made of a function.
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// A guest's upload is refused without a read of the body.
+func TestAvatarGuestBodyIsNotRead(t *testing.T) {
+	h, pool, _ := postingSiteWithData(t)
+	page := getAs(t, h, "/", nil)
+	guest := jar(nil, page)
+	token := formToken(t, bodyOf(t, page))
+	body, ctype := multipartBody(t, token, "me.png", bytes.Repeat([]byte{0x89}, 1<<20))
+	for _, hdr := range []map[string]string{nil, saveHeader} {
+		var reads atomic.Int32
+		r := httptest.NewRequest(http.MethodPost, "/account/avatar", readerFunc(func(p []byte) (int, error) {
+			reads.Add(1)
+			return body.Read(p)
+		}))
+		r.Header.Set("Content-Type", ctype)
+		for k, v := range hdr {
+			r.Header.Set(k, v)
+		}
+		for _, c := range guest {
+			r.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("guest upload (header %v) = %d, want 403", hdr != nil, rec.Code)
+		}
+		if hdr != nil {
+			if answerJSON(t, rec)["message"] == "" {
+				t.Error("the JSON 403 has no message")
+			}
+		}
+		if n := reads.Load(); n != 0 {
+			t.Errorf("the server read the body of a guest %d times", n)
+		}
+	}
+	if avatarOf(t, pool, 1) != "avatars/1.png" {
+		t.Error("a guest changed an avatar")
+	}
+}
+
+// The server takes only maxUploadsInFlight uploads at one time. The next one gets
+// 503 at once, and the slot is free again when the first ends.
+func TestAvatarUploadsInFlightAreCapped(t *testing.T) {
+	var s *site
+	onNew = func(got *site) { s = got }
+	t.Cleanup(func() { onNew = nil })
+	h, pool, _ := postingSiteWithData(t)
+	onNew = nil
+	if cap(s.uploadSlots) != maxUploadsInFlight || maxUploadsInFlight != 4 {
+		t.Fatalf("the slots hold %d, want 4", cap(s.uploadSlots))
+	}
+	s.uploadSlots = make(chan struct{}, 1)
+	a, b := signIn(t, h, "alice", testPassword), signIn(t, h, "bob", testPassword)
+
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	held := httptest.NewRequest(http.MethodPost, "/account/avatar", io.MultiReader(strings.NewReader("--x\r\n"),
+		readerFunc(func([]byte) (int, error) {
+			once.Do(func() { close(started) })
+			<-release
+			return 0, io.EOF
+		})))
+	held.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+	held.Header.Set("X-Gobb-Save", "1")
+	for _, c := range a {
+		held.AddCookie(c)
+	}
+	done := make(chan *httptest.ResponseRecorder)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, held)
+		done <- rec
+	}()
+	<-started
+
+	before := avatarOf(t, pool, 2)
+	rec := upload(t, h, b, testPNG(t, 20, 20), saveHeader)
+	if got := answerJSON(t, rec); rec.Code != http.StatusServiceUnavailable || got["message"] != msgBusy || rec.Header().Get("Retry-After") != "5" {
+		t.Errorf("second upload = %d %v, want 503 with the busy text", rec.Code, got)
+	}
+	if avatarOf(t, pool, 2) != before {
+		t.Error("the refused upload changed the avatar")
+	}
+	close(release)
+	// The held upload ends with its body, which holds no token: refused, not 503.
+	if rec := <-done; rec.Code != http.StatusForbidden && rec.Code != http.StatusBadRequest {
+		t.Errorf("the held upload = %d, want 403 or 400", rec.Code)
+	}
+	if rec := upload(t, h, b, testPNG(t, 20, 20), saveHeader); rec.Code != http.StatusOK {
+		t.Errorf("an upload after the slot is free = %d", rec.Code)
+	}
+}
+
+// The no-script signature counts as a save, like every other setting.
+func TestSignatureFormCountsAsASave(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	for i := range 120 {
+		rec := postWith(t, h, "/account/dateformat", a, url.Values{"dateformat": {"iso"}, "csrf": {token}}, saveHeader)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("save %d = %d", i+1, rec.Code)
+		}
+	}
+	rec := postWith(t, h, "/account/signature", a, url.Values{"signature": {"Over the limit."}, "csrf": {token}}, nil)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(bodyOf(t, rec), msgTooManySaves) {
+		t.Errorf("the form signature over the limit = %d, want 429", rec.Code)
+	}
+	if got := userCol(t, pool, 1, "signature_source"); got == "Over the limit." {
+		t.Error("the signature was stored over the limit")
+	}
+	// And one signature form counts: the 120th save is the last.
+	h, _ = siteWithPool(t, postingBoard(), Options{})
+	a = signIn(t, h, "alice", testPassword)
+	token = accountToken(t, h, a)
+	for i := range 120 {
+		if rec := postWith(t, h, "/account/signature", a, url.Values{"signature": {"Text."}, "csrf": {token}}, nil); rec.Code != http.StatusSeeOther {
+			t.Fatalf("form signature %d = %d", i+1, rec.Code)
+		}
+	}
+	if rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Asia/Tokyo"}, "csrf": {token}}, saveHeader); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("a save after 120 form signatures = %d, want 429", rec.Code)
+	}
+}
+
+// A session lookup that fails answers a request from gobb.js with JSON.
+func TestAutoSaveIdentifyFailureIsJSON(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	pool.Close()
+	for _, target := range []string{"/account/timezone", "/account/avatar"} {
+		var rec *httptest.ResponseRecorder
+		if target == "/account/avatar" {
+			rec = uploadWithToken(t, h, a, token, testPNG(t, 8, 8), saveHeader)
+		} else {
+			rec = postWith(t, h, target, a, url.Values{"timezone": {"Asia/Tokyo"}, "csrf": {token}}, saveHeader)
+		}
+		if got := answerJSON(t, rec); rec.Code != http.StatusInternalServerError || got["message"] != msgWriteFailed {
+			t.Errorf("%s with a dead database = %d %v, want 500 JSON", target, rec.Code, got)
+		}
+	}
+}
+
+// When the write of the path fails, the new file is deleted and the old one stays.
+func TestAvatarNewFileDeletedWhenTheWriteFails(t *testing.T) {
+	h, pool, dataDir := postingSiteWithData(t)
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	beforeSetAvatar = func() { exec(t, pool, `update users set state = 'inactive' where id = 1`) }
+	t.Cleanup(func() { beforeSetAvatar = nil })
+	rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), saveHeader)
+	if got := answerJSON(t, rec); rec.Code != http.StatusNotFound || got["message"] != msgNotSaved {
+		t.Errorf("upload with a failed write = %d %v, want 404 and the neutral text", rec.Code, got)
+	}
+	if files := avatarFiles(t, dataDir, 1); len(files) != 0 {
+		t.Errorf("the new file stays after a failed write: %v", files)
+	}
+	if !fileExists(filepath.Join(dataDir, "avatars/1.png")) || avatarOf(t, pool, 1) != "avatars/1.png" {
+		t.Error("the old avatar was lost")
+	}
+}
+
+// A full gate answers an upload with 503 and the busy text, and stores nothing.
+func TestAvatarGateBusy(t *testing.T) {
+	gate := login.NewGate(1 << 16)
+	h, pool, dataDir := postingSiteOpts(t, Options{LoginGate: gate, LoginGateWait: 20 * time.Millisecond})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	hold, err := gate.Acquire(t.Context(), 1<<16, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold()
+	for _, hdr := range []map[string]string{saveHeader, nil} {
+		rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), hdr)
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "5" {
+			t.Fatalf("upload on a full gate = %d, Retry-After %q, want 503 and 5", rec.Code, rec.Header().Get("Retry-After"))
+		}
+		if hdr != nil {
+			if got := answerJSON(t, rec); got["message"] != msgBusy {
+				t.Errorf("message = %v", got)
+			}
+		} else if !strings.Contains(bodyOf(t, rec), msgBusy) {
+			t.Error("the page lacks the busy text")
+		}
+	}
+	if avatarOf(t, pool, 1) != "avatars/1.png" || len(avatarFiles(t, dataDir, 1)) != 0 {
+		t.Error("a busy gate changed the avatar")
+	}
+}
+
+// A request that is cancelled before the write does not leave the row and the
+// files out of step: the write still finishes.
+func TestAvatarWriteSurvivesACancelledRequest(t *testing.T) {
+	h, pool, dataDir := postingSiteWithData(t)
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	ctx, cancel := context.WithCancel(t.Context())
+	beforeSetAvatar = cancel
+	t.Cleanup(func() { beforeSetAvatar = nil })
+	body, ctype := multipartBody(t, token, "me.png", testPNG(t, 20, 20))
+	r := httptest.NewRequest(http.MethodPost, "/account/avatar", body).WithContext(ctx)
+	r.Header.Set("Content-Type", ctype)
+	r.Header.Set("X-Gobb-Save", "1")
+	for _, c := range a {
+		r.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	stored := avatarOf(t, pool, 1)
+	if !avatarName.MatchString(stored) || !fileExists(filepath.Join(dataDir, stored)) {
+		t.Errorf("after a cancelled request the row names %q (file there: %v)", stored, fileExists(filepath.Join(dataDir, stored)))
+	}
+	if fileExists(filepath.Join(dataDir, "avatars/1.png")) {
+		t.Error("the old file stays after the write committed")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Error("the request was not cancelled")
+	}
+}
+
+// The mode of a new avatar file is 0644 whatever the umask.
+func TestAvatarFileModeIgnoresTheUmask(t *testing.T) {
+	h, pool, dataDir := postingSiteWithData(t)
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	if rec := uploadWithToken(t, h, a, token, testPNG(t, 20, 20), saveHeader); rec.Code != http.StatusOK {
+		t.Fatalf("upload = %d", rec.Code)
+	}
+	info, err := os.Stat(filepath.Join(dataDir, avatarOf(t, pool, 1)))
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v (%v), want 0644", info.Mode().Perm(), err)
+	}
+}
+
+// Every answer to a POST of the settings carries the strict policy of the site,
+// page or JSON: the policy is set for all responses before any handler runs
+// (secure in headers.go), and the account handlers add no embed to it.
+func TestAccountPostAnswersCSP(t *testing.T) {
+	h, _, _ := postingSiteWithData(t)
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	bad := png8(t)
+	type req struct {
+		name string
+		do   func(hdr map[string]string) *httptest.ResponseRecorder
+	}
+	form := func(target string, f url.Values) func(map[string]string) *httptest.ResponseRecorder {
+		return func(hdr map[string]string) *httptest.ResponseRecorder {
+			f = cloneForm(f)
+			f.Set("csrf", token)
+			return postWith(t, h, target, a, f, hdr)
+		}
+	}
+	for _, tc := range []req{
+		{"timezone", form("/account/timezone", url.Values{"timezone": {"UTC"}})},
+		{"dateformat", form("/account/dateformat", url.Values{"dateformat": {"fancy"}})},
+		{"about", form("/account/about", url.Values{"website": {"nope"}})},
+		{"signature", form("/account/signature", url.Values{"signature": {strings.Repeat("x", 2001)}})},
+		{"avatar remove", form("/account/avatar/remove", url.Values{})},
+		{"avatar", func(hdr map[string]string) *httptest.ResponseRecorder {
+			return uploadWithToken(t, h, a, token, bad, hdr)
+		}},
+	} {
+		for _, hdr := range []map[string]string{nil, saveHeader} {
+			rec := tc.do(hdr)
+			where := tc.name + " (script: " + strconv.FormatBool(hdr != nil) + ")"
+			csp := rec.Header().Get("Content-Security-Policy")
+			checkScriptSrc(t, where, csp)
+			for name, want := range map[string]string{"object-src": "'none'", "base-uri": "'none'", "form-action": "'self'", "default-src": "'none'"} {
+				if got, _ := directive(csp, name); got != want {
+					t.Errorf("%s: %s = %q, want %q", where, name, got, want)
+				}
+			}
+			if strings.Contains(csp, "unsafe") {
+				t.Errorf("%s: the policy holds unsafe: %s", where, csp)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+				t.Errorf("%s: Cache-Control = %q", where, got)
+			}
+			if body := bodyOf(t, rec); strings.Contains(body, "<script>") || strings.Contains(body, " style=") || strings.Contains(body, "<style") {
+				t.Errorf("%s: the answer holds inline script or style", where)
+			}
+		}
+	}
+}
+
+// png8 is a text that is not an image, for a refused upload.
+func png8(t *testing.T) []byte { t.Helper(); return []byte("not an image at all") }
+
+func TestZoneCity(t *testing.T) {
+	for zone, want := range map[string]string{
+		"America/New_York": "New York", "Europe/London": "London",
+		"America/Argentina/Buenos_Aires": "Buenos Aires", "Asia/Old_Name": "Old Name", "Etc": "Etc",
+	} {
+		if got := zoneCity(zone); got != want {
+			t.Errorf("zoneCity(%q) = %q, want %q", zone, got, want)
+		}
+	}
+}
+
+// The hint under the time zone names the time in the standard format and the city.
+func TestAccountZoneHint(t *testing.T) {
+	now := time.Date(2026, 10, 25, 20, 44, 0, 0, time.UTC)
+	h, pool := siteWithPool(t, postingBoard(), Options{Now: func() time.Time { return now }})
+	a := signIn(t, h, "alice", testPassword)
+	exec(t, pool, `update users set timezone = 'America/Los_Angeles' where id = 1`)
+	page := bodyOf(t, getAs(t, h, "/account", a))
+	want := `Right now it is <span id="timezone-now">Oct 25, 2026, 1:44 pm</span> in <span id="timezone-city">Los Angeles</span>.`
+	if !strings.Contains(page, want) {
+		t.Errorf("the hint is not %q", want)
 	}
 }

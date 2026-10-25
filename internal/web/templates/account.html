@@ -35,7 +35,7 @@
       </select>
       <p class="save-status" id="timezone-status" role="status" aria-live="polite"></p>
       {{- if .Data.Err.Zone}}<p class="field-error" id="timezone-error" role="alert">{{.Data.Err.Zone}}</p>{{end}}
-      <p class="hint" id="timezone-hint">Every time on the board shows in this zone, with daylight saving time where the city has it. Right now it is <span id="timezone-now">{{.Data.NowText}}</span>.</p>
+      <p class="hint" id="timezone-hint">Every time on the board shows in this zone, with daylight saving time where the city has it. Right now it is <span id="timezone-now">{{.Data.NowText}}</span> in <span id="timezone-city">{{.Data.NowCity}}</span>.</p>
     </div>
     <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save time zone</button></div>
   </form>

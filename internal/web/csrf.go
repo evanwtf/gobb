@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"mime"
 	"net/http"
+	"strconv"
 
 	"github.com/evanwtf/gobb/internal/session"
 )
@@ -81,7 +83,7 @@ const (
 // The body is read before the token is checked, as in [site.protect]: the cap
 // holds the cost. The cross-origin check runs before any read.
 func (s *site) protectUpload(limit int64, h http.HandlerFunc) http.Handler {
-	g := guard{limit: limit, tooBig: msgFileTooLarge, parse: func(r *http.Request) error {
+	g := guard{limit: limit, tooBig: msgFileTooLarge, member: true, slots: func() chan struct{} { return s.uploadSlots }, parse: func(r *http.Request) error {
 		// ParseMultipartForm drops the error of a body that is not multipart (it
 		// returns ErrNotMultipart instead), and a body over the cap is one such
 		// error. So the content type picks the parser.
@@ -110,9 +112,16 @@ type guard struct {
 	tooBig  string
 	expired bool
 	parse   func(*http.Request) error
+	// member asks for a signed-in visitor before the body is read: a guest, or a
+	// visitor whose session ended, gets 403 and the server reads nothing. slots,
+	// when set, is the semaphore of the requests that may be in the guard and the
+	// handler at one time; a request that finds it full gets 503 at once. Both are
+	// for the upload, whose body is read into memory.
+	member bool
+	slots  func() chan struct{}
 }
 
-// The headers that tell the server a request comes from gobb.js. The answer is
+// The header that tells the server a request comes from gobb.js. The answer is
 // then 204 or JSON, never a page.
 const saveHeaderName = "X-Gobb-Save"
 
@@ -150,9 +159,49 @@ func (s *site) guardRefused(w http.ResponseWriter, r *http.Request, status int, 
 	s.fail(w, r, status, heading, msg)
 }
 
+// identifyFailed answers a request whose session could not be looked up: JSON
+// with a fixed text for a request from gobb.js, the error page otherwise.
+func (s *site) identifyFailed(w http.ResponseWriter, r *http.Request, err error) {
+	if saveRequested(r) {
+		slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+		saveMessage(w, http.StatusInternalServerError, msgWriteFailed)
+		return
+	}
+	s.serverError(w, r, err)
+}
+
 func (s *site) guardWith(cop *http.CrossOriginProtection, g guard, h, signedOut http.HandlerFunc) http.Handler {
 	limit, expired := g.limit, g.expired
 	return cop.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if g.member {
+			// The session comes first: nobody who is not signed in makes the server
+			// hold a body.
+			id, err := s.identify(w, r)
+			if err != nil {
+				s.identifyFailed(w, r, err)
+				return
+			}
+			if id.token == "" {
+				msg := "Sign in to upload a file."
+				if id.ended {
+					msg = "Your session ended. You are signed out."
+				}
+				s.guardRefused(w, r, http.StatusForbidden, "Form not accepted", msg)
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), identityKey{}, id))
+			if g.slots != nil {
+				slots := g.slots()
+				select {
+				case slots <- struct{}{}:
+					defer func() { <-slots }()
+				default:
+					w.Header().Set("Retry-After", strconv.Itoa(busyRetrySeconds))
+					s.guardRefused(w, r, http.StatusServiceUnavailable, "Server busy", msgBusy)
+					return
+				}
+			}
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if err := g.parse(r); err != nil {
 			var tooBig *http.MaxBytesError
@@ -167,7 +216,7 @@ func (s *site) guardWith(cop *http.CrossOriginProtection, g guard, h, signedOut 
 		// the context of the request it gets.
 		id, err := s.identify(w, r)
 		if err != nil {
-			s.serverError(w, r, err)
+			s.identifyFailed(w, r, err)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), identityKey{}, id))

@@ -305,8 +305,14 @@ func TestPostBodyCaps(t *testing.T) {
 	h, _ := smallSite(t)
 	for _, tc := range bodyCaps {
 		t.Run(tc.route, func(t *testing.T) {
+			// The upload reads no body for a visitor who is not signed in (it
+			// answers 403), so its cap is tested as a member.
+			var cookies []*http.Cookie
+			if tc.route == "/account/avatar" {
+				cookies = signIn(t, h, "alice", testPassword)
+			}
 			over := url.Values{"junk": {strings.Repeat("x", tc.limit)}}
-			rec := request(t, h, http.MethodPost, tc.route, nil, over)
+			rec := request(t, h, http.MethodPost, tc.route, cookies, over)
 			if rec.Code != http.StatusRequestEntityTooLarge {
 				t.Errorf("body of %d bytes = %d, want 413", len(over.Encode()), rec.Code)
 			}
@@ -314,7 +320,7 @@ func TestPostBodyCaps(t *testing.T) {
 				t.Errorf("the 413 is not the layout: %.200s", body)
 			}
 			under := url.Values{"junk": {strings.Repeat("x", tc.limit-100)}}
-			rec = request(t, h, http.MethodPost, tc.route, nil, under)
+			rec = request(t, h, http.MethodPost, tc.route, cookies, under)
 			// Sign-out with no live session has nothing to protect: past the
 			// cap, it answers 303 to the index instead of the 403.
 			want := http.StatusForbidden

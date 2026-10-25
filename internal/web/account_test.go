@@ -826,7 +826,7 @@ func TestSignaturePayloads(t *testing.T) {
 	if len(payloads) < 150 {
 		t.Fatalf("%d payloads", len(payloads))
 	}
-	h, _ := siteWithPool(t, postingBoard(), Options{})
+	h, _ := siteWithPool(t, postingBoard(), Options{MemberSaves: 100_000})
 	a := signIn(t, h, "alice", testPassword)
 	token := formToken(t, bodyOf(t, getAs(t, h, "/account", a)))
 	saved, refused, checked, blank := 0, 0, 0, 0

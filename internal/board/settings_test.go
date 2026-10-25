@@ -408,3 +408,43 @@ func TestValidAvatarPath(t *testing.T) {
 		}
 	}
 }
+
+// Several rows may name one avatar file (an import allows it). A change that
+// leaves another row on the path returns no old path, so the caller keeps the
+// file; the last row to change away gets the path back.
+func TestSettingsAvatarSharedPath(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	c, b := viewerFor(t, pool, carol), viewerFor(t, pool, bob)
+	const shared = "avatars/shared-old.png"
+	if _, err := pool.Exec(ctx, `update users set avatar_path = $1 where id in ($2, $3)`, shared, carol, bob); err != nil {
+		t.Fatal(err)
+	}
+
+	// One member uploads: the other still names the file.
+	old, err := board.SetAvatar(ctx, pool, c, "avatars/u3-0123456789abcdef.png")
+	if err != nil || old != "" {
+		t.Fatalf("SetAvatar over a shared path: %q, %v; want no old path", old, err)
+	}
+	// The last member to leave gets the path.
+	old, err = board.SetAvatar(ctx, pool, b, "avatars/u2-0123456789abcdef.png")
+	if err != nil || old != shared {
+		t.Fatalf("SetAvatar by the last member: %q, %v; want %s", old, err, shared)
+	}
+
+	// The same for a remove.
+	if _, err := pool.Exec(ctx, `update users set avatar_path = $1 where id in ($2, $3)`, shared, carol, bob); err != nil {
+		t.Fatal(err)
+	}
+	old, err = board.RemoveAvatar(ctx, pool, c)
+	if err != nil || old != "" {
+		t.Fatalf("RemoveAvatar over a shared path: %q, %v; want no old path", old, err)
+	}
+	if got := readSettings(t, pool, bob).Avatar; got == nil || *got != shared {
+		t.Errorf("the other member's avatar = %v, want %s", got, shared)
+	}
+	old, err = board.RemoveAvatar(ctx, pool, b)
+	if err != nil || old != shared {
+		t.Fatalf("RemoveAvatar by the last member: %q, %v; want %s", old, err, shared)
+	}
+}
