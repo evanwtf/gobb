@@ -2,6 +2,7 @@ package account
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -17,12 +18,18 @@ var (
 	// ErrTooLong means the text is longer than the limit.
 	ErrTooLong = errors.New("account: too long")
 	// ErrControl means the text holds a control character. A line break is one.
-	// A format character (Unicode category Cf, such as the bidirectional controls,
-	// the zero-width space and the byte order mark) and the line and paragraph
-	// separators count too, because they hide or reorder text.
+	// The line and paragraph separators (Unicode categories Zl and Zp) count too.
 	ErrControl = errors.New("account: holds a control character")
+	// ErrFormat means the text holds a hidden formatting character: one of
+	// Unicode category Cf, such as the bidirectional controls, the zero-width
+	// space and the byte order mark, because it hides or reorders text. The
+	// zero width joiner, the zero width non-joiner and the tag characters
+	// U+E0020 to U+E007F are not hidden in this sense. They are part of emoji
+	// sequences, subdivision flags and Persian words, and they pass.
+	ErrFormat = errors.New("account: holds a hidden formatting character")
 	// ErrWebsite means the website is not an http or https URL with a host, or it
-	// holds user information, white space or a control character.
+	// holds user information, white space or a control character. A website with a
+	// hidden formatting character is also [ErrFormat].
 	ErrWebsite = errors.New("account: not a website URL")
 	// ErrBirthdayPair means only one of the day and the month is set.
 	ErrBirthdayPair = errors.New("account: birthday needs a day and a month together")
@@ -56,40 +63,68 @@ const (
 )
 
 // CheckProfileText checks a plain-text profile field: valid UTF-8, at most limit
-// characters (runes, not bytes), and no control character, format character or
-// line or paragraph separator. A line break, a tab and U+0000 are control
-// characters. It returns nil, [ErrNotUTF8], [ErrTooLong]
-// or [ErrControl]. It does not trim s: a caller that trims does so first.
+// characters (runes, not bytes), and no control character, hidden formatting
+// character or line or paragraph separator. A line break, a tab and U+0000 are
+// control characters. The zero width joiner, the zero width non-joiner and the
+// tag characters U+E0020 to U+E007F are allowed (ruling R40). It returns nil,
+// [ErrNotUTF8], [ErrTooLong], [ErrControl] or [ErrFormat]. It does not trim s: a
+// caller that trims does so first.
 func CheckProfileText(s string, limit int) error {
 	switch {
 	case !utf8.ValidString(s):
 		return ErrNotUTF8
 	case utf8.RuneCountInString(s) > limit:
 		return ErrTooLong
-	case strings.IndexFunc(s, hidden) >= 0:
-		return ErrControl
 	}
-	return nil
+	return hiddenFault(s)
 }
 
-// hidden reports whether r is a control character, a format character (Unicode
-// category Cf) or a line or paragraph separator (Zl, Zp).
-func hidden(r rune) bool {
-	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+// isFormat reports whether r is a format character (Unicode category Cf) that the
+// profile text refuses. The zero width joiner, the zero width non-joiner and the
+// tag characters U+E0020 to U+E007F are allowed.
+func isFormat(r rune) bool {
+	switch {
+	case r == '\u200c' || r == '\u200d', r >= 0xE0020 && r <= 0xE007F:
+		return false
+	}
+	return unicode.Is(unicode.Cf, r)
+}
+
+// isControl reports whether r is a control character or a line or paragraph
+// separator (Zl, Zp).
+func isControl(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp)
+}
+
+// hiddenFault returns [ErrControl] or [ErrFormat] for the first character of s
+// that is a control character or a hidden formatting character, and nil when s
+// holds none.
+func hiddenFault(s string) error {
+	for _, r := range s {
+		switch {
+		case isControl(r):
+			return ErrControl
+		case isFormat(r):
+			return ErrFormat
+		}
+	}
+	return nil
 }
 
 // CheckWebsite checks a website field. An empty string passes. Any other value
 // must meet all of these:
 //
 //   - it is valid UTF-8, and at most [MaxWebsite] bytes;
-//   - it holds no white space, no control character, no format character and no
-//     line or paragraph separator, in the text or after the percent-decoding of the
-//     host and the path;
+//   - it holds no white space, no control character, no hidden formatting
+//     character and no line or paragraph separator, in the text or after the
+//     percent-decoding of the host, the path, the query and the fragment;
 //   - its scheme is http or https, in any case;
 //   - it has a host;
 //   - it has no user information.
 //
-// It returns nil, [ErrNotUTF8], [ErrTooLong] or [ErrWebsite].
+// It returns nil, [ErrNotUTF8], [ErrTooLong] or [ErrWebsite]. When a hidden
+// formatting character is the cause, the error is also [ErrFormat]. The zero width
+// joiner, the zero width non-joiner and the tag characters pass (ruling R40).
 func CheckWebsite(s string) error {
 	if s == "" {
 		return nil
@@ -99,8 +134,11 @@ func CheckWebsite(s string) error {
 		return ErrNotUTF8
 	case len(s) > MaxWebsite:
 		return ErrTooLong
-	case strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || hidden(r) }) >= 0:
+	case strings.IndexFunc(s, unicode.IsSpace) >= 0:
 		return ErrWebsite
+	}
+	if err := hiddenFault(s); err != nil {
+		return websiteFault(err)
 	}
 	u, err := url.Parse(s)
 	if err != nil {
@@ -113,10 +151,15 @@ func CheckWebsite(s string) error {
 		return ErrWebsite
 	}
 	// Percent-encoding would hide a character that the raw string check refuses.
-	// url.Parse decodes the path; the host is decoded here.
-	host, err := url.PathUnescape(u.Host)
-	if err != nil || strings.IndexFunc(host+u.Path, hidden) >= 0 {
+	// url.Parse has decoded the host, the path and the fragment. The query stays
+	// raw, so decode it here. A query with a bad escape is refused, because the
+	// escape could hide a character.
+	query, err := url.QueryUnescape(u.RawQuery)
+	if err != nil {
 		return ErrWebsite
+	}
+	if err := hiddenFault(u.Host + u.Path + query + u.Fragment); err != nil {
+		return websiteFault(err)
 	}
 	return nil
 }
@@ -158,4 +201,13 @@ func CheckBirthday(day, month, year, latestYear int) error {
 		return ErrNoSuchDate
 	}
 	return nil
+}
+
+// websiteFault returns [ErrWebsite] for a website whose text holds a control or a
+// hidden formatting character. For [ErrFormat], the result is also [ErrFormat].
+func websiteFault(cause error) error {
+	if errors.Is(cause, ErrFormat) {
+		return fmt.Errorf("%w: %w", ErrWebsite, ErrFormat)
+	}
+	return ErrWebsite
 }

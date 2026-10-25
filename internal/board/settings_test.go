@@ -132,6 +132,7 @@ func TestAboutRules(t *testing.T) {
 		long100  = "Use at most 100 characters."
 		long200  = "Use at most 200 characters."
 		oneLine  = "Use one line of plain text."
+		hidden   = "Remove the hidden formatting character."
 		siteForm = "Enter an address that starts with https:// or http://."
 	)
 	cases := []struct {
@@ -146,11 +147,15 @@ func TestAboutRules(t *testing.T) {
 		{"location newline", board.AboutChange{Location: ptr("a\nb")}, "location", oneLine},
 		{"occupation tab", board.AboutChange{Occupation: ptr("a\tb")}, "occupation", oneLine},
 		{"interests NUL", board.AboutChange{Interests: ptr("a\x00b")}, "interests", oneLine},
-		{"location override", board.AboutChange{Location: ptr("a\u202eb")}, "location", oneLine},
-		{"occupation zero-width space", board.AboutChange{Occupation: ptr("a\u200bb")}, "occupation", oneLine},
+		{"location override", board.AboutChange{Location: ptr("a\u202eb")}, "location", hidden},
+		{"occupation zero-width space", board.AboutChange{Occupation: ptr("a\u200bb")}, "occupation", hidden},
+		{"interests byte order mark", board.AboutChange{Interests: ptr("a\ufeffb")}, "interests", hidden},
+		{"website zero-width space", board.AboutChange{Website: ptr("https://example.org/a\u200bb")}, "website", hidden},
 		{"interests line separator", board.AboutChange{Interests: ptr("a\u2028b")}, "interests", oneLine},
-		{"website override", board.AboutChange{Website: ptr("https://example.org/a\u202eb")}, "website", siteForm},
-		{"website encoded override", board.AboutChange{Website: ptr("https://example.org/%E2%80%AEtxt.exe")}, "website", siteForm},
+		{"website override", board.AboutChange{Website: ptr("https://example.org/a\u202eb")}, "website", hidden},
+		{"website encoded override", board.AboutChange{Website: ptr("https://example.org/%E2%80%AEtxt.exe")}, "website", hidden},
+		{"website encoded override in the query", board.AboutChange{Website: ptr("https://example.org/?q=%E2%80%AE")}, "website", hidden},
+		{"website encoded override in the fragment", board.AboutChange{Website: ptr("https://example.org/#%E2%80%AE")}, "website", hidden},
 		{"location bad UTF-8", board.AboutChange{Location: ptr("a\xffb")}, "location", oneLine},
 		{"website ftp", board.AboutChange{Website: ptr("ftp://example.org/")}, "website", siteForm},
 		{"website javascript", board.AboutChange{Website: ptr("javascript:alert(1)")}, "website", siteForm},
@@ -169,6 +174,17 @@ func TestAboutRules(t *testing.T) {
 				t.Errorf("a refusal changed the row: %+v -> %+v", before, got)
 			}
 		})
+	}
+
+	// Ruling R40: the joiners and the tag characters pass.
+	r40 := board.AboutChange{
+		Location:   ptr("\U0001F468\u200D\U0001F4BB Dev"),
+		Occupation: ptr("\U0001F3F4\U000E0067\U000E0062\U000E007F"),
+		Interests:  ptr("\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645"),
+		Website:    ptr("https://example.org/?q=%20a&b=%2F"),
+	}
+	if err := board.SetAbout(ctx, pool, c, r40); err != nil {
+		t.Errorf("joiners, tag characters and an encoded space in the query: %v", err)
 	}
 
 	// The limits themselves pass: 100 and 200 characters, 200 bytes.

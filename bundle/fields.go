@@ -399,6 +399,8 @@ func (v *vet) profileText(field, s string, limit int) {
 	switch err := account.CheckProfileText(s, limit); {
 	case errors.Is(err, account.ErrTooLong):
 		v.add(field, "is longer than %d characters", limit)
+	case errors.Is(err, account.ErrFormat):
+		v.add(field, "holds a hidden formatting character")
 	case errors.Is(err, account.ErrControl):
 		v.add(field, "holds a control character or a line break")
 	}
@@ -412,6 +414,8 @@ func (v *vet) website(field, s string) {
 	switch err := account.CheckWebsite(s); {
 	case errors.Is(err, account.ErrTooLong):
 		v.add(field, "is %d bytes; the limit is %d", len(s), account.MaxWebsite)
+	case errors.Is(err, account.ErrFormat):
+		v.add(field, "holds a hidden formatting character")
 	case err != nil:
 		v.add(field, "must be empty, or an http or https URL with a host, no user information, "+
 			"no white space and no control character")

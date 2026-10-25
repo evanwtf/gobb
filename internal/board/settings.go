@@ -22,6 +22,7 @@ const (
 	msgLong100    = "Use at most 100 characters."
 	msgLong200    = "Use at most 200 characters."
 	msgOneLine    = "Use one line of plain text."
+	msgHidden     = "Remove the hidden formatting character."
 	msgWebsite    = "Enter an address that starts with https:// or http://."
 	msgWebLong    = "Use an address of at most 200 characters."
 	msgBdayPair   = "Pick both a day and a month, or neither."
@@ -113,6 +114,8 @@ func SetAbout(ctx context.Context, pool *pgxpool.Pool, v Viewer, c AboutChange) 
 		}
 		switch {
 		case err == nil:
+		case errors.Is(err, account.ErrFormat):
+			return inputError(f.name, msgHidden)
 		case errors.Is(err, account.ErrTooLong):
 			if f.name == "website" {
 				return inputError(f.name, msgWebLong)

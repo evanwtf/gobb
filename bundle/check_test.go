@@ -676,6 +676,17 @@ func TestUserVersion2Fields(t *testing.T) {
 		{"interests with a line separator", set("interests", "a\u2028b"), "interests"},
 		{"website with an override", set("website", "https://example.com/a\u202eb"), "website"},
 		{"website with an encoded override", set("website", "https://example.com/%E2%80%AEtxt.exe"), "website"},
+		{"location with a joiner", set("location", "\U0001F468\u200D\U0001F4BB Dev"), ""},
+		{"location with a non-joiner", set("location", "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645"), ""},
+		{"location with a subdivision flag", set("location", "\U0001F3F4\U000E0067\U000E0062\U000E007F"), ""},
+		{"location with a byte order mark", set("location", "a\ufeffb"), "location"},
+		{"location with a right-to-left override", set("location", "a\u202eb"), "location"},
+		{"location with an isolate", set("location", "a\u2066b"), "location"},
+		{"website with a zero-width space", set("website", "https://example.com/a\u200bb"), "website"},
+		{"website with an encoded override in the query", set("website", "https://example.com/?q=%E2%80%AE"), "website"},
+		{"website with an encoded override in the fragment", set("website", "https://example.com/#%E2%80%AE"), "website"},
+		{"website with a joiner", set("website", "https://example.com/a\u200db"), ""},
+		{"website with an encoded space and slash in the query", set("website", "https://example.com/?q=%20a&b=%2F"), ""},
 		{"no birthday", date(nil, nil, nil), ""},
 		{"day and month", date(2, 7, nil), ""},
 		{"full date", date(14, 3, 1984), ""},
@@ -751,6 +762,47 @@ func TestBirthYearBoundFollowsCreatedAt(t *testing.T) {
 			})
 			if err := openAndCheck(dir); (err == nil) != tt.ok {
 				t.Errorf("Check = %v, want ok = %v", err, tt.ok)
+			}
+		})
+	}
+}
+
+// TestHiddenCharacterMessages pins the message for each cause of a refused text
+// field: a format character says so, and a line break keeps its own message.
+func TestHiddenCharacterMessages(t *testing.T) {
+	const hidden = "holds a hidden formatting character"
+	tests := []struct {
+		name, field, value, msg string
+	}{
+		{"format character in location", "location", "a\u200bb", hidden},
+		{"override in interests", "interests", "a\u202eb", hidden},
+		{"line break in location", "location", "a\nb", "holds a control character or a line break"},
+		{"line separator in occupation", "occupation", "a\u2028b", "holds a control character or a line break"},
+		{"format character in website", "website", "https://example.com/a\u200bb", hidden},
+		{"encoded format character in website", "website", "https://example.com/%E2%80%AE", hidden},
+		{"space in website", "website", "https://example.com/a b",
+			"must be empty, or an http or https URL with a host, no user information, no white space and no control character"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := bundletest.Write(t, bundletest.Small())
+			editLines(t, dir, "users.jsonl", func(line int, m map[string]any) {
+				if line == 1 {
+					m[tt.field] = tt.value
+				}
+			})
+			err := openAndCheck(dir)
+			var errs bundle.Errors
+			var one *bundle.Error
+			switch {
+			case errors.As(err, &errs) && len(errs) == 1:
+				one = errs[0]
+			case errors.As(err, &one):
+			default:
+				t.Fatalf("Check = %v, want one error", err)
+			}
+			if one.Field != tt.field || one.Msg != tt.msg {
+				t.Errorf("error = %q on %q, want %q on %q", one.Msg, one.Field, tt.msg, tt.field)
 			}
 		})
 	}
