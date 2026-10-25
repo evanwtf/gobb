@@ -30,7 +30,7 @@ func timed(next http.Handler) http.Handler {
 // holds the version and the build only. The line holds nothing about the host,
 // the viewer or the data.
 func footerLine(ctx context.Context, status int) string {
-	tail := "gobb " + version.Version + " · build " + version.Build()
+	tail := plainFooter()
 	if ctx == nil || status < 200 || status > 299 {
 		return tail
 	}
@@ -45,6 +45,11 @@ func footerLine(ctx context.Context, status int) string {
 		queries = "1 query"
 	}
 	return "Rendered in " + formatRender(time.Since(start)) + " with " + queries + " · " + tail
+}
+
+// plainFooter returns the build line without the time and the count.
+func plainFooter() string {
+	return "gobb " + version.Version + " · build " + version.Build()
 }
 
 // formatRender shows d in seconds with two decimals, rounded up to the next

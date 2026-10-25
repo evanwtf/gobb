@@ -732,7 +732,7 @@ func (s *site) framePage(r *http.Request, title string) *page {
 		Home:     s.path(),
 		Nav:      []navLink{{Label: "Index", Href: s.path()}},
 		Noindex:  true,
-		Footer:   footerLine(nil, http.StatusInternalServerError),
+		Footer:   plainFooter(),
 	}
 	if set.HeaderImage != "" {
 		p.HeaderSrc = s.path("files", set.HeaderImage)

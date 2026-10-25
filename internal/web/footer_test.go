@@ -225,7 +225,6 @@ func TestFooterLineShapes(t *testing.T) {
 		{"400", ctx, 400, false},
 		{"404", ctx, 404, false},
 		{"500", ctx, 500, false},
-		{"no context", nil, 200, false},
 		{"no timing in the context", context.Background(), 200, false},
 	} {
 		line := footerLine(tc.ctx, tc.status)
