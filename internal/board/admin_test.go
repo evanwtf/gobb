@@ -51,7 +51,7 @@ func seedSessions(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ip := netip.MustParseAddr("10.1.2.3")
 	for _, id := range []int64{alice, alice, bob} {
-		if _, _, err := session.Create(context.Background(), pool, id, false, ip, "t", t0); err != nil {
+		if _, _, err := boardtest.Session(context.Background(), pool, id, false, ip, "t", t0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -343,7 +343,9 @@ func TestResetAndBanWaitForASignInAndEndItsSession(t *testing.T) {
 			if _, err := tx.Exec(ctx, `select 1 from users where id = $1 for share`, alice); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := session.Create(ctx, tx, alice, false, netip.MustParseAddr("10.1.2.3"), "t", t0); err != nil {
+			// The session row is written inside the transaction that holds the lock.
+			if _, err := tx.Exec(ctx, `insert into sessions (id, user_id, created_at, last_seen_at, expires_at, ip, user_agent, remember)
+values ('test-session', $1, $2, $2, $3, '10.1.2.3', 't', false)`, alice, t0, t0.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			done := make(chan error, 1)
@@ -364,7 +366,12 @@ func TestResetAndBanWaitForASignInAndEndItsSession(t *testing.T) {
 
 // The other order: a reset or a ban holds the row. A sign-in that checks its epoch
 // and the bans (session.CreateChecked) waits, and is refused.
-func TestSignInWaitsForAResetAndForABan(t *testing.T) {
+//
+// The writer side here is hand-written SQL that takes the lock and writes the epoch
+// or the ban, as ResetPassword and BanUser do. The test proves the side of
+// CreateChecked only. The web tests TestSignInInFlightDoesNotSurviveAReset and
+// TestSignInInFlightDoesNotSurviveABanCommand call the real functions.
+func TestCreateCheckedWaitsForTheRowLockOfAResetAndOfABan(t *testing.T) {
 	for _, tc := range []string{"reset", "ban"} {
 		t.Run(tc, func(t *testing.T) {
 			ctx := context.Background()

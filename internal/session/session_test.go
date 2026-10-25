@@ -485,3 +485,95 @@ select exists (select 1 from pg_stat_activity
 		t.Errorf("%d sessions, %v", n, err)
 	}
 }
+
+// TestLookupRefusesABannedUser covers SB-D1. A ban deletes the sessions of the
+// member in its own transaction, and Lookup is the second guard: a ban written
+// straight to the table, with no session deleted, makes the next request a guest.
+func TestLookupRefusesABannedUser(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	ip := netip.MustParseAddr("10.1.2.3")
+	token, _, err := session.Create(ctx, pool, 1, false, ip, "t", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, _, err := session.Create(ctx, pool, 2, false, ip, "t", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := t0.Add(time.Minute)
+	if _, err := session.Lookup(ctx, pool, token, now); err != nil {
+		t.Fatalf("Lookup before the ban: %v", err)
+	}
+	ban := func(kind string, userID any, endsAt any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `insert into bans (kind, user_id, ip, created_at, ends_at)
+values ($1, $2, case when $1 = 'ip' then '10.1.2.3/32'::cidr end, $3, $4)`, kind, userID, t0, endsAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Bans that do not hold user 1: an address ban, a ban of another user, and a
+	// user ban that has ended.
+	ban("ip", nil, nil)
+	ban("user", int64(2), nil)
+	ban("user", int64(1), t0.Add(30*time.Second))
+	if _, err := session.Lookup(ctx, pool, token, now); err != nil {
+		t.Errorf("Lookup with bans that do not hold the user: %v", err)
+	}
+	// The ban of user 2 holds user 2 and only user 2.
+	if _, err := session.Lookup(ctx, pool, otherToken, now); !errors.Is(err, session.ErrNone) {
+		t.Errorf("Lookup of the banned user 2 = %v, want ErrNone", err)
+	}
+	// A user ban with no end holds user 1: no session is deleted, and the session
+	// is dead all the same.
+	ban("user", int64(1), nil)
+	var before int
+	if err := pool.QueryRow(ctx, `select count(*) from sessions where user_id = 1`).Scan(&before); err != nil || before != 1 {
+		t.Fatalf("sessions of user 1 = %d (%v), want 1: the test writes no delete", before, err)
+	}
+	if _, err := session.Lookup(ctx, pool, token, now); !errors.Is(err, session.ErrNone) {
+		t.Errorf("Lookup of a banned user = %v, want ErrNone", err)
+	}
+	// A ban that has a future end holds until then.
+	if _, err := pool.Exec(ctx, `delete from bans where user_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	ban("user", int64(1), now.Add(time.Hour))
+	if _, err := session.Lookup(ctx, pool, token, now); !errors.Is(err, session.ErrNone) {
+		t.Errorf("Lookup during a ban with an end = %v, want ErrNone", err)
+	}
+	if _, err := session.Lookup(ctx, pool, token, now.Add(2*time.Hour)); err != nil && !errors.Is(err, session.ErrNone) {
+		t.Fatal(err)
+	}
+}
+
+// TestLookupReadsTheBanIndex checks that the ban test of Lookup is an indexed
+// lookup: with sequential scans off, the plan names the index of migration 0011.
+func TestLookupReadsTheBanIndex(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `set enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := conn.Query(ctx, `explain select 1 from bans b where b.kind = 'user' and b.user_id = $1 and (b.ends_at is null or b.ends_at > $2)`, int64(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(line + "\n")
+	}
+	if !strings.Contains(plan.String(), "bans_user_idx") {
+		t.Errorf("the plan does not use bans_user_idx:\n%s", plan.String())
+	}
+}

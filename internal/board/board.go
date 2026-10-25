@@ -30,6 +30,10 @@ var (
 	// lock on the topic, or on its forum, stops a reply.
 	ErrTopicLocked = fmt.Errorf("%w: the topic is locked", ErrForbidden)
 	ErrForumLocked = fmt.Errorf("%w: the forum is locked", ErrForbidden)
+	// ErrBanned is an [ErrForbidden] that says why: a user ban holds the member.
+	// A change of the password or the address that was in flight when the ban
+	// landed gets it, and changes nothing.
+	ErrBanned = fmt.Errorf("%w: the member is banned", ErrForbidden)
 	// ErrGone means the row existed and was removed for good.
 	ErrGone = errors.New("board: gone")
 )

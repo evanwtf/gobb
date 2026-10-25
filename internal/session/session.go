@@ -87,20 +87,14 @@ func cutUserAgent(ua string) string {
 // ban holds. The sign-in answers it like a wrong password.
 var ErrStale = errors.New("session: the account changed during the sign-in")
 
-// Create starts a session for userID and returns the token for the cookie. It
-// stores the address and the user agent (cut to 512 bytes), and records the
-// address in user_ips. The remember flag picks the lifetime.
+// CreateChecked starts a session for userID and returns the token for the
+// cookie. It stores the address and the user agent (cut to 512 bytes), and
+// records the address in user_ips. The remember flag picks the lifetime.
 //
-// Create checks nothing about the user. A sign-in uses [CreateChecked].
-func Create(ctx context.Context, q db.Querier, userID int64, remember bool, ip netip.Addr, userAgent string, now time.Time) (string, Session, error) {
-	return create(ctx, q, userID, remember, ip, userAgent, now)
-}
-
-// CreateChecked is [Create] for a sign-in. It starts the session only while the
-// password epoch of the user row still equals wantEpoch (the epoch that the
-// sign-in read with the hash it verified), the user is active, and no user ban
-// that has not ended holds the user; otherwise it returns [ErrStale] and writes
-// nothing. The check and the insert run in one transaction, and the check reads
+// It starts the session only while the password epoch of the user row still
+// equals wantEpoch (the epoch that the sign-in read with the hash it verified),
+// the user is active, and no user ban that has not ended holds the user;
+// otherwise it returns [ErrStale] and writes nothing. The check and the insert run in one transaction, and the check reads
 // the user row with FOR SHARE.
 //
 // The epoch counts the changes of the password: a change on the account page and
@@ -182,9 +176,12 @@ on conflict (user_id, ip) do update set last_seen_at = excluded.last_seen_at`,
 }
 
 // Lookup returns the live session that has token. A session is live while now
-// is before its expiry and its user is active. An unknown, deleted or expired
-// token, and the token of a user who is not active, give [ErrNone]. The rule is
-// here, in one query, so that no caller has to remember it.
+// is before its expiry, its user is active, and no user ban that has not ended
+// holds the user. An unknown, deleted or expired token, the token of a user who
+// is not active, and the token of a banned user give [ErrNone]. The rule is here,
+// in one query, so that no caller has to remember it. A ban deletes the sessions
+// of the member too; this check is the second guard, for a ban that was written
+// by other means. The ban test reads the index bans_user_idx.
 func Lookup(ctx context.Context, q db.Querier, token string, now time.Time) (Session, error) {
 	if token == "" || len(token) > 128 {
 		return Session{}, ErrNone
@@ -193,7 +190,9 @@ func Lookup(ctx context.Context, q db.Querier, token string, now time.Time) (Ses
 	err := q.QueryRow(ctx, `
 select s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.remember
   from sessions s join users u on u.id = s.user_id
- where s.id = $1 and s.expires_at > $2 and u.state = 'active'`, hashToken(token), now).
+ where s.id = $1 and s.expires_at > $2 and u.state = 'active'
+   and not exists (select 1 from bans b
+                    where b.kind = 'user' and b.user_id = s.user_id and (b.ends_at is null or b.ends_at > $2))`, hashToken(token), now).
 		Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt, &s.Remember)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNone

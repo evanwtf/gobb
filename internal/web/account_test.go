@@ -1199,6 +1199,47 @@ func TestEmailChangeWithAnOlderEpochIsRefused(t *testing.T) {
 	}
 }
 
+// A password or an address change that checked the current password, and then met
+// a ban before its write, changes nothing and answers 403 (T6-M1).
+func TestAccountChangeInFlightDoesNotSurviveABan(t *testing.T) {
+	ban := func(pool *pgxpool.Pool) {
+		if _, err := pool.Exec(t.Context(), `insert into bans (kind, user_id, created_at) values ('user', 1, now())`); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Run("email", func(t *testing.T) {
+		h, pool := siteWithPool(t, postingBoard(), Options{})
+		a := signIn(t, h, "alice", testPassword)
+		before := userCol(t, pool, 1, "email")
+		beforeEmailChange = func() { beforeEmailChange = nil; ban(pool) }
+		t.Cleanup(func() { beforeEmailChange = nil })
+		rec := send(t, h, "/account/email", a, url.Values{"email": {"late@example.org"}, "current": {testPassword}})
+		if rec.Code != http.StatusForbidden || !strings.Contains(bodyOf(t, rec), msgBanned) {
+			t.Fatalf("the email change across a ban = %d, want 403 with the ban notice", rec.Code)
+		}
+		if got := userCol(t, pool, 1, "email"); got != before {
+			t.Errorf("the email is %q, want it unchanged (%q)", got, before)
+		}
+	})
+	t.Run("password", func(t *testing.T) {
+		h, pool := siteWithPool(t, postingBoard(), Options{})
+		a := signIn(t, h, "alice", testPassword)
+		before := userCol(t, pool, 1, "password_hash")
+		beforeHold = func() { beforeHold = nil; ban(pool) }
+		t.Cleanup(func() { beforeHold = nil })
+		rec := send(t, h, "/account/password", a, passwordForm(testPassword, newPassword))
+		if rec.Code != http.StatusForbidden || !strings.Contains(bodyOf(t, rec), msgBanned) {
+			t.Fatalf("the password change across a ban = %d, want 403 with the ban notice", rec.Code)
+		}
+		if got := userCol(t, pool, 1, "password_hash"); got != before {
+			t.Error("the password hash changed")
+		}
+		if n := sessionsOf(t, pool, 1); n != 1 {
+			t.Errorf("alice has %d sessions, want the one she had", n)
+		}
+	})
+}
+
 // A sign-in in flight on a legacy hash (bob's), held after the rehash, does not
 // survive a password change either: the rehash leaves the epoch, and the change
 // bumps it.

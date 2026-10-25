@@ -12,7 +12,6 @@ import (
 
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
-	"github.com/evanwtf/gobb/internal/session"
 )
 
 // The loop runs once at start, then once per tick, and stops with its context.
@@ -71,7 +70,7 @@ func TestCleanupLoopStopsBeforeFirstRun(t *testing.T) {
 func TestCleanupLogsCounts(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
-	if _, _, err := session.Create(t.Context(), pool, 1, false, netip.MustParseAddr("10.1.0.1"), "", now.Add(-48*time.Hour)); err != nil {
+	if _, _, err := boardtest.Session(t.Context(), pool, 1, false, netip.MustParseAddr("10.1.0.1"), "", now.Add(-48*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer

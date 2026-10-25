@@ -16,7 +16,6 @@ import (
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/password"
-	"github.com/evanwtf/gobb/internal/session"
 	"github.com/evanwtf/gobb/markup"
 )
 
@@ -55,7 +54,7 @@ func TestChangePassword(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	ip := netip.MustParseAddr("10.1.2.3")
 	for _, id := range []int64{alice, alice, bob} {
-		if _, _, err := session.Create(ctx, pool, id, false, ip, "t", t0); err != nil {
+		if _, _, err := boardtest.Session(ctx, pool, id, false, ip, "t", t0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -98,7 +97,7 @@ func TestChangePasswordNeedsTheRight(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	ip := netip.MustParseAddr("10.1.2.3")
-	if _, _, err := session.Create(ctx, pool, carol, false, ip, "t", t0); err != nil {
+	if _, _, err := boardtest.Session(ctx, pool, carol, false, ip, "t", t0); err != nil {
 		t.Fatal(err)
 	}
 	denyOpts(t, pool, carol, 0, "account.password", "account.email", "account.signature")
@@ -128,7 +127,7 @@ func TestChangePasswordRules(t *testing.T) {
 	if _, err := pool.Exec(ctx, `update users set username = 'Alice-Longname', username_clean = 'alice-longname' where id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := session.Create(ctx, pool, alice, false, netip.MustParseAddr("10.1.2.3"), "t", t0); err != nil {
+	if _, _, err := boardtest.Session(ctx, pool, alice, false, netip.MustParseAddr("10.1.2.3"), "t", t0); err != nil {
 		t.Fatal(err)
 	}
 	a := viewerFor(t, pool, alice)
@@ -483,7 +482,7 @@ func TestChangeWithAnOlderEpochChangesNothing(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	ip := netip.MustParseAddr("10.1.2.3")
-	if _, _, err := session.Create(ctx, pool, alice, false, ip, "t", t0); err != nil {
+	if _, _, err := boardtest.Session(ctx, pool, alice, false, ip, "t", t0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `update users set password_epoch = 5 where id = $1`, alice); err != nil {

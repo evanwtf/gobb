@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/dbtest"
 	"github.com/evanwtf/gobb/internal/importer"
@@ -64,7 +65,7 @@ func count(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 
 func seedSession(t *testing.T, pool *pgxpool.Pool, id int64) string {
 	t.Helper()
-	token, _, err := session.Create(t.Context(), pool, id, false, testIP, "t", testNow)
+	token, _, err := boardtest.Session(t.Context(), pool, id, false, testIP, "t", testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

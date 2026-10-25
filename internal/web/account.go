@@ -231,6 +231,9 @@ func (s *site) writeRefused(w http.ResponseWriter, r *http.Request, p *page, d a
 	case errors.As(err, &in):
 		field(&d, in)
 		s.renderAccount(w, http.StatusBadRequest, p, d)
+	case errors.Is(err, board.ErrBanned):
+		notice(&d, msgBanned)
+		s.renderAccount(w, http.StatusForbidden, p, d)
 	case errors.Is(err, board.ErrForbidden):
 		s.deniedTo(w, p, action)
 	case errors.Is(err, board.ErrNotFound):
