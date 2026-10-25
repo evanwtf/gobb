@@ -357,8 +357,7 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 		// save. The check counts against the address first, so the answer that is
 		// over the limit says nothing about the name, and its text is the one of
 		// the posting limit: a guest does not know that a name is checked. A guest
-		// who may not post
-		// here got the refusal above, and no name was checked.
+		// who may not post here got the refusal above, and no name was checked.
 		if p.Viewer.UserID == 0 && kind != kindEdit {
 			if ok, wait := s.takeNameCheck(r); !ok {
 				s.tooFast(w, r, p, fd, nil, nil, wait, msgPostingTooFast)

@@ -73,6 +73,11 @@ func codeSpanLadder(size int) string {
 	return sb.String() + repeatTo("a\n", max(0, size-sb.Len()))
 }
 
+// ledShape is a first line and then the unit, repeated to the size.
+func ledShape(first, unit string, size int) string {
+	return first + repeatTo(unit, max(0, size-len(first)))
+}
+
 // hostileShapes are the shapes that goldmark parses in more than linear time
 // outside the delimiter list: the ladder of code spans, and a list of link
 // reference definitions, which the paragraph transformer removes one at a time,
@@ -84,6 +89,13 @@ func hostileShapes() []shape {
 		{"link reference definitions with a destination", func(size int) string { return repeatTo("[x]: /u\n", size) }},
 		{"link reference definitions with titles", func(size int) string { return repeatTo("[x]: /u 't'\n", size) }},
 		{"indented link reference definitions", func(size int) string { return repeatTo("   [x]:\n", size) }},
+		// A definition may follow any white space: goldmark skips tabs and any
+		// number of spaces before the "[", and the first line must not be indented.
+		{"definitions behind a tab", func(size int) string { return ledShape("[x]: /u\n", "\t[x]: /u\n", size) }},
+		{"definitions behind a tab, no destination", func(size int) string { return ledShape("[x]:\n", "\t[x]:\n", size) }},
+		{"definitions behind a tab, in a quote", func(size int) string { return ledShape("> [x]:\n", "\t[x]:\n", size) }},
+		{"definitions behind five spaces", func(size int) string { return ledShape("[x]: /u\n", "     [x]: /u\n", size) }},
+		{"definitions behind eight spaces, in a list", func(size int) string { return ledShape("- [x]: /u\n", "        [x]: /u\n", size) }},
 		// The link parser reads the text of each bracket, and goldmark finds the
 		// line of that text by a walk back from the last line.
 		{"shortcut references", func(size int) string { return repeatTo("[x]\n", size) }},
@@ -223,6 +235,31 @@ func TestSpanAndDefinitionBudgetsKeepNaturalPosts(t *testing.T) {
 	}
 }
 
+// TestRefusedParagraphLeavesTheBudget: a long paragraph of "[" lines costs more
+// than the definition budget and keeps its definitions as text. A later,
+// short paragraph with a definition and a link that uses it still works.
+func TestRefusedParagraphLeavesTheBudget(t *testing.T) {
+	log := strings.Repeat("[12:00] name: text\n", 2500)
+	tree := Parse("[a]: /first\n"+log+"\n[k]: /second\nsee [k]", allOn)
+	if err := Validate(tree); err != nil {
+		t.Fatal(err)
+	}
+	var hrefs []string
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.Kind == Element && n.Name == "url" {
+			hrefs = append(hrefs, n.Attrs["href"])
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(tree)
+	if len(hrefs) != 1 || hrefs[0] != "/second" {
+		t.Errorf("links after the refused paragraph = %q, want [/second]", hrefs)
+	}
+}
+
 // TestSpanAndDefinitionBudgetsEndAtTheEnd: past the budget, a run of backticks
 // stays text and a definition stays text, and the tree is valid.
 func TestSpanAndDefinitionBudgetsEndAtTheEnd(t *testing.T) {
@@ -302,7 +339,7 @@ func TestDelimiterBudgetEndsAtTheEnd(t *testing.T) {
 func TestBoundedParsersChangeNothingBelowTheBudget(t *testing.T) {
 	tokens := []string{"*", "**", "_", "__", "|", "||", "~", "a", "b", " ", "\n", "\n\n", "\\", "[", "]", "(", ")", "`", ">", "!",
 		"@", ".", "-", "a@b.c", "http://x.example/y", "www.x.example", "*a*", "_b_", "||c||", "**d**", "snake_case", "(*", "*)", "[a](b)",
-		"``", "```", "`code`", "``a`b``", "`\n`", "[x]", "[x][y]", "[x][]", "![x]", "[x]: /u\n", "[x]:\n", "[y]: <v> 't'\n", "\n[x]: /w\n", "   [z]: /z\n", "> ", "- ", "    "}
+		"``", "```", "`code`", "``a`b``", "`\n`", "[x]", "[x][y]", "[x][]", "![x]", "[x]: /u\n", "\t[x]: /u\n", "     [x]:\n", "[x]:\n", "[y]: <v> 't'\n", "\n[x]: /w\n", "   [z]: /z\n", "> ", "- ", "    "}
 	bounded := engines
 	var plain [4]goldmark.Markdown
 	for i := range plain {

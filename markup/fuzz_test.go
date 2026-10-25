@@ -51,6 +51,9 @@ func FuzzParse(f *testing.F) {
 		strings.Repeat("*_a", 5000), strings.Repeat("_*a", 3000), strings.Repeat("||*_a", 2000), strings.Repeat("~a", 4000),
 		// The code span ladder and the reference shapes (round 2).
 		ladderSeed(60000), strings.Repeat("[x]:\n", 3000), strings.Repeat("[x]: /u 't'\n", 2000), strings.Repeat("[x]\n", 4000), strings.Repeat("![x][y]\n", 2000),
+		// Definitions behind a tab or five spaces (round 3).
+		"[x]: /u\n" + strings.Repeat("\t[x]: /u\n", 3000), "[x]:\n" + strings.Repeat("\t[x]:\n", 4000), "> [x]:\n" + strings.Repeat("\t[x]:\n", 4000),
+		"[x]: /u\n" + strings.Repeat("     [x]: /u\n", 3000), "- [x]: /u\n" + strings.Repeat("        [x]: /u\n", 2500),
 		"[a](" + strings.Repeat("[a](", 50), "[a](<" + strings.Repeat("[a](<", 50), "[a](b \"" + strings.Repeat("[a](b \"", 20),
 	}
 	for _, s := range seeds {
@@ -104,6 +107,7 @@ func FuzzRender(f *testing.F) {
 		"<script>alert(1)</script> <SCRIPT src=x>",
 		strings.Repeat("*_a", 5000),
 		ladderSeed(30000), strings.Repeat("[x]:\n", 3000), strings.Repeat("[x]\n", 4000),
+		"[x]: /u\n" + strings.Repeat("\t[x]: /u\n", 3000), "- [x]: /u\n" + strings.Repeat("        [x]: /u\n", 2500),
 		"> **A** [wrote](/p/1):\n>\n> ||spoiler|| \\*x\\*\n\n```go\n<script>\n```",
 	}
 	for _, s := range seeds {

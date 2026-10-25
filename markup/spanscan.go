@@ -118,9 +118,12 @@ func boundCodeSpans(list []util.PrioritizedValue) []util.PrioritizedValue {
 //
 // refBudget bounds the work. It is a count, kept for one parse in the parser
 // context. It starts at refBudgetPerByte for each byte of the source, plus
-// refBudgetBase. A paragraph spends the number of its lines that start with "["
-// (the most definitions it can hold) times the number of its lines. When the
-// paragraph costs more than is left, no definition is taken: the lines stay text.
+// refBudgetBase. A paragraph spends the number of its lines whose first byte
+// that is not a space or a tab is "[" (the most definitions it can hold) times
+// the number of its lines. When the paragraph costs more than is left, no
+// definition of that paragraph is taken: its lines stay text, and the budget
+// stays as it was for the paragraphs that follow. A paragraph of "[" lines that
+// are not definitions, such as a pasted log, costs the same as one of definitions.
 // A paragraph of 1,000 definitions costs 1,000,000 and fits; a natural post has
 // a few.
 const (
@@ -147,24 +150,30 @@ func (t boundedRefTransformer) Transform(node *ast.Paragraph, reader text.Reader
 	}
 	lines := node.Lines()
 	src := reader.Source()
+	// Count every line of the paragraph whose first byte that is not a space or
+	// a tab is "[". goldmark runs this transformer before it trims the lines, and
+	// its definition parser skips any amount of white space, so a line led by a
+	// tab or by five spaces can start a definition. The count does not stop at a
+	// line that has no "[": a destination or a title may sit on the next line.
 	starts := 0
 	for i := range lines.Len() {
 		seg := lines.At(i)
-		if line := src[seg.Start:seg.Stop]; len(line) > 0 {
-			j := 0
-			for j < len(line) && j < 4 && line[j] == ' ' {
-				j++
-			}
-			if j < len(line) && line[j] == '[' {
-				starts++
-			}
+		line := src[seg.Start:seg.Stop]
+		j := 0
+		for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+			j++
+		}
+		if j < len(line) && line[j] == '[' {
+			starts++
 		}
 	}
 	// The product cannot overflow: both factors are at most the size of the
 	// source, and the budget is far below the square of the size limit.
 	cost := starts * lines.Len()
 	if cost > *budget {
-		*budget = 0
+		// This paragraph keeps its definitions as text. The budget stays as it
+		// is: a later paragraph spends from what is left, and the total stays
+		// linear, because a refused paragraph costs only the loop above.
 		return
 	}
 	*budget -= cost
