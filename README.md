@@ -560,8 +560,9 @@ redirect to the new ones, and a gone member's profile answers 410. Every page ca
 the security headers and a Content-Security-Policy, and every error page uses the
 board's layout.
 
-Plan 4, the write side, is built for v0.1.0: members post, edit and moderate, and private
-messages, uploads and email come later. The design is in
+Plan 4, the write side, is built for v0.1.0: members post, edit and moderate. Before the
+cutover, members also get private messages, a time zone setting and avatar upload
+(roadmap row 4b). Attachment uploads and email come later. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in
 [docs/superpowers/plans/2026-10-23-gobb-roadmap.md](docs/superpowers/plans/2026-10-23-gobb-roadmap.md).

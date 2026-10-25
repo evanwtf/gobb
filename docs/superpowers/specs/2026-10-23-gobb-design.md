@@ -702,7 +702,12 @@ designer's call):
   messages, and the last poll was in 2019. Release 1 holds:
   - the read side (Plan 3);
   - posting: a new topic, a reply, a quote, and the edit and delete of one's own posts;
-  - the profile: change the password, the email address and the signature;
+  - the profile: change the password, the email address and the signature, and pick a
+    color scheme. Added by the owner on 2026-10-25: set the time zone, and upload,
+    replace or remove the avatar;
+  - private messages, added by the owner on 2026-10-25: the inbox and the sent list,
+    with the imported messages; send, reply and quote, to one or more members; delete a
+    message from one's own view; and an unread count in the header;
   - moderation on the page: delete or restore a post, edit a post, lock a topic, and
     approve a held post;
   - admin commands: reset a password, and ban or unban a user;
@@ -711,10 +716,16 @@ designer's call):
 
   Sign-up stays closed, as it is on the first board today.
 
+  **On cutover day, members keep what they use (owner, 2026-10-25):** their settings
+  and their message history. Release 1 leaves out, on purpose, what the first board's
+  members rarely or never changed: display options, a date format, privacy switches,
+  message drafts, folders and rules, and email notices.
+
   **Cutover is done when (owner):**
   - gobb serves the board's website;
   - the old software's process no longer runs on the host;
-  - every member account still signs in with its existing password.
+  - every member account still signs in with its existing password;
+  - every member can read the private messages they had, and set their time zone.
 
   The last point is checked in three ways: every imported hash is in a format that
   gobb verifies (all of them, counted); the legacy test vectors pass; and the owner
@@ -722,7 +733,6 @@ designer's call):
 - **After cutover.** Everything else in sections 7 to 16 comes in later releases. The
   data for each part is imported at cutover and kept, so nothing is lost while it
   waits. This covers:
-  - private messages;
   - creating polls, and voting;
   - attachment uploads;
   - email, with notifications and password reset by email (until then, a member who
