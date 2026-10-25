@@ -30,6 +30,11 @@ type RenderContext struct {
 	// may not load, such as an attachment that needs a right the viewer lacks.
 	// Rendered.Text does not change.
 	ImageNote func(src string) string
+	// NoEmbeds makes each embed a plain link to its page: no frame, no provider
+	// script and no origin in the lists of [Rendered]. A signature is rendered with
+	// it, so that a signature cannot load script of a third party on every page
+	// that shows it. A post keeps its embeds.
+	NoEmbeds bool
 }
 
 // Rendered is the result of [Render].
@@ -441,6 +446,13 @@ func (r *renderer) embed(it renderItem) {
 	if !ok {
 		return
 	}
+	if r.rc.NoEmbeds {
+		if href := embedLink(n.Name, id); href != "" {
+			r.html.WriteString(openTag("div", "class", "embed-link") +
+				openTag("a", "href", href, "rel", "nofollow ugc noopener") + html.EscapeString(href) + closeTag("a") + closeTag("div"))
+		}
+		return
+	}
 	e := embedHTML(n.Name, id)
 	if e.html == "" {
 		return
@@ -458,6 +470,40 @@ func (r *renderer) embed(it renderItem) {
 	for _, u := range e.scripts {
 		r.urls = addKey(r.urls, u)
 	}
+}
+
+// embedLink returns the address of the page of an embed with a canonical ID, or
+// an empty string when the ID has the wrong shape for the tag. The pages are the
+// ones that the embed table links to or frames.
+func embedLink(tag, id string) string {
+	two := func() (string, string, bool) { return strings.Cut(id, "/") }
+	switch tag {
+	case "youtube":
+		return "https://www.youtube.com/watch?v=" + url.QueryEscape(id)
+	case "vimeo":
+		return "https://vimeo.com/" + pathEsc(id)
+	case "tweet":
+		return "https://x.com/i/status/" + pathEsc(id)
+	case "instagram":
+		return "https://www.instagram.com/p/" + pathEsc(id) + "/"
+	case "reddit":
+		if sub, post, ok := two(); ok {
+			return "https://www.reddit.com/r/" + pathEsc(sub) + "/comments/" + pathEsc(post) + "/"
+		}
+	case "tiktok":
+		return originTikTok + "/player/v1/" + pathEsc(id)
+	case "threads":
+		if user, post, ok := two(); ok {
+			return "https://www.threads.com/@" + pathEsc(user) + "/post/" + pathEsc(post) + "/"
+		}
+	case "spotify":
+		if kind, item, ok := two(); ok {
+			return originSpotify + "/" + pathEsc(kind) + "/" + pathEsc(item)
+		}
+	case "soundcloud":
+		return "https://soundcloud.com/" + pathEsc(id)
+	}
+	return ""
 }
 
 // addKey adds k to the set m and returns it. A nil m becomes a new set.

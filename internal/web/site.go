@@ -57,6 +57,11 @@ type Options struct {
 	// with the default budget. cmd/gobb sizes it to the memory limit of the
 	// process (login.BudgetKiB). Tests use it to fill the gate.
 	LoginGate *login.Gate
+	// MemberPosts, GuestPosts and NameChecks are the counts of the limits on the
+	// posting forms in ten minutes: POSTs for each member, POSTs for each guest
+	// address, and guest-name checks for each address. Zero means the default
+	// (60, 20 and 10). Tests that post a lot raise them.
+	MemberPosts, GuestPosts, NameChecks int
 	// LoginGateWait is how long a password check waits for the gate. Zero means
 	// the default of 5 seconds. Tests set it small.
 	LoginGateWait time.Duration
@@ -92,6 +97,8 @@ type site struct {
 	// tries counts the tries at the account changes that need the current
 	// password, per member and form.
 	tries *ratelimit.Limiter
+	// postLimits counts the POSTs of the posting forms and the guest-name checks.
+	postLimits postLimits
 	// patterns lists every pattern registered on the muxes of the site, for a test
 	// that checks the routes against its tables.
 	patterns []string
@@ -126,7 +133,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if opt.LoginGate != nil {
 		lo.Gate = opt.LoginGate
 	}
-	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries()}
+	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt)}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))

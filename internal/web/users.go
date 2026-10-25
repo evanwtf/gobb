@@ -80,7 +80,7 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 		d.FindHref = s.path("search") + "?" + url.Values{"author": {pp.Card.Name}}.Encode()
 	}
 	if pp.Signature != nil {
-		html, err := s.renderTree(r, p, pp.Signature)
+		html, err := s.renderTree(r, p, pp.Signature, true)
 		if err != nil {
 			s.serverError(w, r, err)
 			return
@@ -93,13 +93,14 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderTree renders a stored tree to HTML with the smilies of the board. It
-// adds what the embeds of the tree need to the policy and the scripts of p.
-func (s *site) renderTree(r *http.Request, p *page, tree *markup.Node) (template.HTML, error) {
+// adds what the embeds of the tree need to the policy and the scripts of p. A
+// signature passes noEmbeds: its embed links render as plain links.
+func (s *site) renderTree(r *http.Request, p *page, tree *markup.Node, noEmbeds bool) (template.HTML, error) {
 	smileys, err := board.SmileyLookup(r.Context(), s.pool)
 	if err != nil {
 		return "", err
 	}
-	out := markup.Render(tree, markup.RenderContext{Smiley: smileys, BasePath: s.base})
+	out := markup.Render(tree, markup.RenderContext{Smiley: smileys, BasePath: s.base, NoEmbeds: noEmbeds})
 	p.addRendered(out)
 	return out.HTML, nil
 }
@@ -214,7 +215,7 @@ func (s *site) staticPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	html, err := s.renderTree(r, p, sp.Tree)
+	html, err := s.renderTree(r, p, sp.Tree, false)
 	if err != nil {
 		s.serverError(w, r, err)
 		return

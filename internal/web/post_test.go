@@ -1232,7 +1232,8 @@ func TestPayloadsThroughPosting(t *testing.T) {
 	if len(payloads) < 150 {
 		t.Fatalf("%d payloads", len(payloads))
 	}
-	h, pool := siteWithPool(t, postingBoard(), Options{})
+	// Every payload is posted twice, more than the posting limit allows.
+	h, pool := siteWithPool(t, postingBoard(), Options{MemberPosts: 100_000})
 	a := signIn(t, h, "alice", "example-password")
 
 	// Every payload goes through the preview and then through a save. A payload

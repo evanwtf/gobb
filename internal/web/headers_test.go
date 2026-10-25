@@ -122,21 +122,13 @@ func TestCSPEmbedsYouTubeOnly(t *testing.T) {
 	}
 }
 
-// A signature and a static page render trees too, so their embeds count.
-func TestCSPEmbedInSignatureAndPage(t *testing.T) {
+// A static page renders a tree too, so its embeds count. A signature does not
+// embed: see TestSignatureEmbedIsAPlainLink.
+func TestCSPEmbedInStaticPage(t *testing.T) {
 	h := embedSite(t, func(b *bundletest.Board) {
-		b.Users[0].Signature.Source = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 		b.StaticPages[0].Body.Source = "https://x.com/example/status/20"
 	})
-	bob := signIn(t, h, "bob", testPassword)
-	rec := getAs(t, h, "/u/1", bob)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("profile = %d", rec.Code)
-	}
-	if got, _ := directive(rec.Header().Get("Content-Security-Policy"), "frame-src"); !strings.Contains(got, "youtube-nocookie") {
-		t.Errorf("profile frame-src = %q", got)
-	}
-	rec = get(t, h, "/pages/"+firstPageSlug(t))
+	rec := get(t, h, "/pages/"+firstPageSlug(t))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("static page = %d", rec.Code)
 	}
@@ -146,6 +138,43 @@ func TestCSPEmbedInSignatureAndPage(t *testing.T) {
 	}
 	if !strings.Contains(bodyOf(t, rec), `<script async src="https://platform.x.com/widgets.js">`) {
 		t.Error("the static page lacks the X script tag")
+	}
+}
+
+// A signature renders an embed link as a plain link, with no frame and no
+// provider script, so a signature cannot load third-party script on every page
+// that shows it (A-D2). A post keeps its embeds.
+func TestSignatureEmbedIsAPlainLink(t *testing.T) {
+	const link = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+	h := embedSite(t, func(b *bundletest.Board) {
+		b.Users[0].Signature.Source = link
+		// Neither post of the topic holds an embed, so only the signature could
+		// bring one.
+		b.Posts[0].Body.Source = "No embed here."
+		b.Posts[1].Body.Source = "Nor here."
+	})
+	bob := signIn(t, h, "bob", testPassword)
+	for _, page := range []string{"/t/1", "/u/1"} {
+		rec := getAs(t, h, page, bob)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d", page, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Security-Policy"); got != wantBaseCSP {
+			t.Errorf("%s: CSP = %q, want the base policy %q", page, got, wantBaseCSP)
+		}
+		body := bodyOf(t, rec)
+		if !strings.Contains(body, `<a href="`+link+`" rel="nofollow ugc noopener">`) {
+			t.Errorf("%s: the signature holds no plain link", page)
+		}
+		if strings.Contains(body, "<iframe") || strings.Contains(body, "<script async") {
+			t.Errorf("%s: the signature brought a frame or a script", page)
+		}
+	}
+	// The same link in a post is an embed.
+	h = embedSite(t, func(b *bundletest.Board) { b.Users[0].Signature.Source = link })
+	rec := getAs(t, h, "/t/1", signIn(t, h, "bob", testPassword))
+	if got, _ := directive(rec.Header().Get("Content-Security-Policy"), "frame-src"); !strings.Contains(got, "youtube-nocookie") {
+		t.Errorf("a post lost its embed: frame-src = %q", got)
 	}
 }
 
@@ -429,8 +458,8 @@ func TestAttachmentKeepsCacheControl(t *testing.T) {
 	}
 }
 
-// Two posts, or a post and a signature, that need the same provider load its
-// script once.
+// Two posts that need the same provider load its script once. A signature adds
+// no script.
 func TestOneScriptTagPerProvider(t *testing.T) {
 	h := embedSite(t, func(b *bundletest.Board) {
 		b.Posts[0].Body.Source = "https://x.com/example/status/20"
@@ -447,11 +476,14 @@ func TestOneScriptTagPerProvider(t *testing.T) {
 	if n := strings.Count(body, "<script async"); n != 1 {
 		t.Errorf("%d async scripts, want 1", n)
 	}
-	// Post 1 and post 2 hold one tweet each, and the signature of post 1 holds a
-	// third. (Post 3 is unapproved, post 2 shows no signature.) All three are on
-	// the page, and the script is still loaded once.
-	if n := strings.Count(body, `class="twitter-tweet"`); n != 3 {
-		t.Errorf("%d tweets on the page, want 3 (2 posts and 1 signature)", n)
+	// Post 1 and post 2 hold one tweet each. The signature of post 1 holds a third
+	// tweet link, which is a plain link and not an embed (A-D2). (Post 3 is
+	// unapproved, post 2 shows no signature.) The script is loaded once.
+	if n := strings.Count(body, `class="twitter-tweet"`); n != 2 {
+		t.Errorf("%d tweets on the page, want 2 (the 2 posts; the signature is a plain link)", n)
+	}
+	if !strings.Contains(body, `<a href="https://x.com/i/status/23" rel="nofollow ugc noopener">`) {
+		t.Error("the signature holds no plain link to its tweet")
 	}
 }
 

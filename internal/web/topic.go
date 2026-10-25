@@ -121,7 +121,11 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		p.addRendered(body)
 		pv.HTML = body.HTML
 		if post.Signature != nil {
-			sig := markup.Render(post.Signature, rc)
+			// A signature shows on every page of its member's posts, so it never
+			// embeds: an embed link is a plain link, with no frame and no script.
+			sigRC := rc
+			sigRC.NoEmbeds = true
+			sig := markup.Render(post.Signature, sigRC)
 			p.addRendered(sig)
 			pv.SigHTML = sig.HTML
 		}

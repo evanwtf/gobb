@@ -331,6 +331,9 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 			s.bareForm(w, r, nil, failStatus(r, err), noticeServerError, d.Source)
 			return
 		}
+		// The POST counts against the posting limit before anything else is read
+		// or parsed. A refusal still counts: it costs the server the same.
+		postOK, postWait := s.takePost(p.Viewer, r)
 		fd, rights, hard := s.formFrame(ctx, r, p, kind, id)
 		// What the member sent goes back into the form byte for byte, whatever
 		// happens next.
@@ -338,6 +341,10 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 			fd.Title = d.Title
 		}
 		fd.Source, fd.GuestName, fd.Reason = d.Source, d.GuestName, reason
+		if !postOK {
+			s.tooFast(w, r, p, fd, rights, hard, postWait, msgPostingTooFast)
+			return
+		}
 		if hard != nil {
 			s.writeFailed(w, r, p, fd, kind, hard)
 			return
@@ -345,6 +352,16 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 		if rights != nil {
 			s.writeFailed(w, r, p, fd, kind, rights)
 			return
+		}
+		// A guest's name is checked against the members, by the preview and by the
+		// save. The check counts against the address first, so the answer that is
+		// over the limit says nothing about the name. A guest who may not post
+		// here got the refusal above, and no name was checked.
+		if p.Viewer.UserID == 0 && kind != kindEdit {
+			if ok, wait := s.takeNameCheck(r); !ok {
+				s.tooFast(w, r, p, fd, nil, nil, wait, msgNameChecksTooFast)
+				return
+			}
 		}
 		if form.Get("preview") != "" {
 			s.preview(w, r, p, fd, kind, d, reason)
