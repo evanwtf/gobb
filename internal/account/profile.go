@@ -17,6 +17,9 @@ var (
 	// ErrTooLong means the text is longer than the limit.
 	ErrTooLong = errors.New("account: too long")
 	// ErrControl means the text holds a control character. A line break is one.
+	// A format character (Unicode category Cf, such as the bidirectional controls,
+	// the zero-width space and the byte order mark) and the line and paragraph
+	// separators count too, because they hide or reorder text.
 	ErrControl = errors.New("account: holds a control character")
 	// ErrWebsite means the website is not an http or https URL with a host, or it
 	// holds user information, white space or a control character.
@@ -53,8 +56,9 @@ const (
 )
 
 // CheckProfileText checks a plain-text profile field: valid UTF-8, at most limit
-// characters (runes, not bytes), and no control character. A line break, a tab
-// and U+0000 are control characters. It returns nil, [ErrNotUTF8], [ErrTooLong]
+// characters (runes, not bytes), and no control character, format character or
+// line or paragraph separator. A line break, a tab and U+0000 are control
+// characters. It returns nil, [ErrNotUTF8], [ErrTooLong]
 // or [ErrControl]. It does not trim s: a caller that trims does so first.
 func CheckProfileText(s string, limit int) error {
 	switch {
@@ -62,17 +66,25 @@ func CheckProfileText(s string, limit int) error {
 		return ErrNotUTF8
 	case utf8.RuneCountInString(s) > limit:
 		return ErrTooLong
-	case strings.IndexFunc(s, unicode.IsControl) >= 0:
+	case strings.IndexFunc(s, hidden) >= 0:
 		return ErrControl
 	}
 	return nil
+}
+
+// hidden reports whether r is a control character, a format character (Unicode
+// category Cf) or a line or paragraph separator (Zl, Zp).
+func hidden(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
 // CheckWebsite checks a website field. An empty string passes. Any other value
 // must meet all of these:
 //
 //   - it is valid UTF-8, and at most [MaxWebsite] bytes;
-//   - it holds no white space and no control character;
+//   - it holds no white space, no control character, no format character and no
+//     line or paragraph separator, in the text or after the percent-decoding of the
+//     host and the path;
 //   - its scheme is http or https, in any case;
 //   - it has a host;
 //   - it has no user information.
@@ -87,7 +99,7 @@ func CheckWebsite(s string) error {
 		return ErrNotUTF8
 	case len(s) > MaxWebsite:
 		return ErrTooLong
-	case strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
+	case strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || hidden(r) }) >= 0:
 		return ErrWebsite
 	}
 	u, err := url.Parse(s)
@@ -98,6 +110,12 @@ func CheckWebsite(s string) error {
 		return ErrWebsite
 	}
 	if u.Hostname() == "" || u.User != nil {
+		return ErrWebsite
+	}
+	// Percent-encoding would hide a character that the raw string check refuses.
+	// url.Parse decodes the path; the host is decoded here.
+	host, err := url.PathUnescape(u.Host)
+	if err != nil || strings.IndexFunc(host+u.Path, hidden) >= 0 {
 		return ErrWebsite
 	}
 	return nil

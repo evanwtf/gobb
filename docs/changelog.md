@@ -40,6 +40,9 @@
   `account.view_profiles`: active members whose day and month are today in the viewer's
   zone, with the age when the member gave a year. `board.Profile` takes the current time,
   and `ProfilePage.CanMessage` tells whether the viewer may send the member a message.
+  The "About you" text and the website refuse format characters (Unicode category Cf,
+  such as U+202E and U+200B) and the line and paragraph separators, and the website
+  refuses them after percent-decoding too. The bundle check applies the same rule.
 
 - The member's links move into the header, at the right of the board name: "Signed in
   as {name}" and Sign out, or a guest's Sign in link. The name links to `/account`, and

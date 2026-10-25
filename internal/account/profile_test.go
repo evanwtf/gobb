@@ -25,6 +25,14 @@ func TestCheckProfileText(t *testing.T) {
 		{"nul", "a\x00b", 100, ErrControl},
 		{"del", "a\x7fb", 100, ErrControl},
 		{"c1 control", "a\u0085b", 100, ErrControl},
+		// Format characters, and the line and paragraph separators.
+		{"right-to-left override", "a\u202eb", 100, ErrControl},
+		{"zero-width space", "a\u200bb", 100, ErrControl},
+		{"left-to-right isolate", "a\u2066b", 100, ErrControl},
+		{"byte order mark", "a\ufeffb", 100, ErrControl},
+		{"soft hyphen", "a\u00adb", 100, ErrControl},
+		{"line separator", "a\u2028b", 100, ErrControl},
+		{"paragraph separator", "a\u2029b", 100, ErrControl},
 		{"invalid utf-8", "a\xffb", 100, ErrNotUTF8},
 		{"control and too long: too long first", strings.Repeat("a", 5) + "\n", 3, ErrTooLong},
 	}
@@ -67,6 +75,16 @@ func TestCheckWebsite(t *testing.T) {
 		{"tab", "https://example.com/\ta", ErrWebsite},
 		{"nul", "https://example.com/\x00", ErrWebsite},
 		{"invalid utf-8", "https://example.com/\xff", ErrNotUTF8},
+		{"right-to-left override", "https://example.com/a\u202eb", ErrWebsite},
+		{"zero-width space", "https://example.com/a\u200bb", ErrWebsite},
+		{"byte order mark", "https://\ufeffexample.com/", ErrWebsite},
+		{"soft hyphen", "https://example.com/a\u00adb", ErrWebsite},
+		{"line separator", "https://example.com/a\u2028b", ErrWebsite},
+		{"paragraph separator", "https://example.com/a\u2029b", ErrWebsite},
+		{"encoded override in the path", "https://example.com/%E2%80%AEtxt.exe", ErrWebsite},
+		{"encoded zero-width space in the path", "https://example.com/a%E2%80%8Bb", ErrWebsite},
+		{"encoded isolate in the host", "https://exa%E2%81%A6mple.com/", ErrWebsite},
+		{"encoded letter in the path", "https://example.com/caf%C3%A9", nil},
 		{"bad percent escape", "https://example.com/%zz", ErrWebsite},
 	}
 	for _, tc := range tests {
