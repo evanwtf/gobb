@@ -23,7 +23,7 @@ const (
 	messagesPerPage     = 25
 	maxSubjectRunes     = 120
 	maxRecipients       = 10
-	maxRecipientBytes   = 200 // a longer item cannot be the name of a member
+	maxRecipientBytes   = 255 // a longer item cannot be the name of a member (bundle name limit)
 	maxNameShownRunes   = 40  // how much of an unknown name the refusal repeats
 	msgReplyPrefix      = "Re: "
 	msgAddRecipient     = "Add at least one member."
@@ -216,7 +216,8 @@ type storedMessage struct {
 }
 
 // loadParty reads message id as v may see it. It gives [ErrNotFound] when v is
-// not a party. When lock is true it locks the message row to the end of the
+// not a party. The party rule is in the query, so a message of someone else is
+// neither loaded nor locked. When lock is true it locks the message row to the end of the
 // transaction.
 func loadParty(ctx context.Context, q db.Querier, v Viewer, id int64, lock bool) (storedMessage, error) {
 	suffix := ""
@@ -234,7 +235,8 @@ select p.id, coalesce(p.author_id, 0), coalesce(au.username, p.author_name), p.s
   from pms p
   left join users au on au.id = p.author_id
   left join pm_recipients r on r.pm_id = p.id and r.user_id = $2
- where p.id = $1`+suffix, id, v.UserID).Scan(
+ where p.id = $1
+   and ((p.author_id = $2 and not p.author_deleted) or (r.user_id is not null and not r.is_deleted))`+suffix, id, v.UserID).Scan(
 		&m.id, &m.authorID, &m.authorName, &m.subject, &m.source, &m.at, &m.tree,
 		&m.markdown, &m.smilies, &m.autolink, &m.sig, &authorDeleted, &rKind, &rDeleted)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -370,7 +372,14 @@ func ReplyDraft(ctx context.Context, q db.Querier, v Viewer, id int64, quote boo
 		return MessageDraft{}, err
 	}
 	d := MessageDraft{Subject: m.subject}
-	if m.authorID != 0 {
+	switch {
+	case m.asAuthor:
+		// A reply to one's own message goes on to the people it went to. A blind
+		// copy is not among them.
+		if d.To, err = visibleRecipientNames(ctx, q, id, v.UserID); err != nil {
+			return MessageDraft{}, err
+		}
+	case m.authorID != 0:
 		d.To = m.authorName
 	}
 	if len(d.Subject) < len(msgReplyPrefix) || !strings.EqualFold(d.Subject[:len(msgReplyPrefix)], msgReplyPrefix) {
@@ -380,43 +389,41 @@ func ReplyDraft(ctx context.Context, q db.Querier, v Viewer, id int64, quote boo
 		d.Subject = string([]rune(d.Subject)[:maxSubjectRunes])
 	}
 	if quote {
-		d.Source = quoteMessage(m.authorName, m.source)
+		d.Source = quoteBlock("**"+escapeMarkdown(m.authorName)+"** wrote:", m.source)
 	}
 	return d, nil
 }
 
-// quoteMessage writes src as a quotation by author, with an empty line after it
-// for the reply to start on.
-func quoteMessage(author, src string) string {
-	var b strings.Builder
-	b.WriteString("> **" + author + "** wrote:\n>\n")
-	src = strings.ReplaceAll(strings.ReplaceAll(src, "\r\n", "\n"), "\r", "\n")
-	for _, line := range strings.Split(strings.TrimRight(src, "\n"), "\n") {
-		if line == "" {
-			b.WriteString(">\n")
-			continue
-		}
-		b.WriteString("> " + line + "\n")
+// visibleRecipientNames returns the names of the recipients of kind "to" of
+// message id, except the member self, as a To field: separated by commas, in the
+// order that the message shows them.
+func visibleRecipientNames(ctx context.Context, q db.Querier, id, self int64) (string, error) {
+	rows, err := q.Query(ctx, `
+select u.username
+  from pm_recipients r join users u on u.id = r.user_id
+ where r.pm_id = $1 and r.kind = 'to' and r.user_id <> $2
+ order by u.username_clean, u.id`, id, self)
+	if err != nil {
+		return "", fmt.Errorf("board: read recipients of message %d: %w", id, err)
 	}
-	b.WriteString("\n")
-	return b.String()
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return "", fmt.Errorf("board: read recipients of message %d: %w", id, err)
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("board: read recipients of message %d: %w", id, err)
+	}
+	return strings.Join(names, ", "), nil
 }
 
-// cleanSubject trims a subject and applies the rules: 1 to 120 characters, valid
-// UTF-8, and no control character.
-func cleanSubject(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	n := utf8.RuneCountInString(s)
-	switch {
-	case !utf8.ValidString(s) || hasControl(s):
-		return "", inputError("subject", "The subject may not hold control characters or line breaks.")
-	case n == 0:
-		return "", inputError("subject", "Enter a subject.")
-	case n > maxSubjectRunes:
-		return "", inputError("subject", "The subject is longer than 120 characters.")
-	}
-	return s, nil
-}
+// cleanSubject trims a subject and applies the rules of titles: 1 to 120
+// characters, valid UTF-8, and no control character.
+func cleanSubject(s string) (string, error) { return cleanLine(s, "subject") }
 
 // splitRecipients splits the To field into names: at commas, trimmed, with
 // empty items dropped, and each name once by its clean form. It returns the
@@ -424,7 +431,7 @@ func cleanSubject(s string) (string, error) {
 // keeps an empty clean form.
 func splitRecipients(to string) (names, cleans []string) {
 	seen := map[string]bool{}
-	for _, item := range strings.Split(to, ",") {
+	for item := range strings.SplitSeq(to, ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
 			continue
@@ -445,6 +452,26 @@ func splitRecipients(to string) (names, cleans []string) {
 		}
 	}
 	return names, cleans
+}
+
+// recipientNames reads the To field. A name may hold a comma, so the whole
+// trimmed field comes first: when it is the clean name of an active member, it
+// is the one recipient. Otherwise the field splits at the commas (see
+// [splitRecipients]). A list that is also the name of a member, such as
+// "Smith, Alice, bob" for a member of that name, reads as that member.
+func recipientNames(ctx context.Context, q db.Querier, to string) (names, cleans []string, err error) {
+	if whole := strings.TrimSpace(to); strings.Contains(whole, ",") && utf8.ValidString(whole) && len(whole) <= maxRecipientBytes {
+		clean := account.CleanUsername(whole)
+		var ok bool
+		if err := q.QueryRow(ctx, `select exists (select 1 from users where username_clean = $1 and state = 'active')`, clean).Scan(&ok); err != nil {
+			return nil, nil, fmt.Errorf("board: look up recipient: %w", err)
+		}
+		if ok && clean != "" {
+			return []string{whole}, []string{clean}, nil
+		}
+	}
+	names, cleans = splitRecipients(to)
+	return names, cleans, nil
 }
 
 // shownName cuts a name that a writer typed down to what a refusal repeats.
@@ -472,7 +499,10 @@ func SendMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, d MessageDra
 	if !d.IP.IsValid() {
 		return 0, errors.New("board: a write needs the address of the writer")
 	}
-	names, cleans := splitRecipients(d.To)
+	names, cleans, err := recipientNames(ctx, pool, d.To)
+	if err != nil {
+		return 0, err
+	}
 	switch {
 	case len(names) == 0:
 		return 0, inputError("to", msgAddRecipient)
@@ -486,7 +516,7 @@ func SendMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, d MessageDra
 	body, parseErr := ParseMessage(ctx, pool, v, d.Source)
 
 	var msgID int64
-	err := inTx(ctx, pool, func(tx pgx.Tx) error {
+	err = inTx(ctx, pool, func(tx pgx.Tx) error {
 		// The lock on the author's row makes two sends from one member run one after
 		// the other, so the second finds the first when it looks for a duplicate.
 		var author string

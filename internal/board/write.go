@@ -28,6 +28,7 @@ import (
 const (
 	maxTitleRunes     = 120
 	maxBodyBytes      = 60_000
+	maxMessageBytes   = 60_000
 	maxSignatureBytes = 2_000
 	maxReasonRunes    = 255
 	maxGuestNameRunes = 40
@@ -86,7 +87,7 @@ type Draft struct {
 	IP netip.Addr
 }
 
-// parseHook, when set, runs in [ParseBodyKeeping] just before the parse. A test
+// parseHook, when set, runs in parseText just before the parse. A test
 // sets it to hold a parse open, and to show what the database does meanwhile. It
 // is nil in production.
 var parseHook func()
@@ -150,9 +151,13 @@ const (
 // ParseMessage is the path from the text of a private message to a stored tree.
 // It is [ParseBody] with the rights of messages: the flags are pm.markdown and
 // pm.smilies with URL linking on, an image needs pm.images, and the limit is
-// 60,000 bytes. A fault gives an [*InputError] on the field "body". It stores
-// nothing.
+// 60,000 bytes. A viewer without pm.send gets [ErrForbidden], so a preview needs
+// no check of its own. A fault gives an [*InputError] on the field "body". It
+// stores nothing.
 func ParseMessage(ctx context.Context, q db.Querier, v Viewer, src string) (Body, error) {
+	if v.UserID == 0 || !v.Perms.Has("pm.send", 0) {
+		return Body{}, ErrForbidden
+	}
 	return parseText(ctx, q, v, textMessage, 0, src, nil, nil)
 }
 
@@ -163,7 +168,7 @@ func parseText(ctx context.Context, q db.Querier, v Viewer, kind textKind, forum
 	if signature && flags == nil {
 		return Body{}, errors.New("board: a signature needs its stored flags")
 	}
-	if err := checkSource(src, signature); err != nil {
+	if err := checkSource(src, kind); err != nil {
 		return Body{}, err
 	}
 	var opt markup.Options
@@ -239,11 +244,16 @@ func parseText(ctx context.Context, q db.Querier, v Viewer, kind textKind, forum
 	return Body{Tree: tree, JSON: data, Text: text, Flags: opt}, nil
 }
 
-// checkSource applies the limits to the text of a post or a signature.
-func checkSource(src string, signature bool) error {
+// checkSource applies the limits to the text of a post, a signature or a
+// message.
+func checkSource(src string, kind textKind) error {
+	signature := kind == textSignature
 	limit, limitText := maxBodyBytes, "60,000"
-	if signature {
+	switch kind {
+	case textSignature:
 		limit, limitText = maxSignatureBytes, "2,000"
+	case textMessage:
+		limit, limitText = maxMessageBytes, "60,000"
 	}
 	switch {
 	case !utf8.ValidString(src):
@@ -304,16 +314,21 @@ func hasControl(s string) bool {
 
 // cleanTitle trims a title and applies the rules: 1 to 120 characters, valid
 // UTF-8, and no control character.
-func cleanTitle(s string) (string, error) {
+func cleanTitle(s string) (string, error) { return cleanLine(s, "title") }
+
+// cleanLine trims a one-line field and applies the rules of titles and subjects:
+// 1 to 120 characters, valid UTF-8, and no control character. field is the name
+// of the form field, and it is the word in the messages.
+func cleanLine(s, field string) (string, error) {
 	s = strings.TrimSpace(s)
 	n := utf8.RuneCountInString(s)
 	switch {
 	case !utf8.ValidString(s) || hasControl(s):
-		return "", inputError("title", "The title may not hold control characters or line breaks.")
+		return "", inputError(field, "The "+field+" may not hold control characters or line breaks.")
 	case n == 0:
-		return "", inputError("title", "Enter a title.")
+		return "", inputError(field, "Enter a "+field+".")
 	case n > maxTitleRunes:
-		return "", inputError("title", "The title is longer than 120 characters.")
+		return "", inputError(field, "The "+field+" is longer than 120 characters.")
 	}
 	return s, nil
 }
@@ -1159,8 +1174,16 @@ select coalesce(u.username, p.author_name), p.body_source
 	if err != nil {
 		return "", fmt.Errorf("board: read post %d: %w", postID, err)
 	}
+	return quoteBlock("**"+escapeMarkdown(name)+"** [wrote](/p/"+strconv.FormatInt(postID, 10)+"):", text), nil
+}
+
+// quoteBlock writes a quotation: the line head, an empty quote line, and the
+// lines of text, each behind "> ", then a blank line for the writer to start on.
+// A post quote and a message quote both use it. The caller escapes what it puts
+// in head.
+func quoteBlock(head, text string) string {
 	var sb strings.Builder
-	sb.WriteString("> **" + escapeMarkdown(name) + "** [wrote](/p/" + strconv.FormatInt(postID, 10) + "):\n>\n")
+	sb.WriteString("> " + head + "\n>\n")
 	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
 	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
 		if line == "" {
@@ -1170,7 +1193,7 @@ select coalesce(u.username, p.author_name), p.body_source
 		sb.WriteString("> " + line + "\n")
 	}
 	sb.WriteString("\n")
-	return sb.String(), nil
+	return sb.String()
 }
 
 // escapeMarkdown writes s so that Markdown reads it as plain text: a backslash

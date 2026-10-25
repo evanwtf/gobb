@@ -886,3 +886,184 @@ func TestSendRefusesBannedMember(t *testing.T) {
 	_, err := board.SendMessage(ctx, pool, viewerFor(t, pool, carol), board.MessageDraft{To: "bob", Subject: "S", Source: "x", IP: ip1}, t0)
 	wantIs(t, err, board.ErrBanned, "banned member")
 }
+
+// The name of the author goes into the quote as text. A name with link syntax or
+// emphasis marks must not make a link or an emphasis in the reply.
+func TestQuotedNamesAreEscaped(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	name := "[a](https://evil.example) *b* _c_"
+	if _, err := pool.Exec(ctx, `update pms set author_name = $1, author_id = null where id = 2`, name); err != nil {
+		t.Fatal(err)
+	}
+	a := viewerFor(t, pool, alice)
+	d, err := board.ReplyDraft(ctx, pool, a, 2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `> **\[a\]\(https\:\/\/evil\.example\) \*b\* \_c\_** wrote:` + "\n"
+	if !strings.HasPrefix(d.Source, want) {
+		t.Errorf("quote = %q, want prefix %q", d.Source, want)
+	}
+	b, err := board.ParseMessage(ctx, pool, a, d.Source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(markup.Render(b.Tree, markup.RenderContext{}).HTML)
+	if strings.Contains(out, "<a ") || strings.Contains(out, "evil.example\"") || strings.Contains(out, "<em>") {
+		t.Errorf("the name made markup: %s", out)
+	}
+	// The same helper quotes a post.
+	if _, err := pool.Exec(ctx, `update users set username = $1 where id = $2`, name, bob); err != nil {
+		t.Fatal(err)
+	}
+	q, err := board.QuoteSource(ctx, pool, a, 2) // post 2 is by bob
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(q, `> **\[a\]\(https\:\/\/evil\.example\) \*b\* \_c\_** [wrote]`) {
+		t.Errorf("post quote = %q", q)
+	}
+}
+
+// A name with a comma is one name when the whole field names a member.
+func TestCommaInMemberName(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	if _, err := pool.Exec(ctx, `update users set username = 'Smith, Alice', username_clean = 'smith, alice' where id = $1`, bob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `update pms set author_name = 'Smith, Alice' where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	a := viewerFor(t, pool, alice)
+	// The reply draft names the member, and the draft sends.
+	d, err := board.ReplyDraft(ctx, pool, a, 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.To != "Smith, Alice" {
+		t.Fatalf("To = %q", d.To)
+	}
+	d.Source, d.IP = "Hello", ip1
+	id, err := board.SendMessage(ctx, pool, a, d, t0)
+	if err != nil {
+		t.Fatalf("send to a name with a comma: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `select count(*) from pm_recipients where pm_id = $1 and user_id = $2`, id, bob).Scan(&n); err != nil || n != 1 {
+		t.Errorf("recipient rows = %d, %v, want 1", n, err)
+	}
+	// It needs no pm.send_many: it is one member. Case and spaces do not matter.
+	c := viewerFor(t, pool, carol)
+	if _, err := board.SendMessage(ctx, pool, c, board.MessageDraft{To: "  SMITH, alice ", Subject: "S", Source: "x", IP: ip1}, t0); err != nil {
+		t.Errorf("one member with a comma, no pm.send_many: %v", err)
+	}
+	// A list that is not one name still splits at the commas. "Smith, Alice, carol"
+	// is no member's name as a whole, so it reads as three names, and the first
+	// two are unknown.
+	grantOpts(t, pool, alice, 0, "pm.send_many")
+	_, err = board.SendMessage(ctx, pool, viewerFor(t, pool, alice), board.MessageDraft{To: "Smith, Alice, carol", Subject: "S", Source: "x", IP: ip1}, t0)
+	wantInput(t, err, "to", "No member named “Smith”.")
+}
+
+// A reply to a message that the viewer wrote goes to its "to" recipients.
+func TestReplyToOwnMessage(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	if _, err := pool.Exec(ctx, `insert into pm_recipients (pm_id, user_id, kind) values (1, $1, 'to')`, dave); err != nil {
+		t.Fatal(err)
+	}
+	a := viewerFor(t, pool, alice)
+	d, err := board.ReplyDraft(ctx, pool, a, 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bob and dave, in the order that the message shows. Carol is a blind copy.
+	if d.To != "bob, dave" {
+		t.Errorf("To = %q, want %q", d.To, "bob, dave")
+	}
+	if d.Subject != "Re: Welcome aboard" || !strings.HasPrefix(d.Source, "> **alice** wrote:\n") {
+		t.Errorf("draft = %+v", d)
+	}
+	// Bob replies to alice, not to the other recipient.
+	d, err = board.ReplyDraft(ctx, pool, viewerFor(t, pool, bob), 1, false)
+	if err != nil || d.To != "alice" {
+		t.Errorf("bob's draft = %+v, %v", d, err)
+	}
+}
+
+func TestMessageListPages(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	// 29 more messages to bob: 30 in his inbox, ids 1 and 100 to 128.
+	for i := range 29 {
+		id := 100 + i
+		if _, err := pool.Exec(ctx, `insert into pms (id, author_id, author_name, created_at, subject, body_tree)
+			values ($1, $2, 'alice', $3, 'Bulk', '{}'::jsonb)`, id, alice, t0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `insert into pm_recipients (pm_id, user_id, kind) values ($1, $2, 'to')`, id, bob); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := viewerFor(t, pool, bob)
+	p1, err := board.Inbox(ctx, pool, b, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p1.Rows) != 25 || p1.Pages != 2 || p1.Rows[0].ID != 128 || p1.Rows[24].ID != 104 {
+		t.Errorf("page 1: %d rows, %d pages, first %d, last %d", len(p1.Rows), p1.Pages, p1.Rows[0].ID, p1.Rows[len(p1.Rows)-1].ID)
+	}
+	p2, err := board.Inbox(ctx, pool, b, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := messageIDs(p2); !slices.Equal(got, []int64{103, 102, 101, 100, 1}) || p2.Page != 2 {
+		t.Errorf("page 2 = %v, page %d", got, p2.Page)
+	}
+	if got := authorIDs(p2.Rows[0].To); !slices.Equal(got, []int64{bob}) {
+		t.Errorf("page 2 To = %v", got)
+	}
+	for _, page := range []int{-1, 3} {
+		if _, err := board.Inbox(ctx, pool, b, page); !errors.Is(err, board.ErrNotFound) {
+			t.Errorf("page %d = %v, want ErrNotFound", page, err)
+		}
+	}
+	// The sent list pages the same way.
+	s2, err := board.Sent(ctx, pool, viewerFor(t, pool, alice), 2)
+	if err != nil || !slices.Equal(messageIDs(s2), []int64{103, 102, 101, 100, 1}) {
+		t.Errorf("sent page 2 = %v, %v", messageIDs(s2), err)
+	}
+	if _, err := board.Sent(ctx, pool, viewerFor(t, pool, alice), -1); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("sent page -1 = %v, want ErrNotFound", err)
+	}
+}
+
+// ParseMessage checks the right to send, because a preview calls it alone.
+func TestParseMessageNeedsPMSend(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	denyOpts(t, pool, carol, 0, "pm.send")
+	if _, err := board.ParseMessage(ctx, pool, viewerFor(t, pool, carol), "x"); !errors.Is(err, board.ErrForbidden) {
+		t.Errorf("without pm.send: %v, want ErrForbidden", err)
+	}
+	if _, err := board.ParseMessage(ctx, pool, asGuest(t, pool), "x"); !errors.Is(err, board.ErrForbidden) {
+		t.Errorf("guest: %v, want ErrForbidden", err)
+	}
+}
+
+// A name of 255 bytes is a possible name, so the To field takes it.
+func TestLongestMemberName(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	long := strings.Repeat("x", 255)
+	if _, err := pool.Exec(ctx, `update users set username = $1, username_clean = $1 where id = $2`, long, bob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.SendMessage(ctx, pool, viewerFor(t, pool, alice), board.MessageDraft{To: long, Subject: "S", Source: "x", IP: ip1}, t0); err != nil {
+		t.Errorf("255-byte name: %v", err)
+	}
+	_, err := board.SendMessage(ctx, pool, viewerFor(t, pool, alice), board.MessageDraft{To: long + "y", Subject: "S", Source: "x", IP: ip1}, t0)
+	wantInput(t, err, "to", "")
+}
