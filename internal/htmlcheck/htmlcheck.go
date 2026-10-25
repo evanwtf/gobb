@@ -253,10 +253,6 @@ func (c *checker) element(tok tag, start bool) {
 			href, hasHref = a.val, true
 		case "src":
 			src, hasSrc = a.val, true
-		case "data-instgrm-permalink", "data-text-post-permalink":
-			if !linkOK(a.val) {
-				c.add("%s %q fails the URL rules", key, a.val)
-			}
 		}
 	}
 	switch {

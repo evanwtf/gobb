@@ -439,6 +439,21 @@ func (r *renderer) smiley(it renderItem) {
 	r.html.WriteString(html.EscapeString(code))
 }
 
+// scriptedEmbed reports whether the embed of tag loads a provider script into the
+// page of the board: X, Instagram and Threads do. Such an embed always renders as
+// a plain link (ruling R49), because the script runs in the origin of the board,
+// where it can read the page and open other pages of the board. An embed that is
+// only a frame of the provider (YouTube, Vimeo, TikTok, Spotify, SoundCloud) has
+// no script of its own on the board page and stays embedded. The stored tree is
+// unchanged: this is a decision at render time.
+func scriptedEmbed(tag string) bool {
+	switch tag {
+	case "tweet", "instagram", "threads":
+		return true
+	}
+	return false
+}
+
 // embed renders an embed element, or nothing when its ID fails [EmbedID].
 func (r *renderer) embed(it renderItem) {
 	n := it.n
@@ -446,7 +461,7 @@ func (r *renderer) embed(it renderItem) {
 	if !ok {
 		return
 	}
-	if r.rc.NoEmbeds {
+	if r.rc.NoEmbeds || scriptedEmbed(n.Name) {
 		if href := embedLink(n.Name, id); href != "" {
 			r.html.WriteString(openTag("div", "class", "embed-link") +
 				openTag("a", "href", href, "rel", "nofollow ugc noopener") + html.EscapeString(href) + closeTag("a") + closeTag("div"))
@@ -529,44 +544,22 @@ func pathEsc(id string) string {
 // Origins of the providers. Each embed in [embedHTML] names the page of the
 // provider's published embed documentation that its entry follows.
 const (
-	originYouTube = "https://www.youtube-nocookie.com"
-	originVimeo   = "https://player.vimeo.com"
-	originXFrame  = "https://platform.twitter.com"
-	originXHost   = "https://platform.x.com"
-	// The hosts that X's widget script reaches with fetch or XHR.
-	originXSyndication    = "https://syndication.twitter.com"
-	originXCDNSyndication = "https://cdn.syndication.twimg.com"
-	originInstagram       = "https://www.instagram.com"
-	originTikTok          = "https://www.tiktok.com"
-	originThreads         = "https://www.threads.com"
-	originSpotify         = "https://open.spotify.com"
-	originSoundCloud      = "https://w.soundcloud.com"
+	originYouTube    = "https://www.youtube-nocookie.com"
+	originVimeo      = "https://player.vimeo.com"
+	originTikTok     = "https://www.tiktok.com"
+	originSpotify    = "https://open.spotify.com"
+	originSoundCloud = "https://w.soundcloud.com"
 )
 
-// The script and connect origins of the embed table. The rows of [embedHTML]
-// read these lists, and [EmbedScriptOrigins] and [EmbedConnectOrigins] export their
-// union, so a Content-Security-Policy can be checked against the table and the
-// table has one copy of each list.
+// The script and connect origins of the embed table. No row of [embedHTML] loads
+// a provider script into the page (see [scriptedEmbed]), so both lists are empty.
+// [EmbedScriptOrigins] and [EmbedConnectOrigins] stay, with the plumbing of the
+// scripts in the renderer and in the Content-Security-Policy, for a provider that
+// a later ruling may allow again.
 var (
-	// tweetScriptSrc: platform.x.com/widgets.js answers with a 302 to
-	// platform.twitter.com/widgets.js, so a policy needs both hosts.
-	tweetScriptSrc      = []string{originXFrame, originXHost}
-	tweetConnect        = []string{originXSyndication, originXCDNSyndication}
-	instagramScriptSrc  = []string{originInstagram}
-	threadsScriptSrc    = []string{originThreads}
-	embedScriptOrigins  = union(tweetScriptSrc, instagramScriptSrc, threadsScriptSrc)
-	embedConnectOrigins = union(tweetConnect)
+	embedScriptOrigins  []string
+	embedConnectOrigins []string
 )
-
-// union returns the sorted union of the lists, with no duplicates.
-func union(lists ...[]string) []string {
-	var out []string
-	for _, l := range lists {
-		out = append(out, l...)
-	}
-	sort.Strings(out)
-	return slices.Compact(out)
-}
 
 // EmbedScriptOrigins returns the origins that the embed table adds to script-src,
 // sorted: the hosts of the provider scripts. [Rendered.ScriptSrc] holds only
@@ -602,6 +595,10 @@ type embedOut struct {
 // Every iframe has loading="lazy" and a title. None has a sandbox attribute:
 // the providers' players need both scripts and their own origin, and the
 // pair allow-scripts with allow-same-origin removes the sandbox.
+//
+// The table has no row for the tags tweet, instagram and threads. Their embeds
+// load a provider script into the page of the board, so [scriptedEmbed] sends
+// them to the plain link of [embedLink] in every context (ruling R49).
 func embedHTML(tag, id string) embedOut {
 	switch tag {
 	case "youtube":
@@ -619,45 +616,6 @@ func embedHTML(tag, id string) embedOut {
 			"title", "Vimeo video", "loading", "lazy", "allow", "fullscreen; picture-in-picture",
 			"allowfullscreen", bare) + closeTag("iframe"),
 			frame: originVimeo}
-	case "tweet":
-		// https://docs.x.com/x-for-websites/embedded-posts/overview, and the markup
-		// that https://publish.x.com/oembed returns: a blockquote.twitter-tweet with a
-		// link to x.com, and the script at platform.x.com/widgets.js. The FAQ at
-		// https://docs.x.com/x-for-websites/embedded-posts/faq gives that script URL.
-		// The pages list no frame, connect or image host and give no CSP advice, so
-		// the lists below come from what the script does in a browser (see the report
-		// of the Task 9 check).
-		//
-		// scriptSrc lists both hosts. platform.x.com/widgets.js answers with a 302 to
-		// platform.twitter.com/widgets.js, and that script loads its chunks from
-		// https://platform.twitter.com/js/. A CSP checks each redirect, so a policy
-		// with only platform.x.com blocks the script and the tweet never renders.
-		//
-		// connect lists the hosts that the script reaches with fetch or XHR: the
-		// syndication hosts. The frame the script builds loads from
-		// platform.twitter.com.
-		return embedOut{
-			html: openTag("blockquote", "class", "twitter-tweet") +
-				openTag("a", "href", "https://x.com/i/status/"+pathEsc(id)) + "View post on X" + closeTag("a") +
-				closeTag("blockquote"),
-			frame:     originXFrame,
-			scripts:   []string{originXHost + "/widgets.js"},
-			scriptSrc: tweetScriptSrc,
-			connect:   tweetConnect,
-		}
-	case "instagram":
-		// https://developers.facebook.com/docs/instagram-platform/oembed : a
-		// blockquote.instagram-media that the script at www.instagram.com/embed.js
-		// turns into a frame. The page names www.instagram.com only and gives no
-		// CSP advice.
-		link := "https://www.instagram.com/p/" + pathEsc(id) + "/"
-		return embedOut{
-			html: openTag("blockquote", "class", "instagram-media", "data-instgrm-permalink", link) +
-				openTag("a", "href", link) + "View on Instagram" + closeTag("a") + closeTag("blockquote"),
-			frame:     originInstagram,
-			scripts:   []string{originInstagram + "/embed.js"},
-			scriptSrc: instagramScriptSrc,
-		}
 	case "reddit":
 		// A plain link, with no script and no frame. Reddit publishes no embed page
 		// that this project can read (https://www.reddit.com/wiki/embeds answers 403
@@ -676,24 +634,6 @@ func embedHTML(tag, id string) embedOut {
 		return embedOut{html: openTag("iframe", "class", "embed tiktok", "src", originTikTok+"/player/v1/"+pathEsc(id),
 			"title", "TikTok video", "loading", "lazy", "allow", "fullscreen", "allowfullscreen", bare) + closeTag("iframe"),
 			frame: originTikTok}
-	case "threads":
-		// https://developers.facebook.com/docs/threads/tools-and-resources/embed-a-threads-post :
-		// a blockquote.text-post-media with data-text-post-permalink, and
-		// <script async src="https://www.threads.com/embed.js">. The page names
-		// www.threads.com for both and gives no CSP advice. The docs show a trailing
-		// "/" on the permalink.
-		user, post, ok := strings.Cut(id, "/")
-		if !ok {
-			return embedOut{}
-		}
-		link := "https://www.threads.com/@" + pathEsc(user) + "/post/" + pathEsc(post) + "/"
-		return embedOut{
-			html: openTag("blockquote", "class", "text-post-media", "data-text-post-permalink", link) +
-				openTag("a", "href", link) + "View on Threads" + closeTag("a") + closeTag("blockquote"),
-			frame:     originThreads,
-			scripts:   []string{originThreads + "/embed.js"},
-			scriptSrc: threadsScriptSrc,
-		}
 	case "spotify":
 		// https://developer.spotify.com/documentation/embeds : the iframe src is
 		// open.spotify.com/embed/{type}/{id}.

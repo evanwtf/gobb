@@ -96,15 +96,15 @@ func TestRenderTable(t *testing.T) {
 		{"vimeo", renderEmbed("vimeo", "76979871"),
 			`<iframe class="embed vimeo" src="https://player.vimeo.com/video/76979871" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`},
 		{"tweet", renderEmbed("tweet", "20"),
-			`<blockquote class="twitter-tweet"><a href="https://x.com/i/status/20">View post on X</a></blockquote>`},
+			`<div class="embed-link"><a href="https://x.com/i/status/20" rel="nofollow ugc noopener">https://x.com/i/status/20</a></div>`},
 		{"instagram", renderEmbed("instagram", "CxYz_12-ab"),
-			`<blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/CxYz_12-ab/"><a href="https://www.instagram.com/p/CxYz_12-ab/">View on Instagram</a></blockquote>`},
+			`<div class="embed-link"><a href="https://www.instagram.com/p/CxYz_12-ab/" rel="nofollow ugc noopener">https://www.instagram.com/p/CxYz_12-ab/</a></div>`},
 		{"reddit", renderEmbed("reddit", "programming/abc123"),
 			`<div class="embed-link"><a href="https://www.reddit.com/r/programming/comments/abc123/" rel="nofollow ugc noopener">View post on Reddit</a></div>`},
 		{"tiktok", renderEmbed("tiktok", "6718335390845095173"),
 			`<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/6718335390845095173" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`},
 		{"threads", renderEmbed("threads", "zuck/C04flh-M8ii"),
-			`<blockquote class="text-post-media" data-text-post-permalink="https://www.threads.com/@zuck/post/C04flh-M8ii/"><a href="https://www.threads.com/@zuck/post/C04flh-M8ii/">View on Threads</a></blockquote>`},
+			`<div class="embed-link"><a href="https://www.threads.com/@zuck/post/C04flh-M8ii/" rel="nofollow ugc noopener">https://www.threads.com/@zuck/post/C04flh-M8ii/</a></div>`},
 		{"spotify", renderEmbed("spotify", "track/4cOdK2wGLETKBW3PvgPWqT"),
 			`<iframe class="embed spotify" src="https://open.spotify.com/embed/track/4cOdK2wGLETKBW3PvgPWqT" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`},
 		{"soundcloud track", renderEmbed("soundcloud", "forss/flickermood"),
@@ -308,13 +308,13 @@ func TestRenderOrigins(t *testing.T) {
 		renderEmbed("tweet", "20").Children[0],
 	)
 	r := Render(n, RenderContext{})
-	wantFrame := []string{"https://platform.twitter.com", "https://www.youtube-nocookie.com"}
-	wantScript := []string{"https://platform.twitter.com", "https://platform.x.com"}
+	// The tweet is a plain link (ruling R49): it adds no frame and no script origin.
+	wantFrame := []string{"https://www.youtube-nocookie.com"}
 	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
 		t.Errorf("FrameSrc = %v, want %v", r.FrameSrc, wantFrame)
 	}
-	if !reflect.DeepEqual(r.ScriptSrc, wantScript) {
-		t.Errorf("ScriptSrc = %v, want %v", r.ScriptSrc, wantScript)
+	if len(r.ScriptSrc) != 0 {
+		t.Errorf("ScriptSrc = %v, want none", r.ScriptSrc)
 	}
 }
 
@@ -329,20 +329,16 @@ func TestRenderOriginsEveryEmbed(t *testing.T) {
 		kids = append(kids, el(e.tag, at("id", e.id)))
 	}
 	r := Render(tree(kids...), RenderContext{})
+	// X, Instagram and Threads are plain links (ruling R49): they add no origin.
 	wantFrame := []string{
-		"https://open.spotify.com", "https://platform.twitter.com",
-		"https://player.vimeo.com", "https://w.soundcloud.com", "https://www.instagram.com",
-		"https://www.threads.com", "https://www.tiktok.com", "https://www.youtube-nocookie.com",
-	}
-	wantScript := []string{
-		"https://platform.twitter.com", "https://platform.x.com",
-		"https://www.instagram.com", "https://www.threads.com",
+		"https://open.spotify.com", "https://player.vimeo.com", "https://w.soundcloud.com",
+		"https://www.tiktok.com", "https://www.youtube-nocookie.com",
 	}
 	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
 		t.Errorf("FrameSrc = %v\nwant %v", r.FrameSrc, wantFrame)
 	}
-	if !reflect.DeepEqual(r.ScriptSrc, wantScript) {
-		t.Errorf("ScriptSrc = %v\nwant %v", r.ScriptSrc, wantScript)
+	if len(r.ScriptSrc) != 0 || len(r.ConnectSrc) != 0 {
+		t.Errorf("ScriptSrc = %v, ConnectSrc = %v, want none", r.ScriptSrc, r.ConnectSrc)
 	}
 }
 
@@ -850,32 +846,10 @@ func TestRenderImageNote(t *testing.T) {
 	}
 }
 
-func TestRenderScriptsAndConnect(t *testing.T) {
-	tw := Render(renderEmbed("tweet", "20"), RenderContext{})
-	if want := []string{"https://platform.x.com/widgets.js"}; !reflect.DeepEqual(tw.Scripts, want) {
-		t.Errorf("tweet Scripts = %v, want %v", tw.Scripts, want)
-	}
-	if len(tw.ConnectSrc) == 0 {
-		t.Error("tweet ConnectSrc is empty")
-	}
-	yt := Render(renderEmbed("youtube", "M7lc1UVf-VE"), RenderContext{})
-	if len(yt.Scripts) != 0 || len(yt.ConnectSrc) != 0 {
-		t.Errorf("youtube Scripts = %v, ConnectSrc = %v, want none", yt.Scripts, yt.ConnectSrc)
-	}
-	two := Render(tree(renderEmbed("tweet", "20").Children[0], renderEmbed("tweet", "21").Children[0]), RenderContext{})
-	if len(two.Scripts) != 1 || !reflect.DeepEqual(two.ConnectSrc, tw.ConnectSrc) {
-		t.Errorf("two tweets: Scripts = %v, ConnectSrc = %v", two.Scripts, two.ConnectSrc)
-	}
-}
-
-// TestRenderScriptsEveryEmbed pins the script URLs of the embed table. A script
-// URL is https, has a path, and its origin is in ScriptSrc.
-func TestRenderScriptsEveryEmbed(t *testing.T) {
-	want := map[string]string{
-		"tweet":     "https://platform.x.com/widgets.js",
-		"instagram": "https://www.instagram.com/embed.js",
-		"threads":   "https://www.threads.com/embed.js",
-	}
+// Ruling R49: no embed loads a provider script into the page. X, Instagram and
+// Threads render as a plain link, and every other embed is a frame of the
+// provider, so no embed needs a script, a script origin or a connect origin.
+func TestRenderEmbedsNeedNoScript(t *testing.T) {
 	ids := map[string]string{
 		"tweet": "20", "instagram": "CxYz_12-ab", "reddit": "programming/abc123", "threads": "zuck/C04flh-M8ii",
 		"youtube": "M7lc1UVf-VE", "vimeo": "76979871", "tiktok": "6718335390845095173",
@@ -883,23 +857,23 @@ func TestRenderScriptsEveryEmbed(t *testing.T) {
 	}
 	for tag, id := range ids {
 		r := Render(renderEmbed(tag, id), RenderContext{})
-		w, has := want[tag]
-		switch {
-		case has && !reflect.DeepEqual(r.Scripts, []string{w}):
-			t.Errorf("%s: Scripts = %v, want [%s]", tag, r.Scripts, w)
-		case !has && len(r.Scripts) != 0:
-			t.Errorf("%s: Scripts = %v, want none", tag, r.Scripts)
+		if len(r.Scripts)+len(r.ScriptSrc)+len(r.ConnectSrc) != 0 {
+			t.Errorf("%s: Scripts = %v, ScriptSrc = %v, ConnectSrc = %v, want none", tag, r.Scripts, r.ScriptSrc, r.ConnectSrc)
 		}
-		for _, u := range r.Scripts {
-			origin := u[:strings.Index(u[len("https://"):], "/")+len("https://")]
-			found := false
-			for _, o := range r.ScriptSrc {
-				found = found || o == origin
-			}
-			if !found {
-				t.Errorf("%s: origin %s of %s is not in ScriptSrc %v", tag, origin, u, r.ScriptSrc)
-			}
+		out := string(r.HTML)
+		if strings.Contains(out, "<script") || strings.Contains(out, "<blockquote") {
+			t.Errorf("%s: the output holds a script or a blockquote: %s", tag, out)
 		}
+	}
+	// The scripted tags are links, and the frame tags still frame.
+	for _, tag := range []string{"tweet", "instagram", "threads"} {
+		r := Render(renderEmbed(tag, ids[tag]), RenderContext{})
+		if len(r.FrameSrc) != 0 || !strings.Contains(string(r.HTML), `class="embed-link"`) {
+			t.Errorf("%s: want a plain link and no frame: %s %v", tag, r.HTML, r.FrameSrc)
+		}
+	}
+	if r := Render(renderEmbed("youtube", ids["youtube"]), RenderContext{}); len(r.FrameSrc) == 0 || !strings.Contains(string(r.HTML), "<iframe") {
+		t.Errorf("youtube lost its frame: %s", r.HTML)
 	}
 }
 

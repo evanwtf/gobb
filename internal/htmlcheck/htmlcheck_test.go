@@ -112,8 +112,6 @@ var catches = []struct {
 	{"link", `<link rel="stylesheet" href="https://evil.example/x.css">`, "forbidden element <link>"},
 
 	// The permalink attributes of an embed hold a URL too.
-	{"instagram permalink javascript", `<blockquote class="instagram-media" data-instgrm-permalink="javascript:x"></blockquote>`, "data-instgrm-permalink"},
-	{"threads permalink data", `<blockquote class="text-post-media" data-text-post-permalink="data:x"></blockquote>`, "data-text-post-permalink"},
 
 	// An attribute that the renderer always writes as a constant takes only that
 	// constant.
@@ -134,7 +132,7 @@ var catches = []struct {
 	{"span tabindex negative", `<span class="spoiler" tabindex="-1">y</span>`, `attribute tabindex="-1" on <span> is not a value`},
 	{"div class", `<div class="x">y</div>`, `attribute class="x" on <div> is not a value`},
 	{"pre class", `<pre class="x"><code>y</code></pre>`, `attribute class="x" on <pre> is not a value`},
-	{"blockquote class", `<blockquote class="x">y</blockquote>`, `attribute class="x" on <blockquote> is not a value`},
+	{"blockquote class", `<blockquote class="x">y</blockquote>`, `attribute class is not allowed on <blockquote>`},
 	{"code class", `<code class="x">y</code>`, `attribute class="x" on <code> is not a value`},
 	{"code class with a space", `<code class="language-a b">y</code>`, `attribute class="language-a b" on <code> is not a value`},
 	{"ol start zero", `<ol start="0"><li>x</li></ol>`, `attribute start="0" on <ol> is not a value`},
@@ -261,7 +259,7 @@ func TestCheckAccepts(t *testing.T) {
 		`<P>upper case tag</P>`,
 		`<ul><li><p>x</p></li></ul><br><hr><img src="/a.png" alt="x" loading="lazy" class="post-img">`,
 		`<pre class="code"><code class="language-c++">x</code></pre>`,
-		`<blockquote class="twitter-tweet"><a href="https://x.com/i/status/1">View post on X</a></blockquote>`,
+		`<blockquote><p>x</p></blockquote>`,
 	} {
 		if p := htmlcheck.Problems(f); len(p) != 0 {
 			t.Errorf("Problems(%q) = %q, want none", f, p)

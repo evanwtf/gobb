@@ -428,7 +428,8 @@ func TestPostBodiesSeesAStrayEnd(t *testing.T) {
 }
 
 func TestPolicyProblems(t *testing.T) {
-	withEmbed := "default-src 'none'; script-src 'self' https://platform.x.com; style-src 'self' 'unsafe-inline'; img-src 'self' https:; connect-src 'self' https://syndication.twitter.com; font-src 'self'; frame-src https://platform.twitter.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+	// A page with a YouTube embed. No embed adds a script origin (ruling R49).
+	withEmbed := "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https:; connect-src 'self'; font-src 'self'; frame-src https://www.youtube-nocookie.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 	if got := policyProblems(wantBaseCSP, wantBaseCSP, false); len(got) != 0 {
 		t.Errorf("the base policy: %v", got)
 	}
@@ -455,20 +456,21 @@ func TestPolicyProblems(t *testing.T) {
 		"img-src":          {"img-src 'self' https:", "img-src *"},
 		"font-src":         {"font-src 'self'", "font-src 'self' https://x.example"},
 		"worker-src":       {"object-src 'none'", "object-src 'none'; worker-src *"},
-		"frame-src":        {"frame-src https://platform.twitter.com", "frame-src https://evil.example"},
-		"script unsafe":    {"script-src 'self' https://platform.x.com", "script-src 'self' 'unsafe-inline'"},
-		"script star":      {"script-src 'self' https://platform.x.com", "script-src *"},
-		"connect any":      {"connect-src 'self' https://syndication.twitter.com", "connect-src *"},
-		"style any":        {"style-src 'self' 'unsafe-inline'", "style-src 'self' https://x.example"},
+		"frame-src":        {"frame-src https://www.youtube-nocookie.com", "frame-src https://evil.example"},
+		"script unsafe":    {"script-src 'self'", "script-src 'self' 'unsafe-inline'"},
+		"script star":      {"script-src 'self'", "script-src *"},
+		"connect any":      {"connect-src 'self'", "connect-src *"},
+		"style any":        {"style-src 'self'", "style-src 'self' https://x.example"},
 		"form-action":      {"form-action 'self'", "form-action *"},
-		"script no self":   {"script-src 'self' https://platform.x.com", "script-src https://platform.x.com"},
-		"script with path": {"script-src 'self' https://platform.x.com", "script-src 'self' https://platform.x.com/a.js"},
+		"script no self":   {"script-src 'self'", "script-src https://x.example"},
+		"script with path": {"script-src 'self'", "script-src 'self' https://x.example/a.js"},
 		// A bare https origin that the embed table does not hold (ruling T3 CSP).
-		"script evil origin":  {"script-src 'self' https://platform.x.com", "script-src 'self' https://platform.x.com https://evil.example"},
-		"connect evil origin": {"connect-src 'self' https://syndication.twitter.com", "connect-src 'self' https://syndication.twitter.com https://evil.example"},
-		// An origin of the table in the wrong list: a frame host is no script host.
-		"script frame-only origin":   {"script-src 'self' https://platform.x.com", "script-src 'self' https://www.youtube-nocookie.com"},
-		"connect script-only origin": {"connect-src 'self' https://syndication.twitter.com", "connect-src 'self' https://www.instagram.com"},
+		"script evil origin":  {"script-src 'self'", "script-src 'self' https://evil.example"},
+		"connect evil origin": {"connect-src 'self'", "connect-src 'self' https://evil.example"},
+		// The scripted providers add nothing any more (ruling R49).
+		"script x origin":        {"script-src 'self'", "script-src 'self' https://platform.x.com"},
+		"connect x origin":       {"connect-src 'self'", "connect-src 'self' https://syndication.twitter.com"},
+		"script frame-only host": {"script-src 'self'", "script-src 'self' https://www.youtube-nocookie.com"},
 	} {
 		weak := strings.Replace(withEmbed, change[0], change[1], 1)
 		if got := policyProblems(weak, wantBaseCSP, true); len(got) == 0 {

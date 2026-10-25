@@ -177,41 +177,19 @@ func TestEmbedOriginsCoverTheEmbedTable(t *testing.T) {
 	}
 }
 
-// The script and connect origins of the policy are the ones the renderer writes:
-// the render of every embed uses origins of the two lists and nothing else, and
-// each listed origin is used by some embed.
-func TestEmbedScriptAndConnectOriginsCoverTheEmbedTable(t *testing.T) {
+// Ruling R49: no embed loads a provider script into the page, so the render of
+// every embed needs no script origin and no connect origin, and both lists are
+// empty. The caller owns the results.
+func TestEmbedScriptAndConnectOriginsAreEmpty(t *testing.T) {
 	r := richRender()
-	for name, c := range map[string]struct {
-		got, used []string
-	}{
-		"EmbedScriptOrigins":  {EmbedScriptOrigins(), r.ScriptSrc},
-		"EmbedConnectOrigins": {EmbedConnectOrigins(), r.ConnectSrc},
-	} {
-		if !slices.IsSorted(c.got) || len(slices.Compact(slices.Clone(c.got))) != len(c.got) || len(c.got) == 0 {
-			t.Errorf("%s = %v, want sorted, not empty and without duplicates", name, c.got)
-		}
-		for _, o := range c.got {
-			if !strings.HasPrefix(o, "https://") || strings.HasSuffix(o, "/") || strings.Contains(o[len("https://"):], "/") {
-				t.Errorf("%s: %q is not a bare https origin", name, o)
-			}
-			if !slices.Contains(c.used, o) {
-				t.Errorf("%s lists %q, which no embed of richSource uses", name, o)
-			}
-		}
-		for _, o := range c.used {
-			if !slices.Contains(c.got, o) {
-				t.Errorf("the render has the origin %q, which %s does not list", o, name)
-			}
-		}
+	if len(r.ScriptSrc) != 0 || len(r.ConnectSrc) != 0 || len(r.Scripts) != 0 {
+		t.Errorf("the render of richSource needs scripts %v, script-src %v, connect-src %v; want none", r.Scripts, r.ScriptSrc, r.ConnectSrc)
 	}
-	// The caller owns the result.
-	o := EmbedScriptOrigins()
-	o[0] = "https://evil.example"
-	c := EmbedConnectOrigins()
-	c[0] = "https://evil.example"
-	if EmbedScriptOrigins()[0] == "https://evil.example" || EmbedConnectOrigins()[0] == "https://evil.example" {
-		t.Error("a change to the result reached the table")
+	if got := EmbedScriptOrigins(); len(got) != 0 {
+		t.Errorf("EmbedScriptOrigins = %v, want none", got)
+	}
+	if got := EmbedConnectOrigins(); len(got) != 0 {
+		t.Errorf("EmbedConnectOrigins = %v, want none", got)
 	}
 }
 
@@ -241,7 +219,6 @@ func TestValuelessAttributeCannotBeForged(t *testing.T) {
 // HTML check has its own rules for them (the URL rules, or nothing for an alt).
 var freeAttrs = map[string]bool{
 	"a/href": true, "img/src": true, "img/alt": true, "iframe/src": true,
-	"blockquote/data-instgrm-permalink": true, "blockquote/data-text-post-permalink": true,
 }
 
 // patternAttrs are the attributes whose value follows a rule, not a list.
@@ -343,8 +320,6 @@ func TestAttrValueOK(t *testing.T) {
 		{"div", "class", "x", false},
 		{"pre", "class", "code", true},
 		{"pre", "class", "code x", false},
-		{"blockquote", "class", "twitter-tweet", true},
-		{"blockquote", "class", "x", false},
 		{"code", "class", "language-go", true},
 		{"code", "class", "language-c++", true},
 		{"code", "class", "language-", false},

@@ -38,7 +38,7 @@ var allowed = map[string][]string{
 	"code":       {"class"},
 	"strong":     nil,
 	"em":         nil,
-	"blockquote": {"class", "data-instgrm-permalink", "data-text-post-permalink"},
+	"blockquote": nil,
 	"a":          {"href", "rel"},
 	"img":        {"src", "alt", "loading", "class"},
 	"span":       {"class", "tabindex"},
@@ -65,9 +65,6 @@ var fixedValues = map[string]map[string][]string{
 	},
 	"div": {"class": {"embed-link"}},
 	"pre": {"class": {"code"}},
-	"blockquote": {
-		"class": {"twitter-tweet", "instagram-media", "text-post-media"},
-	},
 	"iframe": {
 		"class": {"embed youtube", "embed vimeo", "embed tiktok", "embed spotify", "embed soundcloud"},
 		"title": {"YouTube video", "Vimeo video", "TikTok video", "Spotify", "SoundCloud"},
@@ -116,8 +113,7 @@ func Allowed() map[string][]string {
 // embedOrigins are the origins that the embed table loads in frames. It holds
 // each frame origin of embedHTML.
 var embedOrigins = []string{
-	originYouTube, originVimeo, originXFrame, originInstagram,
-	originTikTok, originThreads, originSpotify, originSoundCloud,
+	originYouTube, originVimeo, originTikTok, originSpotify, originSoundCloud,
 }
 
 // EmbedOrigins returns the frame origins of the embed table, sorted. The src of

@@ -55,6 +55,9 @@ func TestCSPBase(t *testing.T) {
 	}
 }
 
+// Ruling R49: a topic page with a YouTube embed gets its frame origin and nothing
+// else. An X post in the same topic is a plain link, so the page loads no provider
+// script and adds no script, connect or style origin.
 func TestCSPEmbeds(t *testing.T) {
 	h := embedSite(t, nil)
 	rec := get(t, h, "/t/1")
@@ -63,38 +66,57 @@ func TestCSPEmbeds(t *testing.T) {
 	}
 	body := bodyOf(t, rec)
 	csp := rec.Header().Get("Content-Security-Policy")
-	for name, want := range map[string][]string{
-		"frame-src":   {"https://www.youtube-nocookie.com", "https://platform.twitter.com"},
-		"script-src":  {"'self'", "https://platform.twitter.com", "https://platform.x.com"},
-		"connect-src": {"'self'", "https://syndication.twitter.com", "https://cdn.syndication.twimg.com"},
-		"style-src":   {"'self'", "'unsafe-inline'"},
-	} {
-		got, _ := directive(csp, name)
-		for _, w := range want {
-			if !strings.Contains(" "+got+" ", " "+w+" ") {
-				t.Errorf("%s = %q, want it to hold %s", name, got, w)
-			}
-		}
+	if want := strings.Replace(wantBaseCSP, "frame-src 'none'", "frame-src https://www.youtube-nocookie.com", 1); csp != want {
+		t.Errorf("CSP = %q\nwant %q", csp, want)
 	}
-	if !strings.Contains(body, `<script async src="https://platform.x.com/widgets.js"></script>`) {
-		t.Errorf("the page lacks the X script tag")
+	if strings.Contains(body, "<script async") {
+		t.Error("the page loads a provider script")
 	}
-	if n := strings.Count(body, "<script async"); n != 1 {
-		t.Errorf("%d async scripts, want 1", n)
+	if !strings.Contains(body, `<iframe class="embed youtube"`) {
+		t.Error("the YouTube embed is gone")
 	}
-	for _, d := range []string{"default-src", "img-src", "font-src", "form-action", "frame-ancestors", "base-uri", "object-src"} {
-		want, _ := directive(wantBaseCSP, d)
-		if got, _ := directive(csp, d); got != want {
-			t.Errorf("%s = %q, want %q", d, got, want)
-		}
-	}
-	if strings.Contains(csp, "frame-src 'none'") {
-		t.Errorf("frame-src 'none' stays in %q", csp)
+	if !strings.Contains(body, `<a href="https://x.com/i/status/20" rel="nofollow ugc noopener">`) {
+		t.Error("the X post is not a plain link")
 	}
 
 	// The index holds no post, so it keeps the base policy.
 	if got := get(t, h, "/").Header().Get("Content-Security-Policy"); got != wantBaseCSP {
 		t.Errorf("/ CSP = %q", got)
+	}
+}
+
+// Ruling R49: X, Instagram and Threads links, each alone on a line, render as
+// three plain links. The page has no script element from a provider, no frame, and
+// the base policy exactly.
+func TestScriptedEmbedsArePlainLinks(t *testing.T) {
+	h := embedSite(t, func(b *bundletest.Board) {
+		b.Posts[0].Body.Source = "X:\n\nhttps://x.com/example/status/20\n\nInstagram:\n\nhttps://www.instagram.com/p/CxYz_12-ab/\n\nThreads:\n\nhttps://www.threads.com/@example/post/Cx_12\n"
+		b.Posts[1].Body.Source = "Nothing to embed."
+	})
+	rec := get(t, h, "/t/1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/t/1 = %d", rec.Code)
+	}
+	body := bodyOf(t, rec)
+	for _, link := range []string{
+		"https://x.com/i/status/20",
+		"https://www.instagram.com/p/CxYz_12-ab/",
+		"https://www.threads.com/@example/post/Cx_12/",
+	} {
+		if want := `<div class="embed-link"><a href="` + link + `" rel="nofollow ugc noopener">`; !strings.Contains(body, want) {
+			t.Errorf("the page lacks the link %s", link)
+		}
+	}
+	if n := strings.Count(body, `class="embed-link"`); n != 3 {
+		t.Errorf("%d embed links, want 3", n)
+	}
+	for _, bad := range []string{"<script async", "<iframe", "<blockquote class=", "widgets.js", "embed.js"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the page holds %q", bad)
+		}
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != wantBaseCSP {
+		t.Errorf("CSP = %q\nwant %q", got, wantBaseCSP)
 	}
 }
 
@@ -122,8 +144,8 @@ func TestCSPEmbedsYouTubeOnly(t *testing.T) {
 	}
 }
 
-// A static page renders a tree too, so its embeds count. A signature does not
-// embed: see TestSignatureEmbedIsAPlainLink.
+// A static page renders a tree too, so its scripted embeds are plain links as
+// well (ruling R49), and its policy is the base policy.
 func TestCSPEmbedInStaticPage(t *testing.T) {
 	h := embedSite(t, func(b *bundletest.Board) {
 		b.StaticPages[0].Body.Source = "https://x.com/example/status/20"
@@ -132,12 +154,12 @@ func TestCSPEmbedInStaticPage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("static page = %d", rec.Code)
 	}
-	csp := rec.Header().Get("Content-Security-Policy")
-	if got, _ := directive(csp, "script-src"); !strings.Contains(got, "https://platform.x.com") {
-		t.Errorf("static page script-src = %q", got)
+	if got := rec.Header().Get("Content-Security-Policy"); got != wantBaseCSP {
+		t.Errorf("static page CSP = %q", got)
 	}
-	if !strings.Contains(bodyOf(t, rec), `<script async src="https://platform.x.com/widgets.js">`) {
-		t.Error("the static page lacks the X script tag")
+	body := bodyOf(t, rec)
+	if strings.Contains(body, "<script async") || !strings.Contains(body, `<a href="https://x.com/i/status/20" rel="nofollow ugc noopener">`) {
+		t.Error("the static page does not hold a plain link to the X post")
 	}
 }
 
@@ -458,9 +480,9 @@ func TestAttachmentKeepsCacheControl(t *testing.T) {
 	}
 }
 
-// Two posts that need the same provider load its script once. A signature adds
-// no script.
-func TestOneScriptTagPerProvider(t *testing.T) {
+// Ruling R49: posts and signatures that hold X links add no script tag, and each
+// link is a plain link.
+func TestNoScriptTagForScriptedProviders(t *testing.T) {
 	h := embedSite(t, func(b *bundletest.Board) {
 		b.Posts[0].Body.Source = "https://x.com/example/status/20"
 		b.Posts[1].Body.Source = "https://x.com/example/status/21"
@@ -470,20 +492,16 @@ func TestOneScriptTagPerProvider(t *testing.T) {
 		b.Users[1].Signature.Source = "https://x.com/example/status/24"
 	})
 	body := bodyOf(t, get(t, h, "/t/1"))
-	if n := strings.Count(body, `<script async src="https://platform.x.com/widgets.js"></script>`); n != 1 {
-		t.Errorf("%d X script tags, want 1", n)
+	if n := strings.Count(body, "<script async"); n != 0 {
+		t.Errorf("%d async scripts, want 0", n)
 	}
-	if n := strings.Count(body, "<script async"); n != 1 {
-		t.Errorf("%d async scripts, want 1", n)
+	if n := strings.Count(body, `class="twitter-tweet"`); n != 0 {
+		t.Errorf("%d tweets on the page, want 0", n)
 	}
-	// Post 1 and post 2 hold one tweet each. The signature of post 1 holds a third
-	// tweet link, which is a plain link and not an embed (A-D2). (Post 3 is
-	// unapproved, post 2 shows no signature.) The script is loaded once.
-	if n := strings.Count(body, `class="twitter-tweet"`); n != 2 {
-		t.Errorf("%d tweets on the page, want 2 (the 2 posts; the signature is a plain link)", n)
-	}
-	if !strings.Contains(body, `<a href="https://x.com/i/status/23" rel="nofollow ugc noopener">`) {
-		t.Error("the signature holds no plain link to its tweet")
+	for _, id := range []string{"20", "21", "23"} {
+		if !strings.Contains(body, `<a href="https://x.com/i/status/`+id+`" rel="nofollow ugc noopener">`) {
+			t.Errorf("no plain link to status %s", id)
+		}
 	}
 }
 

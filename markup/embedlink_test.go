@@ -38,10 +38,15 @@ func TestNoEmbedsWritesALink(t *testing.T) {
 			if err := markup.Validate(tree); err != nil {
 				t.Fatalf("the case is not a valid embed: %v", err)
 			}
-			// A post keeps the embed: a frame, or a provider script.
+			// A post keeps a frame embed. X, Instagram and Threads load a script
+			// into the page, so they are links in a post too (ruling R49).
 			post := markup.Render(tree, markup.RenderContext{})
-			if len(post.FrameSrc) == 0 && tc.tag != "reddit" {
+			plain := map[string]bool{"reddit": true, "tweet": true, "instagram": true, "threads": true}
+			if len(post.FrameSrc) == 0 && !plain[tc.tag] {
 				t.Errorf("the post lost its embed: %s", post.HTML)
+			}
+			if plain[tc.tag] && (len(post.FrameSrc) != 0 || !strings.Contains(string(post.HTML), `href="`+tc.href+`"`)) {
+				t.Errorf("the post of a scripted embed is not a plain link: %s", post.HTML)
 			}
 			sig := markup.Render(tree, markup.RenderContext{NoEmbeds: true})
 			html := string(sig.HTML)
