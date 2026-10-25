@@ -27,7 +27,7 @@
           </span>
         </td>
         <td class="num" data-label="Posts"><span class="forum-count">{{num .PostCount}}</span></td>
-        <td class="member-joined" data-label="Joined">{{date .Joined $.Viewer.Loc}}</td>
+        <td class="member-joined" data-label="Joined">{{date .Joined $.Clock}}</td>
       </tr>
     {{- end}}
     </tbody>

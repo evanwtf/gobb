@@ -21,6 +21,14 @@
   indexes for the birthday list, the inbox and the sent list. The importer writes the
   new columns, and `topic_watches` and `bookmarks` stay empty after an import.
 
+- Times show in the format of the viewer. A member picks `standard` (`Oct 25, 2026,
+  5:07 pm`), `relative` (`3 hours ago`, with the standard text in the `title`) or `iso`
+  (`2026-10-25T17:07:00-04:00`); a guest sees `standard`. Ages under 180 days count
+  elapsed time, so a change of daylight saving time does not shift them; older ages
+  count whole calendar months and years in the viewer's zone. Every page builds a
+  `clock` from the viewer and the request time, and the `time` and `date` template
+  functions take it in place of a zone. The `<time>` element keeps `datetime` in UTC.
+
 ## 0.1.0 (2026-10-25)
 
 The first release. gobb is one Go server for a forum, backed by PostgreSQL 16 or later

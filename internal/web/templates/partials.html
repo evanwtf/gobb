@@ -81,7 +81,7 @@
         {{- with .Last}}
         <a class="last-title" href="{{path "p" (printf "%d" .ID)}}">{{.TopicTitle}}</a>
         <span class="last-meta">by {{template "author" .Author}}</span>
-        <span class="last-time">{{time .At $.Loc}}</span>
+        <span class="last-time">{{time .At $.Clock}}</span>
         {{- else}}
         <span class="muted">No posts yet</span>
         {{- end}}
@@ -119,7 +119,7 @@
   <td class="num" data-label="Views"><span class="forum-count">{{num .Views}}</span></td>
   <td class="last" data-label="Last post">
     {{- if .Last.ID}}
-    <a class="last-title" href="{{path "p" (printf "%d" .Last.ID)}}">{{time .Last.At $.Loc}}</a>
+    <a class="last-title" href="{{path "p" (printf "%d" .Last.ID)}}">{{time .Last.At $.Clock}}</a>
     <span class="last-meta">by {{template "author" .Last.Author}}</span>
     {{- else}}
     <span class="muted">No posts yet</span>
@@ -141,7 +141,7 @@
     {{- if or .Card.RankTitle .Card.RankImage}}
     <p class="author-rank">{{if .Card.RankImage}}<img class="rank-img" src="{{path "files" .Card.RankImage}}" alt="">{{end}}{{if .Card.RankTitle}}<span>{{.Card.RankTitle}}</span>{{end}}</p>
     {{- end}}
-    <p class="author-stat">Joined: {{date .Card.Joined .Loc}}</p>
+    <p class="author-stat">Joined: {{date .Card.Joined .Clock}}</p>
     <p class="author-stat">Posts: <b>{{num .Card.PostCount}}</b></p>
     {{- else}}
     <div class="author-avatar"><span class="avatar avatar-none" aria-hidden="true">{{initial .Author.Name}}</span></div>
@@ -157,7 +157,7 @@
         {{- if eq .Visibility "unapproved"}} <span class="tag tag-warn">Waiting for approval</span>{{end}}
         {{- if eq .Visibility "deleted"}} <span class="tag tag-warn">Deleted</span>{{end}}
       </div>
-      {{if .ID}}<a class="permalink" href="#p{{.ID}}" aria-label="Link to this post">{{time .At .Loc}}</a>{{else}}<span class="permalink">{{time .At .Loc}}</span>{{end}}
+      {{if .ID}}<a class="permalink" href="#p{{.ID}}" aria-label="Link to this post">{{time .At .Clock}}</a>{{else}}<span class="permalink">{{time .At .Clock}}</span>{{end}}
     </header>
     <div class="post-body">{{.HTML}}</div>
     {{- if .Attachments}}
@@ -171,7 +171,7 @@
     </section>
     {{- end}}
     {{- if .EditCount}}
-    <p class="edit-note">Edited{{with .EditedBy}} by {{template "author" .}}{{end}}{{with .EditedAt}} on {{time . $.Loc}}{{end}}. {{plural .EditCount "edit" "edits"}} in all.{{if .EditReason}} Reason: {{.EditReason}}{{end}}</p>
+    <p class="edit-note">Edited{{with .EditedBy}} by {{template "author" .}}{{end}}{{with .EditedAt}} on {{time . $.Clock}}{{end}}. {{plural .EditCount "edit" "edits"}} in all.{{if .EditReason}} Reason: {{.EditReason}}{{end}}</p>
     {{- end}}
     {{- if .SigHTML}}
     <div class="signature">{{.SigHTML}}</div>

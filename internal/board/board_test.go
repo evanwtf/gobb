@@ -74,11 +74,30 @@ func TestGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.UserID != 0 || v.Scheme != "slate" || v.Loc.String() != "America/New_York" {
+	if v.UserID != 0 || v.Scheme != "slate" || v.Loc.String() != "America/New_York" || v.DateFormat != "standard" {
 		t.Errorf("guest = %+v", v)
 	}
 	if !v.Perms.Has("forum.read", 2) || v.Perms.Has("forum.read", 3) {
 		t.Error("guest read rights are wrong")
+	}
+}
+
+// Member carries the date format of the member's row.
+func TestMemberDateFormat(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	s, err := board.LoadSettings(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[int64]string{1: "standard", 3: "relative"} {
+		v, err := board.Member(ctx, pool, id, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.DateFormat != want {
+			t.Errorf("member %d: DateFormat = %q, want %q", id, v.DateFormat, want)
+		}
 	}
 }
 

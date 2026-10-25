@@ -28,7 +28,7 @@
 {{- if .Data.Subforums}}
 <section class="category" aria-labelledby="sub-title">
   <div class="bar"><h2 id="sub-title">{{if .Data.IsCategory}}Forums{{else}}Subforums{{end}}</h2></div>
-  {{template "forumtable" rows .Data.Subforums .Viewer}}
+  {{template "forumtable" rows .Data.Subforums .Viewer $.Clock}}
 </section>
 {{- else if .Data.IsCategory}}
 <p class="empty standalone">There are no forums in this category.</p>

@@ -352,6 +352,9 @@ type page struct {
 	Scheme   string
 	Settings board.Settings
 	Viewer   board.Viewer
+	// Clock says how the page shows times: the zone and the date format of the
+	// viewer, and the time of the request.
+	Clock clock
 	// Nav lists the links of the bar under the header.
 	Nav []navLink
 	// CSS, JS and Icon are the site paths of the stylesheet, the script and the
@@ -482,6 +485,7 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 		Scheme:     scheme,
 		Settings:   settings,
 		Viewer:     v,
+		Clock:      clock{Loc: v.Loc, Format: v.DateFormat, Now: s.opt.Now()},
 		CSS:        s.path("static", "gobb.css") + "?v=" + s.assetVersion,
 		JS:         s.path("static", "gobb.js") + "?v=" + s.assetVersion,
 		Icon:       s.path("static", "icon.svg") + "?v=" + s.assetVersion,
@@ -726,7 +730,8 @@ func (s *site) framePage(r *http.Request, title string) *page {
 		Title:    title,
 		Scheme:   scheme,
 		Settings: set,
-		Viewer:   board.Viewer{Loc: loc, Scheme: scheme},
+		Viewer:   board.Viewer{Loc: loc, Scheme: scheme, DateFormat: "standard"},
+		Clock:    clock{Loc: loc, Format: "standard", Now: s.opt.Now()},
 		CSS:      s.path("static", "gobb.css") + "?v=" + s.assetVersion,
 		JS:       s.path("static", "gobb.js") + "?v=" + s.assetVersion,
 		Icon:     s.path("static", "icon.svg") + "?v=" + s.assetVersion,

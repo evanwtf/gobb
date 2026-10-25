@@ -111,7 +111,7 @@ func (s *site) newPage(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]topicRowView, len(np.Topics))
 	for i, row := range np.Topics {
-		rows[i] = topicRowView{TopicRow: row.TopicRow, Loc: p.Viewer.Loc, Forum: row.Forum}
+		rows[i] = topicRowView{TopicRow: row.TopicRow, Clock: p.Clock, Forum: row.Forum}
 	}
 	// The nav of this page needs no second count: the list has it.
 	p.navUnread = &np.Unread

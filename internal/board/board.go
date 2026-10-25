@@ -138,6 +138,8 @@ type Viewer struct {
 	Perms acl.Set
 	// Loc is the zone in which the viewer sees times.
 	Loc *time.Location
+	// DateFormat is how the viewer sees times: "standard", "relative" or "iso".
+	DateFormat string
 	// Scheme is the color scheme of the viewer.
 	Scheme string
 	// LastVisit is the member's last_visit_at, or registered_at when that is
@@ -166,7 +168,7 @@ func Guest(ctx context.Context, q db.Querier, s Settings) (Viewer, error) {
 	if !ValidScheme(scheme) {
 		scheme = Schemes[0]
 	}
-	return Viewer{Perms: acl.Resolve(subject), Loc: loc, Scheme: scheme}, nil
+	return Viewer{Perms: acl.Resolve(subject), Loc: loc, Scheme: scheme, DateFormat: "standard"}, nil
 }
 
 // Member returns the viewer for the active member userID: the grants of the
@@ -176,14 +178,14 @@ func Guest(ctx context.Context, q db.Querier, s Settings) (Viewer, error) {
 // A user who does not exist, or is not active, gives [ErrNotFound].
 func Member(ctx context.Context, q db.Querier, userID int64, s Settings) (Viewer, error) {
 	var (
-		name, zone, scheme, state string
-		lastVisit, markFloor      time.Time
+		name, zone, scheme, state, dateFormat string
+		lastVisit, markFloor                  time.Time
 	)
 	err := q.QueryRow(ctx, `
-select username, timezone, color_scheme, state,
+select username, timezone, color_scheme, state, date_format,
        coalesce(last_visit_at, registered_at), coalesce(last_mark_at, registered_at)
   from users where id = $1`, userID).
-		Scan(&name, &zone, &scheme, &state, &lastVisit, &markFloor)
+		Scan(&name, &zone, &scheme, &state, &dateFormat, &lastVisit, &markFloor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Viewer{}, ErrNotFound
 	}
@@ -215,7 +217,7 @@ select username, timezone, color_scheme, state,
 	}
 	return Viewer{
 		UserID: userID, Name: name, Perms: acl.Resolve(subject),
-		Loc: loc, Scheme: scheme, LastVisit: lastVisit, MarkFloor: markFloor,
+		Loc: loc, Scheme: scheme, DateFormat: dateFormat, LastVisit: lastVisit, MarkFloor: markFloor,
 	}, nil
 }
 

@@ -50,7 +50,7 @@
     <h2 class="search-title"><a href="{{path "p" (printf "%d" .Post.ID)}}">{{.Post.TopicTitle}}</a></h2>
     <p class="search-snippet">{{.Snippet}}</p>
     <p class="search-meta">
-      {{- template "author" .Post.Author}} &middot; {{time .Post.At $.Viewer.Loc}}
+      {{- template "author" .Post.Author}} &middot; {{time .Post.At $.Clock}}
       {{- with .Forum}} &middot; in <a href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>{{end -}}
     </p>
   </li>

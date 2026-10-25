@@ -34,7 +34,7 @@
 {{- with .Data.Poll}}
 <section class="poll" aria-labelledby="poll-title">
   <h2 id="poll-title">{{.Question}}</h2>
-  <p class="poll-note">Results{{if gt .MaxOptions 1}}. Each voter could pick up to {{.MaxOptions}} options{{end}}{{with .EndsAt}}. Voting ends {{time . $.Viewer.Loc}}{{end}}.</p>
+  <p class="poll-note">Results{{if gt .MaxOptions 1}}. Each voter could pick up to {{.MaxOptions}} options{{end}}{{with .EndsAt}}. Voting ends {{time . $.Clock}}{{end}}.</p>
   <ul class="poll-options">
     {{- range .Options}}
     <li>

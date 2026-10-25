@@ -10,25 +10,15 @@ import (
 	"github.com/evanwtf/gobb/internal/board"
 )
 
-// timeLayout and dateLayout are the display formats of times and dates.
-const (
-	timeLayout = "Jan 2, 2006, 3:04 pm"
-	dateLayout = "Jan 2, 2006"
-)
-
 // parseTemplates parses the layout with each page template. Every page gets
 // its own set, so two pages may both define "content".
 func (s *site) parseTemplates() error {
 	funcs := template.FuncMap{
 		"path": s.path,
-		"time": func(t time.Time, loc *time.Location) template.HTML {
-			return timeTag(t, loc, timeLayout)
-		},
-		"date": func(t time.Time, loc *time.Location) template.HTML {
-			return timeTag(t, loc, dateLayout)
-		},
-		"rows": func(rows []*board.Forum, v board.Viewer) forumRows {
-			return forumRows{Rows: rows, Loc: v.Loc, Member: v.UserID != 0}
+		"time": func(t time.Time, c clock) template.HTML { return timeTag(t, c, false) },
+		"date": func(t time.Time, c clock) template.HTML { return timeTag(t, c, true) },
+		"rows": func(rows []*board.Forum, v board.Viewer, c clock) forumRows {
+			return forumRows{Rows: rows, Clock: c, Member: v.UserID != 0}
 		},
 		"initial":       initial,
 		"textareaValue": textareaValue,
@@ -55,17 +45,6 @@ func (s *site) parseTemplates() error {
 // markFormData is the data of the mark-read form partial.
 type markFormData struct {
 	Action, Label, CSRF, Return string
-}
-
-// timeTag writes t in loc as a <time> element. The datetime attribute holds the
-// RFC 3339 time in UTC. The arguments are numbers and a layout, so the result
-// holds nothing that needs escaping.
-func timeTag(t time.Time, loc *time.Location, layout string) template.HTML {
-	if loc == nil {
-		loc = time.UTC
-	}
-	return template.HTML(`<time datetime="` + t.UTC().Format(time.RFC3339) + `">` +
-		t.In(loc).Format(layout) + `</time>`)
 }
 
 // index serves the board index.
@@ -125,7 +104,7 @@ func groupForums(top []*board.Forum) []*forumGroup {
 // to a member, for whom signing in would change nothing.
 type forumRows struct {
 	Rows   []*board.Forum
-	Loc    *time.Location
+	Clock  clock
 	Member bool
 }
 

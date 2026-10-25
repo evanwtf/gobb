@@ -11,7 +11,7 @@
     {{- if .Title}}<h2 id="cat-{{.Forum.ID}}"><a href="{{path "f" (printf "%d" .Forum.ID)}}">{{.Title}}</a></h2>{{end -}}
   </div>
   {{- if .Rows}}
-  {{template "forumtable" rows .Rows $.Viewer}}
+  {{template "forumtable" rows .Rows $.Viewer $.Clock}}
   {{- else}}
   <p class="empty">There are no forums here yet.</p>
   {{- end}}

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/evanwtf/gobb/internal/board"
 )
@@ -32,19 +31,19 @@ type forumData struct {
 	Held bool
 }
 
-// topicRowView is a topic row with the time zone of the viewer.
+// topicRowView is a topic row with the clock of the page.
 type topicRowView struct {
 	board.TopicRow
-	Loc *time.Location
+	Clock clock
 	// Forum is the forum of the topic on the "new since your last visit" list.
 	// It is nil on a forum page.
 	Forum *board.Forum
 }
 
-func rowViews(rows []board.TopicRow, loc *time.Location) []topicRowView {
+func rowViews(rows []board.TopicRow, c clock) []topicRowView {
 	out := make([]topicRowView, len(rows))
 	for i, r := range rows {
-		out[i] = topicRowView{TopicRow: r, Loc: loc}
+		out[i] = topicRowView{TopicRow: r, Clock: c}
 	}
 	return out
 }
@@ -115,13 +114,12 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Title = fp.Forum.Name
-	loc := p.Viewer.Loc
 	p.Data = forumData{
 		Forum:      fp.Forum,
 		Crumbs:     s.crumbsFor(fp.Crumbs),
 		Subforums:  fp.Subforums,
-		Pinned:     rowViews(fp.Pinned, loc),
-		Topics:     rowViews(fp.Topics, loc),
+		Pinned:     rowViews(fp.Pinned, p.Clock),
+		Topics:     rowViews(fp.Topics, p.Clock),
 		Pager:      newPager(s.path("f", strconv.FormatInt(id, 10)), fp.Page, fp.Pages),
 		IsCategory: fp.Forum.Kind == "category",
 		CanStart:   fp.CanStart,

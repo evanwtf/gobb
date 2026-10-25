@@ -10,12 +10,12 @@ import (
 	"time"
 )
 
-// clock is a settable time for the limits.
-type clock struct{ ns atomic.Int64 }
+// testClock is a settable time for the limits.
+type testClock struct{ ns atomic.Int64 }
 
-func newClock(t time.Time) *clock { c := &clock{}; c.ns.Store(t.UnixNano()); return c }
-func (c *clock) now() time.Time   { return time.Unix(0, c.ns.Load()).UTC() }
-func (c *clock) advance(d time.Duration) {
+func newClock(t time.Time) *testClock { c := &testClock{}; c.ns.Store(t.UnixNano()); return c }
+func (c *testClock) now() time.Time   { return time.Unix(0, c.ns.Load()).UTC() }
+func (c *testClock) advance(d time.Duration) {
 	c.ns.Add(int64(d))
 }
 

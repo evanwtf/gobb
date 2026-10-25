@@ -508,7 +508,7 @@ func (s *site) preview(w http.ResponseWriter, r *http.Request, p *page, fd postF
 	}
 	rendered := markup.Render(body.Tree, rc)
 	p.addRendered(rendered)
-	pv := postView{HTML: rendered.HTML, Loc: p.Viewer.Loc, Preview: true}
+	pv := postView{HTML: rendered.HTML, Clock: p.Clock, Preview: true}
 	pv.Post = board.Post{At: s.opt.Now(), Visibility: "approved"}
 	if v := p.Viewer; v.UserID != 0 {
 		card, err := board.Card(ctx, s.pool, v.UserID)

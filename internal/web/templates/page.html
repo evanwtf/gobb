@@ -2,7 +2,7 @@
 <article class="static-page">
   <header class="page-head">
     <h1>{{or .Data.Title .Data.Slug}}</h1>
-    <p class="page-sub">Updated {{date .Data.UpdatedAt .Viewer.Loc}}</p>
+    <p class="page-sub">Updated {{date .Data.UpdatedAt $.Clock}}</p>
   </header>
   <div class="post-body static-body">{{.Data.HTML}}</div>
 </article>

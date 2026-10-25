@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/evanwtf/gobb/internal/board"
@@ -40,7 +39,7 @@ type postView struct {
 	board.Post
 	// HTML and SigHTML come from markup.Render, which escapes everything.
 	HTML, SigHTML template.HTML
-	Loc           *time.Location
+	Clock         clock
 	// Actions are the buttons that the viewer sees on the post.
 	Actions board.PostButtons
 	// Preview is true for the preview of a form: the post has no ID, no
@@ -116,7 +115,7 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	d.Crumbs = append(d.Crumbs, crumb{Label: tp.Forum.Name, Href: s.path("f", strconv.FormatInt(tp.Forum.ID, 10))})
 	d.Posts = make([]postView, len(tp.Posts))
 	for i, post := range tp.Posts {
-		pv := postView{Post: post, Loc: p.Viewer.Loc, Actions: tp.Buttons[i]}
+		pv := postView{Post: post, Clock: p.Clock, Actions: tp.Buttons[i]}
 		body := markup.Render(post.Tree, rc)
 		p.addRendered(body)
 		pv.HTML = body.HTML
