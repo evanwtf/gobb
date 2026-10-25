@@ -470,6 +470,13 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
   font-size: 0.85rem;
 }
 
+/* The build line: the render time, the query count, the version and the build. */
+.build-line {
+  margin: 0.6rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 /* ---- Spoilers: hidden until clicked, focused, or opened with Enter ------- */
 
 .spoiler {

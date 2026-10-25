@@ -236,7 +236,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if onNew != nil {
 		onNew(s)
 	}
-	return secure(s.guard(root)), nil
+	return timed(secure(s.guard(root))), nil
 }
 
 // routes is a ServeMux that remembers the patterns registered on it, so a test
@@ -400,6 +400,9 @@ type page struct {
 	// Noindex adds the robots meta element. render sets it for the pages in
 	// noindexPages.
 	Noindex bool
+	// Footer is the build line at the end of the footer. render sets it from
+	// the status; footerLine says what it holds.
+	Footer string
 }
 
 // addRendered adds what the embeds of a rendered tree need to the page: the
@@ -627,6 +630,9 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		after()
 	}
 	s.addNav(p)
+	// The last step before the footer is written: the count and the time hold
+	// every statement of the page.
+	p.Footer = footerLine(p.ctx, status)
 	var buf bytes.Buffer
 	layoutBuilds.Add(1)
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
@@ -726,6 +732,7 @@ func (s *site) framePage(r *http.Request, title string) *page {
 		Home:     s.path(),
 		Nav:      []navLink{{Label: "Index", Href: s.path()}},
 		Noindex:  true,
+		Footer:   footerLine(nil, http.StatusInternalServerError),
 	}
 	if set.HeaderImage != "" {
 		p.HeaderSrc = s.path("files", set.HeaderImage)

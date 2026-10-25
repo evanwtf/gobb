@@ -23,9 +23,15 @@ var (
 	_ Querier = pgx.Tx(nil)
 )
 
-// Open creates a pool for dsn and pings the database before it returns.
+// Open creates a pool for dsn and pings the database before it returns. The pool
+// counts its statements for [Counter].
 func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("db: open pool: %w", err)
+	}
+	Trace(cfg.ConnConfig)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("db: open pool: %w", err)
 	}

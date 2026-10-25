@@ -81,6 +81,7 @@ func connect(t testing.TB, adminURL, name string) *pgxpool.Pool {
 		t.Fatalf("dbtest: parse %s: %v", EnvVar, err)
 	}
 	cfg.ConnConfig.Database = name
+	db.Trace(cfg.ConnConfig)
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("dbtest: open pool: %v", err)

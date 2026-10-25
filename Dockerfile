@@ -11,7 +11,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/gobb ./cmd/gobb \
+# The commit that the page footer shows. CI and the release workflow pass the
+# commit SHA. It is declared here, after the source, so a new commit rebuilds
+# only this step. The runtime stage never sees it. The binary checks the value:
+# anything but 7 to 40 hex characters shows as "unknown".
+ARG GOBB_COMMIT
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+      -ldflags="-s -w -X github.com/evanwtf/gobb/internal/version.Commit=${GOBB_COMMIT}" \
+      -o /out/gobb ./cmd/gobb \
  && mkdir -p /out/data
 
 # Runtime stage: no shell, no package manager. The binary checks its own health.

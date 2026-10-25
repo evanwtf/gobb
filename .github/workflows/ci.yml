@@ -192,6 +192,9 @@ jobs:
       # compose.yaml tags the image it builds as ghcr.io/evanwtf/gobb:$GOBB_VERSION.
       GOBB_VERSION: ci-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PASSWORD: ci
+      # The commit that the build line of every page shows. docker build and
+      # compose.yaml pass it as the GOBB_COMMIT build argument.
+      GOBB_COMMIT: ${{ github.sha }}
       # Every compose command uses the CI port override and the 256 MiB cap.
       COMPOSE_FILE: compose.yaml:.github/compose.ci.yaml:.github/compose.memcap.yaml
     steps:
@@ -216,7 +219,7 @@ jobs:
       # Build the exact production target, then run it.
       - name: Build the image and run it
         run: |
-          docker build -t "$IMAGE" .
+          docker build --build-arg GOBB_COMMIT="$GOBB_COMMIT" -t "$IMAGE" .
           out=$(docker run --rm "$IMAGE" version)
           echo "$out"
           [ "$out" = "gobb 0.1.0" ]
@@ -262,6 +265,31 @@ jobs:
             { echo "want the memory limit from the cgroup: 70% of 256 MiB, and a 128 MiB gate"; exit 1; }
           echo "$logs" | grep -q -F 'kib=65536 checks_at_once=2' ||
             { echo "want a charge of 65536 KiB, two checks at once"; exit 1; }
+
+      # The build line of a page names the commit that CI built: the first 8
+      # characters of github.sha. /t/99 is a 404, which shows the build and no
+      # time or query count.
+      - name: The footer names the commit
+        run: |
+          port=$(docker compose port gobb 8080)
+          want=$(printf '%.8s' "$GOBB_COMMIT")
+          case "$want" in
+            *[!0-9a-f]* | "") echo "GOBB_COMMIT does not start with 8 hex characters"; exit 1 ;;
+          esac
+          [ "${#want}" = 8 ] || { echo "GOBB_COMMIT is shorter than 8 characters"; exit 1; }
+          for path in / /t/1 /t/99; do
+            line=$(curl -sS "http://$port$path" | sed -n 's|.*<p class="build-line">\([^<]*\)</p>.*|\1|p')
+            echo "$path: $line"
+            case "$line" in
+              *" · build $want") ;;
+              *) echo "$path: the build line does not end with build $want"; exit 1 ;;
+            esac
+          done
+          # The last path, /t/99, is a 404: no time and no query count.
+          case "$line" in
+            "gobb "*) ;;
+            *) echo "a 404 shows a time or a query count"; exit 1 ;;
+          esac
 
       - name: Serve pages under the memory cap
         run: |

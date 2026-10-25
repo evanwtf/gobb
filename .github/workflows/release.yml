@@ -159,13 +159,15 @@ jobs:
             os=${target%/*}
             arch=${target#*/}
             name="gobb_${VERSION}_${os}_${arch}"
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" -o "dist/$name" ./cmd/gobb
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w -X github.com/evanwtf/gobb/internal/version.Commit=$GITHUB_SHA" -o "dist/$name" ./cmd/gobb
             # A sum file names the binary without a directory, so `sha256sum -c` works next to it.
             (cd dist && sha256sum "$name" > "$name.sha256")
             info=$(go version -m "dist/$name")
             for want in "CGO_ENABLED=0" "-trimpath=true" "GOOS=$os" "GOARCH=$arch"; do
               echo "$info" | grep -F -- "$want" > /dev/null || { echo "$name: build info lacks $want"; exit 1; }
             done
+            # The build line of every page shows this commit.
+            grep -a -F "$GITHUB_SHA" "dist/$name" > /dev/null || { echo "$name: the binary lacks the commit $GITHUB_SHA"; exit 1; }
           done
           (cd dist && sha256sum -c ./*.sha256)
           ls -l dist
@@ -190,16 +192,20 @@ jobs:
       - name: Build both images, with no emulation
         run: |
           docker buildx create --name "$BUILDER" --driver docker-container
-          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 .
+          docker buildx build --builder "$BUILDER" --build-arg GOBB_COMMIT="$GITHUB_SHA" --platform linux/amd64,linux/arm64 .
           rootfs="$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID"
           mkdir "$rootfs"
           for arch in amd64 arm64; do
-            docker buildx build --builder "$BUILDER" --platform "linux/$arch" --output "type=tar,dest=$rootfs/$arch.tar" .
+            docker buildx build --builder "$BUILDER" --platform "linux/$arch" --build-arg GOBB_COMMIT="$GITHUB_SHA" --output "type=tar,dest=$rootfs/$arch.tar" .
             tar -xf "$rootfs/$arch.tar" -O usr/bin/gobb > "$rootfs/gobb-$arch"
             go version -m "$rootfs/gobb-$arch" | grep -F "GOARCH=$arch" > /dev/null || { echo "the $arch image holds a binary for another CPU"; exit 1; }
+            # The build line of every page shows this commit. The linker puts the
+            # string in the binary. (.dockerignore keeps .git out of the build, so
+            # the Go tool stamps no revision of its own.)
+            grep -a -F "$GITHUB_SHA" "$rootfs/gobb-$arch" > /dev/null || { echo "the $arch binary lacks the commit $GITHUB_SHA"; exit 1; }
             tar -tf "$rootfs/$arch.tar" | grep -x 'var/lib/gobb/' > /dev/null || { echo "the $arch image lacks /var/lib/gobb"; exit 1; }
           done
-          docker buildx build --builder "$BUILDER" --platform linux/amd64 --load -t "$IMAGE" .
+          docker buildx build --builder "$BUILDER" --build-arg GOBB_COMMIT="$GITHUB_SHA" --platform linux/amd64 --load -t "$IMAGE" .
 
       # Only the amd64 image runs: the runner is amd64.
       - name: Smoke-run the local amd64 image
@@ -261,6 +267,7 @@ jobs:
           docker buildx create --name "$BUILDER" --driver docker-container
           docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 \
             --provenance=false \
+            --build-arg GOBB_COMMIT="$GITHUB_SHA" \
             --tag "$REPO_IMAGE:$VERSION" --tag "$REPO_IMAGE:latest" --push .
 
       # Pull the image back from the registry and run it. The runner is amd64. The

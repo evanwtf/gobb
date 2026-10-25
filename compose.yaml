@@ -23,7 +23,11 @@ services:
   gobb:
     # Pull the published image, or build it here with `docker compose build`.
     image: ghcr.io/evanwtf/gobb:${GOBB_VERSION:-latest}
-    build: .
+    build:
+      context: .
+      args:
+        # The commit that the page footer shows. Empty means "build unknown".
+        GOBB_COMMIT: ${GOBB_COMMIT:-}
     depends_on:
       postgres:
         condition: service_healthy

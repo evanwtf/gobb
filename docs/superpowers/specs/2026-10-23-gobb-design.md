@@ -592,6 +592,10 @@ designer's call):
   holds when the database is down or slow, and when a page template fails. Plain text
   never reaches a visitor. **(owner)** Only `/healthz`, which machines read, answers in
   plain text.
+- Every page ends its footer with one small line: `Rendered in 0.02 s with 5 queries ·
+  gobb 0.1.0 · build 0f0f0fac`. A page that does not answer 2xx shows `gobb 0.1.0 ·
+  build 0f0f0fac` only. It holds nothing about the host, the viewer or the data.
+  **(owner, 2026-10-25)**
 - **Slate** is the default. It comes from the first board's original header image:
 
 | Role | Color |
