@@ -1140,3 +1140,15 @@ func TestDeleteByANonPartyLocksNothing(t *testing.T) {
 		t.Errorf("delete by a party under a lock = %v, want a deadline error", err)
 	}
 }
+
+// Ruling R46: a message subject refuses the hidden formatting characters of
+// ruling R40, with a message that says why.
+func TestSendSubjectRefusesHiddenFormat(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	a := viewerFor(t, pool, alice)
+	for _, subject := range []string{"a\u202eb", "a\u2066b"} {
+		_, err := board.SendMessage(ctx, pool, a, board.MessageDraft{To: "bob", Subject: subject, Source: "x", IP: ip1}, t0)
+		wantInput(t, err, "subject", "Remove the hidden formatting character.")
+	}
+}

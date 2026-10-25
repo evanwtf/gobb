@@ -47,7 +47,7 @@
 <ol class="search-hits">
   {{- range .Data.Hits}}
   <li class="search-hit">
-    <h2 class="search-title"><a href="{{path "p" (printf "%d" .Post.ID)}}">{{.Post.TopicTitle}}</a></h2>
+    <h2 class="search-title"><a href="{{path "p" (printf "%d" .Post.ID)}}"><bdi>{{.Post.TopicTitle}}</bdi></a></h2>
     <p class="search-snippet">{{.Snippet}}</p>
     <p class="search-meta">
       {{- template "author" .Post.Author}} &middot; {{time .Post.At $.Clock}}

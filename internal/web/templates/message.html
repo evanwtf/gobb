@@ -2,7 +2,7 @@
 {{- with .Data}}
 {{template "crumbs" .Crumbs}}
 <header class="page-head">
-  <h1>{{or .Msg.Subject "(no subject)"}}</h1>
+  <h1><bdi>{{or .Msg.Subject "(no subject)"}}</bdi></h1>
 </header>
 <dl class="message-meta">
   <dt>From</dt><dd>{{template "author" .Msg.From}}</dd>

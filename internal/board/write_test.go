@@ -676,6 +676,16 @@ func TestNewTopicAndReplyInput(t *testing.T) {
 		_, err := board.NewTopic(ctx, pool, v, 2, board.Draft{Title: title, Source: "text", IP: ip1}, t0)
 		wantInput(t, err, "title", "")
 	}
+	// Ruling R46: a title refuses the hidden formatting characters of ruling R40,
+	// with a message that says why.
+	for _, title := range []string{"a\u202eb", "a\u2066b", "a\u200bb"} {
+		_, err := board.NewTopic(ctx, pool, v, 2, board.Draft{Title: title, Source: "text", IP: ip1}, t0)
+		wantInput(t, err, "title", "Remove the hidden formatting character.")
+	}
+	// The joiners of emoji sequences pass.
+	if _, err := board.NewTopic(ctx, pool, v, 2, board.Draft{Title: "Family \U0001F468\u200d\U0001F469", Source: "text", IP: ip1}, t0); err != nil {
+		t.Errorf("a title with a zero-width joiner: %v", err)
+	}
 	// 120 characters are allowed, counted as characters and not bytes.
 	if _, err := board.NewTopic(ctx, pool, v, 2, board.Draft{Title: strings.Repeat("é", 120), Source: "text", IP: ip1}, t0); err != nil {
 		t.Errorf("a title of 120 characters: %v", err)
@@ -688,8 +698,8 @@ func TestNewTopicAndReplyInput(t *testing.T) {
 	wantInput(t, err, "body", "")
 	_, err = board.Reply(ctx, pool, v, 1, board.Draft{Source: "![x](https://example.com/a.png)", IP: ip1}, t0)
 	wantInput(t, err, "body", msgImages)
-	if got := countPosts(t, pool); got != n+1 {
-		t.Errorf("%d posts, want %d: only the 120-character title saved", got, n+1)
+	if got := countPosts(t, pool); got != n+2 {
+		t.Errorf("%d posts, want %d: only the 120-character title and the joiner title saved", got, n+2)
 	}
 	// A reply ignores a title.
 	pid, err := board.Reply(ctx, pool, v, 1, board.Draft{Title: strings.Repeat("t", 500), Source: "title ignored", IP: ip1}, t0)

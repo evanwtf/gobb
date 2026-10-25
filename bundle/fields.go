@@ -117,6 +117,15 @@ func (v *vet) label(field, s string) {
 	}
 }
 
+// title checks a topic title or a subject: a label with no hidden formatting
+// character (ruling R46), by the rule of account.HiddenFormat.
+func (v *vet) title(field, s string) {
+	v.label(field, s)
+	if utf8.ValidString(s) && account.HasHiddenFormat(s) {
+		v.add(field, "holds a hidden formatting character")
+	}
+}
+
 func (v *vet) optLabel(field string, s *string) {
 	if s != nil {
 		v.label(field, *s)
@@ -611,7 +620,7 @@ func (t Topic) check() []*Error {
 	var v vet
 	v.id("id", t.ID)
 	v.id("forum_id", t.ForumID)
-	v.label("title", t.Title)
+	v.title("title", t.Title)
 	v.optID("author_id", t.AuthorID)
 	v.label("author_name", t.AuthorName)
 	v.count("view_count", t.ViewCount)
@@ -631,7 +640,7 @@ func (p Post) check() []*Error {
 	v.optID("author_id", p.AuthorID)
 	v.label("author_name", p.AuthorName)
 	v.ip("author_ip", p.AuthorIP)
-	v.label("subject", p.Subject)
+	v.title("subject", p.Subject)
 	v.body("body", p.Body)
 	v.enum("visibility", p.Visibility, visibilities)
 	v.count("edit_count", p.EditCount)
@@ -701,7 +710,7 @@ func (p PM) check() []*Error {
 	v.optID("author_id", p.AuthorID)
 	v.label("author_name", p.AuthorName)
 	v.ip("author_ip", p.AuthorIP)
-	v.label("subject", p.Subject)
+	v.title("subject", p.Subject)
 	v.body("body", p.Body)
 	if len(p.Recipients) == 0 && p.AuthorID == nil {
 		v.add("recipients", "has no recipient; a message with no author_id needs 1 or more, so that somebody can see it")

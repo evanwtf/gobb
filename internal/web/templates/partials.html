@@ -4,7 +4,7 @@
 <nav class="crumbs" aria-label="Breadcrumb">
   <ol>
     {{- range .}}
-    <li><a href="{{.Href}}">{{.Label}}</a></li>
+    <li><a href="{{.Href}}"><bdi>{{.Label}}</bdi></a></li>
     {{- end}}
   </ol>
 </nav>
@@ -79,7 +79,7 @@
       <td class="num" data-label="Posts"><span class="forum-count">{{num .Posts}}</span></td>
       <td class="last" data-label="Last post">
         {{- with .Last}}
-        <a class="last-title" href="{{path "p" (printf "%d" .ID)}}">{{.TopicTitle}}</a>
+        <a class="last-title" href="{{path "p" (printf "%d" .ID)}}"><bdi>{{.TopicTitle}}</bdi></a>
         <span class="last-meta">by {{template "author" .Author}}</span>
         <span class="last-time">{{time .At $.Clock}}</span>
         {{- else}}
@@ -97,7 +97,7 @@
 <tr class="topic-row{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}{{if .New}} row-new{{end}}">
   <td class="forum-main topic-main">
     {{- if .MovedTo}}
-    <span class="tag tag-moved">Moved:</span> <a class="topic-link" href="{{path "t" (printf "%d" .MovedTo)}}">{{.Title}}</a>
+    <span class="tag tag-moved">Moved:</span> <a class="topic-link" href="{{path "t" (printf "%d" .MovedTo)}}"><bdi>{{.Title}}</bdi></a>
     {{- else}}
     {{- if eq .Kind "announce"}}<span class="tag tag-announce">Announcement</span> {{end}}
     {{- if eq .Kind "global"}}<span class="tag tag-announce">Global</span> {{end}}
@@ -105,7 +105,7 @@
     {{- if eq .Visibility "unapproved"}}<span class="tag tag-warn">Waiting for approval</span> {{end}}
     {{- if eq .Visibility "deleted"}}<span class="tag tag-warn">Deleted</span> {{end}}
     {{- if .New}}{{template "newbadge"}} {{end}}
-    <a class="topic-link" href="{{path "t" (printf "%d" .ID)}}">{{if .New}}{{template "newtext"}}{{end}}{{.Title}}</a>
+    <a class="topic-link" href="{{path "t" (printf "%d" .ID)}}">{{if .New}}{{template "newtext"}}{{end}}<bdi>{{.Title}}</bdi></a>
     {{- if .Locked}} <span class="tag">Locked</span>{{end}}
     <p class="topic-meta">by {{template "author" .Author}}
       {{- with .Forum}} in <a href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>{{end}}
@@ -152,7 +152,7 @@
   <div class="post-main">
     <header class="post-head">
       <div class="post-title">
-        {{- if and .Subject (ne .Subject .Topic) (ne .Subject (printf "Re: %s" .Topic))}}<h2 class="post-subject">{{.Subject}}</h2>
+        {{- if and .Subject (ne .Subject .Topic) (ne .Subject (printf "Re: %s" .Topic))}}<h2 class="post-subject"><bdi>{{.Subject}}</bdi></h2>
         {{- else}}<h2 class="visually-hidden">Post by <bdi>{{.Author.Name}}</bdi></h2>{{end}}
         {{- if eq .Visibility "unapproved"}} <span class="tag tag-warn">Waiting for approval</span>{{end}}
         {{- if eq .Visibility "deleted"}} <span class="tag tag-warn">Deleted</span>{{end}}

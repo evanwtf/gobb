@@ -656,7 +656,7 @@ func TestNewInAccessibleName(t *testing.T) {
 	}
 	fp := bodyOf(t, getAs(t, h, "/f/2", carol))
 	trow := rowOf(fp, "topic-row", "Welcome to the example board")
-	if !strings.Contains(trow, `<span class="visually-hidden">New: </span>Welcome to the example board</a>`) {
+	if !strings.Contains(trow, `<span class="visually-hidden">New: </span><bdi>Welcome to the example board</bdi></a>`) {
 		t.Errorf("the topic link does not say New:\n%s", trow)
 	}
 	for _, r := range []string{row, trow} {

@@ -79,16 +79,22 @@ func CheckProfileText(s string, limit int) error {
 	return hiddenFault(s)
 }
 
-// isFormat reports whether r is a format character (Unicode category Cf) that the
-// profile text refuses. The zero width joiner, the zero width non-joiner and the
-// tag characters U+E0020 to U+E007F are allowed.
-func isFormat(r rune) bool {
+// HiddenFormat reports whether r is a hidden formatting character: one of Unicode
+// category Cf that [ErrFormat] describes. The zero width joiner, the zero width
+// non-joiner and the tag characters U+E0020 to U+E007F are not (ruling R40). This
+// is the one rule for it: the profile checks, the checks of titles and subjects,
+// and the bundle checks all call it.
+func HiddenFormat(r rune) bool {
 	switch {
 	case r == '\u200c' || r == '\u200d', r >= 0xE0020 && r <= 0xE007F:
 		return false
 	}
 	return unicode.Is(unicode.Cf, r)
 }
+
+// HasHiddenFormat reports whether s holds a hidden formatting character (see
+// [HiddenFormat]).
+func HasHiddenFormat(s string) bool { return strings.IndexFunc(s, HiddenFormat) >= 0 }
 
 // isControl reports whether r is a control character or a line or paragraph
 // separator (Zl, Zp).
@@ -104,7 +110,7 @@ func hiddenFault(s string) error {
 		switch {
 		case isControl(r):
 			return ErrControl
-		case isFormat(r):
+		case HiddenFormat(r):
 			return ErrFormat
 		}
 	}

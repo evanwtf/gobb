@@ -317,14 +317,17 @@ func hasControl(s string) bool {
 func cleanTitle(s string) (string, error) { return cleanLine(s, "title", maxTitleRunes) }
 
 // cleanLine trims a one-line field and applies the rules of titles and subjects:
-// 1 to limit characters, valid UTF-8, and no control character. field is the name
-// of the form field, and it is the word in the messages.
+// 1 to limit characters, valid UTF-8, no control character and no hidden
+// formatting character (the rule of [account.HiddenFormat], ruling R46). field is
+// the name of the form field, and it is the word in the messages.
 func cleanLine(s, field string, limit int) (string, error) {
 	s = strings.TrimSpace(s)
 	n := utf8.RuneCountInString(s)
 	switch {
 	case !utf8.ValidString(s) || hasControl(s):
 		return "", inputError(field, "The "+field+" may not hold control characters or line breaks.")
+	case account.HasHiddenFormat(s):
+		return "", inputError(field, "Remove the hidden formatting character.")
 	case n == 0:
 		return "", inputError(field, "Enter a "+field+".")
 	case n > limit:

@@ -31,7 +31,7 @@
       <tr class="topic-row{{if .Unread}} row-new{{end}}">
         <td class="forum-main topic-main">
           {{- if .Unread}}{{template "newbadge"}} {{end}}
-          <a class="topic-link" href="{{path "messages" (printf "%d" .ID)}}">{{if .Unread}}{{template "newtext"}}{{end}}{{or .Subject "(no subject)"}}</a>
+          <a class="topic-link" href="{{path "messages" (printf "%d" .ID)}}">{{if .Unread}}{{template "newtext"}}{{end}}<bdi>{{or .Subject "(no subject)"}}</bdi></a>
           {{- if $.Data.Inbox}}
           <p class="topic-meta">from {{template "author" .From}}</p>
           {{- else}}

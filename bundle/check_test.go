@@ -827,3 +827,47 @@ func TestHiddenCharacterMessages(t *testing.T) {
 		})
 	}
 }
+
+// TestHiddenCharacterInTitles pins ruling R46: a topic title, a post subject and a
+// message subject refuse a hidden formatting character, with the message of the
+// profile fields. The joiners of emoji sequences pass.
+func TestHiddenCharacterInTitles(t *testing.T) {
+	for _, tt := range []struct{ file, field string }{
+		{"topics.jsonl", "title"}, {"posts.jsonl", "subject"}, {"pms.jsonl", "subject"},
+	} {
+		for _, bad := range []string{"a‮b", "a⁦b"} {
+			t.Run(tt.file+" "+tt.field+" "+strconv.QuoteToASCII(bad), func(t *testing.T) {
+				dir := bundletest.Write(t, bundletest.Small())
+				editLines(t, dir, tt.file, func(line int, m map[string]any) {
+					if line == 1 {
+						m[tt.field] = bad
+					}
+				})
+				err := openAndCheck(dir)
+				var errs bundle.Errors
+				var one *bundle.Error
+				switch {
+				case errors.As(err, &errs) && len(errs) == 1:
+					one = errs[0]
+				case errors.As(err, &one):
+				default:
+					t.Fatalf("Check = %v, want one error", err)
+				}
+				if one.File != tt.file || one.Line != 1 || one.Field != tt.field || one.Msg != "holds a hidden formatting character" {
+					t.Errorf("error = %v, want %s:1: %s: holds a hidden formatting character", one, tt.file, tt.field)
+				}
+			})
+		}
+		t.Run(tt.file+" joiner", func(t *testing.T) {
+			dir := bundletest.Write(t, bundletest.Small())
+			editLines(t, dir, tt.file, func(line int, m map[string]any) {
+				if line == 1 {
+					m[tt.field] = "Family \U0001F468‍\U0001F469"
+				}
+			})
+			if err := openAndCheck(dir); err != nil {
+				t.Errorf("Check = %v, want nil", err)
+			}
+		})
+	}
+}

@@ -181,3 +181,31 @@ func TestFormatErrors(t *testing.T) {
 		t.Errorf("space = %v, want ErrWebsite only", got)
 	}
 }
+
+// HasHiddenFormat is the one rule of ruling R40 for a caller that checks a line of
+// text: the hidden formatting characters are refused, and the joiners and tag
+// characters that emoji and Persian words need are not.
+func TestHasHiddenFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		want     bool
+	}{
+		{"plain", "A plain title", false},
+		{"right-to-left override", "a\u202eb", true},
+		{"left-to-right isolate", "a\u2066b", true},
+		{"zero-width space", "a\u200bb", true},
+		{"byte order mark", "a\ufeffb", true},
+		{"soft hyphen", "a\u00adb", true},
+		{"zero-width joiner", "\U0001F468\u200d\U0001F469", false},
+		{"zero-width non-joiner", "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", false},
+		{"tag character", "\U0001F3F4\U000E0067\U000E007F", false},
+		{"empty", "", false},
+	} {
+		if got := HasHiddenFormat(tc.in); got != tc.want {
+			t.Errorf("%s: HasHiddenFormat(%q) = %v, want %v", tc.name, tc.in, got, tc.want)
+		}
+	}
+	if !HiddenFormat('\u202e') || HiddenFormat('\u200d') || HiddenFormat('a') {
+		t.Error("HiddenFormat disagrees with HasHiddenFormat")
+	}
+}
