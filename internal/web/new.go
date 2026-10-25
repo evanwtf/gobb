@@ -22,6 +22,12 @@ import (
 // A client that sends none counts when it asks for HTML. A prefetch does not
 // count: the person has not opened the page yet.
 //
+// A browser also sends Sec-Fetch-Site. Only "same-origin" (a click on this site)
+// and "none" (a typed address, a bookmark) count. A link on another site, and a
+// script that opens the page in a window, send "cross-site" or "same-site", and
+// the page they open writes nothing (ruling R45). A client that sends no
+// Sec-Fetch-Site is judged on the other headers alone.
+//
 // Any other GET writes nothing, with one accepted exception that is not
 // bookkeeping: a GET whose cookie names a dead session (expired, or of a user
 // who is not active) deletes that session's row ([site.identify]). The row is
@@ -34,6 +40,9 @@ func isNavigation(r *http.Request) bool {
 		if strings.Contains(strings.ToLower(r.Header.Get(h)), "prefetch") {
 			return false
 		}
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		return false
 	}
 	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" {
 		return dest == "document"

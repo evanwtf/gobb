@@ -84,6 +84,13 @@ func TestIsNavigation(t *testing.T) {
 		{"no header, image accept", "GET", map[string]string{"Accept": "image/avif,image/*"}, false},
 		{"head", "HEAD", map[string]string{"Sec-Fetch-Dest": "document"}, false},
 		{"prefetch", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Purpose": "prefetch"}, false},
+		// Ruling R45: a navigation that another site started does not count.
+		{"document, cross-site", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "cross-site"}, false},
+		{"document, same-site", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-site"}, false},
+		{"document, same-origin", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"}, true},
+		{"document, none", "GET", map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "none"}, true},
+		{"site without dest, cross-site, html", "GET", map[string]string{"Sec-Fetch-Site": "cross-site", "Accept": "text/html"}, false},
+		{"site without dest, same-origin, html", "GET", map[string]string{"Sec-Fetch-Site": "same-origin", "Accept": "text/html"}, true},
 	} {
 		r := httptest.NewRequest(c.method, "/t/1", nil)
 		for k, v := range c.hdr {
@@ -92,6 +99,40 @@ func TestIsNavigation(t *testing.T) {
 		if got := isNavigation(r); got != c.want {
 			t.Errorf("%s: isNavigation = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// Ruling R45: a topic mark follows a navigation that the member started (a typed
+// address, a bookmark, a click on this site), not one that another site started.
+func TestTopicMarkNeedsAnOwnNavigation(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	carol := signIn(t, h, "carol", "example-password")
+	marks := func() int {
+		t.Helper()
+		return countRows(t, pool, `select count(*) from topic_marks where user_id = 3`)
+	}
+	for _, site := range []string{"cross-site", "same-site"} {
+		hdr := map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": site}
+		if rec := getWith(t, h, "/t/1", carol, hdr); rec.Code != http.StatusOK {
+			t.Fatalf("GET /t/1 (%s): %d", site, rec.Code)
+		}
+		if n := marks(); n != 0 {
+			t.Errorf("a %s navigation left %d topic marks, want 0", site, n)
+		}
+	}
+	for _, site := range []string{"same-origin", "none"} {
+		exec(t, pool, `delete from topic_marks where user_id = 3`)
+		hdr := map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": site}
+		getWith(t, h, "/t/1", carol, hdr)
+		if n := marks(); n != 1 {
+			t.Errorf("a %s navigation left %d topic marks, want 1", site, n)
+		}
+	}
+	// No fetch metadata and Accept: text/html is an older browser: it marks.
+	exec(t, pool, `delete from topic_marks where user_id = 3`)
+	getWith(t, h, "/t/1", carol, map[string]string{"Accept": "text/html"})
+	if n := marks(); n != 1 {
+		t.Errorf("an older browser left %d topic marks, want 1", n)
 	}
 }
 

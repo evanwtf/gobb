@@ -642,3 +642,76 @@ func TestMessagePayloadsPage(t *testing.T) {
 	}
 	t.Logf("payloads: %d; previewed: %d (%d bodies); stored: %d; refused: %d; message pages checked: %d", len(payloads), previewed, checked, len(ids), refused, bodies)
 }
+
+// Ruling R45: a message is marked read by a navigation that the member started,
+// not by one that another site started (a link, or a script that opens the page
+// in a window).
+func TestMessageMarkNeedsAnOwnNavigation(t *testing.T) {
+	h, pool := messageSite(t, Options{})
+	alice := signIn(t, h, "alice", testPassword)
+	bob := signIn(t, h, "bob", testPassword)
+	read := func(id int64) bool {
+		t.Helper()
+		return countRows(t, pool, fmt.Sprintf(`select count(*) from pm_recipients where pm_id = %d and user_id = 2 and is_read`, id)) == 1
+	}
+	send := func() int64 {
+		return sentID(t, sendMessage(t, h, alice, "bob", "Hello", "A short note."))
+	}
+	for _, site := range []string{"cross-site", "same-site"} {
+		id := send()
+		hdr := map[string]string{"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": site}
+		if rec := getWith(t, h, fmt.Sprintf("/messages/%d", id), bob, hdr); rec.Code != http.StatusOK {
+			t.Fatalf("GET (%s): %d", site, rec.Code)
+		}
+		if read(id) {
+			t.Errorf("a %s navigation marked message %d read", site, id)
+		}
+	}
+	for name, hdr := range map[string]map[string]string{
+		"same-origin":  {"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"},
+		"none":         {"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "none"},
+		"older client": {"Accept": "text/html"},
+	} {
+		id := send()
+		if rec := getWith(t, h, fmt.Sprintf("/messages/%d", id), bob, hdr); rec.Code != http.StatusOK {
+			t.Fatalf("GET (%s): %d", name, rec.Code)
+		}
+		if !read(id) {
+			t.Errorf("a %s navigation did not mark message %d read", name, id)
+		}
+	}
+}
+
+// Ruling R43: a message and its preview render an embed as a plain link, so the
+// sender cannot pick third-party script for the most private page.
+func TestMessageEmbedIsAPlainLink(t *testing.T) {
+	h, _ := messageSite(t, Options{})
+	alice := signIn(t, h, "alice", testPassword)
+	bob := signIn(t, h, "bob", testPassword)
+	const text = "Look at this:\n\nhttps://x.com/example/status/20\n\nAnd this:\n\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ\n"
+	id := sentID(t, sendMessage(t, h, alice, "bob", "Links", text))
+	preview, _ := postAs(t, h, "/messages/new", alice, url.Values{"to": {"bob"}, "subject": {"Links"}, "body": {text}, "preview": {"1"}})
+	pages := map[string]*httpRecorder{
+		"message": getWith(t, h, fmt.Sprintf("/messages/%d", id), bob, asPage),
+		"preview": preview,
+	}
+	for name, rec := range pages {
+		body := bodyOf(t, rec)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d", name, rec.Code)
+		}
+		for _, want := range []string{`class="embed-link"`, `href="https://x.com/i/status/20"`, `href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s lacks %s", name, want)
+			}
+		}
+		for _, bad := range []string{"<iframe", "platform.x.com", "twitter-tweet", "widgets.js"} {
+			if strings.Contains(body, bad) {
+				t.Errorf("%s holds %q", name, bad)
+			}
+		}
+		if got := rec.Header().Get("Content-Security-Policy"); got != wantBaseCSP {
+			t.Errorf("%s: Content-Security-Policy = %q\nwant %q", name, got, wantBaseCSP)
+		}
+	}
+}

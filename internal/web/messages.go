@@ -197,14 +197,14 @@ func (s *site) messageShow(w http.ResponseWriter, r *http.Request) {
 		folder, href = "Sent", s.path("messages", "sent")
 	}
 	d.Crumbs = []crumb{{Label: "Messages", Href: s.path("messages")}, {Label: folder, Href: href}}
+	// A message and a signature never embed: an embed is a plain link, with no
+	// frame and no provider script on the most private page (ruling R43).
+	rc.NoEmbeds = true
 	body := markup.Render(m.Tree, rc)
 	p.addRendered(body)
 	d.HTML = body.HTML
 	if m.Signature != nil {
-		// A signature never embeds: an embed link is a plain link.
-		sigRC := rc
-		sigRC.NoEmbeds = true
-		sig := markup.Render(m.Signature, sigRC)
+		sig := markup.Render(m.Signature, rc)
 		p.addRendered(sig)
 		d.SigHTML = sig.HTML
 	}
@@ -389,6 +389,9 @@ func (s *site) messagePreview(w http.ResponseWriter, r *http.Request, p *page, d
 		s.messageSendFailed(w, r, p, d, err)
 		return
 	}
+	// The preview shows what the message page shows: an embed is a plain link
+	// (ruling R43).
+	rc.NoEmbeds = true
 	rendered := markup.Render(body.Tree, rc)
 	p.addRendered(rendered)
 	card, err := board.Card(ctx, s.pool, p.Viewer.UserID)
