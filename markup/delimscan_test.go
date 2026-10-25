@@ -2,11 +2,15 @@ package markup
 
 import (
 	"math/rand"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
 )
 
 // delimShapes are the sources that make goldmark's emphasis matching slow: two
@@ -50,15 +54,71 @@ func randomMix(seed int64, size int) string {
 	return string(b)
 }
 
+// shape is a source that a test builds to a size in bytes.
+type shape struct {
+	name string
+	gen  func(size int) string
+}
+
+// codeSpanLadder is runs of 1, 2, ... 200 backticks, each followed by a space,
+// then a newline and lines of "a" to the size. Each run finds no closer of its
+// length, so each reads every later line of the paragraph.
+func codeSpanLadder(size int) string {
+	var sb strings.Builder
+	for k := 1; k <= 200; k++ {
+		sb.WriteString(strings.Repeat("`", k))
+		sb.WriteByte(' ')
+	}
+	sb.WriteByte('\n')
+	return sb.String() + repeatTo("a\n", max(0, size-sb.Len()))
+}
+
+// hostileShapes are the shapes that goldmark parses in more than linear time
+// outside the delimiter list: the ladder of code spans, and a list of link
+// reference definitions, which the paragraph transformer removes one at a time,
+// with a copy of the lines that remain.
+func hostileShapes() []shape {
+	return []shape{
+		{"code span ladder", codeSpanLadder},
+		{"link reference definitions", func(size int) string { return repeatTo("[x]:\n", size) }},
+		{"link reference definitions with a destination", func(size int) string { return repeatTo("[x]: /u\n", size) }},
+		{"link reference definitions with titles", func(size int) string { return repeatTo("[x]: /u 't'\n", size) }},
+		{"indented link reference definitions", func(size int) string { return repeatTo("   [x]:\n", size) }},
+		// The link parser reads the text of each bracket, and goldmark finds the
+		// line of that text by a walk back from the last line.
+		{"shortcut references", func(size int) string { return repeatTo("[x]\n", size) }},
+		{"full references", func(size int) string { return repeatTo("[x][y]\n", size) }},
+		{"collapsed references", func(size int) string { return repeatTo("[x][]\n", size) }},
+		{"image references", func(size int) string { return repeatTo("![x]\n", size) }},
+	}
+}
+
+// TestHostileShapesAllocateLittle: one parse of a 60,000-byte body allocates
+// under 64 MiB. The code span ladder took 679 MiB.
+func TestHostileShapesAllocateLittle(t *testing.T) {
+	const limit = 64 << 20
+	for _, sh := range hostileShapes() {
+		t.Run(sh.name, func(t *testing.T) {
+			src := sh.gen(60000)
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			Parse(src, allOn)
+			runtime.ReadMemStats(&after)
+			got := after.TotalAlloc - before.TotalAlloc
+			t.Logf("%d bytes allocated, %d allocations", got, after.Mallocs-before.Mallocs)
+			if got > limit {
+				t.Errorf("one parse allocated %d MiB, want under %d MiB", got>>20, limit>>20)
+			}
+		})
+	}
+}
+
 // TestParseDelimiterShapesAreLinear covers the quadratic parse of mixed emphasis
 // delimiters: a body of "*_a" repeated to 60,000 bytes took 1.6 s. Each shape
 // must parse in under 50 ms (ten times that under the race detector), and
 // twice the input must take less than three times as long.
 func TestParseDelimiterShapesAreLinear(t *testing.T) {
-	type shape struct {
-		name string
-		gen  func(size int) string
-	}
 	var shapes []shape
 	for name, unit := range delimShapes {
 		shapes = append(shapes, shape{name, func(size int) string { return repeatTo(unit, size) }})
@@ -75,6 +135,7 @@ func TestParseDelimiterShapesAreLinear(t *testing.T) {
 	shapes = append(shapes, shape{"long address", func(size int) string {
 		return repeatTo("~a", size/2) + "@" + repeatTo("b", size/2-1)
 	}})
+	shapes = append(shapes, hostileShapes()...)
 	for _, sh := range shapes {
 		t.Run(sh.name, func(t *testing.T) {
 			// The ratio is a wall-clock measure, and a busy machine (the CI runner
@@ -140,6 +201,50 @@ func TestDelimiterBudgetHoldsALongParagraph(t *testing.T) {
 	}
 }
 
+// TestSpanAndDefinitionBudgetsKeepNaturalPosts: many code spans, and a long list
+// of link reference definitions, stay markup.
+func TestSpanAndDefinitionBudgetsKeepNaturalPosts(t *testing.T) {
+	tree := Parse(strings.Repeat("Use `a` and ``b`c`` here.\n\n", 3000), allOn)
+	if got := countNamed(tree, "code"); got != 6000 {
+		t.Errorf("%d code elements in 3,000 paragraphs, want 6000", got)
+	}
+	var defs strings.Builder
+	for i := range 800 {
+		defs.WriteString("[k" + strconv.Itoa(i) + "]: /u" + strconv.Itoa(i) + "\n")
+	}
+	tree = Parse(defs.String()+"\n[k799] and [k0]", allOn)
+	if got := countNamed(tree, "url"); got != 2 {
+		t.Errorf("%d links from 800 definitions, want 2", got)
+	}
+	// The definitions in one paragraph with text after them.
+	tree = Parse(defs.String()+"[k799] and [k0]", allOn)
+	if got := countNamed(tree, "url"); got != 2 {
+		t.Errorf("%d links from 800 definitions in the paragraph of the text, want 2", got)
+	}
+}
+
+// TestSpanAndDefinitionBudgetsEndAtTheEnd: past the budget, a run of backticks
+// stays text and a definition stays text, and the tree is valid.
+func TestSpanAndDefinitionBudgetsEndAtTheEnd(t *testing.T) {
+	ladder := codeSpanLadder(60000)
+	tree := Parse(ladder+"\n\nthen `last` here", allOn)
+	if err := Validate(tree); err != nil {
+		t.Fatal(err)
+	}
+	if got := countNamed(tree, "code"); got != 0 {
+		// The ladder itself is a paragraph of text; the last span follows the end
+		// of the budget and stays text.
+		t.Errorf("%d code elements after the ladder, want 0", got)
+	}
+	tree = Parse(strings.Repeat("[x]: /u\n", 8000)+"\n[x]", allOn)
+	if err := Validate(tree); err != nil {
+		t.Fatal(err)
+	}
+	if got := countNamed(tree, "url"); got != 0 {
+		t.Errorf("%d links from definitions past the budget, want 0", got)
+	}
+}
+
 // countNamed counts the elements of the tree with the name.
 func countNamed(n *Node, name string) int {
 	c := 0
@@ -191,56 +296,82 @@ func TestDelimiterBudgetEndsAtTheEnd(t *testing.T) {
 }
 
 // TestBoundedParsersChangeNothingBelowTheBudget compares the bounded parsers with
-// the unbounded ones on random text full of delimiters and addresses, which stays
-// far below the budget.
+// the unbounded ones on random text full of delimiters, code spans, links,
+// definitions and addresses, which stays far below the budget. It compares each
+// of the four engines: Markdown on or off, Autolink on or off.
 func TestBoundedParsersChangeNothingBelowTheBudget(t *testing.T) {
 	tokens := []string{"*", "**", "_", "__", "|", "||", "~", "a", "b", " ", "\n", "\n\n", "\\", "[", "]", "(", ")", "`", ">", "!",
-		"@", ".", "-", "a@b.c", "http://x.example/y", "www.x.example", "*a*", "_b_", "||c||", "**d**", "snake_case", "(*", "*)", "[a](b)"}
+		"@", ".", "-", "a@b.c", "http://x.example/y", "www.x.example", "*a*", "_b_", "||c||", "**d**", "snake_case", "(*", "*)", "[a](b)",
+		"``", "```", "`code`", "``a`b``", "`\n`", "[x]", "[x][y]", "[x][]", "![x]", "[x]: /u\n", "[x]:\n", "[y]: <v> 't'\n", "\n[x]: /w\n", "   [z]: /z\n", "> ", "- ", "    "}
 	bounded := engines
 	var plain [4]goldmark.Markdown
 	for i := range plain {
 		plain[i] = newEngineWith(i >= 2, i%2 == 1, false)
 	}
+	// Lines that begin inside a tab have padding, which a value must keep.
+	fixed := []string{">\t[x]\n>\t[x]\n", ">\t[x]\n>\t[x][y]\n>  [x]: /u\n", "- a\n\t[x]\n\t[x]\n", "-\t[x]\n  [x]\n", "> - \t[x]\n>   [x]\n", ">\t[a\n>\tb]\n>\t[x]", ">\t[\n>\tx]\n>\t[x]: /u", "[\nx]\n[\ny]\n[x]"}
 	rng := rand.New(rand.NewSource(7))
-	for i := 0; i < 30000; i++ {
+	for i := 0; i < 30000+len(fixed); i++ {
 		var sb strings.Builder
 		for j, k := 0, 1+rng.Intn(30); j < k; j++ {
 			sb.WriteString(tokens[rng.Intn(len(tokens))])
 		}
 		src := sb.String()
-		want := func() string {
-			engines = plain
-			defer func() { engines = bounded }()
-			return js(Parse(src, allOn))
-		}()
-		if got := js(Parse(src, allOn)); got != want {
-			t.Fatalf("source %q\nbounded: %s\nplain:   %s", src, got, want)
+		if i < len(fixed) {
+			src = fixed[i]
+		}
+		for flags := range 4 {
+			opt := Options{Markdown: flags >= 2, Autolink: flags%2 == 1}
+			want := func() string {
+				engines = plain
+				defer func() { engines = bounded }()
+				return js(Parse(src, opt))
+			}()
+			if got := js(Parse(src, opt)); got != want {
+				t.Fatalf("source %q, %+v\nbounded: %s\nplain:   %s", src, opt, got, want)
+			}
 		}
 	}
 }
 
-// TestBoundedEnginesWrapTheDelimiterParsers fails unless the emphasis parser, the
-// spoiler parser and the autolink parser are each wrapped once. The emphasis
-// lookup is by value, so a goldmark upgrade that changes the value would
-// otherwise remove the bound without an error.
-func TestBoundedEnginesWrapTheDelimiterParsers(t *testing.T) {
-	n := 0
-	for _, pv := range boundedInlineParsers() {
-		if _, ok := pv.Value.(boundedDelimiterParser); ok {
-			n++
-		}
+// TestBoundedEnginesWrapTheParsers fails unless each bounded parser ran in the
+// engines that hold it. A parse takes a parser context of the test, and each
+// wrapper sets the key of its budget in it. An engine of plain goldmark parsers
+// sets none, so a source that shows markup is not a proof, and a lookup by value
+// that a goldmark upgrade breaks would otherwise remove a bound without an error.
+func TestBoundedEnginesWrapTheParsers(t *testing.T) {
+	type want struct {
+		name     string
+		src      string
+		key      parser.ContextKey
+		markdown bool // the engine needs Markdown
+		autolink bool // the engine needs Autolink
 	}
-	if n != 1 {
-		t.Errorf("wrapped %d emphasis parsers, want 1", n)
+	wants := []want{
+		{"emphasis", "*a*", delimBudgetKey, true, false},
+		{"spoiler", "||a||", delimBudgetKey, true, false},
+		{"autolink", "a@b.cc", emailBudgetKey, false, true},
+		{"link", "[a](b)", scanBudgetKey, true, false},
+		{"code span", "`a`", spanBudgetKey, true, false},
+		{"link reference definition", "[x]: /u\n\n[x]", refBudgetKey, true, false},
 	}
-	// The spoiler and the autolink parsers are added by extensions. A shape for
-	// each is in the scaling test; here the budget key shows the wrapper ran.
-	for name, src := range map[string]string{
-		"spoiler":  "||a||",
-		"autolink": "a@b.cc",
-	} {
-		if !has(Parse(src, allOn), map[string]string{"spoiler": "spoiler", "autolink": "email"}[name]) {
-			t.Errorf("%s: no markup from %q", name, src)
+	ran := func(m goldmark.Markdown, w want) bool {
+		pc := parser.NewContext()
+		m.Parser().Parse(text.NewReader([]byte(w.src)), parser.WithContext(pc))
+		return pc.Get(w.key) != nil
+	}
+	for flags := range 4 {
+		markdown, autolink := flags >= 2, flags%2 == 1
+		for _, w := range wants {
+			if (w.markdown && !markdown) || (w.autolink && !autolink) {
+				continue
+			}
+			if !ran(engines[flags], w) {
+				t.Errorf("markdown=%v autolink=%v: the %s parser is not wrapped in its budget", markdown, autolink, w.name)
+			}
+			if ran(newEngineWith(markdown, autolink, false), w) {
+				t.Errorf("markdown=%v autolink=%v: the unbounded engine sets the budget of the %s parser", markdown, autolink, w.name)
+			}
 		}
 	}
 }

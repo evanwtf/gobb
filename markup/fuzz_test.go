@@ -49,6 +49,8 @@ func FuzzParse(f *testing.F) {
 		"<x\u202e@c.example>", "<x\\y@c.example>", ":\t)", "a\xffb", "[<https://a.b>](/c)", "![[a](/b)](/c)",
 		// Mixed delimiters that never pair (A-I1): the shape that took 1.6 s at 60,000 bytes.
 		strings.Repeat("*_a", 5000), strings.Repeat("_*a", 3000), strings.Repeat("||*_a", 2000), strings.Repeat("~a", 4000),
+		// The code span ladder and the reference shapes (round 2).
+		ladderSeed(60000), strings.Repeat("[x]:\n", 3000), strings.Repeat("[x]: /u 't'\n", 2000), strings.Repeat("[x]\n", 4000), strings.Repeat("![x][y]\n", 2000),
 		"[a](" + strings.Repeat("[a](", 50), "[a](<" + strings.Repeat("[a](<", 50), "[a](b \"" + strings.Repeat("[a](b \"", 20),
 	}
 	for _, s := range seeds {
@@ -101,6 +103,7 @@ func FuzzRender(f *testing.F) {
 		"https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nhttps://x.com/a/status/1\n\nhttps://open.spotify.com/track/abc",
 		"<script>alert(1)</script> <SCRIPT src=x>",
 		strings.Repeat("*_a", 5000),
+		ladderSeed(30000), strings.Repeat("[x]:\n", 3000), strings.Repeat("[x]\n", 4000),
 		"> **A** [wrote](/p/1):\n>\n> ||spoiler|| \\*x\\*\n\n```go\n<script>\n```",
 	}
 	for _, s := range seeds {
@@ -120,4 +123,16 @@ func FuzzRender(f *testing.F) {
 		}
 		htmlcheck.Check(t, string(markup.Render(markup.Parse(string(data), opt), smileys()).HTML))
 	})
+}
+
+// ladderSeed is runs of 1, 2, ... 200 backticks, each followed by a space, then a
+// newline and lines of "a" to the size: the shape that took 147 ms and 679 MiB.
+func ladderSeed(size int) string {
+	var sb strings.Builder
+	for k := 1; k <= 200; k++ {
+		sb.WriteString(strings.Repeat("`", k))
+		sb.WriteByte(' ')
+	}
+	sb.WriteByte('\n')
+	return sb.String() + strings.Repeat("a\n", max(0, size-sb.Len())/2)
 }

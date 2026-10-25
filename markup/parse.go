@@ -79,15 +79,17 @@ func newEngine(markdown, autolink bool) goldmark.Markdown {
 // bare links in both.
 func newEngineWith(markdown, autolink, bounded bool) goldmark.Markdown {
 	inline := parser.DefaultInlineParsers()
+	transformers := parser.DefaultParagraphTransformers()
 	if bounded {
 		inline = boundedInlineParsers()
+		transformers = boundRefTransformers(transformers)
 	}
 	var opts []goldmark.Option
 	if markdown {
 		opts = append(opts, goldmark.WithParser(parser.NewParser(
 			parser.WithBlockParsers(cappedBlockParsers()...),
 			parser.WithInlineParsers(inline...),
-			parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...),
+			parser.WithParagraphTransformers(transformers...),
 		)))
 	} else {
 		opts = append(opts, goldmark.WithParser(parser.NewParser(
