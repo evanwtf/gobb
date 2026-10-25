@@ -15,6 +15,7 @@ import (
 	"image/png"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -554,6 +555,31 @@ func TestMakeContext(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want context.Canceled", err)
 	}
+}
+
+// TestMakeConcurrentSameOutput pins that the shared encoder and its buffer pool give
+// the same bytes for the same upload, whatever the number of calls at once.
+func TestMakeConcurrentSameOutput(t *testing.T) {
+	in := pngBytes(t, 40, 30, color.RGBA{10, 200, 30, 255})
+	want, err := avatar.Make(context.Background(), bytes.NewReader(in), gate(), wait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 5 {
+				got, err := avatar.Make(context.Background(), bytes.NewReader(in), gate(), wait)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Errorf("Make = %d bytes, %v; want the %d bytes of the first call", len(got), err, len(want))
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // FuzzMake: any input gives PNG bytes of 128 x 128 or one of the named errors,

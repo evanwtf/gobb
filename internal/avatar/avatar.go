@@ -19,10 +19,26 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/evanwtf/gobb/internal/login"
 )
+
+// encoder is the one PNG encoder of the package. Its buffer pool keeps the
+// encoder's tables (about 1.1 MB) between calls. The default settings are the same
+// as those of [png.Encode], so the output does not change.
+var encoder = &png.Encoder{BufferPool: new(bufferPool)}
+
+// bufferPool is a [png.EncoderBufferPool] on a [sync.Pool].
+type bufferPool struct{ pool sync.Pool }
+
+func (p *bufferPool) Get() *png.EncoderBuffer {
+	b, _ := p.pool.Get().(*png.EncoderBuffer)
+	return b // nil makes the encoder allocate a new buffer
+}
+
+func (p *bufferPool) Put(b *png.EncoderBuffer) { p.pool.Put(b) }
 
 // The limits of an upload and the size of the result.
 const (
@@ -104,9 +120,10 @@ func Make(ctx context.Context, r io.Reader, gate *login.Gate, wait time.Duration
 	}
 	// The encode runs after the gate share is back: the decoded image is gone,
 	// and what is left is the small result and the encoder's tables (about
-	// 1 MiB). It is not part of the charge.
+	// 1 MiB). The encoder takes the tables from a pool, so a call does not
+	// allocate them again. They are not part of the charge.
 	var out bytes.Buffer
-	if err := png.Encode(&out, small); err != nil {
+	if err := encoder.Encode(&out, small); err != nil {
 		return nil, fmt.Errorf("avatar: encode the result: %w", err)
 	}
 	return out.Bytes(), nil
@@ -195,8 +212,8 @@ func inspect(data []byte) (format, uint64, error) {
 //   - JPEG: by color model, on sides rounded up to a multiple of 32. The decoder
 //     pads each plane to whole MCUs of 8 x the largest sampling factor, and a
 //     factor may be 4 (a frame with a scan for each component can give all three
-//     components 4 x 2 or 2 x 4), so the MCU is up to 32 x 32 pixels. CMYK 24 bytes a pixel, RGB (Adobe) 19, YCbCr 15,
-//     gray 5, and 24 for any other model. A progressive file keeps 32-bit
+//     components 4 x 2 or 2 x 4), so the MCU is up to 32 x 32 pixels. CMYK 24 bytes a pixel, RGB (Adobe) 19,
+//     YCbCr 15, gray 5, and 24 for any other model. A progressive file keeps 32-bit
 //     coefficients for each component.
 //   - PNG: 8 bytes a pixel for a 16-bit file, else 4; twice that for an
 //     interlaced file (Adam7), where the decoder allocates an image for each
