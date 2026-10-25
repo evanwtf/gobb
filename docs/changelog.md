@@ -43,16 +43,20 @@
   website; a nil field stays as it is) and `SetBirthday` need `account.profile`, trim and
   check each value with the rules in `internal/account/profile.go`, and refuse with a
   message beside the field. `SetAvatar` and `RemoveAvatar` need `account.avatar` and
-  return the path they replaced, so the caller deletes that file after the commit.
+  return the path they replaced, so the caller deletes that file after the commit;
+  `SetAvatar` accepts only `avatars/u{id}-{16 hex}.png` for the member's own id.
   `avatar.Make` turns an upload into a new 128 x 128 PNG. It reads at most 1 MiB, takes
   the format from the first bytes (PNG, JPEG or GIF; WebP is refused), reads the size
   from the header and refuses more than 8,000 pixels a side or 16,000,000 in all before
-  it decodes, charges the decode's memory to the login gate by format (JPEG 12 bytes a
-  pixel, PNG 8 for a 16-bit file and 4 otherwise, GIF 4, plus 1 MiB) and refuses with
-  the size error a decode that is more than the whole budget (`Gate.Budget` is new), so
-  none runs alone and breaks the memory limit of the container; it decodes the first frame,
-  crops the center square, and resamples it (area average to shrink, nearest pixel to
-  grow). Only pixels reach the output, so metadata and trailing bytes do not survive.
+  it decodes, charges the decode's memory to the login gate by format (JPEG 15, 19, 24
+  or 5 bytes a pixel by color model, on sides padded to 16; PNG 4, or 8 for 16 bits,
+  doubled when interlaced; GIF 4; plus 1 MiB) and refuses with the size error a decode
+  that is more than the whole budget (`Gate.Budget` is new), so none runs alone and
+  breaks the memory limit of the container. The share goes back through
+  `Gate.AcquireCollected`, which runs a garbage collection first, as the sign-in does
+  (the sign-in now uses it too). It decodes the first frame, crops the center square,
+  and resamples it (area average to shrink, nearest pixel to grow; the pixels are read
+  without boxing each one). Only pixels reach the output, so metadata and trailing bytes do not survive.
   `FuzzMake` joins the CI fuzz job.
 
 ## 0.1.0 (2026-10-25)

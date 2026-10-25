@@ -77,7 +77,8 @@ func sniff(b []byte) format {
 //     anything but PNG, JPEG and GIF (WebP and SVG included).
 //  3. It reads the size from the header only, and returns [ErrDimensions] when a
 //     side is over [MaxSide] or the pixels are over [MaxPixels].
-//  4. It works out the memory of the decode (see [chargeKiB]) and returns
+//  4. It works out the memory of the decode (see [chargeKiB]; the figures depend
+//     on the format and on the color model or bit depth) and returns
 //     [ErrDimensions] when that is more than the whole budget of gate. Else it
 //     takes the memory from gate, waiting up to wait, and returns [login.ErrBusy]
 //     when the wait ends (or the error of ctx when ctx ends first). It gives the
@@ -85,7 +86,8 @@ func sniff(b []byte) format {
 //  5. It decodes the image (the first frame of a GIF), crops the center square,
 //     and resamples it to [Size] x [Size]: an area average when it shrinks, the
 //     nearest pixel when it grows.
-//  6. It encodes the result with the standard PNG encoder.
+//  6. It gives the gate share back (after a garbage collection) and encodes the
+//     result with the standard PNG encoder.
 //
 // A file whose header is sound but whose body does not decode gives [ErrFormat].
 func Make(ctx context.Context, r io.Reader, gate *login.Gate, wait time.Duration) ([]byte, error) {
@@ -96,34 +98,37 @@ func Make(ctx context.Context, r io.Reader, gate *login.Gate, wait time.Duration
 	if len(data) > MaxBytes {
 		return nil, ErrTooLarge
 	}
-	f := sniff(data)
-	if f == fmtNone {
-		return nil, ErrFormat
+	small, err := decodeSquare(ctx, data, gate, wait)
+	if err != nil {
+		return nil, err
 	}
+	// The encode runs after the gate share is back: the decoded image is gone,
+	// and what is left is the small result and the encoder's tables (about
+	// 1 MiB). It is not part of the charge.
+	var out bytes.Buffer
+	if err := png.Encode(&out, small); err != nil {
+		return nil, fmt.Errorf("avatar: encode the result: %w", err)
+	}
+	return out.Bytes(), nil
+}
 
-	var cfg image.Config
-	switch f {
-	case fmtPNG:
-		cfg, err = png.DecodeConfig(bytes.NewReader(data))
-	case fmtJPEG:
-		cfg, err = jpeg.DecodeConfig(bytes.NewReader(data))
-	case fmtGIF:
-		cfg, err = gif.DecodeConfig(bytes.NewReader(data))
+// decodeSquare is the part of [Make] that the gate bounds: the checks of the
+// header, the share of the gate, the decode and the resample to [Size] x [Size].
+// The bytes of data are held through the call; they are the 1024 KiB of the
+// charge that does not depend on the pixels, with the resampler's tables. The
+// release collects garbage first, so the decoded image does not sit on the heap
+// under the next holder (a sign-in uses the same gate).
+func decodeSquare(ctx context.Context, data []byte, gate *login.Gate, wait time.Duration) (*image.RGBA, error) {
+	f, kib, err := inspect(data)
+	if err != nil {
+		return nil, err
 	}
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		return nil, ErrFormat
-	}
-	if cfg.Width > MaxSide || cfg.Height > MaxSide || cfg.Width*cfg.Height > MaxPixels {
-		return nil, ErrDimensions
-	}
-
-	kib := chargeKiB(f, cfg)
 	if kib > gate.Budget() {
 		// The gate would run this decode alone, and it needs more than the budget:
 		// the process could run out of memory. Refuse it before any allocation.
 		return nil, ErrDimensions
 	}
-	release, err := gate.Acquire(ctx, kib, wait)
+	release, err := gate.AcquireCollected(ctx, kib, wait)
 	if err != nil {
 		return nil, err
 	}
@@ -146,33 +151,117 @@ func Make(ctx context.Context, r io.Reader, gate *login.Gate, wait time.Duration
 	if b := img.Bounds(); b.Dx() <= 0 || b.Dy() <= 0 || b.Dx() > MaxSide || b.Dy() > MaxSide || b.Dx()*b.Dy() > MaxPixels {
 		return nil, ErrDimensions
 	}
+	return squareTo128(img), nil
+}
 
-	var out bytes.Buffer
-	if err := png.Encode(&out, squareTo128(img)); err != nil {
-		return nil, fmt.Errorf("avatar: encode the result: %w", err)
+// inspect reads the header of data and returns its format and the memory that a
+// decode needs, in KiB (see [chargeKiB]). It allocates no pixels. It returns
+// [ErrFormat] when the first bytes are none of the three formats or the header
+// does not parse, and [ErrDimensions] when a side is over [MaxSide] or the pixels
+// are over [MaxPixels].
+func inspect(data []byte) (format, uint64, error) {
+	f := sniff(data)
+	var (
+		cfg image.Config
+		err error
+	)
+	switch f {
+	case fmtPNG:
+		cfg, err = png.DecodeConfig(bytes.NewReader(data))
+	case fmtJPEG:
+		cfg, err = jpeg.DecodeConfig(bytes.NewReader(data))
+	case fmtGIF:
+		cfg, err = gif.DecodeConfig(bytes.NewReader(data))
+	default:
+		return fmtNone, 0, ErrFormat
 	}
-	return out.Bytes(), nil
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return fmtNone, 0, ErrFormat
+	}
+	if cfg.Width > MaxSide || cfg.Height > MaxSide || cfg.Width*cfg.Height > MaxPixels {
+		return fmtNone, 0, ErrDimensions
+	}
+	// The PNG header is sound, so the interlace byte is the last byte of the
+	// first chunk: 8 (signature) + 8 (chunk length and type) + 13 - 1.
+	interlaced := f == fmtPNG && len(data) > 28 && data[28] == 1
+	return f, chargeKiB(f, cfg, interlaced), nil
 }
 
 // chargeKiB is the memory that the decode of an image needs, in KiB, worked out
 // from the header: 1024 KiB, plus a number of bytes for each pixel that depends on
-// what the decoder holds.
+// what the decoder holds. The tests in charge_internal_test.go compare each figure
+// with the bytes that the decoder allocates.
 //
-//   - JPEG: 12. A progressive file keeps 32-bit coefficients for three components.
-//   - PNG: 8 when the decoder gives 16 bits a sample (a 16-bit file), else 4.
+//   - JPEG: by color model, on sides rounded up to a multiple of 16 (the decoder
+//     pads to whole blocks). CMYK 24 bytes a pixel, RGB (Adobe) 19, YCbCr 15,
+//     gray 5, and 24 for any other model. A progressive file keeps 32-bit
+//     coefficients for each component.
+//   - PNG: 8 bytes a pixel for a 16-bit file, else 4; twice that for an
+//     interlaced file (Adam7), where the decoder allocates an image for each
+//     pass besides the final image. The passes are garbage once merged, but the
+//     collector may not have run, so the charge counts them all.
 //   - GIF: 4.
-func chargeKiB(f format, cfg image.Config) uint64 {
+func chargeKiB(f format, cfg image.Config, interlaced bool) uint64 {
+	w, h := uint64(cfg.Width), uint64(cfg.Height)
 	perPixel := uint64(4)
 	switch f {
 	case fmtJPEG:
-		perPixel = 12
+		w, h = (w+15)&^15, (h+15)&^15
+		switch cfg.ColorModel {
+		case color.GrayModel:
+			perPixel = 5
+		case color.YCbCrModel:
+			perPixel = 15
+		case color.RGBAModel:
+			perPixel = 19
+		default: // CMYK and anything else
+			perPixel = 24
+		}
 	case fmtPNG:
 		switch cfg.ColorModel {
 		case color.Gray16Model, color.RGBA64Model, color.NRGBA64Model:
 			perPixel = 8
 		}
 	}
-	return uint64(cfg.Width)*uint64(cfg.Height)*perPixel/1024 + 1024
+	total := w * h * perPixel
+	if interlaced {
+		total *= 2
+	}
+	return total/1024 + 1024
+}
+
+// pixelReader returns a function that gives the premultiplied 16-bit color of a
+// pixel of src. For the types that the decoders return, it reads the pixel as a
+// struct, which allocates nothing; image.Image.At boxes each color in an
+// interface, and over 16,000,000 pixels that is 64 to 128 MB of garbage. Any
+// other type goes through At.
+func pixelReader(src image.Image) func(x, y int) (r, g, b, a uint32) {
+	switch s := src.(type) {
+	case *image.RGBA:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.RGBAAt(x, y).RGBA() }
+	case *image.NRGBA:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.NRGBAAt(x, y).RGBA() }
+	case *image.RGBA64:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.RGBA64At(x, y).RGBA() }
+	case *image.NRGBA64:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.NRGBA64At(x, y).RGBA() }
+	case *image.Gray:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.GrayAt(x, y).RGBA() }
+	case *image.Gray16:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.Gray16At(x, y).RGBA() }
+	case *image.YCbCr:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.YCbCrAt(x, y).RGBA() }
+	case *image.CMYK:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return s.CMYKAt(x, y).RGBA() }
+	case *image.Paletted:
+		return func(x, y int) (uint32, uint32, uint32, uint32) {
+			if !(image.Point{X: x, Y: y}).In(s.Rect) {
+				return 0, 0, 0, 0
+			}
+			return s.Palette[s.ColorIndexAt(x, y)].RGBA()
+		}
+	}
+	return func(x, y int) (uint32, uint32, uint32, uint32) { return src.At(x, y).RGBA() }
 }
 
 // span is the share of one source pixel in up to two result pixels.
@@ -191,6 +280,7 @@ func squareTo128(src image.Image) *image.RGBA {
 	x0 := b.Min.X + (b.Dx()-s)/2
 	y0 := b.Min.Y + (b.Dy()-s)/2
 	dst := image.NewRGBA(image.Rect(0, 0, Size, Size))
+	at := pixelReader(src)
 
 	if s <= Size {
 		// Growth, or the same size: the nearest pixel to the center of each
@@ -199,7 +289,7 @@ func squareTo128(src image.Image) *image.RGBA {
 			sy := y0 + (2*y+1)*s/(2*Size)
 			for x := range Size {
 				sx := x0 + (2*x+1)*s/(2*Size)
-				r, g, bl, a := src.At(sx, sy).RGBA()
+				r, g, bl, a := at(sx, sy)
 				o := dst.PixOffset(x, y)
 				dst.Pix[o], dst.Pix[o+1], dst.Pix[o+2], dst.Pix[o+3] = uint8(r>>8), uint8(g>>8), uint8(bl>>8), uint8(a>>8)
 			}
@@ -207,7 +297,10 @@ func squareTo128(src image.Image) *image.RGBA {
 		return dst
 	}
 
-	// Shrink: the area average of premultiplied color.
+	// Shrink: the area average of premultiplied color. A result row i takes the
+	// source rows that overlap it. Each source row is reduced across to Size
+	// sums, then added to the sums of the result row with its weight, so the
+	// memory is two rows of Size sums and not the whole result.
 	spans := make([]span, s)
 	for k := range s {
 		lo, hi := k*Size, (k+1)*Size
@@ -218,38 +311,41 @@ func squareTo128(src image.Image) *image.RGBA {
 			sp.w[j] = uint64(min(hi, (i+1)*s) - max(lo, i*s))
 		}
 	}
-	sum := make([][4]uint64, Size*Size)
-	for y := range s {
-		sy := spans[y]
-		for x := range s {
-			sx := spans[x]
-			r, g, bl, a := src.At(x0+x, y0+y).RGBA()
-			c := [4]uint64{uint64(r), uint64(g), uint64(bl), uint64(a)}
-			for j := range 2 {
-				if sy.w[j] == 0 {
-					continue
-				}
-				for i := range 2 {
-					if sx.w[i] == 0 {
-						continue
+	across := make([][4]uint64, Size)
+	down := make([][4]uint64, Size)
+	total := uint64(s) * uint64(s)
+	for i := range Size {
+		clear(down)
+		// Source rows k overlap result row i when k*Size < (i+1)*s and (k+1)*Size > i*s.
+		for k := i * s / Size; k <= ((i+1)*s-1)/Size && k < s; k++ {
+			wy := uint64(min((k+1)*Size, (i+1)*s) - max(k*Size, i*s))
+			if wy == 0 {
+				continue
+			}
+			clear(across)
+			for x := range s {
+				r, g, bl, a := at(x0+x, y0+k)
+				sx := &spans[x]
+				for j := range 2 {
+					if w := sx.w[j]; w != 0 {
+						p := &across[sx.idx[j]]
+						p[0] += uint64(r) * w
+						p[1] += uint64(g) * w
+						p[2] += uint64(bl) * w
+						p[3] += uint64(a) * w
 					}
-					w := sy.w[j] * sx.w[i]
-					p := &sum[sy.idx[j]*Size+sx.idx[i]]
-					p[0] += c[0] * w
-					p[1] += c[1] * w
-					p[2] += c[2] * w
-					p[3] += c[3] * w
+				}
+			}
+			for x := range Size {
+				for c := range 4 {
+					down[x][c] += across[x][c] * wy
 				}
 			}
 		}
-	}
-	total := uint64(s) * uint64(s)
-	for y := range Size {
 		for x := range Size {
-			p := sum[y*Size+x]
-			o := dst.PixOffset(x, y)
+			o := dst.PixOffset(x, i)
 			for c := range 4 {
-				dst.Pix[o+c] = uint8((p[c] / total) >> 8)
+				dst.Pix[o+c] = uint8((down[x][c] / total) >> 8)
 			}
 		}
 	}

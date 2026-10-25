@@ -3,6 +3,7 @@ package login_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -199,5 +200,56 @@ func TestGateBudget(t *testing.T) {
 	}
 	if got := login.NewGate(login.DefaultBudgetKiB).Budget(); got != login.DefaultBudgetKiB {
 		t.Errorf("Budget() = %d, want %d", got, login.DefaultBudgetKiB)
+	}
+}
+
+func forcedCollections() uint32 {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.NumForcedGC
+}
+
+// The release of AcquireCollected runs a garbage collection first, then gives the
+// share back. A waiter records the count of forced collections at the moment the
+// gate lets it in: a collection that runs after the release is too late, because
+// the waiter has already started. The loop gives that race many chances to show.
+func TestAcquireCollectedCollectsBeforeRelease(t *testing.T) {
+	g := login.NewGate(100)
+	for range 20 {
+		release, err := g.AcquireCollected(t.Context(), 100, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := forcedCollections()
+		entry := make(chan uint32, 1)
+		go func() {
+			rel, err := g.Acquire(context.Background(), 100, 5*time.Second)
+			if err != nil {
+				t.Error("the waiter got no room:", err)
+				entry <- 0
+				return
+			}
+			entry <- forcedCollections()
+			rel()
+		}()
+		time.Sleep(5 * time.Millisecond) // let the waiter queue
+		release()
+		release() // a second call changes nothing
+		if got := <-entry; got <= before {
+			t.Fatalf("forced collections: %d before the release, %d when the waiter got in; want a collection in between", before, got)
+		}
+	}
+}
+
+// AcquireCollected refuses like Acquire.
+func TestAcquireCollectedBusy(t *testing.T) {
+	g := login.NewGate(100)
+	rel, err := g.AcquireCollected(t.Context(), 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	if _, err := g.AcquireCollected(t.Context(), 1, 10*time.Millisecond); !errors.Is(err, login.ErrBusy) {
+		t.Errorf("error = %v, want ErrBusy", err)
 	}
 }

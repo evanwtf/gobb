@@ -700,7 +700,8 @@ func (s *Service) runJobs(ctx context.Context, c *clock, pw string, jobs []hashJ
 // 64 MiB hashes, the heap held three 64 MiB blocks where the gate allows two,
 // and the kernel killed a container under a 256 MiB cap. The collection is
 // cheap, because the memory of a hash holds no pointers: well under 1 ms with
-// two 64 MiB checks live. It runs inside the floor.
+// two 64 MiB checks live. It runs inside the floor. [Gate.AcquireCollected] does
+// the collection and the release.
 func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	if s.onAcquire != nil {
 		s.onAcquire(kib)
@@ -708,17 +709,7 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	if s.opt.Gate == nil {
 		return func() {}, nil
 	}
-	release, err := s.opt.Gate.Acquire(ctx, kib, s.GateWait)
-	if err != nil {
-		return nil, err
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			runtime.GC()
-			release()
-		})
-	}, nil
+	return s.opt.Gate.AcquireCollected(ctx, kib, s.GateWait)
 }
 
 func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time) (int64, int64, error) {

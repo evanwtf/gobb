@@ -275,39 +275,73 @@ func deref(p *int) any {
 
 func TestSettingsRights(t *testing.T) {
 	ctx := context.Background()
-	pool, _ := boardtest.Load(t, bundletest.Small())
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
-	g := asGuest(t, pool)
 
-	// A guest gets ErrForbidden from each function.
-	wantIs(t, board.SetTimezone(ctx, pool, g, "America/Chicago"), board.ErrForbidden, "SetTimezone by a guest")
-	wantIs(t, board.SetDateFormat(ctx, pool, g, "iso"), board.ErrForbidden, "SetDateFormat by a guest")
-	wantIs(t, board.SetAbout(ctx, pool, g, board.AboutChange{Location: ptr("x")}), board.ErrForbidden, "SetAbout by a guest")
-	wantIs(t, board.SetBirthday(ctx, pool, g, board.Birthday{Day: 1, Month: 1}, now), board.ErrForbidden, "SetBirthday by a guest")
-	_, err := board.SetAvatar(ctx, pool, g, "avatars/u1-0123456789abcdef.png")
-	wantIs(t, err, board.ErrForbidden, "SetAvatar by a guest")
-	_, err = board.RemoveAvatar(ctx, pool, g)
-	wantIs(t, err, board.ErrForbidden, "RemoveAvatar by a guest")
+	t.Run("guest", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		g := asGuest(t, pool)
+		wantIs(t, board.SetTimezone(ctx, pool, g, "America/Chicago"), board.ErrForbidden, "SetTimezone by a guest")
+		wantIs(t, board.SetDateFormat(ctx, pool, g, "iso"), board.ErrForbidden, "SetDateFormat by a guest")
+		wantIs(t, board.SetAbout(ctx, pool, g, board.AboutChange{Location: ptr("x")}), board.ErrForbidden, "SetAbout by a guest")
+		wantIs(t, board.SetBirthday(ctx, pool, g, board.Birthday{Day: 1, Month: 1}, now), board.ErrForbidden, "SetBirthday by a guest")
+		_, err := board.SetAvatar(ctx, pool, g, "avatars/u1-0123456789abcdef.png")
+		wantIs(t, err, board.ErrForbidden, "SetAvatar by a guest")
+		_, err = board.RemoveAvatar(ctx, pool, g)
+		wantIs(t, err, board.ErrForbidden, "RemoveAvatar by a guest")
+	})
 
-	// With the rights removed, the matching writes refuse and the others work.
-	denyOpts(t, pool, carol, 0, "account.profile", "account.avatar")
-	before := readSettings(t, pool, carol)
-	c := viewerFor(t, pool, carol)
-	wantIs(t, board.SetAbout(ctx, pool, c, board.AboutChange{Location: ptr("x")}), board.ErrForbidden, "SetAbout without account.profile")
-	wantIs(t, board.SetBirthday(ctx, pool, c, board.Birthday{Day: 1, Month: 1}, now), board.ErrForbidden, "SetBirthday without account.profile")
-	_, err = board.SetAvatar(ctx, pool, c, "avatars/u3-0123456789abcdef.png")
-	wantIs(t, err, board.ErrForbidden, "SetAvatar without account.avatar")
-	_, err = board.RemoveAvatar(ctx, pool, c)
-	wantIs(t, err, board.ErrForbidden, "RemoveAvatar without account.avatar")
-	if got := readSettings(t, pool, carol); !reflect.DeepEqual(got, before) {
-		t.Errorf("a refused write changed the row: %+v -> %+v", before, got)
-	}
-	if err := board.SetTimezone(ctx, pool, c, "America/Denver"); err != nil {
-		t.Errorf("SetTimezone without the account rights: %v", err)
-	}
-	if err := board.SetDateFormat(ctx, pool, c, "relative"); err != nil {
-		t.Errorf("SetDateFormat without the account rights: %v", err)
-	}
+	// Each right alone: with one removed, its writes refuse, and every other
+	// function still works.
+	t.Run("without account.profile", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		denyOpts(t, pool, carol, 0, "account.profile")
+		before := readSettings(t, pool, carol)
+		c := viewerFor(t, pool, carol)
+		wantIs(t, board.SetAbout(ctx, pool, c, board.AboutChange{Location: ptr("x")}), board.ErrForbidden, "SetAbout")
+		wantIs(t, board.SetBirthday(ctx, pool, c, board.Birthday{Day: 1, Month: 1}, now), board.ErrForbidden, "SetBirthday")
+		if got := readSettings(t, pool, carol); !reflect.DeepEqual(got, before) {
+			t.Errorf("a refused write changed the row: %+v -> %+v", before, got)
+		}
+		if err := board.SetTimezone(ctx, pool, c, "America/Denver"); err != nil {
+			t.Errorf("SetTimezone: %v", err)
+		}
+		if err := board.SetDateFormat(ctx, pool, c, "relative"); err != nil {
+			t.Errorf("SetDateFormat: %v", err)
+		}
+		old, err := board.SetAvatar(ctx, pool, c, "avatars/u3-0123456789abcdef.png")
+		if err != nil || old != "" {
+			t.Errorf("SetAvatar: %q, %v", old, err)
+		}
+		if old, err = board.RemoveAvatar(ctx, pool, c); err != nil || old == "" {
+			t.Errorf("RemoveAvatar: %q, %v", old, err)
+		}
+	})
+
+	t.Run("without account.avatar", func(t *testing.T) {
+		pool, _ := boardtest.Load(t, bundletest.Small())
+		denyOpts(t, pool, carol, 0, "account.avatar")
+		before := readSettings(t, pool, carol)
+		c := viewerFor(t, pool, carol)
+		_, err := board.SetAvatar(ctx, pool, c, "avatars/u3-0123456789abcdef.png")
+		wantIs(t, err, board.ErrForbidden, "SetAvatar")
+		_, err = board.RemoveAvatar(ctx, pool, c)
+		wantIs(t, err, board.ErrForbidden, "RemoveAvatar")
+		if got := readSettings(t, pool, carol); !reflect.DeepEqual(got, before) {
+			t.Errorf("a refused write changed the row: %+v -> %+v", before, got)
+		}
+		if err := board.SetTimezone(ctx, pool, c, "America/Denver"); err != nil {
+			t.Errorf("SetTimezone: %v", err)
+		}
+		if err := board.SetDateFormat(ctx, pool, c, "relative"); err != nil {
+			t.Errorf("SetDateFormat: %v", err)
+		}
+		if err := board.SetAbout(ctx, pool, c, board.AboutChange{Location: ptr("x")}); err != nil {
+			t.Errorf("SetAbout: %v", err)
+		}
+		if err := board.SetBirthday(ctx, pool, c, board.Birthday{Day: 1, Month: 1}, now); err != nil {
+			t.Errorf("SetBirthday: %v", err)
+		}
+	})
 }
 
 func TestSettingsAvatarPath(t *testing.T) {
@@ -336,7 +370,14 @@ func TestSettingsAvatarPath(t *testing.T) {
 		t.Errorf("avatar_path = %q after remove, want NULL", *got)
 	}
 	// A path outside avatars/ is a fault of the caller.
-	for _, bad := range []string{"", "x.png", "avatars/", "avatars/../etc/passwd", "/avatars/a.png", "avatars/a\x00.png", "avatars\\a.png"} {
+	for _, bad := range []string{
+		"", "x.png", "avatars/", "avatars/.", "avatars/..", "avatars/.x", "avatars/../etc/passwd",
+		"/avatars/a.png", "avatars//a.png", "avatars/a/", "avatars/a\x00.png", "avatars\\a.png",
+		"avatars/u3-0123456789abcdef.png/",
+		// A path that gobb would not make for this member.
+		"avatars/u4-0123456789abcdef.png", "avatars/u3-0123456789ABCDEF.png", "avatars/u3-0123456789abcde.png",
+		"avatars/u3-0123456789abcdef.gif", "avatars/other.png",
+	} {
 		if _, err := board.SetAvatar(ctx, pool, c, bad); err == nil {
 			t.Errorf("SetAvatar(%q) = nil, want an error", bad)
 		}

@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -81,6 +82,31 @@ func (g *Gate) Acquire(ctx context.Context, kib uint64, wait time.Duration) (rel
 	// The waiter may have been the one that held the line for those behind it.
 	g.wake()
 	return nil, cause
+}
+
+// AcquireCollected is [Gate.Acquire] with a release that runs a garbage
+// collection first, then gives the share back.
+//
+// The memory of a holder is garbage when the holder ends, and the runtime
+// collects it only after a later allocation, even under a memory limit. Without
+// the collection, the next holder's memory lands on top of that garbage: with
+// 64 MiB hashes, the heap held three 64 MiB blocks where the gate allows two,
+// and the kernel killed a container under a 256 MiB cap. A holder whose memory
+// is a large block of garbage at the end (a password hash, a decoded image) takes
+// its share with this method. The collection is cheap when the block holds no
+// pointers. Calling the release twice is safe.
+func (g *Gate) AcquireCollected(ctx context.Context, kib uint64, wait time.Duration) (release func(), err error) {
+	rel, err := g.Acquire(ctx, kib, wait)
+	if err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			runtime.GC()
+			rel()
+		})
+	}, nil
 }
 
 // fits returns how many holders of kib the gate runs at once. A cost above the

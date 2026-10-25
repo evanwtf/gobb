@@ -188,18 +188,45 @@ func nullZero(n int) any {
 	return n
 }
 
-// validAvatarPath reports whether p is a path that gobb makes: "avatars/" and a
-// file name of letters, digits, hyphens, dots and underscores, with no ".." and
-// no separator after the folder.
+// validAvatarPath reports whether p is a site path under avatars/: one or more
+// elements of letters, digits, hyphens, dots and underscores, separated by single
+// slashes, none empty and none starting with a dot (so no ".", no ".." and no
+// hidden file). Imported avatars keep the names of the converter, so this is the
+// general rule; SetAvatar asks for more.
 func validAvatarPath(p string) bool {
-	name, ok := strings.CutPrefix(p, "avatars/")
-	if !ok || name == "" || strings.Contains(name, "..") {
+	rest, ok := strings.CutPrefix(p, "avatars/")
+	if !ok || rest == "" {
 		return false
 	}
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.', r == '_':
-		default:
+	for _, el := range strings.Split(rest, "/") {
+		if el == "" || el[0] == '.' {
+			return false
+		}
+		for _, r := range el {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.', r == '_':
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// ownAvatarPath reports whether p is a path that gobb makes for member userID:
+// "avatars/u{id}-{16 lowercase hex}.png". A member can only store a file of his or
+// her own, because the replaced file is deleted after the commit.
+func ownAvatarPath(userID int64, p string) bool {
+	rest, ok := strings.CutPrefix(p, fmt.Sprintf("avatars/u%d-", userID))
+	if !ok {
+		return false
+	}
+	hex, ok := strings.CutSuffix(rest, ".png")
+	if !ok || len(hex) != 16 {
+		return false
+	}
+	for _, r := range hex {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 			return false
 		}
 	}
@@ -208,14 +235,14 @@ func validAvatarPath(p string) bool {
 
 // SetAvatar stores path as the avatar of member v and returns the path it
 // replaced ("" when there was none). It needs account.avatar. path is a site path
-// that gobb made ("avatars/..."); any other value is an error of the caller. The
-// caller deletes the old file after the commit, so that a failed write never
-// loses the current avatar.
+// that gobb made for this member ("avatars/u{id}-{16 hex}.png"); any other value
+// is an error of the caller. The caller deletes the old file after the commit, so
+// that a failed write never loses the current avatar.
 func SetAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer, path string) (old string, err error) {
 	if err := mayAccount(v, "account.avatar"); err != nil {
 		return "", err
 	}
-	if !validAvatarPath(path) {
+	if !validAvatarPath(path) || !ownAvatarPath(v.UserID, path) {
 		return "", fmt.Errorf("board: %q is not an avatar path", path)
 	}
 	return swapAvatar(ctx, pool, v, path)

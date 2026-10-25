@@ -13,6 +13,7 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -192,30 +193,104 @@ func pngHeader(w, h uint32) []byte {
 }
 
 func TestMakeRefusesHugeBeforeDecode(t *testing.T) {
-	g := login.NewGate(1) // a budget of 1 KiB: any acquire for a decode would wait
-	for _, d := range [][2]uint32{{50000, 50000}, {8001, 10}, {10, 8001}, {5000, 5000}} {
+	// The gate is large and fully held, with a wait that would show: a request
+	// that gets past the checks of the header waits for the gate and gives
+	// ErrBusy, and one that the limits refuse gives ErrDimensions at once. So the
+	// answers tell the limits apart from the budget, and show that a refusal
+	// takes nothing from the gate.
+	g := login.NewGate(1 << 20) // 1 GiB
+	rel, err := g.Acquire(context.Background(), 1<<20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	const longWait = 250 * time.Millisecond
+	for _, d := range [][2]uint32{
+		{50000, 50000}, // a header of under 1 KB for 2.5 billion pixels
+		{8001, 10},     // one over the side limit
+		{10, 8001},
+		{4001, 4000}, // 16,004,000 pixels: just over the pixel limit
+		{8000, 2001}, // 16,008,000
+	} {
 		data := pngHeader(d[0], d[1])
 		if len(data) >= 1024 {
 			t.Fatalf("test input is %d bytes", len(data))
 		}
-		_, err := avatar.Make(context.Background(), bytes.NewReader(data), g, wait)
+		start := time.Now()
+		_, err := avatar.Make(context.Background(), bytes.NewReader(data), g, longWait)
 		if !errors.Is(err, avatar.ErrDimensions) {
 			t.Errorf("%dx%d: error = %v, want ErrDimensions", d[0], d[1], err)
 		}
+		if took := time.Since(start); took > longWait/2 {
+			t.Errorf("%dx%d: took %v, it waited for the gate", d[0], d[1], took)
+		}
 	}
-	// The limits themselves pass the size check; the file has no pixels, so the
-	// decode then fails as a format error.
-	big := login.NewGate(1 << 20)
-	_, err := avatar.Make(context.Background(), bytes.NewReader(pngHeader(4000, 4000)), big, wait)
-	if errors.Is(err, avatar.ErrDimensions) {
-		t.Errorf("4000x4000 (16,000,000 pixels) = %v, want it past the size check", err)
+	// The limits themselves pass the checks of the header, so Make waits for the
+	// gate and the wait ends busy.
+	for _, d := range [][2]uint32{{8000, 2000}, {4000, 4000}, {8000, 1}, {1, 8000}} {
+		_, err := avatar.Make(context.Background(), bytes.NewReader(pngHeader(d[0], d[1])), g, 10*time.Millisecond)
+		if !errors.Is(err, login.ErrBusy) {
+			t.Errorf("%dx%d: error = %v, want ErrBusy (past the limits, no room in the gate)", d[0], d[1], err)
+		}
 	}
-	// Nothing is held after the refusals: a full-budget acquire succeeds at once.
-	rel, err := g.Acquire(context.Background(), 1, 0)
-	if err != nil {
+	// With the gate free the same headers get as far as the decode, and fail there.
+	rel()
+	_, err = avatar.Make(context.Background(), bytes.NewReader(pngHeader(4000, 4000)), g, wait)
+	if !errors.Is(err, avatar.ErrFormat) {
+		t.Errorf("4000x4000, free gate: error = %v, want ErrFormat (no pixels)", err)
+	}
+	// Nothing is held after the refusals.
+	if rel, err = g.Acquire(context.Background(), 1<<20, 0); err != nil {
 		t.Fatalf("the gate is held after the refusals: %v", err)
 	}
-	rel()
+}
+
+// A side of 1 pixel is legal: the center square is 1 x 1 and grows to 128 x 128.
+func TestMakeThinImages(t *testing.T) {
+	for _, d := range [][2]int{{8000, 1}, {1, 8000}, {2, 8000}} {
+		out, err := avatar.Make(context.Background(), bytes.NewReader(pngBytes(t, d[0], d[1], color.RGBA{7, 8, 9, 255})), gate(), wait)
+		if err != nil {
+			t.Fatalf("%dx%d: %v", d[0], d[1], err)
+		}
+		img := decode(t, out)
+		if b := img.Bounds(); b.Dx() != 128 || b.Dy() != 128 {
+			t.Errorf("%dx%d: output is %v", d[0], d[1], b)
+		}
+		if r, g, b, _ := img.At(100, 20).RGBA(); r>>8 != 7 || g>>8 != 8 || b>>8 != 9 {
+			t.Errorf("%dx%d: color = %d,%d,%d", d[0], d[1], r>>8, g>>8, b>>8)
+		}
+	}
+}
+
+// The gate share comes back only after a garbage collection: the decoded image
+// is garbage when Make ends, and the next holder (a sign-in uses the same gate)
+// would otherwise allocate on top of it. The ordering of the collection and the
+// release is tested on the gate (login.TestAcquireCollectedCollectsBeforeRelease);
+// this test shows that Make takes its share through it, on the way out of a
+// success and of a failed decode.
+func TestMakeCollectsBeforeRelease(t *testing.T) {
+	forced := func() uint32 {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return m.NumForcedGC
+	}
+	g := login.NewGate(1 << 20)
+	for name, data := range map[string][]byte{
+		"success":       pngBytes(t, 30, 30, color.White),
+		"failed decode": pngHeader(100, 100),
+	} {
+		before := forced()
+		_, _ = avatar.Make(context.Background(), bytes.NewReader(data), g, wait)
+		if got := forced(); got <= before {
+			t.Errorf("%s: forced collections %d before, %d after; want one before the release", name, before, got)
+		}
+	}
+	// A refusal before the gate takes nothing and needs no collection.
+	before := forced()
+	_, _ = avatar.Make(context.Background(), bytes.NewReader([]byte("text")), g, wait)
+	if got := forced(); got != before {
+		t.Errorf("a refused file ran %d collections", got-before)
+	}
 }
 
 // jpegHeader builds a start of image, a JFIF segment (the decoder returns the
@@ -249,7 +324,7 @@ func TestMakeRefusesOverBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(4000, 4000)), prod, time.Minute)
+	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(4000, 4000)), prod, 250*time.Millisecond)
 	if !errors.Is(err, avatar.ErrDimensions) {
 		t.Errorf("4000x4000 JPEG, gate full: error = %v, want ErrDimensions", err)
 	}
