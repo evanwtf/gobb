@@ -252,7 +252,12 @@ no member has exits 1 with `no member named <name>` on stderr, and changes nothi
 Each command that changes something writes one row to the moderation log (`user.reset_password`,
 `user.ban`, `user.unban`) with no actor and `{"via":"cli"}` as details. Messages go to
 stderr. The exit code is 0 on success, 1 on an unknown name or a failure, and 2 on a
-wrong call. A failed command changes nothing.
+wrong call. A failed command changes nothing, with one exception: if `reset-password`
+cannot print the new password (the write to stdout fails), the reset has committed and
+the old password no longer works. The command exits 1 and says so on stderr. Run it
+again to get a new password. On success, every command logs the stored username and
+the ID of the member it matched on stderr, so a name that the fold matched to another
+member shows at once.
 
 ### Old addresses
 

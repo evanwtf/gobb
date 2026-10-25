@@ -67,27 +67,32 @@ func newPassword() (string, error) {
 	return string(out), nil
 }
 
-// UserByName returns the ID of the member whose username_clean equals
-// [account.CleanUsername] of name, whatever the state of the account. No such
-// member, and a name that no username can be (not valid UTF-8, or with a NUL),
-// give [ErrNotFound].
-func UserByName(ctx context.Context, q db.Querier, name string) (int64, error) {
+// UserByName returns the ID and the stored username of the member whose
+// username_clean equals [account.CleanUsername] of name, whatever the state of
+// the account. The username lets a command show which member the folded name
+// reached. No such member, and a name that no username can be (not valid UTF-8,
+// or with a NUL), give [ErrNotFound]. It takes no lock: it runs outside the
+// transaction of the write that follows, which locks the row.
+func UserByName(ctx context.Context, q db.Querier, name string) (int64, string, error) {
 	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) {
-		return 0, ErrNotFound
+		return 0, "", ErrNotFound
 	}
 	clean := account.CleanUsername(name)
 	if clean == "" {
-		return 0, ErrNotFound
+		return 0, "", ErrNotFound
 	}
-	var id int64
-	err := q.QueryRow(ctx, `select id from users where username_clean = $1`, clean).Scan(&id)
+	var (
+		id       int64
+		username string
+	)
+	err := q.QueryRow(ctx, `select id, username from users where username_clean = $1`, clean).Scan(&id, &username)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, ErrNotFound
+		return 0, "", ErrNotFound
 	}
 	if err != nil {
-		return 0, fmt.Errorf("board: find member %q: %w", clean, err)
+		return 0, "", fmt.Errorf("board: find member %q: %w", clean, err)
 	}
-	return id, nil
+	return id, username, nil
 }
 
 // lockUser takes the user row FOR UPDATE and returns [ErrNotFound] when there is

@@ -333,3 +333,26 @@ func TestResetPasswordWhenStdoutFails(t *testing.T) {
 		t.Errorf("sign-in with the old password = %v, want ErrWrong", err)
 	}
 }
+
+// TestUserCommandsLogTheMatchedMember covers T6-M3. The name that the administrator
+// types is folded (case, width, invisible characters), so the member it reaches
+// may not be the one in mind. Each command logs the stored username and the ID on
+// stderr, so the administrator sees a wrong match at once.
+func TestUserCommandsLogTheMatchedMember(t *testing.T) {
+	userBoard(t)
+	for _, args := range [][]string{
+		{"user", "ban", "  ALICE ", "-reason", "x"},
+		{"user", "ban", "ALICE"},             // already banned: a no-op
+		{"user", "unban", "Alice"},           // lifts the ban
+		{"user", "unban", "alice"},           // no ban: a no-op
+		{"user", "reset-password", "a​lice"}, // a zero-width space is folded away
+	} {
+		code, _, errOut := runUser(t, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d\n%s", args, code, errOut)
+		}
+		if !strings.Contains(errOut, "username=alice") || !strings.Contains(errOut, "user=1") {
+			t.Errorf("%v: stderr = %q, want the matched username=alice and user=1", args, errOut)
+		}
+	}
+}

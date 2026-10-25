@@ -26,7 +26,10 @@ const userUsage = `usage: gobb user reset-password <name>
 // reset-password, as one line. Every message goes to stderr through slog, and no
 // message, error or log row holds the password. The exit code is 0 on success,
 // 1 on an unknown name or any failure, and 2 on a usage error. A failure changes
-// nothing.
+// nothing, with one exception: when reset-password cannot write the password to
+// stdout, the reset has committed and stays. The command exits 1, and the
+// administrator runs it again to get a new password. Every message names the
+// stored username and the ID of the member that the typed name reached.
 func user(ctx context.Context, args []string) error {
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	if len(args) == 0 {
@@ -100,7 +103,7 @@ func execUser(ctx context.Context, log *slog.Logger, sub, name, reason string) e
 		return err
 	}
 	defer pool.Close()
-	id, err := board.UserByName(ctx, pool, name)
+	id, matched, err := board.UserByName(ctx, pool, name)
 	if errors.Is(err, board.ErrNotFound) {
 		log.Error(fmt.Sprintf("no member named %s", name))
 		return errReported
@@ -108,6 +111,9 @@ func execUser(ctx context.Context, log *slog.Logger, sub, name, reason string) e
 	if err != nil {
 		return err
 	}
+	// The name that was typed is folded, so the member it reached may not be the one
+	// in mind: every message names the stored username and the ID.
+	log = log.With("username", matched, "user", id)
 	now := time.Now()
 	switch sub {
 	case "reset-password":
@@ -115,7 +121,7 @@ func execUser(ctx context.Context, log *slog.Logger, sub, name, reason string) e
 		if err != nil {
 			return err
 		}
-		log.Info("password reset; the member's sessions are ended", "user", id)
+		log.Info("password reset; the member's sessions are ended")
 		// The one line on stdout. If the write fails, the password is changed and
 		// lost: say so, and the administrator runs the command again.
 		if _, err := fmt.Fprintln(stdout, pw); err != nil {
@@ -124,23 +130,23 @@ func execUser(ctx context.Context, log *slog.Logger, sub, name, reason string) e
 	case "ban":
 		err := board.BanUser(ctx, pool, id, reason, now)
 		if errors.Is(err, board.ErrAlreadyBanned) {
-			log.Info("the member is already banned; nothing changed", "user", id)
+			log.Info("the member is already banned; nothing changed")
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		log.Info("member banned; their sessions are ended", "user", id)
+		log.Info("member banned; their sessions are ended")
 	case "unban":
 		err := board.UnbanUser(ctx, pool, id, now)
 		if errors.Is(err, board.ErrNotBanned) {
-			log.Info("the member has no ban; nothing changed", "user", id)
+			log.Info("the member has no ban; nothing changed")
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		log.Info("member unbanned", "user", id)
+		log.Info("member unbanned")
 	}
 	return nil
 }

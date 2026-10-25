@@ -61,13 +61,13 @@ func TestUserByName(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	for _, name := range []string{"alice", "  ALICE ", "Alice"} {
-		if id, err := board.UserByName(ctx, pool, name); err != nil || id != alice {
-			t.Errorf("UserByName(%q) = %d, %v, want alice", name, id, err)
+		if id, username, err := board.UserByName(ctx, pool, name); err != nil || id != alice || username != "alice" {
+			t.Errorf("UserByName(%q) = %d, %q, %v, want alice", name, id, username, err)
 		}
 	}
 	for _, name := range []string{"nobody", "", "alice\x00", "\xff\xfe"} {
-		if id, err := board.UserByName(ctx, pool, name); !errors.Is(err, board.ErrNotFound) || id != 0 {
-			t.Errorf("UserByName(%q) = %d, %v, want ErrNotFound", name, id, err)
+		if id, username, err := board.UserByName(ctx, pool, name); !errors.Is(err, board.ErrNotFound) || id != 0 || username != "" {
+			t.Errorf("UserByName(%q) = %d, %q, %v, want ErrNotFound", name, id, username, err)
 		}
 	}
 }
