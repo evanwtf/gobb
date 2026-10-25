@@ -36,6 +36,12 @@ func NewGate(budgetKiB uint64) *Gate {
 	return &Gate{budget: budgetKiB}
 }
 
+// Budget returns the memory that the gate lets holders use at one time, in KiB.
+// It is the value that [NewGate] got, and it does not change while the gate is in
+// use. A caller that knows a cost can never fit (a cost above Budget runs alone, as
+// the whole budget) may refuse the work before it calls Acquire.
+func (g *Gate) Budget() uint64 { return g.budget }
+
 // Acquire waits up to wait for kib of the budget. A cost above the budget counts
 // as the whole budget, so that check runs alone. On success it returns a release
 // function, which gives the memory back; calling it twice is safe. When the wait

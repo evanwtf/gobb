@@ -205,7 +205,8 @@ func TestMakeRefusesHugeBeforeDecode(t *testing.T) {
 	}
 	// The limits themselves pass the size check; the file has no pixels, so the
 	// decode then fails as a format error.
-	_, err := avatar.Make(context.Background(), bytes.NewReader(pngHeader(4000, 4000)), g, wait)
+	big := login.NewGate(1 << 20)
+	_, err := avatar.Make(context.Background(), bytes.NewReader(pngHeader(4000, 4000)), big, wait)
 	if errors.Is(err, avatar.ErrDimensions) {
 		t.Errorf("4000x4000 (16,000,000 pixels) = %v, want it past the size check", err)
 	}
@@ -217,10 +218,80 @@ func TestMakeRefusesHugeBeforeDecode(t *testing.T) {
 	rel()
 }
 
+// jpegHeader builds a start of image, a JFIF segment (the decoder returns the
+// size after the frame header only when it saw one) and a progressive frame header
+// with three components (4:2:0) that declares w x h, and no more.
+func jpegHeader(w, h uint16) []byte {
+	b := []byte{0xFF, 0xD8,
+		0xFF, 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+		0xFF, 0xC2, 0, 17, 8, byte(h >> 8), byte(h), byte(w >> 8), byte(w), 3,
+		1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1}
+	return b
+}
+
+// pngHeaderDepth is pngHeader with a bit depth and a color type.
+func pngHeaderDepth(w, h uint32, depth, colorType byte) []byte {
+	b := pngHeader(w, h)
+	// signature 8 + length 4 + type 4 + width 4 + height 4 = depth at 24.
+	b[24], b[25] = depth, colorType
+	binary.BigEndian.PutUint32(b[29:], crc32.ChecksumIEEE(b[12:29]))
+	return b
+}
+
+// Ruling R12: the charge is per format, and a decode that the budget cannot hold
+// is refused, not run alone.
+func TestMakeRefusesOverBudget(t *testing.T) {
+	// A progressive JPEG header of 4000 x 4000 charges 12 bytes a pixel, about
+	// 187,500 KiB + 1,024, over the 131,072 KiB production budget. A held gate shows
+	// that Make does not wait for it: the answer is ErrDimensions, not ErrBusy.
+	prod := login.NewGate(128 * 1024)
+	rel, err := prod.Acquire(context.Background(), 128*1024, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(4000, 4000)), prod, time.Minute)
+	if !errors.Is(err, avatar.ErrDimensions) {
+		t.Errorf("4000x4000 JPEG, gate full: error = %v, want ErrDimensions", err)
+	}
+	rel()
+	// The same on an idle gate: no acquire, so the gate is free afterward.
+	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(4000, 4000)), prod, wait)
+	if !errors.Is(err, avatar.ErrDimensions) {
+		t.Errorf("4000x4000 JPEG, idle gate: error = %v, want ErrDimensions", err)
+	}
+	if rel, err = prod.Acquire(context.Background(), 128*1024, 0); err != nil {
+		t.Errorf("the gate is held after a refusal: %v", err)
+	} else {
+		rel()
+	}
+	// A JPEG of 2000 x 2000 charges 12*4M/1024 + 1024 = 47,898 KiB: under the budget.
+	_, err = avatar.Make(context.Background(), bytes.NewReader(jpegHeader(2000, 2000)), prod, wait)
+	if errors.Is(err, avatar.ErrDimensions) {
+		t.Errorf("2000x2000 JPEG: error = %v, want it past the charge check", err)
+	}
+
+	// 2000 x 2000 PNG: 16 bits charge 8 bytes a pixel (32,274 KiB), 8 bits charge
+	// 4 (16,649 KiB). A gate of 20,000 KiB refuses the first and admits the second.
+	small := login.NewGate(20000)
+	_, err = avatar.Make(context.Background(), bytes.NewReader(pngHeaderDepth(2000, 2000, 16, 2)), small, wait)
+	if !errors.Is(err, avatar.ErrDimensions) {
+		t.Errorf("16-bit PNG: error = %v, want ErrDimensions", err)
+	}
+	_, err = avatar.Make(context.Background(), bytes.NewReader(pngHeaderDepth(2000, 2000, 8, 2)), small, wait)
+	if !errors.Is(err, avatar.ErrFormat) {
+		t.Errorf("8-bit PNG: error = %v, want ErrFormat (past the charge check, no pixels)", err)
+	}
+	// A 16-bit gray PNG is charged like any 16-bit PNG (the decoder gives 16 bits).
+	_, err = avatar.Make(context.Background(), bytes.NewReader(pngHeaderDepth(2000, 2000, 16, 0)), small, wait)
+	if !errors.Is(err, avatar.ErrDimensions) {
+		t.Errorf("16-bit gray PNG: error = %v, want ErrDimensions", err)
+	}
+}
+
 // A decode that does not fit the gate in the wait is busy, not an error of the file.
 func TestMakeBusy(t *testing.T) {
-	g := login.NewGate(1000)
-	rel, err := g.Acquire(context.Background(), 1000, 0)
+	g := login.NewGate(2048)
+	rel, err := g.Acquire(context.Background(), 2048, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,8 +468,8 @@ func TestMakeAnimatedGIF(t *testing.T) {
 
 // A context that has ended stops the wait for the gate.
 func TestMakeContext(t *testing.T) {
-	g := login.NewGate(1000)
-	rel, _ := g.Acquire(context.Background(), 1000, 0)
+	g := login.NewGate(2048)
+	rel, _ := g.Acquire(context.Background(), 2048, 0)
 	defer rel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

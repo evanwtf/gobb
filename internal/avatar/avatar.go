@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -76,9 +77,11 @@ func sniff(b []byte) format {
 //     anything but PNG, JPEG and GIF (WebP and SVG included).
 //  3. It reads the size from the header only, and returns [ErrDimensions] when a
 //     side is over [MaxSide] or the pixels are over [MaxPixels].
-//  4. It takes width x height x 4 / 1024 + 1024 KiB from gate, waiting up to
-//     wait, and returns [login.ErrBusy] when the wait ends (or the error of ctx
-//     when ctx ends first). It gives the memory back before it returns.
+//  4. It works out the memory of the decode (see [chargeKiB]) and returns
+//     [ErrDimensions] when that is more than the whole budget of gate. Else it
+//     takes the memory from gate, waiting up to wait, and returns [login.ErrBusy]
+//     when the wait ends (or the error of ctx when ctx ends first). It gives the
+//     memory back before it returns.
 //  5. It decodes the image (the first frame of a GIF), crops the center square,
 //     and resamples it to [Size] x [Size]: an area average when it shrinks, the
 //     nearest pixel when it grows.
@@ -114,7 +117,12 @@ func Make(ctx context.Context, r io.Reader, gate *login.Gate, wait time.Duration
 		return nil, ErrDimensions
 	}
 
-	kib := uint64(cfg.Width)*uint64(cfg.Height)*4/1024 + 1024
+	kib := chargeKiB(f, cfg)
+	if kib > gate.Budget() {
+		// The gate would run this decode alone, and it needs more than the budget:
+		// the process could run out of memory. Refuse it before any allocation.
+		return nil, ErrDimensions
+	}
 	release, err := gate.Acquire(ctx, kib, wait)
 	if err != nil {
 		return nil, err
@@ -144,6 +152,27 @@ func Make(ctx context.Context, r io.Reader, gate *login.Gate, wait time.Duration
 		return nil, fmt.Errorf("avatar: encode the result: %w", err)
 	}
 	return out.Bytes(), nil
+}
+
+// chargeKiB is the memory that the decode of an image needs, in KiB, worked out
+// from the header: 1024 KiB, plus a number of bytes for each pixel that depends on
+// what the decoder holds.
+//
+//   - JPEG: 12. A progressive file keeps 32-bit coefficients for three components.
+//   - PNG: 8 when the decoder gives 16 bits a sample (a 16-bit file), else 4.
+//   - GIF: 4.
+func chargeKiB(f format, cfg image.Config) uint64 {
+	perPixel := uint64(4)
+	switch f {
+	case fmtJPEG:
+		perPixel = 12
+	case fmtPNG:
+		switch cfg.ColorModel {
+		case color.Gray16Model, color.RGBA64Model, color.NRGBA64Model:
+			perPixel = 8
+		}
+	}
+	return uint64(cfg.Width)*uint64(cfg.Height)*perPixel/1024 + 1024
 }
 
 // span is the share of one source pixel in up to two result pixels.

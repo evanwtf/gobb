@@ -47,7 +47,10 @@
   `avatar.Make` turns an upload into a new 128 x 128 PNG. It reads at most 1 MiB, takes
   the format from the first bytes (PNG, JPEG or GIF; WebP is refused), reads the size
   from the header and refuses more than 8,000 pixels a side or 16,000,000 in all before
-  it decodes, takes the decode's memory from the login gate, decodes the first frame,
+  it decodes, charges the decode's memory to the login gate by format (JPEG 12 bytes a
+  pixel, PNG 8 for a 16-bit file and 4 otherwise, GIF 4, plus 1 MiB) and refuses with
+  the size error a decode that is more than the whole budget (`Gate.Budget` is new), so
+  none runs alone and breaks the memory limit of the container; it decodes the first frame,
   crops the center square, and resamples it (area average to shrink, nearest pixel to
   grow). Only pixels reach the output, so metadata and trailing bytes do not survive.
   `FuzzMake` joins the CI fuzz job.

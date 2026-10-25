@@ -153,7 +153,7 @@ func TestAboutRules(t *testing.T) {
 		{"website userinfo", board.AboutChange{Website: ptr("https://u:p@example.org/")}, "website", siteForm},
 		{"website space", board.AboutChange{Website: ptr("https://exa mple.org/")}, "website", siteForm},
 		{"website no host", board.AboutChange{Website: ptr("https:///x")}, "website", siteForm},
-		{"website 201 bytes", board.AboutChange{Website: ptr("https://example.org/" + strings.Repeat("a", 181))}, "website", siteForm},
+		{"website 201 bytes", board.AboutChange{Website: ptr("https://example.org/" + strings.Repeat("a", 181))}, "website", "Use an address of at most 200 characters."},
 		// A refusal in one field stops the whole change.
 		{"good then bad", board.AboutChange{Location: ptr("Changed"), Website: ptr("nope")}, "website", siteForm},
 	}

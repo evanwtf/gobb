@@ -182,3 +182,22 @@ func TestGateFairness(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Budget returns the budget the gate was made with, in KiB, whatever is held.
+func TestGateBudget(t *testing.T) {
+	g := login.NewGate(100)
+	if got := g.Budget(); got != 100 {
+		t.Errorf("Budget() = %d, want 100", got)
+	}
+	rel, err := g.Acquire(t.Context(), 60, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	if got := g.Budget(); got != 100 {
+		t.Errorf("Budget() with 60 held = %d, want 100", got)
+	}
+	if got := login.NewGate(login.DefaultBudgetKiB).Budget(); got != login.DefaultBudgetKiB {
+		t.Errorf("Budget() = %d, want %d", got, login.DefaultBudgetKiB)
+	}
+}

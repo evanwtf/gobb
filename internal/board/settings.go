@@ -23,6 +23,7 @@ const (
 	msgLong200    = "Use at most 200 characters."
 	msgOneLine    = "Use one line of plain text."
 	msgWebsite    = "Enter an address that starts with https:// or http://."
+	msgWebLong    = "Use an address of at most 200 characters."
 	msgBdayPair   = "Pick both a day and a month, or neither."
 	msgBdayYear   = "A year needs a day and a month."
 	msgBdayEarly  = "The earliest year you can pick is 1900."
@@ -114,8 +115,7 @@ func SetAbout(ctx context.Context, pool *pgxpool.Pool, v Viewer, c AboutChange) 
 		case err == nil:
 		case errors.Is(err, account.ErrTooLong):
 			if f.name == "website" {
-				// A website over its byte limit is a malformed address to the member.
-				return inputError(f.name, msgWebsite)
+				return inputError(f.name, msgWebLong)
 			}
 			return inputError(f.name, f.msgLong)
 		case errors.Is(err, account.ErrWebsite) || f.name == "website":
