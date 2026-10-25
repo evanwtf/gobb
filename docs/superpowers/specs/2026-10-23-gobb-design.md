@@ -125,7 +125,8 @@ The build fails, even if it runs, if any of these happen:
 - Register and verify email (switched on in release 2; section 17), log in with
   username or email **(designer's call)**, log out, reset password by email.
 - Edit profile: email (re-verified), password, avatar (upload), signature, time zone,
-  color scheme.
+  date format, color scheme, and "About you": location, occupation, interests, website
+  and birthday.
 
 **Posting**
 
@@ -703,8 +704,20 @@ designer's call):
   - the read side (Plan 3);
   - posting: a new topic, a reply, a quote, and the edit and delete of one's own posts;
   - the profile: change the password, the email address and the signature, and pick a
-    color scheme. Added by the owner on 2026-10-25: set the time zone, and upload,
-    replace or remove the avatar;
+    color scheme. Added by the owner on 2026-10-25:
+    - the time zone;
+    - the date format: the current one ("Oct 25, 2026, 5:07 pm"), relative ("just
+      now", "92 seconds ago", "98 minutes ago", "39 hours ago", "96 days ago", "14
+      months ago", "3 years ago"), or ISO 8601 in the member's zone with the offset
+      ("2026-10-25T17:07:00-04:00"). Guests see the current one;
+    - the avatar: upload, replace or remove;
+    - "About you": location, occupation, interests and website, shown on the profile.
+      A website is `http` or `https` only, and its link carries `rel="nofollow ugc"`;
+    - the birthday: day and month, and the year if the member wants the age shown. A
+      year later than the current year minus 19 is refused: the first board is not
+      for children. The profile shows the age when the year is set, and the board
+      index lists the birthdays of the day;
+    - links to the account page and to the messages in the header;
   - private messages, added by the owner on 2026-10-25: the inbox and the sent list,
     with the imported messages; send, reply and quote, to one or more members; delete a
     message from one's own view; and an unread count in the header;
@@ -717,9 +730,16 @@ designer's call):
   Sign-up stays closed, as it is on the first board today.
 
   **On cutover day, members keep what they use (owner, 2026-10-25):** their settings
-  and their message history. Release 1 leaves out, on purpose, what the first board's
-  members rarely or never changed: display options, a date format, privacy switches,
-  message drafts, folders and rules, and email notices.
+  and their message history.
+
+  **Every imported setting is one the member can change (owner, 2026-10-25).** A
+  per-user setting that changes what a member sees comes into gobb only with a page
+  where the member changes it. A setting with no such page stays out of the bundle,
+  and the member gets gobb's default. For the first board, the bundle leaves out
+  display options, posting defaults, privacy and email switches, topic watches,
+  bookmarks, notification settings, message drafts, folders and rules, and the
+  memberships of groups that members join freely and that grant no rights. A later
+  feature that brings one back brings its page with it.
 
   **Cutover is done when (owner):**
   - gobb serves the board's website;
