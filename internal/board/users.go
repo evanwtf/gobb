@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -114,6 +115,12 @@ func Profile(ctx context.Context, q db.Querier, v Viewer, userID int64, now time
 	if err != nil {
 		return ProfilePage{}, fmt.Errorf("board: read profile %d: %w", userID, err)
 	}
+	// An import stores the About text as given, so a field of white space only
+	// must read as empty.
+	out.Location = strings.TrimSpace(out.Location)
+	out.Occupation = strings.TrimSpace(out.Occupation)
+	out.Interests = strings.TrimSpace(out.Interests)
+	out.Website = strings.TrimSpace(out.Website)
 	if bday != nil && bmon != nil {
 		y, m, d := calendarDay(v, now)
 		out.Age = ageOn(*bday, *bmon, byear, y, m, d)

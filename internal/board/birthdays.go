@@ -72,8 +72,8 @@ func Birthdays(ctx context.Context, q db.Querier, v Viewer, now time.Time) ([]Bi
 		return nil, nil
 	}
 	y, m, d := calendarDay(v, now)
-	// On 28 February of a year with no 29 February, the 29th is also today.
-	leapDay := m == time.February && d == 28 && !isLeap(y)
+	// A 29 February birthday is also today when [birthdayIn] puts it on d.
+	leapDay := m == time.February && d != 29 && birthdayIn(29, 2, y) == d
 	rows, err := q.Query(ctx, `
 select id, username, birth_day, birth_month, birth_year
   from users

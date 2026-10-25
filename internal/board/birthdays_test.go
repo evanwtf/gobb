@@ -197,3 +197,40 @@ func TestBirthdaysLeapDay(t *testing.T) {
 		t.Errorf("age on 1 Mar 2027 = %d, want 27", got)
 	}
 }
+
+// A viewer zone behind UTC sees the day before: 03:00 UTC on 14 March 2027 is
+// the evening of 13 March in Los Angeles.
+func TestBirthdaysZoneBehindUTC(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	la := memberOn(t, pool, 2, "bob")
+	la.Loc, _ = time.LoadLocation("America/Los_Angeles")
+	now := time.Date(2027, 3, 14, 3, 0, 0, 0, time.UTC)
+
+	p, err := board.Profile(ctx, pool, la, 1, now)
+	if err != nil || p.Age == nil || *p.Age != 42 {
+		t.Errorf("alice Age = %v, %v; want 42", p.Age, err)
+	}
+	rows, err := board.Birthdays(ctx, pool, la, now)
+	if err != nil || len(rows) != 0 {
+		t.Errorf("Birthdays = %+v, %v; want none", rows, err)
+	}
+}
+
+// An import stores the About text as given. A field of white space only,
+// including a no-break space, reads as empty, and other text has no edge space.
+func TestProfileTrimsAboutText(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	bob := memberOn(t, pool, 2, "bob")
+	if _, err := pool.Exec(ctx, `update users set location = '   ', occupation = E'\u00a0', interests = E' \u00a0chess\t ' where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	p, err := board.Profile(ctx, pool, bob, 3, time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Location != "" || p.Occupation != "" || p.Interests != "chess" {
+		t.Errorf("about = %q %q %q", p.Location, p.Occupation, p.Interests)
+	}
+}

@@ -71,6 +71,18 @@ func TestProfileAboutEscapes(t *testing.T) {
 	}
 }
 
+func TestProfileBlankAboutShowsNoRow(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), clockAt(2026, 10, 25))
+	exec(t, pool, `update users set location = '   ', occupation = E'\u00a0', interests = '' where id = 3`)
+	bob := signIn(t, h, "bob", testPassword)
+	page := bodyOf(t, getAs(t, h, "/u/3", bob))
+	for _, no := range []string{"<dt>Location</dt>", "<dt>Occupation</dt>", "<dt>Interests</dt>"} {
+		if strings.Contains(page, no) {
+			t.Errorf("/u/3 shows %q for a blank field", no)
+		}
+	}
+}
+
 func TestProfileAge(t *testing.T) {
 	for _, c := range []struct {
 		y    int
@@ -157,6 +169,18 @@ func TestIndexBirthdaysLeapDay(t *testing.T) {
 	}
 }
 
+// The link keeps the stored address; only its text drops the format characters.
+func TestWebsiteLinkKeepsHref(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), clockAt(2026, 10, 25))
+	exec(t, pool, `update users set website = 'https://example.com/%E2%80%AEtxt.exe' where id = 1`)
+	bob := signIn(t, h, "bob", testPassword)
+	page := bodyOf(t, getAs(t, h, "/u/1", bob))
+	want := `<a href="https://example.com/%E2%80%AEtxt.exe" rel="nofollow ugc noopener">example.com/txt.exe</a>`
+	if !strings.Contains(page, want) {
+		t.Errorf("/u/1 lacks %q", want)
+	}
+}
+
 func TestWebsiteText(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://example.com/alice":      "example.com/alice",
@@ -164,6 +188,9 @@ func TestWebsiteText(t *testing.T) {
 		"http://example.com/a/b/":        "example.com/a/b/",
 		"https://example.com/p?q=1#frag": "example.com/p",
 		"not a url":                      "not a url",
+		// Format characters (bidirectional controls) stay out of the text.
+		"https://example.com/%E2%80%AEtxt.exe": "example.com/txt.exe",
+		"https://example.com/a%E2%80%8Eb":      "example.com/ab",
 	} {
 		if got := websiteText(in); got != want {
 			t.Errorf("websiteText(%q) = %q, want %q", in, got, want)

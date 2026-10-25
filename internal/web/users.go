@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/markup"
@@ -27,14 +28,21 @@ type profileData struct {
 }
 
 // websiteText returns the host and the path of a website address, without the
-// scheme, for the text of a link. The query and the fragment stay out. An address
-// that does not parse shows as it is.
+// scheme, for the text of a link. The query and the fragment stay out. Format
+// characters (Unicode category Cf, such as the bidirectional controls) stay out
+// too, because a decoded path could use them to reorder the text. An address that
+// does not parse shows as it is, without them.
 func websiteText(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return raw
+	text := raw
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		text = u.Host + u.Path
 	}
-	return u.Host + u.Path
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, text)
 }
 
 // denied answers 403 for a page that the viewer may not see: a page that needs
