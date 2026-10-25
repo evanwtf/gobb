@@ -40,13 +40,23 @@ const (
 )
 
 // AccountPage is what the account page shows to a member: the own email address,
-// the own signature source, and which of the three forms the member may use.
+// the own signature source, the own settings, and which of the forms the member
+// may use.
 type AccountPage struct {
 	Email         string
 	EmailVerified bool
 	Signature     string
 
-	CanPassword, CanEmail, CanSignature bool
+	// Timezone is the stored zone name. It can be a name that gobb no longer
+	// lists in [tz.Zones]. DateFormat is "standard", "relative" or "iso".
+	Timezone, DateFormat string
+	// The "About you" fields, as stored. A birthday part that is unset is 0.
+	Location, Occupation, Interests, Website string
+	BirthDay, BirthMonth, BirthYear          int
+	// AvatarPath is the stored avatar path, or empty.
+	AvatarPath string
+
+	CanPassword, CanEmail, CanSignature, CanProfile, CanAvatar bool
 }
 
 // mayAccount returns [ErrForbidden] for a guest and for a member who lacks
@@ -70,14 +80,34 @@ func Account(ctx context.Context, q db.Querier, v Viewer) (AccountPage, error) {
 		CanPassword:  v.Perms.Has("account.password", 0),
 		CanEmail:     v.Perms.Has("account.email", 0),
 		CanSignature: v.Perms.Has("account.signature", 0),
+		CanProfile:   v.Perms.Has("account.profile", 0),
+		CanAvatar:    v.Perms.Has("account.avatar", 0),
 	}
-	err := q.QueryRow(ctx, `select email, email_verified, signature_source from users where id = $1 and state = 'active'`, v.UserID).
-		Scan(&out.Email, &out.EmailVerified, &out.Signature)
+	var day, month, year *int16
+	var avatar *string
+	err := q.QueryRow(ctx, `
+select email, email_verified, signature_source, timezone, date_format,
+       location, occupation, interests, website, birth_day, birth_month, birth_year, avatar_path
+  from users where id = $1 and state = 'active'`, v.UserID).
+		Scan(&out.Email, &out.EmailVerified, &out.Signature, &out.Timezone, &out.DateFormat,
+			&out.Location, &out.Occupation, &out.Interests, &out.Website, &day, &month, &year, &avatar)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AccountPage{}, ErrNotFound
 	}
 	if err != nil {
 		return AccountPage{}, fmt.Errorf("board: read account of %d: %w", v.UserID, err)
+	}
+	if day != nil {
+		out.BirthDay = int(*day)
+	}
+	if month != nil {
+		out.BirthMonth = int(*month)
+	}
+	if year != nil {
+		out.BirthYear = int(*year)
+	}
+	if avatar != nil {
+		out.AvatarPath = *avatar
 	}
 	return out, nil
 }

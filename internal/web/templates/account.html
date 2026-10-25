@@ -1,11 +1,156 @@
 {{define "content"}}
 <header class="page-head">
   <h1>Your account</h1>
-  <p class="page-sub">Signed in as {{.Viewer.Name}}.</p>
+  <p class="page-sub">Changes save as you make them. <a href="{{path "u" (printf "%d" .Viewer.UserID)}}">Your public profile</a></p>
 </header>
 
 {{- with .Data.Done}}
 <p class="notice-inline" role="status">{{.}}</p>
+{{- end}}
+{{- with .Data.Err.Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.}}</p></div>
+{{- end}}
+
+<section class="account-section" aria-labelledby="timezone-title">
+  <h2 id="timezone-title">Time zone</h2>
+  <form class="post-form" method="post" action="{{path "account" "timezone"}}" data-autosave>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="field">
+      <label for="timezone">Show times in</label>
+      <select id="timezone" name="timezone" aria-describedby="timezone-hint{{if .Data.Err.Zone}} timezone-error{{end}}"
+        {{- if .Data.Err.Zone}} aria-invalid="true"{{end}}>
+        {{- if not .Data.ZoneListed}}
+        <option value="{{.Data.Timezone}}" selected>{{.Data.Timezone}} (your current setting)</option>
+        {{- end}}
+        <optgroup label="Common">
+          {{- range .Data.Common}}
+          <option value="{{.Name}}"{{if eq .Name $.Data.Timezone}} selected{{end}}>{{.Label}}</option>
+          {{- end}}
+        </optgroup>
+        <optgroup label="All zones">
+          {{- range .Data.Zones}}
+          <option value="{{.}}"{{if $.Data.SelectedInAll .}} selected{{end}}>{{.}}</option>
+          {{- end}}
+        </optgroup>
+      </select>
+      <p class="save-status" id="timezone-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Zone}}<p class="field-error" id="timezone-error" role="alert">{{.Data.Err.Zone}}</p>{{end}}
+      <p class="hint" id="timezone-hint">Every time on the board shows in this zone, with daylight saving time where the city has it. Right now it is <span id="timezone-now">{{.Data.NowText}}</span>.</p>
+    </div>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save time zone</button></div>
+  </form>
+</section>
+
+<section class="account-section" aria-labelledby="dateformat-title">
+  <h2 id="dateformat-title">Date format</h2>
+  <form class="post-form" method="post" action="{{path "account" "dateformat"}}" data-autosave>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <fieldset class="field"><legend>Show times as</legend>
+      <p class="field-check"><input type="radio" name="dateformat" id="dateformat-standard" value="standard"{{if eq .Data.DateFormat "standard"}} checked{{end}}> <label for="dateformat-standard">Date and time: <b>{{.Data.Samples.Standard}}</b></label></p>
+      <p class="field-check"><input type="radio" name="dateformat" id="dateformat-relative" value="relative"{{if eq .Data.DateFormat "relative"}} checked{{end}}> <label for="dateformat-relative">Relative: {{range $i, $t := .Data.Samples.Relative}}{{if $i}}, {{end}}<b>{{$t}}</b>{{end}}. Hold the pointer on a time to see the exact one.</label></p>
+      <p class="field-check"><input type="radio" name="dateformat" id="dateformat-iso" value="iso"{{if eq .Data.DateFormat "iso"}} checked{{end}}> <label for="dateformat-iso">ISO 8601: <b>{{.Data.Samples.ISO}}</b></label></p>
+      <p class="save-status" id="dateformat-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Format}}<p class="field-error" id="dateformat-error" role="alert">{{.Data.Err.Format}}</p>{{end}}
+    </fieldset>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save date format</button></div>
+  </form>
+</section>
+
+{{- if .Data.CanProfile}}
+<section class="account-section" aria-labelledby="about-title">
+  <h2 id="about-title">About you</h2>
+  <form class="post-form" method="post" action="{{path "account" "about"}}" data-autosave>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <p class="hint">Everything here shows on <a href="{{path "u" (printf "%d" .Viewer.UserID)}}">your profile</a>. Leave a field empty to hide it.</p>
+    <div class="field">
+      <label for="location">Location</label>
+      <input id="location" name="location" value="{{.Data.Location}}" maxlength="100"{{if .Data.Err.Location}} aria-invalid="true" aria-describedby="location-error"{{end}}>
+      <p class="save-status" id="location-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Location}}<p class="field-error" id="location-error" role="alert">{{.Data.Err.Location}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="occupation">Occupation</label>
+      <input id="occupation" name="occupation" value="{{.Data.Occupation}}" maxlength="100"{{if .Data.Err.Occupation}} aria-invalid="true" aria-describedby="occupation-error"{{end}}>
+      <p class="save-status" id="occupation-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Occupation}}<p class="field-error" id="occupation-error" role="alert">{{.Data.Err.Occupation}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="interests">Interests</label>
+      <input id="interests" name="interests" value="{{.Data.Interests}}" maxlength="200"{{if .Data.Err.Interests}} aria-invalid="true" aria-describedby="interests-error"{{end}}>
+      <p class="save-status" id="interests-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Interests}}<p class="field-error" id="interests-error" role="alert">{{.Data.Err.Interests}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="website">Website</label>
+      <input id="website" name="website" value="{{.Data.Website}}" maxlength="200" aria-describedby="website-hint{{if .Data.Err.Website}} website-error{{end}}"
+        {{- if .Data.Err.Website}} aria-invalid="true"{{end}}>
+      <p class="save-status" id="website-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Website}}<p class="field-error" id="website-error" role="alert">{{.Data.Err.Website}}</p>{{end}}
+      <p class="hint" id="website-hint">An address that starts with https:// or http://.</p>
+    </div>
+    <fieldset class="field" data-birthday><legend>Birthday</legend>
+      <p class="birthday-row">
+        <select aria-label="Day" name="bday"{{if .Data.Err.Birthday}} aria-invalid="true"{{end}}><option value="">Day</option>
+          {{- range .Data.Days}}<option value="{{.}}"{{if eq . $.Data.BirthDay}} selected{{end}}>{{.}}</option>{{end -}}
+        </select><select aria-label="Month" name="bmonth"{{if .Data.Err.Birthday}} aria-invalid="true"{{end}}><option value="">Month</option>
+          {{- range .Data.Months}}<option value="{{.Number}}"{{if eq .Number $.Data.BirthMonth}} selected{{end}}>{{.Name}}</option>{{end -}}
+        </select><select aria-label="Year" name="byear"{{if .Data.Err.Birthday}} aria-invalid="true"{{end}}><option value="">Year (optional)</option>
+          {{- range .Data.Years}}<option value="{{.}}"{{if eq . $.Data.BirthYear}} selected{{end}}>{{.}}</option>{{end -}}
+        </select>
+      </p>
+      <p class="save-status" id="birthday-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Birthday}}<p class="field-error" id="birthday-error" role="alert">{{.Data.Err.Birthday}}</p>{{end}}
+      <p class="hint">Leave out the year if you don't want your age shown. The latest year you can pick is {{.Data.LatestYear}}. The birthday saves when it has both a day and a month, or neither.</p>
+    </fieldset>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save About you</button></div>
+  </form>
+</section>
+{{- end}}
+
+{{- if .Data.CanAvatar}}
+<section class="account-section" aria-labelledby="avatar-title">
+  <h2 id="avatar-title">Avatar</h2>
+  <form class="post-form" method="post" action="{{path "account" "avatar"}}" enctype="multipart/form-data" data-autosave>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="field">
+      <p id="avatar-show" data-initial="{{initial .Viewer.Name}}">
+        {{- if .Data.AvatarPath}}<img class="avatar-img" src="{{path "files" .Data.AvatarPath}}" alt="Your avatar" width="96" height="96">
+        {{- else}}<span class="avatar avatar-lg avatar-none" aria-hidden="true">{{initial .Viewer.Name}}</span>{{end}}
+      </p>
+      <label for="avatar">New avatar</label>
+      <input id="avatar" name="avatar" type="file" accept="image/png,image/jpeg,image/gif" aria-describedby="avatar-hint{{if .Data.Err.Avatar}} avatar-error{{end}}"
+        {{- if .Data.Err.Avatar}} aria-invalid="true"{{end}}>
+      <p class="save-status" id="avatar-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Avatar}}<p class="field-error" id="avatar-error" role="alert">{{.Data.Err.Avatar}}</p>{{end}}
+      <p class="hint" id="avatar-hint">A PNG, JPEG or GIF of at most 1 MB. It uploads as soon as you pick it. gobb checks the file, stores a fresh copy at 128 &times; 128 pixels, and drops everything else in the file.</p>
+    </div>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Upload avatar</button></div>
+  </form>
+  <form class="post-form" id="avatar-remove" method="post" action="{{path "account" "avatar" "remove"}}"{{if not .Data.AvatarPath}} hidden{{end}}>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="form-actions"><button class="button-quiet" type="submit">Remove avatar</button></div>
+  </form>
+</section>
+{{- end}}
+
+{{- if .Data.CanSignature}}
+<section class="account-section" aria-labelledby="account-signature-title">
+  <h2 id="account-signature-title">Your signature</h2>
+  <form class="post-form" method="post" action="{{path "account" "signature"}}" data-autosave>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="field">
+      <label for="sig-text">Signature</label>
+      <textarea id="sig-text" name="signature" rows="6" aria-describedby="sig-hint{{if .Data.Sig.Text}} sig-error{{end}}"
+        {{- if .Data.Sig.Text}} aria-invalid="true"{{end}}>{{textareaValue .Data.Signature}}</textarea>
+      <p class="save-status" id="signature-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Sig.Text}}<p class="field-error" id="sig-error" role="alert">{{.Data.Sig.Text}}</p>{{end}}
+      <p class="hint" id="sig-hint">At most 2,000 bytes. Markdown works here: **bold**, *italic*, [link](https://example.com). Leave it empty for no signature. It saves when you leave the box.</p>
+    </div>
+    <div class="form-actions save-fallback">
+      <button class="button button-inline" type="submit">Save signature</button>
+    </div>
+  </form>
+</section>
 {{- end}}
 
 {{- if .Data.CanPassword}}
@@ -69,28 +214,5 @@
     </div>
   </form>
 </section>
-{{- end}}
-
-{{- if .Data.CanSignature}}
-<section class="account-section" aria-labelledby="account-signature-title">
-  <h2 id="account-signature-title">Your signature</h2>
-  <form class="post-form" method="post" action="{{path "account" "signature"}}">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <div class="field">
-      <label for="sig-text">Signature</label>
-      <textarea id="sig-text" name="signature" rows="6" aria-describedby="sig-hint{{if .Data.Sig.Text}} sig-error{{end}}"
-        {{- if .Data.Sig.Text}} aria-invalid="true"{{end}}>{{textareaValue .Data.Signature}}</textarea>
-      {{- if .Data.Sig.Text}}<p class="field-error" id="sig-error" role="alert">{{.Data.Sig.Text}}</p>{{end}}
-      <p class="hint" id="sig-hint">At most 2,000 bytes. Markdown works here: **bold**, *italic*, [link](https://example.com). Leave it empty for no signature.</p>
-    </div>
-    <div class="form-actions">
-      <button class="button button-inline" type="submit">Save signature</button>
-    </div>
-  </form>
-</section>
-{{- end}}
-
-{{- if not (or .Data.CanPassword .Data.CanEmail .Data.CanSignature)}}
-<p>You have no rights to change your account here.</p>
 {{- end}}
 {{end}}

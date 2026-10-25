@@ -13,6 +13,7 @@ import (
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 	"github.com/evanwtf/gobb/internal/session"
+	"github.com/evanwtf/gobb/internal/tz"
 )
 
 // The account page and the three changes it makes. Each change is a POST through
@@ -27,9 +28,14 @@ const maxAccountBody = 48 << 10
 // doneNotices are the three notices that /account?done=... can show. Any other
 // value shows nothing.
 var doneNotices = map[string]string{
-	"password":  "Your password is changed.",
-	"email":     "Your email address is changed.",
-	"signature": "Your signature is saved.",
+	"password":       "Your password is changed.",
+	"email":          "Your email address is changed.",
+	"signature":      "Your signature is saved.",
+	"timezone":       "Your time zone is saved.",
+	"dateformat":     "Your date format is saved.",
+	"about":          "Your changes are saved.",
+	"avatar":         "Your avatar is saved.",
+	"avatar-removed": "Your avatar is removed.",
 }
 
 // The texts of the account forms.
@@ -84,6 +90,14 @@ type passwordErr struct{ Notice, Current, Next, Confirm string }
 type emailErr struct{ Notice, Email, Current string }
 type signatureErr struct{ Text string }
 
+// settingsErr holds the messages that sit beside the fields of the settings
+// forms. Notice is for the whole page.
+type settingsErr struct {
+	Notice                                                 string
+	Zone, Format, Location, Occupation, Interests, Website string
+	Birthday, Avatar                                       string
+}
+
 // accountData is the data of account.html.
 type accountData struct {
 	board.AccountPage
@@ -96,6 +110,89 @@ type accountData struct {
 	Pass             passwordErr
 	Mail             emailErr
 	Sig              signatureErr
+	// Err holds the messages of the settings forms.
+	Err settingsErr
+	// The embedded AccountPage holds the stored settings. On a failed POST of a
+	// settings form, the fields that the member sent replace them, except the
+	// time zone and the date format, which keep the stored value.
+
+	// Samples are the three date formats made with the clock of the viewer.
+	Samples dateSamples
+	// NowText is the time now in the zone of the viewer.
+	NowText string
+	// LatestYear is the latest year that the birthday accepts.
+	LatestYear int
+	// Common and Zones are the choices of the time zone list.
+	Common []tz.Choice
+	Zones  []string
+}
+
+// dateSamples are the samples that the date format choices show.
+type dateSamples struct {
+	Standard string
+	Relative []string
+	ISO      string
+}
+
+// monthChoice is a month of the birthday list.
+type monthChoice struct {
+	Number int
+	Name   string
+}
+
+// birthdayDays and birthdayMonths are the day and month lists of the form.
+var (
+	birthdayDays = func() []int {
+		d := make([]int, 31)
+		for i := range d {
+			d[i] = i + 1
+		}
+		return d
+	}()
+	birthdayMonths = func() []monthChoice {
+		out := make([]monthChoice, 12)
+		for i := range out {
+			out[i] = monthChoice{i + 1, time.Month(i + 1).String()}
+		}
+		return out
+	}()
+)
+
+// Days and Months are the lists of the birthday form.
+func (accountData) Days() []int           { return birthdayDays }
+func (accountData) Months() []monthChoice { return birthdayMonths }
+
+// Years returns the years of the birthday list, newest first: from LatestYear
+// down to 1900. A stored year above LatestYear (an import) is added on top, so
+// the list shows it.
+func (d accountData) Years() []int {
+	var out []int
+	if d.BirthYear > d.LatestYear {
+		out = append(out, d.BirthYear)
+	}
+	for y := d.LatestYear; y >= account.MinBirthYear; y-- {
+		out = append(out, y)
+	}
+	return out
+}
+
+// ZoneListed reports whether the stored zone is one that the list offers.
+func (d accountData) ZoneListed() bool { return tz.Known(d.Timezone) }
+
+// InCommon reports whether zone is one of the common choices.
+func (d accountData) InCommon(zone string) bool {
+	for _, c := range d.Common {
+		if c.Name == zone {
+			return true
+		}
+	}
+	return false
+}
+
+// SelectedInAll reports whether the entry zone of the full list is the selected
+// one. A zone that is also a common choice is selected there, once, not here.
+func (d accountData) SelectedInAll(zone string) bool {
+	return zone == d.Timezone && !d.InCommon(zone)
 }
 
 // account serves GET /account: a guest goes to sign in and comes back here; a
@@ -107,6 +204,9 @@ func (s *site) account(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.Viewer.UserID == 0 {
+		// The redirect is not a page, so the robots meta element has no place on
+		// it; the header says the same.
+		w.Header().Set("X-Robots-Tag", "noindex")
 		http.Redirect(w, r, s.loginHref(s.path("account")), http.StatusFound)
 		return
 	}
@@ -125,8 +225,29 @@ func (s *site) accountData(r *http.Request, p *page) (accountData, error) {
 	if err != nil {
 		return accountData{}, err
 	}
-	return accountData{AccountPage: ap, Email: ap.Email, Signature: ap.Signature}, nil
+	now := s.opt.Now()
+	loc := p.Viewer.Loc
+	if loc == nil {
+		loc = time.UTC
+	}
+	d := accountData{AccountPage: ap, Email: ap.Email, Signature: ap.Signature, Common: tz.Common, Zones: tz.Zones}
+	d.LatestYear = now.UTC().Year() - account.MinAge
+	d.NowText = now.In(loc).Format(nowLayout)
+	d.Samples = dateSamples{
+		Standard: now.In(loc).Format(timeLayout),
+		Relative: []string{
+			relText(now.Add(-98*time.Minute), now, loc),
+			relText(now.Add(-39*time.Hour), now, loc),
+			relText(now.In(loc).AddDate(0, -14, 0), now, loc),
+		},
+		ISO: now.In(loc).Format(isoTimeLayout),
+	}
+	return d, nil
 }
+
+// nowLayout is the layout of the time that the time zone hint shows. gobb.js
+// makes the same text for a zone that the member picks.
+const nowLayout = "Mon, Jan 2, 2006, 3:04 pm"
 
 // renderAccount writes the account page. The forms of the layout return to the
 // account page, not to the address of a POST.
@@ -373,6 +494,10 @@ func (s *site) changeEmail(w http.ResponseWriter, r *http.Request) {
 // whatever happens after the csrf check.
 func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 	const action = "change your signature"
+	if saveRequested(r) {
+		s.saveSignature(w, r)
+		return
+	}
 	text := r.PostForm.Get("signature")
 	p, err := s.begin(w, r, "Account", "account")
 	if err != nil {

@@ -206,13 +206,16 @@ func TestBasePathEverywhere(t *testing.T) {
 	}
 	account := bodyOf(t, rec)
 	checkBasePath(t, "alice /forum/account", account, "/forum/")
-	for _, want := range []string{`action="/forum/account/password"`, `action="/forum/account/email"`, `action="/forum/account/signature"`} {
+	for _, want := range []string{`action="/forum/account/password"`, `action="/forum/account/email"`, `action="/forum/account/signature"`,
+		`action="/forum/account/timezone"`, `action="/forum/account/dateformat"`, `action="/forum/account/about"`,
+		`action="/forum/account/avatar"`, `action="/forum/account/avatar/remove"`} {
 		if !strings.Contains(account, want) {
 			t.Errorf("/forum/account lacks %s", want)
 		}
 	}
 	// The three POST routes exist only under the prefix.
-	for _, p := range []string{"/account/password", "/account/email", "/account/signature"} {
+	for _, p := range []string{"/account/password", "/account/email", "/account/signature", "/account/timezone",
+		"/account/dateformat", "/account/about", "/account/avatar", "/account/avatar/remove"} {
 		if rec := request(t, h, http.MethodPost, p, alice, url.Values{}); rec.Code != http.StatusNotFound {
 			t.Errorf("POST %s without the prefix: status %d, want 404", p, rec.Code)
 		}

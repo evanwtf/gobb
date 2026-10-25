@@ -61,6 +61,28 @@
   bytes do not survive.
   `FuzzMake` joins the CI fuzz job.
 
+- The account page saves each setting as it changes. It gains a time zone list ("Common"
+  first, then every zone), a date format choice with a sample of each format, "About you"
+  (location, occupation, interests, website, and the birthday's day, month and year), and an
+  avatar with "Remove avatar". The signature saves the same way. `gobb.js` sends a field
+  when its `change` event fires, with `X-Gobb-Save: 1`: one save at a time for each field
+  (a change made meanwhile waits, and only its latest value goes), a text box that has
+  focus goes out as the page closes (`keepalive`), and the status line says "Saving…",
+  then "Saved." or the message of the server. A save answers 204, or JSON
+  (`{"field","message"}` with 400, `{"message"}` for 403, 404, 413, 429 and 503). A
+  refusal of the CSRF or cross-origin check, a body over its cap and a form that cannot be
+  read answer in JSON too. An avatar upload answers 200 with `{"src"}`. Without script the
+  Save buttons post the forms and the answer is a 303 to `/account?done=...`, or the page
+  again with the message beside the field. `POST /account/about` changes only the fields
+  it holds, and the birthday only when day, month and year are all present. The new routes
+  are `/account/timezone`, `/account/dateformat`, `/account/about`, `/account/avatar` (a
+  multipart upload of at most 1 MiB, through `protectUpload`) and `/account/avatar/remove`.
+  The handler writes the new PNG as `avatars/u{id}-{16 hex}.png` through an `os.Root` with
+  `O_EXCL`, deletes it when the database write fails, and deletes the old file after the
+  write commits only when `board.ValidAvatarPath` accepts its path. The decode takes its
+  memory from the sign-in gate. Limits: 120 saves in 10 minutes and 10 uploads in an hour
+  for each member.
+
 ## 0.1.0 (2026-10-25)
 
 The first release. gobb is one Go server for a forum, backed by PostgreSQL 16 or later

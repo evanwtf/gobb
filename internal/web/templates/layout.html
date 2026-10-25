@@ -68,7 +68,7 @@
       </ul>
     </nav>
     {{- end}}
-    <p>Times are shown in {{.Viewer.Loc}}.</p>
+    <p id="footer-zone">Times are shown in {{.Viewer.Loc}}.</p>
     {{- if .Controls}}
     <form class="scheme-picker" method="post" action="{{path "scheme"}}" aria-label="Color scheme">
       <input type="hidden" name="csrf" value="{{.CSRF}}">

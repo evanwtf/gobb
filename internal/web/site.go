@@ -99,6 +99,11 @@ type site struct {
 	tries *ratelimit.Limiter
 	// postLimits counts the POSTs of the posting forms and the guest-name checks.
 	postLimits postLimits
+	// saves counts the saves of the settings and the avatar uploads of each member.
+	saves saveLimits
+	// gate is the memory gate of the password checks. An avatar decode takes its
+	// share from the same gate, so one budget covers both.
+	gate *login.Gate
 	// patterns lists every pattern registered on the muxes of the site, for a test
 	// that checks the routes against its tables.
 	patterns []string
@@ -133,7 +138,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if opt.LoginGate != nil {
 		lo.Gate = opt.LoginGate
 	}
-	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt)}
+	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
+		saves: newSaveLimits(), gate: lo.Gate}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
@@ -213,6 +219,11 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.Handle("POST /account/password", s.protect(maxAccountBody, s.changePassword))
 	inner.Handle("POST /account/email", s.protect(maxAccountBody, s.changeEmail))
 	inner.Handle("POST /account/signature", s.protectPosting(maxPostingBody, s.changeSignature))
+	inner.Handle("POST /account/timezone", s.protect(maxPostBody, s.setTimezone))
+	inner.Handle("POST /account/dateformat", s.protect(maxPostBody, s.setDateFormat))
+	inner.Handle("POST /account/about", s.protect(maxAccountBody, s.setAbout))
+	inner.Handle("POST /account/avatar", s.protectUpload(maxAvatarBody, s.uploadAvatar))
+	inner.Handle("POST /account/avatar/remove", s.protect(maxPostBody, s.removeAvatar))
 	inner.HandleFunc("GET /static/{name}", s.static)
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
 	// Without this, the mux would redirect /files/avatars to /files/avatars/.

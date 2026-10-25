@@ -2,8 +2,10 @@ package web
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"html"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -661,6 +663,48 @@ type tokenRow struct {
 	setup  string
 }
 
+// multipart reports whether the route takes a multipart upload of a file in the
+// field "avatar" instead of a urlencoded form.
+func (r tokenRow) multipart() bool { return r.target == "/account/avatar" }
+
+// rowRequest builds the POST of a row with form and the cookies. A multipart row
+// carries a small PNG beside the fields of form.
+func rowRequest(t *testing.T, row tokenRow, cookies []*http.Cookie, form url.Values, hdr map[string]string) *http.Request {
+	t.Helper()
+	var r *http.Request
+	if row.multipart() {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		for k, vs := range form {
+			for _, v := range vs {
+				_ = mw.WriteField(k, v)
+			}
+		}
+		fw, _ := mw.CreateFormFile("avatar", "me.png")
+		_, _ = fw.Write(testPNG(t, 24, 24))
+		_ = mw.Close()
+		r = httptest.NewRequest(http.MethodPost, row.target, &buf)
+		r.Header.Set("Content-Type", mw.FormDataContentType())
+	} else {
+		r = httptest.NewRequest(http.MethodPost, row.target, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	for _, c := range cookies {
+		r.AddCookie(c)
+	}
+	return r
+}
+
+// serveReq sends r to h.
+func serveReq(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
 var tokenRows = []tokenRow{
 	{"/f/2/post", "alice", url.Values{"title": {"x"}, "body": {"No token."}}, ""},
 	{"/t/1/reply", "alice", url.Values{"body": {"No token."}}, ""},
@@ -675,6 +719,11 @@ var tokenRows = []tokenRow{
 	{"/account/password", "alice", url.Values{"current": {testPassword}, "next": {"a new pass phrase"}, "confirm": {"a new pass phrase"}}, ""},
 	{"/account/email", "alice", url.Values{"email": {"alice.new@example.org"}, "current": {testPassword}}, ""},
 	{"/account/signature", "alice", url.Values{"signature": {"No token."}}, ""},
+	{"/account/timezone", "alice", url.Values{"timezone": {"Asia/Tokyo"}}, ""},
+	{"/account/dateformat", "alice", url.Values{"dateformat": {"iso"}}, ""},
+	{"/account/about", "alice", url.Values{"location": {"No token."}}, ""},
+	{"/account/avatar", "alice", url.Values{}, ""},
+	{"/account/avatar/remove", "alice", url.Values{}, ""},
 	{"/login", "", url.Values{"name": {"alice"}, "password": {testPassword}}, ""},
 	{"/logout", "alice", url.Values{}, ""},
 	{"/scheme", "alice", url.Values{"scheme": {"slate-deep"}}, ""},
@@ -800,7 +849,12 @@ func TestPostingNeedsToken(t *testing.T) {
 			}
 			// The control: a good token gets 303.
 			h, _ := tokenSite(t, row)
-			if rec := send(t, h, row.target, login(h), row.form); rec.Code != http.StatusSeeOther {
+			control := login(h)
+			first := getAs(t, h, "/", control)
+			control = jar(control, first)
+			good := cloneForm(row.form)
+			good.Set("csrf", formToken(t, bodyOf(t, first)))
+			if rec := serveReq(h, rowRequest(t, row, control, good, nil)); rec.Code != http.StatusSeeOther {
 				t.Fatalf("POST %s with a good token = %d, want 303 (the row is refused by something other than the token)\n%s",
 					row.target, rec.Code, bodyOf(t, rec))
 			}
@@ -814,13 +868,13 @@ func TestPostingNeedsToken(t *testing.T) {
 			other := cloneForm(row.form)
 			other.Set("csrf", formToken(t, bodyOf(t, guestPage)))
 			for what, f := range map[string]url.Values{"no token": row.form, "wrong token": wrong} {
-				if rec := request(t, h, http.MethodPost, row.target, cookies, f); rec.Code != http.StatusForbidden {
+				if rec := serveReq(h, rowRequest(t, row, cookies, f, nil)); rec.Code != http.StatusForbidden {
 					t.Errorf("POST %s, %s: status %d, want 403", row.target, what, rec.Code)
 				}
 			}
 			if row.actor != "" {
 				// A guest's token does not work for a member.
-				if rec := request(t, h, http.MethodPost, row.target, cookies, other); rec.Code != http.StatusForbidden {
+				if rec := serveReq(h, rowRequest(t, row, cookies, other, nil)); rec.Code != http.StatusForbidden {
 					t.Errorf("POST %s with a guest's token: status %d, want 403", row.target, rec.Code)
 				}
 			}
@@ -829,23 +883,14 @@ func TestPostingNeedsToken(t *testing.T) {
 			// same request from the same site gets 303.
 			page := getAs(t, h, "/", cookies)
 			withToken := jar(cookies, page)
-			good := cloneForm(row.form)
+			good = cloneForm(row.form)
 			good.Set("csrf", formToken(t, bodyOf(t, page)))
 			for what, hdr := range map[string]map[string]string{
 				"Sec-Fetch-Site cross-site": {"Sec-Fetch-Site": "cross-site"},
 				"a foreign Origin":          {"Origin": "https://attacker.example"},
 				"Sec-Fetch-Site same-site":  {"Sec-Fetch-Site": "same-site"},
 			} {
-				r := httptest.NewRequest(http.MethodPost, row.target, strings.NewReader(good.Encode()))
-				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-				for k, v := range hdr {
-					r.Header.Set(k, v)
-				}
-				for _, c := range withToken {
-					r.AddCookie(c)
-				}
-				rec := httptest.NewRecorder()
-				h.ServeHTTP(rec, r)
+				rec := serveReq(h, rowRequest(t, row, withToken, good, hdr))
 				if rec.Code != http.StatusForbidden {
 					t.Errorf("POST %s with a good token and %s: status %d, want 403", row.target, what, rec.Code)
 				}

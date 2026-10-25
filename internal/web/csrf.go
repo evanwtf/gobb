@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 
 	"github.com/evanwtf/gobb/internal/session"
@@ -69,16 +71,96 @@ const (
 	expiredMessage = "This form expired. Use your browser's Back button to get your text back, then reload the page and post again."
 )
 
+// protectUpload is [site.protect] for a form that carries a file. It reads the
+// body as multipart/form-data, with the whole body (limit bytes) held in memory:
+// limit is the size of the largest file and a little more for the other parts,
+// so no part spills to disk. The token is a text part of the form. A body that is
+// not multipart is read as a urlencoded form, so a request with no file reaches
+// the handler, which refuses it.
+//
+// The body is read before the token is checked, as in [site.protect]: the cap
+// holds the cost. The cross-origin check runs before any read.
+func (s *site) protectUpload(limit int64, h http.HandlerFunc) http.Handler {
+	g := guard{limit: limit, tooBig: msgFileTooLarge, parse: func(r *http.Request) error {
+		// ParseMultipartForm drops the error of a body that is not multipart (it
+		// returns ErrNotMultipart instead), and a body over the cap is one such
+		// error. So the content type picks the parser.
+		if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "multipart/form-data" {
+			return r.ParseForm()
+		}
+		return r.ParseMultipartForm(limit)
+	}}
+	return s.guardWith(s.crossOrigin, g, h, nil)
+}
+
+// msgFileTooLarge is the text of the 413 of an upload.
+const msgFileTooLarge = "That file is too large. Use one of at most 1 MB."
+
 func (s *site) guardPost(cop *http.CrossOriginProtection, limit int64, h, signedOut http.HandlerFunc, expired bool) http.Handler {
+	g := guard{limit: limit, tooBig: "The form you sent is too large.", expired: expired,
+		parse: func(r *http.Request) error { return r.ParseForm() }}
+	return s.guardWith(cop, g, h, signedOut)
+}
+
+// guard says how guardWith reads a request: the cap of the body, the text of the
+// 413, how it parses the body, and whether a failed token answers with the
+// "form expired" page of a posting form.
+type guard struct {
+	limit   int64
+	tooBig  string
+	expired bool
+	parse   func(*http.Request) error
+}
+
+// The headers that tell the server a request comes from gobb.js. The answer is
+// then 204 or JSON, never a page.
+const saveHeaderName = "X-Gobb-Save"
+
+// saveRequested reports whether r comes from the script of the account page,
+// which wants a JSON answer.
+func saveRequested(r *http.Request) bool { return r.Header.Get(saveHeaderName) == "1" }
+
+// writeJSON writes v as the JSON answer of a request from gobb.js.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		// The values are strings of this package; this cannot happen.
+		b, status = []byte(`{"message":"Something went wrong."}`), http.StatusInternalServerError
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", cacheMember)
+	w.WriteHeader(status)
+	_, _ = w.Write(b)
+}
+
+// saveMessage writes the JSON answer {"message": msg} with status.
+func saveMessage(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"message": msg})
+}
+
+// guardRefused answers a refusal of the guard: a JSON message for a request from
+// gobb.js, the page otherwise.
+func (s *site) guardRefused(w http.ResponseWriter, r *http.Request, status int, heading, msg string) {
+	if saveRequested(r) {
+		saveMessage(w, status, msg)
+		return
+	}
+	s.fail(w, r, status, heading, msg)
+}
+
+func (s *site) guardWith(cop *http.CrossOriginProtection, g guard, h, signedOut http.HandlerFunc) http.Handler {
+	limit, expired := g.limit, g.expired
 	return cop.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
-		if err := r.ParseForm(); err != nil {
+		if err := g.parse(r); err != nil {
 			var tooBig *http.MaxBytesError
 			if errors.As(err, &tooBig) {
-				s.fail(w, r, http.StatusRequestEntityTooLarge, "Request too large", "The form you sent is too large.")
+				s.guardRefused(w, r, http.StatusRequestEntityTooLarge, "Request too large", g.tooBig)
 				return
 			}
-			s.fail(w, r, http.StatusBadRequest, "Bad request", "The form could not be read.")
+			s.guardRefused(w, r, http.StatusBadRequest, "Bad request", "The form could not be read.")
 			return
 		}
 		// The identity is read once. The handler's own call of begin finds it in
@@ -93,14 +175,14 @@ func (s *site) guardPost(cop *http.CrossOriginProtection, limit int64, h, signed
 		// in logs and in the Referer header.
 		if !session.CheckCSRF(id.secret(), r.PostForm.Get("csrf")) {
 			switch {
-			case expired:
+			case expired && !saveRequested(r):
 				s.failExpired(w, r)
 			case id.token == "" && signedOut != nil:
 				signedOut(w, r)
 			case id.ended:
-				s.fail(w, r, http.StatusForbidden, "Signed out", "Your session ended. You are signed out.")
+				s.guardRefused(w, r, http.StatusForbidden, "Signed out", "Your session ended. You are signed out.")
 			default:
-				s.fail(w, r, http.StatusForbidden, "Form not accepted",
+				s.guardRefused(w, r, http.StatusForbidden, "Form not accepted",
 					"The form could not be checked. Go back, reload the page and send the form again.")
 			}
 			return
@@ -112,6 +194,10 @@ func (s *site) guardPost(cop *http.CrossOriginProtection, limit int64, h, signed
 // denyExpired answers a posting form that http.CrossOriginProtection refused. It
 // echoes nothing.
 func (s *site) denyExpired(w http.ResponseWriter, r *http.Request) {
+	if saveRequested(r) {
+		saveMessage(w, http.StatusForbidden, msgCrossOrigin)
+		return
+	}
 	s.failExpired(w, r)
 }
 
@@ -127,6 +213,8 @@ func (s *site) failExpired(w http.ResponseWriter, r *http.Request) {
 
 // denyCrossOrigin answers a POST that http.CrossOriginProtection refused.
 func (s *site) denyCrossOrigin(w http.ResponseWriter, r *http.Request) {
-	s.fail(w, r, http.StatusForbidden, "Form not accepted",
-		"This form was sent from another site, or by a browser that does not say where it came from.")
+	s.guardRefused(w, r, http.StatusForbidden, "Form not accepted", msgCrossOrigin)
 }
+
+// msgCrossOrigin is the text of the 403 of a POST from another site.
+const msgCrossOrigin = "This form was sent from another site, or by a browser that does not say where it came from."
