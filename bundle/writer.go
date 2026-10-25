@@ -39,7 +39,7 @@ type dataFile struct {
 }
 
 // Create starts a bundle in dir. The directory must not exist, or it must be
-// empty. Create makes it, with its parents, and opens all 23 data files. source
+// empty. Create makes it, with its parents, and opens all 21 data files. source
 // is the manifest's "source" label. Create refuses settings or a source that
 // fail their checks. When Create fails, it removes what it made.
 func Create(dir, source string, s Settings) (*Writer, error) {

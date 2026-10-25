@@ -21,7 +21,7 @@ import (
 	"github.com/evanwtf/gobb/markup"
 )
 
-// loaded lists the data files that the loaders in this package cover: all 23.
+// loaded lists the data files that the loaders in this package cover: all 21.
 var loaded = bundle.Files
 
 // writeBoard writes a board to disk. It applies edit first, when edit is set.

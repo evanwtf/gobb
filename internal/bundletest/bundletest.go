@@ -45,8 +45,6 @@ type Board struct {
 	PollVotes    []bundle.PollVote
 	Attachments  []bundle.Attachment
 	PMs          []bundle.PM
-	TopicWatches []bundle.TopicWatch
-	Bookmarks    []bundle.Bookmark
 	TopicMarks   []bundle.TopicMark
 	ForumMarks   []bundle.ForumMark
 	Bans         []bundle.Ban
@@ -93,8 +91,6 @@ func Write(t testing.TB, b *Board) string {
 	addAll(t, w, b.PollVotes)
 	addAll(t, w, b.Attachments)
 	addAll(t, w, b.PMs)
-	addAll(t, w, b.TopicWatches)
-	addAll(t, w, b.Bookmarks)
 	addAll(t, w, b.TopicMarks)
 	addAll(t, w, b.ForumMarks)
 	addAll(t, w, b.Bans)
@@ -168,10 +164,18 @@ const (
 //
 //	Settings    header image header/banner.png; time zone America/New_York
 //	ranks       1 "Newcomer" (image ranks/newcomer.png)
-//	users       1 alice  owner, active, argon2id ("gobb" scheme), rank 1, avatar
-//	            2 bob    active, bcrypt cost 4 ("legacy" scheme), rank 1
-//	            3 carol  active, argon2id, email not verified
+//	users       1 alice  owner, active, argon2id ("gobb" scheme), rank 1, avatar;
+//	                     location "Lake Placid, NY", website
+//	                     https://example.com/alice, birthday 14 March 1984
+//	            2 bob    active, bcrypt cost 4 ("legacy" scheme), rank 1;
+//	                     birthday 2 July, no year
+//	            3 carol  active, argon2id, email not verified; date format relative
 //	            4 dave   inactive, empty legacy hash, empty email
+//	            Every user has the date format standard, except carol. Only alice
+//	            has a location or a website; no user has an occupation or
+//	            interests. Time zones: alice America/New_York, bob Europe/London,
+//	            carol and dave Atlantic/Reykjavik (the offset of UTC all year; the
+//	            format has no bare UTC).
 //	gone_users  8
 //	groups      1 guests, 2 members, 3 moderators, 4 admins (the built-in groups)
 //	            5 "Beta testers" (kind request)
@@ -206,8 +210,6 @@ const (
 //	attachments 1 on post 2, by bob (attachments/1.png, image/png)
 //	            2 orphan, by alice (attachments/2.gif, image/gif)
 //	pms         1 alice to bob, bcc carol. 2 bob to alice (author deleted)
-//	topic_watches    bob watches topic 1
-//	bookmarks        carol marks topic 2
 //	topic_marks      bob, topic 1. forum_marks: bob, forum 2
 //	bans        user 4 (ended), email spammer@example.com, ip 10.99.0.0/16
 //	smilies     ":)" (smilies/smile.gif), ":D" (smilies/grin.png)
@@ -260,7 +262,9 @@ func Small() *Board {
 			RegisteredAt: at(2019, 5, 1, 10, 0), LastVisitAt: atp(2026, 10, 1, 8, 30),
 			PostCount: 120, RankID: ptr(int64(1)), Avatar: &avatar,
 			Signature: body("Example signature"), Timezone: "America/New_York",
-			ColorScheme: "slate", NotifyOnPost: true,
+			ColorScheme: "slate", DateFormat: "standard",
+			Location: "Lake Placid, NY", Website: "https://example.com/alice",
+			BirthDay: ptr(14), BirthMonth: ptr(3), BirthYear: ptr(1984),
 		},
 		{
 			ID: 2, Username: "bob", Email: "bob@example.com",
@@ -270,7 +274,8 @@ func Small() *Board {
 			LastMarkAt: atp(2026, 9, 30, 19, 0),
 			PostCount:  45, RankID: ptr(int64(1)),
 			Signature: body(""), Timezone: "Europe/London",
-			ColorScheme: "slate-deep", NotifyOnPost: true,
+			ColorScheme: "slate-deep", DateFormat: "standard",
+			BirthDay: ptr(2), BirthMonth: ptr(7),
 		},
 		{
 			ID: 3, Username: "carol", Email: "carol@example.com",
@@ -278,16 +283,16 @@ func Small() *Board {
 			State:        "active",
 			RegisteredAt: at(2020, 1, 15, 9, 0),
 			PostCount:    3,
-			Signature:    body(""), Timezone: "UTC",
-			ColorScheme: "slate-light",
+			Signature:    body(""), Timezone: "Atlantic/Reykjavik",
+			ColorScheme: "slate-light", DateFormat: "relative",
 		},
 		{
 			ID: 4, Username: "dave", Email: "",
 			Password:     bundle.Password{Scheme: "legacy", Hash: ""},
 			State:        "inactive",
 			RegisteredAt: at(2020, 3, 3, 12, 0),
-			Signature:    body(""), Timezone: "UTC",
-			ColorScheme: "slate",
+			Signature:    body(""), Timezone: "Atlantic/Reykjavik",
+			ColorScheme: "slate", DateFormat: "standard",
 		},
 	}
 	b.GoneUsers = []bundle.GoneUser{{ID: 8}}
@@ -465,8 +470,6 @@ func Small() *Board {
 		},
 	}
 
-	b.TopicWatches = []bundle.TopicWatch{{UserID: 2, TopicID: 1}}
-	b.Bookmarks = []bundle.Bookmark{{UserID: 3, TopicID: 2}}
 	b.TopicMarks = []bundle.TopicMark{{UserID: 2, TopicID: 1, MarkedAt: at(2026, 10, 1, 12, 0)}}
 	b.ForumMarks = []bundle.ForumMark{{UserID: 2, ForumID: 2, MarkedAt: at(2026, 9, 30, 8, 0)}}
 
@@ -499,7 +502,7 @@ func Small() *Board {
 // number of posts in each topic, for scale tests. It keeps the users, forums,
 // groups, grants and settings of [Small], and it replaces everything that hangs
 // on topics and posts: the topics, posts, polls, votes, attachments, private
-// messages, watches, bookmarks and marks. It drops the attachment files too.
+// messages and marks. It drops the attachment files too.
 //
 // Topic t (counted from 1) lives in forum 2 when t is odd, and in forum 3 when
 // t is even. Its posts are numbered in order across the board, so the post IDs
@@ -511,7 +514,7 @@ func Large(topics, postsPerTopic int) *Board {
 	b := Small()
 	b.Topics, b.Posts, b.Polls, b.PollVotes = nil, nil, nil, nil
 	b.Attachments, b.PMs = nil, nil
-	b.TopicWatches, b.Bookmarks, b.TopicMarks, b.ForumMarks = nil, nil, nil, nil
+	b.TopicMarks, b.ForumMarks = nil, nil
 	delete(b.Files, "attachments/1.png")
 	delete(b.Files, "attachments/2.gif")
 

@@ -86,10 +86,6 @@ func TestWriteThenRead(t *testing.T) {
 			err = Add(w, r)
 		case PM:
 			err = Add(w, r)
-		case TopicWatch:
-			err = Add(w, r)
-		case Bookmark:
-			err = Add(w, r)
 		case TopicMark:
 			err = Add(w, r)
 		case ForumMark:
@@ -163,15 +159,13 @@ func TestWriteThenRead(t *testing.T) {
 	expect(t, r, rows[11].(PollVote))
 	expect(t, r, rows[12].(Attachment))
 	expect(t, r, rows[13].(PM))
-	expect(t, r, rows[14].(TopicWatch))
-	expect(t, r, rows[15].(Bookmark))
-	expect(t, r, rows[16].(TopicMark))
-	expect(t, r, rows[17].(ForumMark))
-	expect(t, r, rows[18].(Ban))
-	expect(t, r, rows[19].(Smiley))
-	expect(t, r, rows[20].(LegacyRoute))
-	expect(t, r, rows[21].(LegacyFile))
-	expect(t, r, rows[22].(StaticPage))
+	expect(t, r, rows[14].(TopicMark))
+	expect(t, r, rows[15].(ForumMark))
+	expect(t, r, rows[16].(Ban))
+	expect(t, r, rows[17].(Smiley))
+	expect(t, r, rows[18].(LegacyRoute))
+	expect(t, r, rows[19].(LegacyFile))
+	expect(t, r, rows[20].(StaticPage))
 }
 
 func TestWriteThenReadHeaderImage(t *testing.T) {
@@ -209,9 +203,9 @@ func TestOpenRefuses(t *testing.T) {
 		{"wrong format", func(t *testing.T, dir string) {
 			editJSON(t, dir, "manifest.json", func(m map[string]any) { m["format"] = "other" })
 		}, `manifest.json: format: is "other"`},
-		{"version 2", func(t *testing.T, dir string) {
-			editJSON(t, dir, "manifest.json", func(m map[string]any) { m["version"] = 2 })
-		}, "manifest.json: version: is 2"},
+		{"version 3", func(t *testing.T, dir string) {
+			editJSON(t, dir, "manifest.json", func(m map[string]any) { m["version"] = 3 })
+		}, "manifest.json: version: is 3"},
 		{"extra top-level file", func(t *testing.T, dir string) {
 			writeFile(t, filepath.Join(dir, "notes.txt"), "x")
 		}, "notes.txt: is not part of the bundle layout"},
@@ -361,12 +355,12 @@ func TestOpenReadsVersionFirst(t *testing.T) {
 		edit func(m map[string]any)
 		want string
 	}{
-		{"new key", func(m map[string]any) { m["version"] = 2; m["new_key"] = 1 },
-			"manifest.json: version: is 2; this reader knows version 1"},
-		{"missing key", func(m map[string]any) { m["version"] = 2; delete(m, "source") },
-			"manifest.json: version: is 2; this reader knows version 1"},
-		{"changed counts", func(m map[string]any) { m["version"] = 2; m["counts"] = []any{} },
-			"manifest.json: version: is 2; this reader knows version 1"},
+		{"new key", func(m map[string]any) { m["version"] = 3; m["new_key"] = 1 },
+			"manifest.json: version: is 3; this reader knows version 2"},
+		{"missing key", func(m map[string]any) { m["version"] = 3; delete(m, "source") },
+			"manifest.json: version: is 3; this reader knows version 2"},
+		{"changed counts", func(m map[string]any) { m["version"] = 3; m["counts"] = []any{} },
+			"manifest.json: version: is 3; this reader knows version 2"},
 		{"wrong format", func(m map[string]any) { m["format"] = "other"; m["new_key"] = 1 },
 			`manifest.json: format: is "other"`},
 	}
@@ -377,6 +371,46 @@ func TestOpenReadsVersionFirst(t *testing.T) {
 			_, err := Open(dir)
 			if err == nil || !strings.HasPrefix(err.Error(), tt.want) {
 				t.Errorf("err = %v, want prefix %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestVersion1Refused pins the message that tells a converter author what to do.
+func TestVersion1Refused(t *testing.T) {
+	const want = "manifest.json: version: bundle format version 1; this gobb reads version 2. " +
+		"Build the bundle again with a converter for version 2."
+	tests := []struct {
+		name string
+		edit func(m map[string]any)
+	}{
+		{"manifest of version 2 with version 1", func(m map[string]any) { m["version"] = 1 }},
+		{"version 1 counts", func(m map[string]any) {
+			m["version"] = 1
+			m["counts"] = map[string]any{"topic_watches": 1, "bookmarks": 1}
+		}},
+		{"version 1 and another key", func(m map[string]any) { m["version"] = 1; m["new_key"] = 1 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := newBundle(t)
+			editJSON(t, dir, "manifest.json", tt.edit)
+			if _, err := Open(dir); err == nil || err.Error() != want {
+				t.Errorf("Open = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// TestWatchFilesUnknown pins that version 2 has no file for watches or bookmarks.
+func TestWatchFilesUnknown(t *testing.T) {
+	for _, name := range []string{"topic_watches.jsonl", "bookmarks.jsonl"} {
+		t.Run(name, func(t *testing.T) {
+			dir := newBundle(t)
+			writeFile(t, filepath.Join(dir, name), "")
+			want := name + ": is not part of the bundle layout"
+			if _, err := Open(dir); err == nil || err.Error() != want {
+				t.Errorf("Open = %v, want %q", err, want)
 			}
 		})
 	}

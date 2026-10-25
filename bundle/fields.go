@@ -9,15 +9,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
-	_ "time/tzdata" // zone data for a host that has none of its own
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/evanwtf/gobb/internal/account"
 	"github.com/evanwtf/gobb/internal/acl"
 	"github.com/evanwtf/gobb/internal/password"
+	"github.com/evanwtf/gobb/internal/tz"
 	"github.com/evanwtf/gobb/markup"
 )
 
@@ -60,6 +58,7 @@ var (
 	routeKindsOffset = []string{"forum", "topic"}
 	legacyFileDirs   = []string{"smilies", "ranks"}
 	settingValues    = []string{string(Yes), string(No), string(Never)}
+	dateFormats      = []string{"standard", "relative", "iso"}
 )
 
 // vet collects the faults of one row.
@@ -270,31 +269,21 @@ func (v *vet) optFile(field string, f *FileRef, dir string) {
 // body checks a body.
 func (v *vet) body(field string, b Body) { v.text(field+".source", b.Source) }
 
-// maxZoneName is the longest zone name that the check passes to LoadLocation.
-const maxZoneName = 64
+// KnownZone reports whether name is a time zone that the format accepts: a
+// place in the IANA zone.tab file, such as "America/New_York". It is exact: a fixed
+// offset (Etc/GMT+4), UTC, an alias and a name in another case are refused. A
+// converter outside this module, which cannot import internal/tz, maps its zones
+// with this function.
+func KnownZone(name string) bool { return tz.Known(name) }
 
-// zoneOK holds the zone names that LoadLocation has accepted. A failed name is
-// not cached, so a hostile bundle cannot grow the map.
-var zoneOK sync.Map // name -> struct{}
-
-// zone checks that s is an IANA zone name that time.LoadLocation accepts.
-// LoadLocation also takes "" (UTC) and "Local"; the format does not. The answer
-// can depend on the host: LoadLocation reads the host's zoneinfo first, and uses
-// the copy embedded by time/tzdata only when the host has none.
+// zone checks that s is a place in zone.tab (see [KnownZone]).
 func (v *vet) zone(field, s string) {
 	if !v.text(field, s) {
 		return
 	}
-	if _, ok := zoneOK.Load(s); ok {
-		return
+	if !tz.Known(s) {
+		v.add(field, "is %q; it must be a place in the IANA zone.tab file, such as America/New_York", clip(s))
 	}
-	if s != "" && s != "Local" && len(s) <= maxZoneName {
-		if _, err := time.LoadLocation(s); err == nil {
-			zoneOK.Store(s, struct{}{})
-			return
-		}
-	}
-	v.add(field, "is %q; it must be an IANA time zone name of at most %d bytes", clip(s), maxZoneName)
 }
 
 // smileyCode checks that code is valid as the code of a markup smiley element.
@@ -323,7 +312,11 @@ func (v *vet) formatVersion(format string, version int) {
 	if format != Format {
 		v.add("format", "is %q; it must be %q", clip(format), Format)
 	}
-	if version != Version {
+	switch {
+	case version < Version:
+		v.add("version", "bundle format version %d; this gobb reads version %d. "+
+			"Build the bundle again with a converter for version %d.", version, Version, Version)
+	case version > Version:
 		v.add("version", "is %d; this reader knows version %d", version, Version)
 	}
 }
@@ -389,7 +382,78 @@ func (u User) check() []*Error {
 	v.body("signature", u.Signature)
 	v.zone("timezone", u.Timezone)
 	v.enum("color_scheme", u.ColorScheme, colorSchemes)
+	v.enum("date_format", u.DateFormat, dateFormats)
+	v.profileText("location", u.Location, account.MaxLocation)
+	v.profileText("occupation", u.Occupation, account.MaxLocation)
+	v.profileText("interests", u.Interests, account.MaxInterests)
+	v.website("website", u.Website)
+	v.birthday(u)
 	return v.errs
+}
+
+// profileText checks a plain-text profile field with account.CheckProfileText.
+func (v *vet) profileText(field, s string, max int) {
+	if !v.text(field, s) {
+		return
+	}
+	switch err := account.CheckProfileText(s, max); {
+	case errors.Is(err, account.ErrTooLong):
+		v.add(field, "is longer than %d characters", max)
+	case errors.Is(err, account.ErrControl):
+		v.add(field, "holds a control character or a line break")
+	}
+}
+
+// website checks the website of a user with account.CheckWebsite.
+func (v *vet) website(field, s string) {
+	if !v.text(field, s) {
+		return
+	}
+	switch err := account.CheckWebsite(s); {
+	case errors.Is(err, account.ErrTooLong):
+		v.add(field, "is %d bytes; the limit is %d", len(s), account.MaxWebsite)
+	case err != nil:
+		v.add(field, "must be empty, or an http or https URL with a host, no user information, "+
+			"no white space and no control character")
+	}
+}
+
+// birthday checks the three birth fields of a user with account.CheckBirthday. It
+// cannot check the latest year, because a row has no manifest: Check proves that
+// one with the year of created_at.
+func (v *vet) birthday(u User) {
+	ok := true
+	get := func(field string, p *int, lo, hi int) int {
+		switch {
+		case p == nil:
+			return 0
+		case *p < lo || *p > hi:
+			v.add(field, "is %d; it must be %d to %d, or null", *p, lo, hi)
+			ok = false
+			return 0
+		}
+		return *p
+	}
+	day := get("birth_day", u.BirthDay, 1, 31)
+	month := get("birth_month", u.BirthMonth, 1, 12)
+	year := get("birth_year", u.BirthYear, 1, maxInt32)
+	if !ok {
+		return
+	}
+	switch err := account.CheckBirthday(day, month, year, 0); {
+	case errors.Is(err, account.ErrBirthdayPair):
+		v.add("birth_day", "and birth_month must both be null or both be set")
+	case errors.Is(err, account.ErrYearAlone):
+		v.add("birth_year", "may be set only when birth_day and birth_month are set")
+	case errors.Is(err, account.ErrYearTooEarly):
+		v.add("birth_year", "is %d; the earliest year is %d", year, account.MinBirthYear)
+	case errors.Is(err, account.ErrNoSuchDate):
+		if year == 0 {
+			v.add("birth_day", "day %d of month %d does not exist", day, month)
+		} else {
+			v.add("birth_day", "day %d of month %d does not exist in %d", day, month, year)
+		}
+	}
 }
 
 func (g GoneUser) check() []*Error {
@@ -650,20 +714,6 @@ func (p PM) check() []*Error {
 		seen[r.UserID] = true
 		v.enum(at+"kind", r.Kind, recipientKinds)
 	}
-	return v.errs
-}
-
-func (w TopicWatch) check() []*Error {
-	var v vet
-	v.id("user_id", w.UserID)
-	v.id("topic_id", w.TopicID)
-	return v.errs
-}
-
-func (b Bookmark) check() []*Error {
-	var v vet
-	v.id("user_id", b.UserID)
-	v.id("topic_id", b.TopicID)
 	return v.errs
 }
 

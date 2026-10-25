@@ -52,7 +52,7 @@ func TestImportKeepsEveryColumn(t *testing.T) {
 		c.State, c.Owner, c.EmailVerified = "inactive", true, false
 		c.RegisteredAt, c.LastVisitAt, c.LastMarkAt = regAt, &visitAt, &markAt
 		c.PostCount, c.RankID = 777, ptr(int64(1))
-		c.Timezone, c.ColorScheme, c.NotifyOnPost = "Asia/Tokyo", "slate-deep", false
+		c.Timezone, c.ColorScheme = "Asia/Tokyo", "slate-deep"
 
 		// post 3
 		p := &b.Posts[2]
@@ -71,14 +71,12 @@ func TestImportKeepsEveryColumn(t *testing.T) {
 		b.Polls[0].EndsAt, b.Polls[0].Question = &endsAt, "Pick one"
 
 		b.PMs[1].Subject, b.PMs[1].AuthorIP = "A different subject", ptr("2001:db8::99")
-
-		b.TopicWatches[0].NotifyPending = true
 	})
 	mustRun(t, pool, dir, t.TempDir(), false)
 
 	t.Run("users", func(t *testing.T) {
 		var hash, state string
-		var owner, verified, notify bool
+		var owner, verified bool
 		var reg time.Time
 		var visit, mark *time.Time
 		var posts int
@@ -86,14 +84,14 @@ func TestImportKeepsEveryColumn(t *testing.T) {
 		var tz, scheme string
 		err := pool.QueryRow(ctx,
 			`select password_hash, state, is_owner, email_verified, registered_at, last_visit_at,
-			        last_mark_at, post_count, rank_id, timezone, color_scheme, notify_on_post
+			        last_mark_at, post_count, rank_id, timezone, color_scheme
 			 from users where id = 3`).
-			Scan(&hash, &state, &owner, &verified, &reg, &visit, &mark, &posts, &rank, &tz, &scheme, &notify)
+			Scan(&hash, &state, &owner, &verified, &reg, &visit, &mark, &posts, &rank, &tz, &scheme)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if hash != small.Users[2].Password.Hash || state != "inactive" || !owner || verified || notify {
-			t.Errorf("user 3 = %q %q owner=%v verified=%v notify=%v", hash, state, owner, verified, notify)
+		if hash != small.Users[2].Password.Hash || state != "inactive" || !owner || verified {
+			t.Errorf("user 3 = %q %q owner=%v verified=%v", hash, state, owner, verified)
 		}
 		if !reg.Equal(regAt) {
 			t.Errorf("registered_at = %s, want %s", reg, regAt)
@@ -119,9 +117,10 @@ func TestImportKeepsEveryColumn(t *testing.T) {
 				t.Errorf("user %d = owner %v, verified %v, %s", c.id, owner, verified, state)
 			}
 		}
-		var notifyAlice bool
-		if err := pool.QueryRow(ctx, `select notify_on_post from users where id = 1`).Scan(&notifyAlice); err != nil || !notifyAlice {
-			t.Errorf("notify_on_post of user 1 = %v, %v; want true", notifyAlice, err)
+		// Version 2 has no notify_on_post. The column keeps its default.
+		var allNotify bool
+		if err := pool.QueryRow(ctx, `select bool_and(notify_on_post) from users`).Scan(&allNotify); err != nil || !allNotify {
+			t.Errorf("notify_on_post of every user = %v, %v; want the default true", allNotify, err)
 		}
 	})
 
@@ -228,17 +227,6 @@ func TestImportKeepsEveryColumn(t *testing.T) {
 			if subject != c.subject || ip != c.ip || name != c.name {
 				t.Errorf("pm %d = %q %q %q", c.id, subject, ip, name)
 			}
-		}
-	})
-
-	t.Run("topic_watches", func(t *testing.T) {
-		var pending bool
-		if err := pool.QueryRow(ctx,
-			`select notify_pending from topic_watches where user_id = 2 and topic_id = 1`).Scan(&pending); err != nil {
-			t.Fatal(err)
-		}
-		if !pending {
-			t.Error("notify_pending = false, want true")
 		}
 	})
 }

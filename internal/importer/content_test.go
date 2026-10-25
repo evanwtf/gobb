@@ -60,7 +60,7 @@ func TestImportSmallBoard(t *testing.T) {
 	// Every data file reports its row count.
 	want := map[string]int{
 		"topics": 3, "posts": 6, "polls": 1, "poll_votes": 2, "attachments": 2,
-		"pms": 2, "topic_watches": 1, "bookmarks": 1, "topic_marks": 1, "forum_marks": 1,
+		"pms": 2, "topic_marks": 1, "forum_marks": 1,
 	}
 	for f, n := range want {
 		if counts[f] != n {
@@ -71,8 +71,8 @@ func TestImportSmallBoard(t *testing.T) {
 	// message has one row for each recipient: 2 + 1 = 3 in all.
 	for table, n := range map[string]int{
 		"topics": 3, "posts": 6, "polls": 1, "poll_options": 3, "poll_votes": 2,
-		"attachments": 2, "pms": 2, "pm_recipients": 3, "topic_watches": 1,
-		"bookmarks": 1, "topic_marks": 1, "forum_marks": 1,
+		"attachments": 2, "pms": 2, "pm_recipients": 3,
+		"topic_watches": 0, "bookmarks": 0, "topic_marks": 1, "forum_marks": 1,
 	} {
 		if got := count(t, pool, table); got != n {
 			t.Errorf("%s has %d rows, want %d", table, got, n)
@@ -204,10 +204,6 @@ func TestImportSmallBoard(t *testing.T) {
 	}
 
 	// The small tables.
-	var w bool
-	if err := pool.QueryRow(ctx, `select notify_pending from topic_watches where user_id = 2 and topic_id = 1`).Scan(&w); err != nil {
-		t.Fatal(err)
-	}
 	var marked time.Time
 	if err := pool.QueryRow(ctx, `select marked_at from topic_marks where user_id = 2 and topic_id = 1`).Scan(&marked); err != nil {
 		t.Fatal(err)

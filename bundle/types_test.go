@@ -31,7 +31,9 @@ func fullRows() []Row {
 			EmailVerified: true, RegisteredAt: testTime, LastVisitAt: &testTime,
 			LastMarkAt: &testTime, PostCount: 3, RankID: ptr(int64(1)),
 			Avatar: ptr(ref("avatars")), Signature: body(), Timezone: "America/New_York",
-			ColorScheme: "slate", NotifyOnPost: true,
+			ColorScheme: "slate", DateFormat: "iso", Location: "Lake Placid, NY",
+			Occupation: "Pilot", Interests: "Gliders", Website: "https://example.com/alice",
+			BirthDay: ptr(14), BirthMonth: ptr(3), BirthYear: ptr(1984),
 		},
 		GoneUser{ID: 9},
 		Group{ID: 1, Name: "Guests", Builtin: ptr("guests"), Kind: "builtin", Description: "d"},
@@ -75,8 +77,6 @@ func fullRows() []Row {
 			Body: body(), ShowSignature: true, AuthorDeleted: true,
 			Recipients: []Recipient{{UserID: 2, Kind: "to", Read: true, Deleted: true}},
 		},
-		TopicWatch{UserID: 1, TopicID: 1, NotifyPending: true},
-		Bookmark{UserID: 1, TopicID: 1},
 		TopicMark{UserID: 1, TopicID: 1, MarkedAt: testTime},
 		ForumMark{UserID: 1, ForumID: 2, MarkedAt: testTime},
 		Ban{
@@ -112,8 +112,6 @@ func validRows() []Row {
 		PollVote{TopicID: 1, OptionID: 1, UserID: 1, VoterIP: ptr("2001:db8::1")},
 		validAttachment(),
 		validPM(),
-		TopicWatch{UserID: 1, TopicID: 1},
-		Bookmark{UserID: 1, TopicID: 1},
 		TopicMark{UserID: 1, TopicID: 1, MarkedAt: testTime},
 		ForumMark{UserID: 1, ForumID: 2, MarkedAt: testTime},
 		validBan(),
@@ -128,7 +126,7 @@ func validUser() User {
 	return User{
 		ID: 1, Username: "alice", Email: "", State: "active", RegisteredAt: testTime,
 		Password: Password{Scheme: "legacy", Hash: ""}, Signature: body(),
-		Timezone: "UTC", ColorScheme: "slate-deep",
+		Timezone: "America/New_York", ColorScheme: "slate-deep", DateFormat: "standard",
 	}
 }
 
@@ -203,8 +201,8 @@ func validPage() StaticPage {
 }
 
 func TestRowFiles(t *testing.T) {
-	if len(Files) != 23 {
-		t.Fatalf("len(Files) = %d, want 23", len(Files))
+	if len(Files) != 21 {
+		t.Fatalf("len(Files) = %d, want 21", len(Files))
 	}
 	seen := map[string]bool{}
 	for _, f := range Files {
@@ -379,6 +377,27 @@ func TestCheckFields(t *testing.T) {
 		{"user timezone long", func() Row { u := validUser(); u.Timezone = strings.Repeat("a", 65); return u }(), "timezone"},
 		{"user timezone empty", func() Row { u := validUser(); u.Timezone = ""; return u }(), "timezone"},
 		{"user timezone Local", func() Row { u := validUser(); u.Timezone = "Local"; return u }(), "timezone"},
+		{"user timezone UTC", func() Row { u := validUser(); u.Timezone = "UTC"; return u }(), "timezone"},
+		{"user timezone offset", func() Row { u := validUser(); u.Timezone = "Etc/GMT+4"; return u }(), "timezone"},
+		{"user date format", func() Row { u := validUser(); u.DateFormat = "custom"; return u }(), "date_format"},
+		{"user date format empty", func() Row { u := validUser(); u.DateFormat = ""; return u }(), "date_format"},
+		{"user location", func() Row { u := validUser(); u.Location = strings.Repeat("l", 101); return u }(), "location"},
+		{"user occupation", func() Row { u := validUser(); u.Occupation = "a\nb"; return u }(), "occupation"},
+		{"user interests", func() Row { u := validUser(); u.Interests = strings.Repeat("i", 201); return u }(), "interests"},
+		{"user website", func() Row { u := validUser(); u.Website = "ftp://x.org"; return u }(), "website"},
+		{"user website long", func() Row { u := validUser(); u.Website = "https://example.com/" + strings.Repeat("a", 200); return u }(), "website"},
+		{"user birth day alone", func() Row { u := validUser(); u.BirthDay = ptr(5); return u }(), "birth_day"},
+		{"user birth month alone", func() Row { u := validUser(); u.BirthMonth = ptr(5); return u }(), "birth_day"},
+		{"user birth year alone", func() Row { u := validUser(); u.BirthYear = ptr(1990); return u }(), "birth_year"},
+		{"user birth day 0", func() Row { u := validUser(); u.BirthDay, u.BirthMonth = ptr(0), ptr(5); return u }(), "birth_day"},
+		{"user birth month 13", func() Row { u := validUser(); u.BirthDay, u.BirthMonth = ptr(5), ptr(13); return u }(), "birth_month"},
+		{"user birth day 31 April", func() Row { u := validUser(); u.BirthDay, u.BirthMonth = ptr(31), ptr(4); return u }(), "birth_day"},
+		{"user birth year 0", func() Row { u := validUser(); u.BirthDay, u.BirthMonth, u.BirthYear = ptr(5), ptr(5), ptr(0); return u }(), "birth_year"},
+		{"user birth year 1899", func() Row {
+			u := validUser()
+			u.BirthDay, u.BirthMonth, u.BirthYear = ptr(5), ptr(5), ptr(1899)
+			return u
+		}(), "birth_year"},
 		{"user color", func() Row { u := validUser(); u.ColorScheme = "neon"; return u }(), "color_scheme"},
 		{"user avatar dir", func() Row { u := validUser(); u.Avatar = ptr(ref("ranks")); return u }(), "avatar.path"},
 		{"user id zero", func() Row { u := validUser(); u.ID = 0; return u }(), "id"},
@@ -531,7 +550,6 @@ func TestCheckFields(t *testing.T) {
 		{"pm recipient id", func() Row { p := validPM(); p.Recipients[0].UserID = 0; return p }(), "recipients[0].user_id"},
 		{"pm body long", func() Row { p := validPM(); p.Body.Source = long; return p }(), "body.source"},
 		{"pm ip", func() Row { p := validPM(); p.AuthorIP = ptr("x"); return p }(), "author_ip"},
-		{"bookmark ids", Bookmark{UserID: 0, TopicID: 1}, "user_id"},
 		{"ban ip host bits", func() Row { b := validBan(); b.IP = ptr("10.0.0.1/8"); return b }(), "ip"},
 		{"ban ip no prefix", func() Row { b := validBan(); b.IP = ptr("10.0.0.1"); return b }(), "ip"},
 		{"ban ip6 host bits", func() Row { b := validBan(); b.IP = ptr("2001:db8::1/32"); return b }(), "ip"},
@@ -627,7 +645,6 @@ func TestCheckFields(t *testing.T) {
 		{"gone user id", GoneUser{ID: 0}, "id"},
 		{"topic mark ids", TopicMark{UserID: 1, TopicID: 0, MarkedAt: testTime}, "topic_id"},
 		{"forum mark ids", ForumMark{UserID: 0, ForumID: 1, MarkedAt: testTime}, "user_id"},
-		{"topic watch ids", TopicWatch{UserID: 1, TopicID: -1}, "topic_id"},
 		{"ban email kind, empty email", Ban{Kind: "email", Email: ptr(""), CreatedAt: testTime}, "email"},
 	}
 	for _, tt := range tests {
@@ -660,7 +677,8 @@ func TestCheckManifestAndSettings(t *testing.T) {
 		field string
 	}{
 		{"format", m(func(x *Manifest) { x.Format = "other" }).check(), "format"},
-		{"version", m(func(x *Manifest) { x.Version = 2 }).check(), "version"},
+		{"version", m(func(x *Manifest) { x.Version = 3 }).check(), "version"},
+		{"version 1", m(func(x *Manifest) { x.Version = 1 }).check(), "version"},
 		{"source", m(func(x *Manifest) { x.Source = strings.Repeat("s", 256) }).check(), "source"},
 		{"missing count", m(func(x *Manifest) { delete(x.Counts, "posts") }).check(), "counts"},
 		{"extra count", m(func(x *Manifest) { x.Counts["extra"] = 1 }).check(), "counts"},

@@ -275,38 +275,6 @@ func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 	return n, rcpts.flush(ctx)
 }
 
-func loadTopicWatches(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
-	cp := newBulk(tx, "topic_watches", "topic_watches", "user_id", "topic_id", "notify_pending")
-	n := 0
-	err := bundle.Each(r.Reader, func(line int, w bundle.TopicWatch) error {
-		if err := cp.add(ctx, line, w.UserID, w.TopicID, w.NotifyPending); err != nil {
-			return err
-		}
-		n++
-		return nil
-	})
-	if err != nil {
-		return n, err
-	}
-	return n, cp.flush(ctx)
-}
-
-func loadBookmarks(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
-	cp := newBulk(tx, "bookmarks", "bookmarks", "user_id", "topic_id")
-	n := 0
-	err := bundle.Each(r.Reader, func(line int, b bundle.Bookmark) error {
-		if err := cp.add(ctx, line, b.UserID, b.TopicID); err != nil {
-			return err
-		}
-		n++
-		return nil
-	})
-	if err != nil {
-		return n, err
-	}
-	return n, cp.flush(ctx)
-}
-
 func loadTopicMarks(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 	cp := newBulk(tx, "topic_marks", "topic_marks", "user_id", "topic_id", "marked_at")
 	n := 0

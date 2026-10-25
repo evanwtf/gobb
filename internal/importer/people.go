@@ -108,16 +108,14 @@ func loadUsers(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 			     password_hash, password_scheme, state, is_owner, email_verified,
 			     registered_at, last_visit_at, last_mark_at, post_count, rank_id,
 			     avatar_path, signature_source, signature_tree, signature_markdown,
-			     signature_smilies, signature_autolink, timezone, color_scheme,
-			     notify_on_post)
+			     signature_smilies, signature_autolink, timezone, color_scheme)
 			 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-			     $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24)`,
+			     $16, $17, $18::jsonb, $19, $20, $21, $22, $23)`,
 			u.ID, u.Username, account.CleanUsername(u.Username), u.Email, account.CleanEmail(u.Email),
 			u.Password.Hash, u.Password.Scheme, u.State, u.Owner, u.EmailVerified,
 			u.RegisteredAt, u.LastVisitAt, u.LastMarkAt, u.PostCount, u.RankID,
 			filePath(u.Avatar), u.Signature.Source, tree, u.Signature.Markdown,
-			u.Signature.Smilies, u.Signature.Autolink, u.Timezone, u.ColorScheme,
-			u.NotifyOnPost)
+			u.Signature.Smilies, u.Signature.Autolink, u.Timezone, u.ColorScheme)
 		if err != nil {
 			return idErr("users", line, u.ID, "insert", err)
 		}

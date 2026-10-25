@@ -2,6 +2,7 @@ package bundle_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -185,9 +186,9 @@ func TestCheckRefuses(t *testing.T) {
 		{"recipient that is not a user", func(b *bundletest.Board) {
 			b.PMs[0].Recipients = append(b.PMs[0].Recipients, bundle.Recipient{UserID: 99, Kind: "bcc"})
 		}, "pms.jsonl:1: recipients[2].user_id: no row in users.jsonl has id 99"},
-		{"bookmark twice", func(b *bundletest.Board) {
-			b.Bookmarks = append(b.Bookmarks, b.Bookmarks[0])
-		}, "bookmarks.jsonl:2: user_id: the pair (user_id 3, topic_id 2) appears already, on line 1"},
+		{"topic mark twice", func(b *bundletest.Board) {
+			b.TopicMarks = append(b.TopicMarks, b.TopicMarks[0])
+		}, "topic_marks.jsonl:2: user_id: the pair (user_id 2, topic_id 1) appears already, on line 1"},
 		{"forum mark for a missing forum", func(b *bundletest.Board) {
 			b.ForumMarks[0].ForumID = 99
 		}, "forum_marks.jsonl:1: forum_id: no row in forums.jsonl has id 99"},
@@ -532,5 +533,220 @@ func TestCheckPMWithNobodyToSeeIt(t *testing.T) {
 	want := "pms.jsonl:1: recipients: "
 	if len(errs) != 1 || !strings.HasPrefix(errs[0].Error(), want) {
 		t.Fatalf("Check = %v\nwant one error that starts with %q", err, want)
+	}
+}
+
+// editLines rewrites each line of the JSON Lines file name in dir. f gets the
+// line number (from 1) and the decoded object. The writer refuses a row that
+// fails its own checks, so a test that needs one edits the file.
+func editLines(t *testing.T, dir, name string, f func(line int, m map[string]any)) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []byte
+	for i, line := range bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n")) {
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatal(err)
+		}
+		f(i+1, m)
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(append(out, b...), '\n')
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// editObject rewrites the JSON object in dir/name.
+func editObject(t *testing.T, dir, name string, f func(m map[string]any)) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	f(m)
+	if data, err = json.Marshal(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// openAndCheck opens the bundle in dir and runs Check. It returns the first
+// error, from Open or from Check.
+func openAndCheck(dir string) error {
+	r, err := bundle.Open(dir)
+	if err != nil {
+		return err
+	}
+	return bundle.Check(r)
+}
+
+func TestUserZoneMustBePlace(t *testing.T) {
+	for _, zone := range []string{"Etc/GMT+4", "UTC", "Etc/UTC", "GMT", "EST5EDT", "Australia/ACT", "america/new_york"} {
+		t.Run("user "+zone, func(t *testing.T) {
+			dir := bundletest.Write(t, bundletest.Small())
+			editLines(t, dir, "users.jsonl", func(line int, m map[string]any) {
+				if line == 1 {
+					m["timezone"] = zone
+				}
+			})
+			err := openAndCheck(dir)
+			var errs bundle.Errors
+			if !errors.As(err, &errs) || len(errs) != 1 ||
+				errs[0].File != "users.jsonl" || errs[0].Line != 1 || errs[0].Field != "timezone" {
+				t.Errorf("Check = %v, want one error at users.jsonl:1 field timezone", err)
+			}
+		})
+	}
+	for _, zone := range []string{"UTC", "Etc/GMT+4"} {
+		t.Run("settings "+zone, func(t *testing.T) {
+			dir := bundletest.Write(t, bundletest.Small())
+			editObject(t, dir, "settings.json", func(m map[string]any) { m["timezone"] = zone })
+			var e *bundle.Error
+			if err := openAndCheck(dir); !errors.As(err, &e) || e.File != "settings.json" || e.Field != "timezone" {
+				t.Errorf("Open = %v, want an error at settings.json field timezone", err)
+			}
+		})
+	}
+}
+
+func TestKnownZone(t *testing.T) {
+	for name, want := range map[string]bool{
+		"America/New_York": true, "Europe/Kyiv": true, "UTC": false, "Etc/GMT+4": false, "": false,
+	} {
+		if got := bundle.KnownZone(name); got != want {
+			t.Errorf("KnownZone(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestUserVersion2Fields checks each rule of the version 2 fields of users.jsonl
+// through Open and Check, with created_at in 2026.
+func TestUserVersion2Fields(t *testing.T) {
+	long := func(n int) string { return strings.Repeat("a", n) }
+	date := func(d, m, y any) func(map[string]any) {
+		return func(u map[string]any) { u["birth_day"], u["birth_month"], u["birth_year"] = d, m, y }
+	}
+	set := func(k string, v any) func(map[string]any) { return func(u map[string]any) { u[k] = v } }
+	tests := []struct {
+		name  string
+		edit  func(u map[string]any)
+		field string // the field of the one expected error; empty when the row passes
+	}{
+		{"standard", set("date_format", "standard"), ""},
+		{"relative", set("date_format", "relative"), ""},
+		{"iso", set("date_format", "iso"), ""},
+		{"custom date format", set("date_format", "custom"), "date_format"},
+		{"empty date format", set("date_format", ""), "date_format"},
+		{"https website", set("website", "https://example.com/alice"), ""},
+		{"empty website", set("website", ""), ""},
+		{"scheme in upper case", set("website", "HTTPS://Example.com/a"), ""},
+		{"javascript website", set("website", "javascript:alert(1)"), "website"},
+		{"ftp website", set("website", "ftp://x.org"), "website"},
+		{"website with no scheme", set("website", "example.com"), "website"},
+		{"website with no host", set("website", "https://"), "website"},
+		{"website with user info", set("website", "https://a:b@x.org"), "website"},
+		{"website with a space", set("website", "https://example.com/a b"), "website"},
+		{"website of 200 bytes", set("website", "https://example.com/"+long(200-20)), ""},
+		{"website of 201 bytes", set("website", "https://example.com/"+long(201-20)), "website"},
+		{"interests of 200 characters", set("interests", strings.Repeat("é", 200)), ""},
+		{"interests of 201 characters", set("interests", strings.Repeat("é", 201)), "interests"},
+		{"location of 100 characters", set("location", long(100)), ""},
+		{"location of 101 characters", set("location", long(101)), "location"},
+		{"occupation of 101 characters", set("occupation", long(101)), "occupation"},
+		{"location with a line break", set("location", "Lake\nPlacid"), "location"},
+		{"occupation with a tab", set("occupation", "a\tb"), "occupation"},
+		{"interests with a control character", set("interests", "a\u0007b"), "interests"},
+		{"no birthday", date(nil, nil, nil), ""},
+		{"day and month", date(2, 7, nil), ""},
+		{"full date", date(14, 3, 1984), ""},
+		{"day with no month", date(5, nil, nil), "birth_day"},
+		{"month with no day", date(nil, 5, nil), "birth_day"},
+		{"year with no day", date(nil, nil, 1990), "birth_year"},
+		{"year with day only", date(5, nil, 1990), "birth_day"},
+		{"29 February 2001", date(29, 2, 2001), "birth_day"},
+		{"29 February 2000", date(29, 2, 2000), ""},
+		{"29 February, no year", date(29, 2, nil), ""},
+		{"31 April", date(31, 4, nil), "birth_day"},
+		{"day 0", date(0, 5, nil), "birth_day"},
+		{"month 13", date(5, 13, nil), "birth_month"},
+		{"year 0", date(5, 5, 0), "birth_year"},
+		{"year 1899", date(5, 5, 1899), "birth_year"},
+		{"year 1900", date(5, 5, 1900), ""},
+		{"year 2008, a bound of 2007", date(5, 5, 2008), "birth_year"},
+		{"year 2007, the bound", date(5, 5, 2007), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := bundletest.Write(t, bundletest.Small())
+			editObject(t, dir, "manifest.json", func(m map[string]any) { m["created_at"] = "2026-10-25T12:00:00Z" })
+			editLines(t, dir, "users.jsonl", func(line int, m map[string]any) {
+				if line == 1 {
+					tt.edit(m)
+				}
+			})
+			err := openAndCheck(dir)
+			if tt.field == "" {
+				if err != nil {
+					t.Fatalf("Check = %v, want nil", err)
+				}
+				return
+			}
+			var errs bundle.Errors
+			var one *bundle.Error
+			switch {
+			case errors.As(err, &errs) && len(errs) == 1:
+				one = errs[0]
+			case errors.As(err, &one):
+			default:
+				t.Fatalf("Check = %v, want one error", err)
+			}
+			if one.File != "users.jsonl" || one.Line != 1 || one.Field != tt.field {
+				t.Errorf("error = %v, want users.jsonl:1 field %s", one, tt.field)
+			}
+		})
+	}
+}
+
+// TestBirthYearBoundFollowsCreatedAt pins that the latest birth year is the year
+// of manifest.created_at minus 19, in UTC.
+func TestBirthYearBoundFollowsCreatedAt(t *testing.T) {
+	for _, tt := range []struct {
+		createdAt string
+		year      int
+		ok        bool
+	}{
+		{"2026-10-25T12:00:00Z", 2007, true},
+		{"2026-10-25T12:00:00Z", 2008, false},
+		{"2030-01-01T00:00:00Z", 2011, true},
+		{"2030-01-01T00:00:00Z", 2012, false},
+		{"2026-12-31T23:30:00-05:00", 2008, true}, // 2027-01-01 in UTC
+	} {
+		t.Run(tt.createdAt+" "+strconv.Itoa(tt.year), func(t *testing.T) {
+			dir := bundletest.Write(t, bundletest.Small())
+			editObject(t, dir, "manifest.json", func(m map[string]any) { m["created_at"] = tt.createdAt })
+			editLines(t, dir, "users.jsonl", func(line int, m map[string]any) {
+				if line == 1 {
+					m["birth_year"] = tt.year
+				}
+			})
+			if err := openAndCheck(dir); (err == nil) != tt.ok {
+				t.Errorf("Check = %v, want ok = %v", err, tt.ok)
+			}
+		})
 	}
 }

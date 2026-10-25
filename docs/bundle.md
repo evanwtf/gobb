@@ -1,4 +1,4 @@
-# The gobb import bundle, format version 1
+# The gobb import bundle, format version 2
 
 A bundle is the file format that a converter writes to move a board into gobb. This
 page is the reference for the format. The Go package `github.com/evanwtf/gobb/bundle`
@@ -27,7 +27,7 @@ level (an AppleDouble `._` file is an extra entry):
 
 - `manifest.json`
 - `settings.json`
-- 23 data files, each named `<name>.jsonl`. Each file is present even when it is empty.
+- 21 data files, each named `<name>.jsonl`. Each file is present even when it is empty.
 - `files/`, the directory that holds the files the rows name. It may be absent when no
   row names a file.
 
@@ -51,15 +51,13 @@ The data files, in load order:
 12. `poll_votes.jsonl`
 13. `attachments.jsonl`
 14. `pms.jsonl`
-15. `topic_watches.jsonl`
-16. `bookmarks.jsonl`
-17. `topic_marks.jsonl`
-18. `forum_marks.jsonl`
-19. `bans.jsonl`
-20. `smilies.jsonl`
-21. `legacy_routes.jsonl`
-22. `legacy_files.jsonl`
-23. `static_pages.jsonl`
+15. `topic_marks.jsonl`
+16. `forum_marks.jsonl`
+17. `bans.jsonl`
+18. `smilies.jsonl`
+19. `legacy_routes.jsonl`
+20. `legacy_files.jsonl`
+21. `static_pages.jsonl`
 
 ## Field rules
 
@@ -88,15 +86,22 @@ only on a field with a `?`. A list or an object that the tables name (`settings`
 - **slug**: matches `^[a-z0-9][a-z0-9-]{0,63}$`.
 - **param**: matches `^[A-Za-z0-9_]{1,64}$`.
 - **ip**: an IPv4 or IPv6 address, with no zone, for example `10.0.0.5` or `2001:db8::5`.
-- **zone**: an IANA time zone name that Go's `time.LoadLocation` accepts, for example
-  `America/New_York`. The empty string and `Local` are not zone names here.
+- **zone**: a place from the `zone.tab` file of the IANA time zone database, for example
+  `America/New_York` or `Europe/Kyiv`. The match is exact. A fixed offset (`Etc/GMT+4`),
+  `UTC`, `GMT`, an old alias (`EST5EDT`, `Australia/ACT`), `Local` and the empty string
+  are not zones here, because a member's time must follow a real place and its
+  daylight saving rules. A converter written in Go maps its zones with
+  `bundle.KnownZone`. The list is `internal/tz` in the gobb repository, for tzdata
+  2026c.
 - **setting**: `"yes"`, `"no"` or `"never"`. `never` always wins over `yes`.
 - **option**: one of the permission option names that gobb defines, such as
   `forum.read` or `topic.reply`. An option is one of three kinds. A *forum* option
   applies per forum. A *board* option applies to the whole board. A *moderator* option
   applies at both levels.
 
-Every length limit in this format is in bytes of UTF-8, not in characters.
+Every length limit in this format is in bytes of UTF-8, not in characters, except the
+limits of `location`, `occupation` and `interests` in `users.jsonl`, which count
+characters.
 
 These integer fields land in 32-bit database columns, so each is at most
 2,147,483,647: `users.post_count`, `topics.view_count`, `posts.edit_count`,
@@ -168,23 +173,23 @@ attachment.
 | Field | Type | Rule |
 |---|---|---|
 | `format` | string | The text `gobb-bundle`. |
-| `version` | int | The number `1`. |
+| `version` | int | The number `2`. A bundle of version 1 is refused (see "Changes from version 1"). |
 | `created_at` | time | When the converter wrote the bundle. |
 | `source` | label | A short description of the source system. |
-| `counts` | object | Exactly the 23 data-file names as keys (no `.jsonl`). Each value is a count: the number of lines in that file. |
+| `counts` | object | Exactly the 21 data-file names as keys (no `.jsonl`). Each value is a count: the number of lines in that file. |
 
 A count that disagrees with its file stops the import.
 
 ```json
 {
   "format": "gobb-bundle",
-  "version": 1,
+  "version": 2,
   "created_at": "2026-01-15T12:00:00Z",
   "source": "example forum export",
   "counts": {
     "ranks": 1, "users": 2, "gone_users": 1, "groups": 4, "group_members": 1,
     "roles": 1, "grants": 2, "forums": 2, "topics": 1, "posts": 2, "polls": 1,
-    "poll_votes": 1, "attachments": 1, "pms": 1, "topic_watches": 1, "bookmarks": 1,
+    "poll_votes": 1, "attachments": 1, "pms": 1,
     "topic_marks": 1, "forum_marks": 1, "bans": 1, "smilies": 1, "legacy_routes": 1,
     "legacy_files": 1, "static_pages": 1
   }
@@ -197,7 +202,7 @@ A count that disagrees with its file stops the import.
 |---|---|---|
 | `board_name` | name | The name of the board. |
 | `board_description` | label | A short description. |
-| `timezone` | zone | The zone in which guests see times. |
+| `timezone` | zone | The zone in which guests see times. It is a place; see **zone**. |
 | `default_color_scheme` | string | `slate`, `slate-deep` or `slate-light`. |
 | `registration` | string | `closed`, `open` or `approval`. |
 | `email_notifications` | bool | Whether the board sends notification email. |
@@ -247,16 +252,36 @@ A count that disagrees with its file stops the import.
 | `rank_id`? | id | A row of `ranks.jsonl`. |
 | `avatar`? | file | An image under `avatars/`. It holds `path`, `size` and `sha256`. |
 | `signature` | body | The user's signature. It holds `source`, `markdown`, `smilies` and `autolink`. |
-| `timezone` | zone | |
+| `timezone` | zone | The zone in which the user sees times. It is a place; see **zone**. |
 | `color_scheme` | string | `slate`, `slate-deep` or `slate-light`. |
-| `notify_on_post` | bool | |
+| `date_format` | string | How the user sees times: `standard`, `relative` or `iso`. |
+| `location` | string | Plain text, at most 100 characters, with no control character and no line break. May be empty. |
+| `occupation` | string | The same rule as `location`: at most 100 characters. |
+| `interests` | string | The same rule, at most 200 characters. |
+| `website` | string | Empty, or an `http` or `https` URL. See below. |
+| `birth_day`? | int | The day of the month of the birthday, 1 to 31, or `null`. |
+| `birth_month`? | int | The month of the birthday, 1 to 12, or `null`. |
+| `birth_year`? | int | The year of the birthday, or `null`. |
+
+`website` is empty, or it meets all of these: it is at most 200 bytes; its scheme is
+`http` or `https` (in any case); it has a host; and it has no user information, no
+white space and no control character.
+
+The birthday follows these rules:
+
+- `birth_day` and `birth_month` are both `null`, or both set. `birth_year` may be set
+  only when both are.
+- The date exists. 29 February needs a `null` year or a leap year.
+- The year is 1900 to the year of `manifest.created_at` (in UTC) minus 19. A user
+  must be at least 19 years old. `bundle.Check` proves the upper bound, because it
+  needs the manifest.
 
 Cross-row rules: user names are unique after gobb cleans them (case folding and
 Unicode normalization). At least one active user is an owner, and at least one active
 owner has a non-empty `password.hash`, so that an owner can log in after the cutover.
 
 ```json
-{"id":1,"username":"alice","email":"alice@example.com","password":{"scheme":"gobb","hash":"$argon2id$v=19$m=19456,t=2,p=1$nIWkXeM7L5FA7XDKfH36lQ$lxqRFYzVFEIy5o0i5Or7n6g0FyBsBN3Mfl8PA1WJdMo"},"state":"active","owner":true,"email_verified":true,"registered_at":"2019-05-01T10:00:00Z","last_visit_at":"2026-01-10T08:30:00Z","last_mark_at":null,"post_count":120,"rank_id":1,"avatar":null,"signature":{"source":"Example signature","markdown":true,"smilies":true,"autolink":true},"timezone":"America/New_York","color_scheme":"slate","notify_on_post":true}
+{"id":1,"username":"alice","email":"alice@example.com","password":{"scheme":"gobb","hash":"$argon2id$v=19$m=19456,t=2,p=1$nIWkXeM7L5FA7XDKfH36lQ$lxqRFYzVFEIy5o0i5Or7n6g0FyBsBN3Mfl8PA1WJdMo"},"state":"active","owner":true,"email_verified":true,"registered_at":"2019-05-01T10:00:00Z","last_visit_at":"2026-01-10T08:30:00Z","last_mark_at":null,"post_count":120,"rank_id":1,"avatar":null,"signature":{"source":"Example signature","markdown":true,"smilies":true,"autolink":true},"timezone":"America/New_York","color_scheme":"slate","date_format":"standard","location":"Lake Placid, NY","occupation":"","interests":"","website":"https://example.com/alice","birth_day":14,"birth_month":3,"birth_year":1984}
 ```
 
 ## gone_users.jsonl
@@ -496,33 +521,6 @@ to `author_id`.
 {"id":1,"author_id":1,"author_name":"alice","author_ip":null,"created_at":"2025-12-01T18:00:00Z","subject":"Hello","body":{"source":"Hi Bob.","markdown":true,"smilies":true,"autolink":true},"show_signature":false,"author_deleted":false,"recipients":[{"user_id":2,"kind":"to","read":true,"deleted":false}]}
 ```
 
-## topic_watches.jsonl
-
-| Field | Type | Rule |
-|---|---|---|
-| `user_id` | id | A row of `users.jsonl`. |
-| `topic_id` | id | A row of `topics.jsonl`. |
-| `notify_pending` | bool | Whether a notification is pending. |
-
-The pair (`user_id`, `topic_id`) is unique.
-
-```json
-{"user_id":2,"topic_id":1,"notify_pending":false}
-```
-
-## bookmarks.jsonl
-
-| Field | Type | Rule |
-|---|---|---|
-| `user_id` | id | A row of `users.jsonl`. |
-| `topic_id` | id | A row of `topics.jsonl`. |
-
-The pair (`user_id`, `topic_id`) is unique.
-
-```json
-{"user_id":2,"topic_id":1}
-```
-
 ## topic_marks.jsonl
 
 A row says when a user last read a topic.
@@ -645,3 +643,21 @@ A row maps an old URL prefix of the source system to a gobb directory.
 ```json
 {"slug":"about","title":"About","body":{"source":"This is an example board.","markdown":true,"smilies":false,"autolink":true},"updated_at":"2025-06-01T12:00:00Z"}
 ```
+
+## Changes from version 1
+
+Version 2 changes these things. Build the bundle again with a converter for version 2:
+gobb refuses a bundle of version 1 with `bundle format version 1; this gobb reads
+version 2. Build the bundle again with a converter for version 2.`
+
+- `manifest.json` has `"version": 2`, and `counts` has 21 keys.
+- `users.jsonl` drops `notify_on_post`. The database column keeps its default,
+  because email comes later with its own switch.
+- `users.jsonl` adds `date_format`, `location`, `occupation`, `interests`, `website`,
+  `birth_day`, `birth_month` and `birth_year`.
+- The format drops `topic_watches.jsonl` and `bookmarks.jsonl`, because gobb has no page
+  for them. A bundle that holds either file is refused. The tables stay in the schema.
+- `settings.timezone` and `users.timezone` must be places from `zone.tab`. A bundle that
+  holds `UTC`, a fixed offset or an alias in these fields is refused. A converter can map
+  such a value to a place with the same offset, for example `Atlantic/Reykjavik` for
+  UTC.

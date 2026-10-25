@@ -9,7 +9,7 @@ import (
 const Format = "gobb-bundle"
 
 // Version is the version of the format that this package reads and writes.
-const Version = 1
+const Version = 2
 
 // MaxLineBytes is the longest line that a data file may hold, in bytes.
 const MaxLineBytes = 1 << 20
@@ -19,7 +19,7 @@ const MaxLineBytes = 1 << 20
 // of a [Body].
 const MaxSourceBytes = 100_000
 
-// Files lists the names of the 23 data files in load order. A name has no
+// Files lists the names of the 21 data files in load order. A name has no
 // ".jsonl" suffix. A row that points at another row comes after the file of the
 // row it points at.
 var Files = []string{
@@ -37,8 +37,6 @@ var Files = []string{
 	"poll_votes",
 	"attachments",
 	"pms",
-	"topic_watches",
-	"bookmarks",
 	"topic_marks",
 	"forum_marks",
 	"bans",
@@ -193,7 +191,14 @@ type User struct {
 	Signature     Body       `json:"signature"`
 	Timezone      string     `json:"timezone"`
 	ColorScheme   string     `json:"color_scheme"`
-	NotifyOnPost  bool       `json:"notify_on_post"`
+	DateFormat    string     `json:"date_format"` // "standard", "relative" or "iso"
+	Location      string     `json:"location"`
+	Occupation    string     `json:"occupation"`
+	Interests     string     `json:"interests"`
+	Website       string     `json:"website"`
+	BirthDay      *int       `json:"birth_day"`
+	BirthMonth    *int       `json:"birth_month"`
+	BirthYear     *int       `json:"birth_year"`
 }
 
 // GoneUser is a row of gone_users.jsonl: the ID of a user that the source system
@@ -336,19 +341,6 @@ type PM struct {
 	Recipients    []Recipient `json:"recipients"`
 }
 
-// TopicWatch is a row of topic_watches.jsonl.
-type TopicWatch struct {
-	UserID        int64 `json:"user_id"`
-	TopicID       int64 `json:"topic_id"`
-	NotifyPending bool  `json:"notify_pending"`
-}
-
-// Bookmark is a row of bookmarks.jsonl.
-type Bookmark struct {
-	UserID  int64 `json:"user_id"`
-	TopicID int64 `json:"topic_id"`
-}
-
 // TopicMark is a row of topic_marks.jsonl: the time a user last read a topic.
 type TopicMark struct {
 	UserID   int64     `json:"user_id"`
@@ -452,12 +444,6 @@ func (Attachment) DataFile() string { return "attachments" }
 
 // DataFile returns "pms".
 func (PM) DataFile() string { return "pms" }
-
-// DataFile returns "topic_watches".
-func (TopicWatch) DataFile() string { return "topic_watches" }
-
-// DataFile returns "bookmarks".
-func (Bookmark) DataFile() string { return "bookmarks" }
 
 // DataFile returns "topic_marks".
 func (TopicMark) DataFile() string { return "topic_marks" }

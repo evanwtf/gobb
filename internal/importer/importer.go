@@ -81,8 +81,6 @@ var loaders = []loader{
 	{"poll_votes", loadPollVotes},
 	{"attachments", loadAttachments},
 	{"pms", loadPMs},
-	{"topic_watches", loadTopicWatches},
-	{"bookmarks", loadBookmarks},
 	{"topic_marks", loadTopicMarks},
 	{"forum_marks", loadForumMarks},
 	{"bans", loadBans},

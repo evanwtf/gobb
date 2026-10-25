@@ -2,7 +2,7 @@
 // to move a board into gobb.
 //
 // A bundle is a directory, or a gzip-compressed tar archive of one. It holds
-// "manifest.json", "settings.json", 23 JSON Lines data files and a "files"
+// "manifest.json", "settings.json", 21 JSON Lines data files and a "files"
 // directory. This package holds a Go type for every file and every row, and the
 // checks that need only one row. The checks are the string rules, the enums, the
 // ranges, the exactly-one rules, the scope fit of an option grant and the shape

@@ -54,14 +54,15 @@ var errFull = errors.New("bundle: error limit reached")
 // Check proves the rules that span rows:
 //
 //   - IDs are unique in each file, and so are the keys: the pair of a group
-//     member, a watch, a bookmark and a read mark, the triple of a poll vote,
-//     the code of a smiley, the pair (path, match) of a legacy route, the
-//     prefix of a legacy file and the slug of a static page;
+//     member and a read mark, the triple of a poll vote, the code of a smiley,
+//     the pair (path, match) of a legacy route, the prefix of a legacy file and
+//     the slug of a static page;
 //   - every reference names a row that exists;
 //   - each of the four built-in groups appears exactly once;
 //   - at least one active user is an owner, and at least one active owner has a
 //     password hash, so that an owner can log in;
 //   - cleaned user names are unique;
+//   - a birth year is at most the year of manifest.created_at minus 19;
 //   - the forum parent chain has no cycle;
 //   - a topic is in a forum of kind forum;
 //   - a moved-topic marker has no posts and points at a topic that is not a
@@ -95,7 +96,7 @@ func Check(r *Reader) error {
 		tallies: map[pollOption]tally{}, voters: map[pollVoter]int{},
 		votes: map[voteKey]int{}, clean: map[string]int64{},
 		builtin: map[string]int{}, named: map[string]*namedFile{},
-		members: pairSet{}, watches: pairSet{}, bookmarks: pairSet{},
+		members:    pairSet{},
 		topicMarks: pairSet{}, forumMarks: pairSet{},
 		smileys: keySet{}, routes: keySet{}, prefixes: keySet{}, pages: keySet{},
 	}
@@ -122,8 +123,6 @@ func Check(r *Reader) error {
 	scan(w, w.pollVote)
 	scan(w, w.attachment)
 	scan(w, w.pm)
-	scan(w, w.topicWatch)
-	scan(w, w.bookmark)
 	scan(w, w.topicMark)
 	scan(w, w.forumMark)
 	scan(w, w.ban)
@@ -249,8 +248,8 @@ type whole struct {
 	loginOwner  bool             // an active owner has a password hash
 	builtin     map[string]int   // built-in group name -> line
 
-	members, watches, bookmarks, topicMarks, forumMarks pairSet
-	smileys, routes, prefixes, pages                    keySet
+	members, topicMarks, forumMarks  pairSet
+	smileys, routes, prefixes, pages keySet
 
 	grantForums []lineRef // forum IDs that grants name, checked after forums
 	pageRoutes  []slugRef // slugs that page routes name, checked after static_pages
@@ -375,6 +374,10 @@ func (w *whole) user(line int, u User) {
 		return
 	}
 	w.optRef(file, line, "rank_id", w.ranks, u.RankID, "ranks.jsonl")
+	if latest := w.r.manifest.CreatedAt.UTC().Year() - account.MinAge; u.BirthYear != nil && *u.BirthYear > latest {
+		w.bad(file, line, "birth_year", "is %d; the latest year is %d, which is the year of manifest.created_at minus %d",
+			*u.BirthYear, latest, account.MinAge)
+	}
 	if u.Avatar != nil {
 		w.nameFile(file, line, "avatar", *u.Avatar)
 	}
@@ -695,20 +698,6 @@ func (w *whole) pm(line int, m PM) {
 	for i, r := range m.Recipients {
 		w.ref(file, line, "recipients["+strconv.Itoa(i)+"].user_id", w.users, r.UserID, "users.jsonl")
 	}
-}
-
-func (w *whole) topicWatch(line int, x TopicWatch) {
-	const file = "topic_watches.jsonl"
-	w.ref(file, line, "user_id", w.users, x.UserID, "users.jsonl")
-	w.topicRef(file, line, "topic_id", x.TopicID)
-	w.uniquePair(file, line, w.watches, "user_id", x.UserID, "topic_id", x.TopicID)
-}
-
-func (w *whole) bookmark(line int, x Bookmark) {
-	const file = "bookmarks.jsonl"
-	w.ref(file, line, "user_id", w.users, x.UserID, "users.jsonl")
-	w.topicRef(file, line, "topic_id", x.TopicID)
-	w.uniquePair(file, line, w.bookmarks, "user_id", x.UserID, "topic_id", x.TopicID)
 }
 
 func (w *whole) topicMark(line int, x TopicMark) {
