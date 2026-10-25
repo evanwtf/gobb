@@ -48,6 +48,13 @@ func TestReleaseCheck(t *testing.T) {
 			notNotes:  []string{"Older bullet.", "## 0.1.0", "0.0.9"},
 		},
 		{
+			name: "CRLF line ends give the same notes", tag: "v0.1.0", codeVer: "0.1.0",
+			changelog: strings.ReplaceAll(goodLog, "\n", "\r\n"),
+			wantVer:   "0.1.0",
+			wantNotes: []string{"Intro line.", "First bullet.", "Second bullet."},
+			notNotes:  []string{"\r", "Older bullet."},
+		},
+		{
 			name: "tag with larger numbers passes", tag: "v10.20.30", codeVer: "10.20.30",
 			changelog: "## 10.20.30 (2030-02-28)\n\n- x\n", wantVer: "10.20.30", wantNotes: []string{"- x"},
 		},
@@ -120,6 +127,25 @@ func TestReleaseCheck(t *testing.T) {
 		{
 			name: "heading is the last line", tag: "v0.1.0", codeVer: "0.1.0",
 			changelog: "## 0.1.0 (2026-11-01)", wantErr: "empty",
+		},
+
+		// GitHub refuses a release body over 125,000 characters. The check counts
+		// characters, not bytes: "é" is two bytes and one character.
+		{
+			name: "notes of exactly the limit pass", tag: "v0.1.0", codeVer: "0.1.0",
+			changelog: "## 0.1.0 (2026-11-01)\n\n" + strings.Repeat("a", maxNotes) + "\n", wantVer: "0.1.0",
+		},
+		{
+			name: "notes one character over the limit", tag: "v0.1.0", codeVer: "0.1.0",
+			changelog: "## 0.1.0 (2026-11-01)\n\n" + strings.Repeat("a", maxNotes+1) + "\n", wantErr: "125000",
+		},
+		{
+			name: "the limit counts characters, not bytes", tag: "v0.1.0", codeVer: "0.1.0",
+			changelog: "## 0.1.0 (2026-11-01)\n\n" + strings.Repeat("é", maxNotes) + "\n", wantVer: "0.1.0",
+		},
+		{
+			name: "dry run refuses notes over the limit", dry: true, codeVer: "0.1.0",
+			changelog: "## 0.1.0 (unreleased)\n\n" + strings.Repeat("a", maxNotes+1) + "\n", wantErr: "125000",
 		},
 
 		// The dry mode takes the version from the code and accepts "(unreleased)".

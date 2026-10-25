@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# bash adds -e and -o pipefail, so a failed command in a pipe fails the step.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -33,6 +38,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # The check that the tag is on main needs the history of main.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Scope the Go caches to this run
@@ -54,6 +61,8 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          # Reads the releases of this repo (contents: read is enough).
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           # An unknown event, or a manual run with no dry_run value, is refused.
@@ -69,6 +78,18 @@ jobs:
             [ "$REF_TYPE" = tag ] || { echo "refused: publishing runs only from a tag, not from the $REF_TYPE $REF_NAME"; exit 1; }
             version=$(go run ./scripts/releasecheck "$REF_NAME")
             publish=true
+            # Only a commit of main may be released.
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+              { echo "refused: the commit of $REF_NAME is not on main"; exit 1; }
+            # A re-run of a published tag must not push the images again. A failed
+            # lookup that does not say "release not found" is also a refusal.
+            if out=$(gh release view "$REF_NAME" -R "$GITHUB_REPOSITORY" --json tagName 2>&1); then
+              echo "refused: $REF_NAME has a release already"; exit 1
+            fi
+            case "$out" in
+              *"release not found"*) ;;
+              *) echo "refused: cannot tell if $REF_NAME has a release: $out"; exit 1 ;;
+            esac
           fi
           echo "mode $mode, version $version, publish $publish"
           {
@@ -93,24 +114,31 @@ jobs:
       VERSION: ${{ needs.releasecheck.outputs.version }}
       # Every name carries the run ID and the attempt: the runner is shared.
       IMAGE: gobb:release-${{ github.run_id }}-${{ github.run_attempt }}
+      BUILDER: gobb-release-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      # First, before anything can fail: DOCKER_CONFIG points at a folder of this
+      # run, so no step, and no clean-up step, ever acts on the Docker state of the
+      # runner user. (A job-level env cannot read runner.temp, so a step sets it.)
+      - name: Scope the Docker config to this run
+        run: |
+          dir="$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "DOCKER_CONFIG=$dir" >> "$GITHUB_ENV"
+          mkdir -p "$dir"
+          chmod 700 "$dir"
+          # The Docker CLI looks for its plugins (buildx) in the config folder first,
+          # so the new folder links to the plugins of the runner user.
+          [ ! -d "$HOME/.docker/cli-plugins" ] || ln -s "$HOME/.docker/cli-plugins" "$dir/cli-plugins"
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Scope the Go caches and the Docker config to this run
+      - name: Scope the Go caches to this run
         run: |
           {
             echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
             echo "GOMODCACHE=$RUNNER_TEMP/gomod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-            echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-            echo "BUILDER=gobb-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           } >> "$GITHUB_ENV"
-          # The Docker CLI looks for its plugins (buildx) in the config folder first,
-          # so the new folder links to the plugins of the runner user.
-          mkdir -p "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          chmod 700 "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          [ ! -d "$HOME/.docker/cli-plugins" ] || ln -s "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cli-plugins"
 
       - uses: actions/setup-go@v7
         with:
@@ -122,7 +150,7 @@ jobs:
         run: |
           docker buildx version
           gh --version
-          sha256sum --version | head -n 1
+          sha256sum --version > /dev/null
 
       - name: Build the binaries and their sums
         run: |
@@ -136,7 +164,7 @@ jobs:
             (cd dist && sha256sum "$name" > "$name.sha256")
             info=$(go version -m "dist/$name")
             for want in "CGO_ENABLED=0" "-trimpath=true" "GOOS=$os" "GOARCH=$arch"; do
-              echo "$info" | grep -q -F -- "$want" || { echo "$name: build info lacks $want"; exit 1; }
+              echo "$info" | grep -F -- "$want" > /dev/null || { echo "$name: build info lacks $want"; exit 1; }
             done
           done
           (cd dist && sha256sum -c ./*.sha256)
@@ -168,8 +196,8 @@ jobs:
           for arch in amd64 arm64; do
             docker buildx build --builder "$BUILDER" --platform "linux/$arch" --output "type=tar,dest=$rootfs/$arch.tar" .
             tar -xf "$rootfs/$arch.tar" -O usr/bin/gobb > "$rootfs/gobb-$arch"
-            go version -m "$rootfs/gobb-$arch" | grep -q -F "GOARCH=$arch" || { echo "the $arch image holds a binary for another CPU"; exit 1; }
-            tar -tf "$rootfs/$arch.tar" | grep -q -x 'var/lib/gobb/' || { echo "the $arch image lacks /var/lib/gobb"; exit 1; }
+            go version -m "$rootfs/gobb-$arch" | grep -F "GOARCH=$arch" > /dev/null || { echo "the $arch image holds a binary for another CPU"; exit 1; }
+            tar -tf "$rootfs/$arch.tar" | grep -x 'var/lib/gobb/' > /dev/null || { echo "the $arch image lacks /var/lib/gobb"; exit 1; }
           done
           docker buildx build --builder "$BUILDER" --platform linux/amd64 --load -t "$IMAGE" .
 
@@ -183,10 +211,14 @@ jobs:
       - name: Clean up
         if: always()
         run: |
-          docker buildx rm --force "$BUILDER" || true
-          docker image rm "$IMAGE" || true
-          chmod -R u+w "$GOMODCACHE" 2>/dev/null || true
-          rm -rf "$GOMODCACHE" "$GOCACHE" "$DOCKER_CONFIG" "$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID" dist
+          # Docker commands run only against the config folder of this run.
+          if [ "${DOCKER_CONFIG:-}" = "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" ]; then
+            docker buildx rm --force "$BUILDER" || true
+            docker image rm "$IMAGE" || true
+            rm -rf "$DOCKER_CONFIG"
+          fi
+          chmod -R u+w "${GOMODCACHE:-/nonexistent}" 2>/dev/null || true
+          rm -rf "${GOMODCACHE:-}" "${GOCACHE:-}" "$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID" dist
 
   # The only job that holds registry credentials. They live in a Docker config
   # folder under the run's temp folder, and the last step removes it.
@@ -201,20 +233,20 @@ jobs:
     env:
       VERSION: ${{ needs.releasecheck.outputs.version }}
       REPO_IMAGE: ghcr.io/evanwtf/gobb
+      BUILDER: gobb-push-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      # First, before anything can fail (see the build job).
+      - name: Scope the Docker config to this run
+        run: |
+          dir="$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "DOCKER_CONFIG=$dir" >> "$GITHUB_ENV"
+          mkdir -p "$dir"
+          chmod 700 "$dir"
+          [ ! -d "$HOME/.docker/cli-plugins" ] || ln -s "$HOME/.docker/cli-plugins" "$dir/cli-plugins"
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Scope the Docker config to this run
-        run: |
-          {
-            echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-            echo "BUILDER=gobb-push-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          } >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          chmod 700 "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          [ ! -d "$HOME/.docker/cli-plugins" ] || ln -s "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cli-plugins"
 
       - name: Log in to the registry
         if: needs.releasecheck.outputs.publish == 'true' && github.ref_type == 'tag'
@@ -231,7 +263,10 @@ jobs:
             --provenance=false \
             --tag "$REPO_IMAGE:$VERSION" --tag "$REPO_IMAGE:latest" --push .
 
-      # Pull the image back from the registry and run it. The runner is amd64.
+      # Pull the image back from the registry and run it. The runner is amd64. The
+      # pull uses the login above, so it works while the new package is private.
+      # (The first push makes a private package, and the owner makes it public after
+      # the run: README, "Release".)
       - name: Smoke-run the pushed image
         run: |
           docker pull "$REPO_IMAGE:$VERSION"
@@ -243,16 +278,20 @@ jobs:
           b=$(docker buildx imagetools inspect "$REPO_IMAGE:latest" --raw | sha256sum)
           [ "$a" = "$b" ] || { echo ":latest and :$VERSION differ"; exit 1; }
           raw=$(docker buildx imagetools inspect "$REPO_IMAGE:$VERSION" --raw)
-          echo "$raw" | grep -q '"architecture": *"amd64"' || { echo "no amd64 image"; exit 1; }
-          echo "$raw" | grep -q '"architecture": *"arm64"' || { echo "no arm64 image"; exit 1; }
+          echo "$raw" | grep '"architecture": *"amd64"' > /dev/null || { echo "no amd64 image"; exit 1; }
+          echo "$raw" | grep '"architecture": *"arm64"' > /dev/null || { echo "no arm64 image"; exit 1; }
 
       - name: Log out and remove the credentials
         if: always()
         run: |
-          docker logout ghcr.io || true
-          docker buildx rm --force "$BUILDER" || true
-          docker image rm "$REPO_IMAGE:$VERSION" "$REPO_IMAGE:latest" || true
-          rm -rf "$DOCKER_CONFIG"
+          # Docker commands run only against the config folder of this run, never
+          # against the Docker state of the runner user.
+          if [ "${DOCKER_CONFIG:-}" = "$RUNNER_TEMP/docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" ]; then
+            docker logout ghcr.io || true
+            docker buildx rm --force "$BUILDER" || true
+            docker image rm "$REPO_IMAGE:$VERSION" "$REPO_IMAGE:latest" || true
+            rm -rf "$DOCKER_CONFIG"
+          fi
 
   # Last: a release exists only after the image is pushed and has run. The notes
   # come from docs/changelog.md, never from the message of the tag.

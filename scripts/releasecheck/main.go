@@ -9,7 +9,8 @@
 //   - the first "## " section of docs/changelog.md is exactly "X.Y.Z (YYYY-MM-DD)",
 //     for the version of the tag and a real date;
 //   - internal/version holds the version of the tag;
-//   - the section is not empty.
+//   - the section is not empty, and not over 125000 characters (the limit of GitHub
+//     for the body of a release).
 //
 // With -dry-run there is no tag. The version comes from internal/version, and the
 // date of the heading may be "(unreleased)". Every other check runs. The dry run
@@ -30,9 +31,14 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/evanwtf/gobb/internal/version"
 )
+
+// maxNotes is the longest release body in characters. GitHub refuses a longer one,
+// and it refuses it after the image is public, so the check runs first.
+const maxNotes = 125000
 
 var (
 	tagRE     = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
@@ -80,6 +86,9 @@ func check(tag string, dry bool, codeVer, changelog string) (ver, notes string, 
 	notes = strings.TrimSpace(body)
 	if notes == "" {
 		return "", "", fmt.Errorf("the section %s is empty", ver)
+	}
+	if n := utf8.RuneCountInString(notes); n > maxNotes {
+		return "", "", fmt.Errorf("the notes of %s are %d characters; GitHub accepts at most %d", ver, n, maxNotes)
 	}
 	return ver, notes, nil
 }

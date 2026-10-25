@@ -73,6 +73,17 @@ func TestCompare(t *testing.T) {
 			wantErr: "tables differ",
 		},
 		{
+			name: "a migration row lost in the restore",
+			setup: func(t *testing.T, src, dst *pgxpool.Pool) {
+				probe(t, src, "rc_probe", 3)
+				probe(t, dst, "rc_probe", 3)
+				if _, err := dst.Exec(ctx, "delete from schema_migrations where version = (select max(version) from schema_migrations)"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "schema_migrations: source ",
+		},
+		{
 			name:    "an empty source proves nothing",
 			setup:   func(t *testing.T, src, dst *pgxpool.Pool) {},
 			wantErr: "no rows",
@@ -104,7 +115,8 @@ func TestCompare(t *testing.T) {
 }
 
 // TestCompareListsEveryTable checks that the count covers every table that
-// db.DataTables lists, so a table added by a later migration needs no edit.
+// db.DataTables lists, so a table added by a later migration needs no edit, and
+// the table of applied migrations too.
 func TestCompareListsEveryTable(t *testing.T) {
 	ctx := context.Background()
 	src, dst := dbtest.New(t), dbtest.New(t)
@@ -121,6 +133,7 @@ func TestCompareListsEveryTable(t *testing.T) {
 	if len(tables) < 10 {
 		t.Fatalf("only %d tables", len(tables))
 	}
+	tables = append(tables, "schema_migrations")
 	for _, name := range tables {
 		if !strings.Contains(out.String(), name+": source ") {
 			t.Errorf("table %s is missing from the output", name)

@@ -26,7 +26,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 ```
 
 `up --build` builds the image from this checkout. To run a published image instead, set
-`GOBB_VERSION` in `.env` to a release tag, or leave it at `latest`, once a release exists. Then run
+`GOBB_VERSION` in `.env` to a version without the `v` (for example `0.1.0`; the release tag is `v0.1.0`), or leave it at `latest`, once a release exists. Then run
 `docker compose pull && docker compose up -d --wait`. The image comes from
 `ghcr.io/evanwtf/gobb`.
 
@@ -153,61 +153,93 @@ mkdir -p "$BACKUP_DIR"
 
 1. **Dump the database.** `pg_dump -Fc` writes the compressed custom format. Run it in
    the `postgres` container, and write the file on the host. The `-T` flag keeps
-   Compose from adding a terminal, which would change the bytes:
+   Compose from adding a terminal, which would change the bytes. A failed dump is
+   deleted, so that it cannot look like a backup:
 
+   <!-- block: dump -->
    ```sh
-   docker compose exec -T postgres pg_dump -U gobb -d gobb -Fc > "$BACKUP_DIR/gobb-$STAMP.dump" || echo "pg_dump failed; do not upgrade"
+   docker compose exec -T postgres pg_dump -U gobb -d gobb -Fc > "$BACKUP_DIR/gobb-$STAMP.dump" || { rm -f "$BACKUP_DIR/gobb-$STAMP.dump"; echo "pg_dump failed; do not upgrade"; }
    ```
 
 2. **Archive the data volume.** The gobb image has no shell, so a container that has
-   `tar` reads the volume of the running gobb container, read-only:
+   `tar` reads the volume of the running gobb container, read-only. A failed archive
+   is deleted too:
 
+   <!-- block: archive -->
    ```sh
    docker run --rm --volumes-from "$(docker compose ps -q gobb):ro" -v "$BACKUP_DIR:/backup" \
      --entrypoint sh postgres:18 \
      -c 'tar czf "/backup/$1" -C /var/lib/gobb . && chown "$2" "/backup/$1" && chmod 600 "/backup/$1"' \
-     sh "gobb-data-$STAMP.tar.gz" "$(id -u):$(id -g)" || echo "tar failed; do not upgrade"
+     sh "gobb-data-$STAMP.tar.gz" "$(id -u):$(id -g)" || { rm -f "$BACKUP_DIR/gobb-data-$STAMP.tar.gz"; echo "tar failed; do not upgrade"; }
    ```
 
 3. **Check the files before you upgrade.** A dump that is a few kilobytes for a board
    with members means that something failed. Compare its size with the last dump, and
    list its contents:
 
+   <!-- block: check -->
    ```sh
    ls -l "$BACKUP_DIR/gobb-$STAMP.dump" "$BACKUP_DIR/gobb-data-$STAMP.tar.gz"
    docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$STAMP.dump" | wc -l
    ```
 
-4. **Upgrade.** Set `GOBB_VERSION` in `.env` to the new release tag, or leave it at
-   `latest`. Pull the image and start the stack. gobb applies the new migrations at
-   start. A migration is not undone when you go back to an older image, so to go back
-   you restore the dump (below).
+4. **Upgrade.** Set `GOBB_VERSION` in `.env` to the new version without the `v`, for
+   example `0.1.0` (the release tag is `v0.1.0`, the image tag is `0.1.0`), or leave it
+   at `latest`. Write down the version that you leave: a rollback needs it. Pull the
+   image and start the stack. gobb applies the new migrations at start. A migration is
+   not undone when you go back to an older image, so to go back you restore the dump
+   (below).
 
    ```sh
    docker compose pull && docker compose up -d --wait
    curl -fsS http://127.0.0.1:8080/healthz
    ```
 
-To restore, stop gobb. Restore the database from the dump, then the data volume from
-the archive. `--clean --if-exists` drops each table of the dump and creates it again,
-so a restore over a newer schema returns the old one. The first command below picks
-the newest dump in `$BACKUP_DIR`. To restore an older one, set `STAMP` to its date:
+### Restore
 
+The restore drops the `gobb` database, creates it again, and loads the dump into the
+empty database. It does not use `pg_restore --clean`: that option drops only the tables
+that are in the dump, so a table that a newer migration added would stay, and the next
+upgrade would try to create it again. The restore then empties the data volume and
+unpacks the archive.
+
+The first command picks the newest stamp for which both files exist and are not empty.
+To restore an older backup, set `STAMP` to its date.
+
+<!-- block: restore-pick -->
 ```sh
-export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p' | tail -n 1)
-docker compose stop gobb
-docker compose exec -T postgres pg_restore -U gobb -d gobb --clean --if-exists --exit-on-error < "$BACKUP_DIR/gobb-$STAMP.dump"
-docker run --rm --volumes-from "$(docker compose ps -aq gobb)" -v "$BACKUP_DIR:/backup:ro" \
-  --entrypoint sh postgres:18 \
-  -c 'find /var/lib/gobb -mindepth 1 -delete && tar xzf "/backup/gobb-data-$1.tar.gz" -C /var/lib/gobb' sh "$STAMP"
+export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p' | while read -r s; do [ -s "$BACKUP_DIR/gobb-$s.dump" ] && [ -s "$BACKUP_DIR/gobb-data-$s.tar.gz" ] && echo "$s"; done | tail -n 1)
 ```
 
-Then set `GOBB_VERSION` back to the version that wrote the backup and run
+The second command is one chain, and the first failure stops it. Nothing is stopped or
+deleted until these checks pass: `STAMP` is not empty, the dump and the archive both
+exist and are not empty, `pg_restore --list` reads the dump, and `tar tzf` reads the
+archive. If the chain stops, read the message, fix the cause and run it again. The
+`postgres` service must be running.
+
+<!-- block: restore -->
+```sh
+test -n "$STAMP" && \
+test -s "$BACKUP_DIR/gobb-$STAMP.dump" && \
+test -s "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" && \
+docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$STAMP.dump" > /dev/null && \
+tar tzf "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" > /dev/null && \
+docker compose stop gobb && \
+docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database if exists gobb with (force)' -c 'create database gobb' && \
+docker compose exec -T postgres pg_restore -U gobb -d gobb --exit-on-error < "$BACKUP_DIR/gobb-$STAMP.dump" && \
+docker run --rm --volumes-from "$(docker compose ps -aq gobb)" -v "$BACKUP_DIR:/backup:ro" \
+  --entrypoint sh postgres:18 \
+  -c 'tar tzf "/backup/gobb-data-$1.tar.gz" > /dev/null && find /var/lib/gobb -mindepth 1 -delete && tar xzf "/backup/gobb-data-$1.tar.gz" -C /var/lib/gobb' sh "$STAMP"
+```
+
+Then set `GOBB_VERSION` back to the version that wrote the backup, and run
 `docker compose up -d --wait`. gobb reads the legacy routes and the stored password
 hashes once at start, so always start it after a restore.
 
-CI runs the dump and the restore on every push. It restores the dump into a new
-database and compares the row count of every table (`scripts/rowcounts`).
+CI runs these commands on every push. It restores a dump over a database that holds an
+extra table, and checks that the table is gone and that the row count of every table is
+the same (`scripts/rowcounts`). It also runs the restore with the archive missing, and
+checks that the restore deletes nothing and fails.
 
 ## Run the server
 
@@ -452,9 +484,16 @@ version, never the message of the tag.
    git tag -a "$TAG" -m "gobb $TAG" && git push origin "$TAG"
    ```
 
+4. The first push of the image makes a private package. After the release run, open the
+   package settings of `ghcr.io/evanwtf/gobb` and make it public. Until then, `docker
+   compose pull` fails for everyone who is not signed in to the registry.
+
 `releasecheck` is the first job of the workflow. It refuses a tag that is not `vX.Y.Z`,
 a first section that is not exactly `X.Y.Z` and a date, a version in `internal/version`
-that differs from the tag, and an empty section. Nothing builds or publishes after a
+that differs from the tag, an empty section, and notes over 125,000 characters (the
+limit of GitHub for a release body). In a tag run, the job also refuses a tag whose
+commit is not on `main`, and a tag that already has a release, so a re-run of a
+published tag cannot push the images again. Nothing builds or publishes after a
 refusal.
 
 To try the workflow without a release, run it by hand with `dry_run` true, which is the

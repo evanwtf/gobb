@@ -481,3 +481,42 @@ esac
 		t.Errorf("a name the list does not hold: exit %d, want 1:\n%s", code, out)
 	}
 }
+
+const readmeSample = "# Sample\n\n" +
+	"<!-- block: first -->\n```sh\necho one\n```\n\n" +
+	"1. A step.\n\n   <!-- block: second -->\n   ```sh\n   echo two \\\n     && echo three\n   ```\n\n" +
+	"<!-- block: empty -->\n```sh\n```\n\n" +
+	"<!-- block: text-only -->\n```\nnot shell\n```\n"
+
+func TestReadmeBlock(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(file, []byte(readmeSample), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		want     string
+		wantCode int
+	}{
+		{"first", "echo one\n", 0},
+		{"second", "echo two \\\n  && echo three\n", 0},
+		{"empty", "", 1},
+		{"text-only", "", 1},
+		{"missing", "", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, code := run(t, dir, nil, "readme-block.sh", tt.name, file)
+			if code != tt.wantCode {
+				t.Fatalf("exit %d, want %d; output: %q", code, tt.wantCode, out)
+			}
+			if tt.wantCode == 0 && out != tt.want {
+				t.Fatalf("block = %q, want %q", out, tt.want)
+			}
+		})
+	}
+	if _, code := run(t, dir, nil, "readme-block.sh"); code != 2 {
+		t.Errorf("no arguments: exit %d, want 2", code)
+	}
+}

@@ -16,6 +16,8 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags=
 
 # Runtime stage: no shell, no package manager. The binary checks its own health.
 FROM cgr.dev/chainguard/static:latest
+# Links the registry package to this repo, so the release workflow can read it.
+LABEL org.opencontainers.image.source="https://github.com/evanwtf/gobb"
 COPY --from=build /out/gobb /usr/bin/gobb
 # Create the data directory with the right owner before the switch to nonroot,
 # so a new volume mounted here is writable.

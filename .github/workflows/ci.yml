@@ -201,6 +201,7 @@ jobs:
 
       # The backup round trip below runs scripts/rowcounts with Go.
       - name: Scope the Go caches to this run
+        shell: bash
         run: |
           {
             echo "GOCACHE=$RUNNER_TEMP/gocache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -331,6 +332,106 @@ jobs:
           [ "$oom" = 0 ] || { echo "the kernel killed a process in the container"; exit 1; }
           [ "$peak" -lt 268435456 ] || { echo "memory.peak reached the 256 MiB cap"; exit 1; }
 
+      # The backup and the restore of the README ("Back up and upgrade"). The step
+      # runs the commands that the README shows: scripts/readme-block.sh takes each
+      # block from the file, so the README cannot drift from what CI proves.
+      #
+      # 1. Back up with gobb running, as the README says.
+      # 2. Stop gobb, restore the dump into a copy (gobb_check), and compare the row
+      #    counts of the live database with the copy: the dump is complete.
+      # 3. Add a table to the live database. It stands in for a table of a newer
+      #    migration, and it has a foreign key to users, which `pg_restore --clean`
+      #    could not drop.
+      # 4. Run the restore with each input broken in turn: the restore must exit
+      #    non-zero and delete nothing, neither the database nor the data volume.
+      # 5. Run the restore for real. The extra table must be gone, every row count
+      #    (schema_migrations too) must equal the copy, and the data volume must
+      #    hold the same files. Then gobb must start on the restored board.
+      - name: Back up and restore, and compare the row counts
+        shell: bash
+        run: |
+          umask 077
+          export BACKUP_DIR="$RUNNER_TEMP/backups-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$BACKUP_DIR"
+          trap 'rm -rf "$BACKUP_DIR"' EXIT
+          # Run a block of the README in this shell.
+          block() {
+            local text
+            text=$(sh scripts/readme-block.sh "$1") || return 1
+            eval "$text"
+          }
+          sql() { docker compose exec -T postgres psql -U gobb -v ON_ERROR_STOP=1 -tA "$@"; }
+          hostport=$(docker compose port postgres 5432)
+          dsn() { echo "postgres://gobb:$POSTGRES_PASSWORD@$hostport/$1?sslmode=disable"; }
+          counts() { GOBB_SOURCE_DSN=$(dsn "$1") GOBB_RESTORED_DSN=$(dsn "$2") go run ./scripts/rowcounts; }
+          # The number of files in the data volume of the gobb container.
+          files() {
+            docker run --rm --volumes-from "$(docker compose ps -aq gobb)" \
+              --entrypoint sh postgres:18 -c 'find /var/lib/gobb -type f | wc -l'
+          }
+
+          # 1. Back up.
+          export STAMP
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          good=$STAMP
+          block dump
+          block archive
+          block check
+          [ -s "$BACKUP_DIR/gobb-$good.dump" ] || { echo "the dump is missing or empty"; exit 1; }
+          [ -s "$BACKUP_DIR/gobb-data-$good.tar.gz" ] || { echo "the archive is missing or empty"; exit 1; }
+
+          # 2. The dump holds what the live database holds.
+          docker compose stop gobb
+          sql -d postgres -c 'create database gobb_check'
+          docker compose exec -T postgres pg_restore -U gobb -d gobb_check --exit-on-error < "$BACKUP_DIR/gobb-$good.dump"
+          counts gobb gobb_check
+          before=$(files)
+          echo "files in the data volume: $before"
+          [ "$before" -gt 0 ] || { echo "the data volume is empty, so a deleted volume would not show"; exit 1; }
+
+          # 3. A table of a newer migration.
+          sql -d gobb -c 'create table newer_table (id int primary key, user_id int references users (id))' -c 'insert into newer_table (id) values (1)'
+
+          # 4. Each broken input must stop the restore before it deletes anything.
+          refuses() {
+            local why=$1 status=0
+            block restore || status=$?
+            [ "$status" -ne 0 ] || { echo "the restore passed with $why"; exit 1; }
+            [ "$(sql -d gobb -c 'select count(*) from newer_table')" = 1 ] || { echo "$why: the restore dropped the database"; exit 1; }
+            [ "$(files)" = "$before" ] || { echo "$why: the restore changed the data volume"; exit 1; }
+            echo "refused with $why, and deleted nothing"
+          }
+          # A stamp with a dump and no archive is newer than the good one. The picker
+          # must skip it.
+          bad=29990101-000000
+          cp "$BACKUP_DIR/gobb-$good.dump" "$BACKUP_DIR/gobb-$bad.dump"
+          block restore-pick
+          [ "$STAMP" = "$good" ] || { echo "the picker chose $STAMP, want $good"; exit 1; }
+          STAMP=$bad
+          refuses "the archive missing"
+          STAMP=
+          refuses "an empty STAMP"
+          printf 'not a dump' > "$BACKUP_DIR/gobb-$bad.dump"
+          cp "$BACKUP_DIR/gobb-data-$good.tar.gz" "$BACKUP_DIR/gobb-data-$bad.tar.gz"
+          STAMP=$bad
+          refuses "a dump that pg_restore cannot read"
+          cp "$BACKUP_DIR/gobb-$good.dump" "$BACKUP_DIR/gobb-$bad.dump"
+          printf 'not an archive' > "$BACKUP_DIR/gobb-data-$bad.tar.gz"
+          refuses "an archive that tar cannot read"
+          rm -f "$BACKUP_DIR/gobb-$bad.dump" "$BACKUP_DIR/gobb-data-$bad.tar.gz"
+
+          # 5. The restore.
+          block restore-pick
+          [ "$STAMP" = "$good" ] || { echo "the picker chose $STAMP, want $good"; exit 1; }
+          block restore
+          [ -z "$(sql -d gobb -c "select to_regclass('public.newer_table')")" ] || { echo "newer_table survived the restore"; exit 1; }
+          counts gobb_check gobb
+          [ "$(files)" = "$before" ] || { echo "the data volume differs after the restore"; exit 1; }
+          docker compose up -d --wait
+          port=$(docker compose port gobb 8080)
+          curl -fsS "http://$port/healthz"
+          sh scripts/smoke-serve.sh "http://$port"
+
       # Compose gives gobb a 30 s grace period. A clean stop must end well inside
       # it, with exit code 0 (137 means Docker sent SIGKILL).
       - name: Stop gobb cleanly
@@ -344,26 +445,6 @@ jobs:
           echo "stop took $took s, exit code $code"
           [ "$code" = 0 ] || { echo "want exit code 0"; exit 1; }
           awk -v t="$took" 'BEGIN { exit !(t < 25) }' || { echo "the stop took 25 s or more"; exit 1; }
-
-      # The backup of the README ("Back up and upgrade"): dump with pg_dump -Fc,
-      # restore into a new database with pg_restore --clean --if-exists, then
-      # compare the row count of every table that db.DataTables lists. gobb is
-      # stopped, so nothing writes between the dump and the count. The count runs
-      # on the runner and reaches postgres through its published localhost port.
-      - name: Back up and restore, and compare the row counts
-        run: |
-          umask 077
-          dump="$RUNNER_TEMP/gobb-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.dump"
-          trap 'rm -f "$dump"' EXIT
-          docker compose exec -T postgres pg_dump -U gobb -d gobb -Fc > "$dump"
-          [ -s "$dump" ] || { echo "the dump is empty"; exit 1; }
-          ls -l "$dump"
-          docker compose exec -T postgres createdb -U gobb gobb_restored
-          docker compose exec -T postgres pg_restore -U gobb -d gobb_restored --clean --if-exists --exit-on-error < "$dump"
-          hostport=$(docker compose port postgres 5432)
-          export GOBB_SOURCE_DSN="postgres://gobb:$POSTGRES_PASSWORD@$hostport/gobb?sslmode=disable"
-          export GOBB_RESTORED_DSN="postgres://gobb:$POSTGRES_PASSWORD@$hostport/gobb_restored?sslmode=disable"
-          go run ./scripts/rowcounts
 
       - name: Show the logs after a failure
         if: failure()

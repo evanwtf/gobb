@@ -1,9 +1,9 @@
 // Command rowcounts proves a backup round trip. It counts the rows of every table
 // in two databases and exits 1 on any difference.
 //
-// CI restores a dump into a new database, then runs this command on the source
-// and the restored copy. It lists the tables through db.DataTables, so a table
-// that a later migration adds is covered with no edit here.
+// CI restores a dump, then runs this command on the source and the restored copy.
+// It lists the tables through db.DataTables, so a table that a later migration
+// adds is covered with no edit here. It counts schema_migrations too.
 //
 // The connection strings come from two variables, so they stay out of the
 // process list:
@@ -27,7 +27,7 @@ import (
 )
 
 // compare counts the rows of every data table in src and dst, and writes one line
-// for each table. It returns an error when the table lists differ, when a count
+// for each table, schema_migrations included. It returns an error when the table lists differ, when a count
 // differs, or when src holds no rows at all (an empty source proves nothing).
 func compare(ctx context.Context, src, dst db.Querier, out io.Writer) error {
 	srcTables, err := db.DataTables(ctx, src)
@@ -41,9 +41,12 @@ func compare(ctx context.Context, src, dst db.Querier, out io.Writer) error {
 	if !slices.Equal(srcTables, dstTables) {
 		return fmt.Errorf("tables differ: source %v, restored %v", srcTables, dstTables)
 	}
+	// db.DataTables leaves out schema_migrations. A restore that loses its rows
+	// would make gobb run every migration again, so it is counted too.
+	counted := append(slices.Clone(srcTables), "schema_migrations")
 	var bad []string
 	total := 0
-	for _, name := range srcTables {
+	for _, name := range counted {
 		a, err := count(ctx, src, name)
 		if err != nil {
 			return fmt.Errorf("source %s: %w", name, err)
@@ -52,13 +55,15 @@ func compare(ctx context.Context, src, dst db.Querier, out io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("restored %s: %w", name, err)
 		}
-		total += a
+		if name != "schema_migrations" {
+			total += a
+		}
 		fmt.Fprintf(out, "%s: source %d, restored %d\n", name, a, b)
 		if a != b {
 			bad = append(bad, fmt.Sprintf("%s: source %d, restored %d", name, a, b))
 		}
 	}
-	fmt.Fprintf(out, "%d tables, %d rows in the source\n", len(srcTables), total)
+	fmt.Fprintf(out, "%d tables, %d rows in the data tables of the source\n", len(counted), total)
 	if len(bad) > 0 {
 		return fmt.Errorf("row counts differ:\n%s", strings.Join(bad, "\n"))
 	}
