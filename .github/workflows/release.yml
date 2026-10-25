@@ -155,17 +155,21 @@ jobs:
 
       # The same builder and commands as the push job, with no login and no push.
       # The build stage runs on the runner and cross-compiles, so no emulation is
-      # needed (and none is installed). The local output holds the root files of
-      # each platform, which proves the arm64 image carries an arm64 binary.
+      # needed (and none is installed). The first build covers both platforms. Then
+      # each platform is written as a tar file of its root files, which proves that
+      # the arm64 image carries an arm64 binary. (A tar file, because a folder
+      # output would need to create the device nodes of the base image.)
       - name: Build both images, with no emulation
         run: |
           docker buildx create --name "$BUILDER" --driver docker-container
-          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 \
-            --output "type=local,dest=$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID" .
+          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 .
+          rootfs="$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID"
+          mkdir "$rootfs"
           for arch in amd64 arm64; do
-            bin="$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID/linux_$arch/usr/bin/gobb"
-            go version -m "$bin" | grep -q -F "GOARCH=$arch" || { echo "the $arch image holds a binary for another CPU"; exit 1; }
-            [ -d "$RUNNER_TEMP/rootfs-$GITHUB_RUN_ID/linux_$arch/var/lib/gobb" ] || { echo "the $arch image lacks /var/lib/gobb"; exit 1; }
+            docker buildx build --builder "$BUILDER" --platform "linux/$arch" --output "type=tar,dest=$rootfs/$arch.tar" .
+            tar -xf "$rootfs/$arch.tar" -O usr/bin/gobb > "$rootfs/gobb-$arch"
+            go version -m "$rootfs/gobb-$arch" | grep -q -F "GOARCH=$arch" || { echo "the $arch image holds a binary for another CPU"; exit 1; }
+            tar -tf "$rootfs/$arch.tar" | grep -q -x 'var/lib/gobb/' || { echo "the $arch image lacks /var/lib/gobb"; exit 1; }
           done
           docker buildx build --builder "$BUILDER" --platform linux/amd64 --load -t "$IMAGE" .
 
