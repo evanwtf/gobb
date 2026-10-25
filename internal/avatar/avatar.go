@@ -192,8 +192,10 @@ func inspect(data []byte) (format, uint64, error) {
 // what the decoder holds. The tests in charge_internal_test.go compare each figure
 // with the bytes that the decoder allocates.
 //
-//   - JPEG: by color model, on sides rounded up to a multiple of 16 (the decoder
-//     pads to whole blocks). CMYK 24 bytes a pixel, RGB (Adobe) 19, YCbCr 15,
+//   - JPEG: by color model, on sides rounded up to a multiple of 32. The decoder
+//     pads each plane to whole MCUs of 8 x the largest sampling factor, and a
+//     factor may be 4 (a frame with a scan for each component can give all three
+//     components 4 x 2 or 2 x 4), so the MCU is up to 32 x 32 pixels. CMYK 24 bytes a pixel, RGB (Adobe) 19, YCbCr 15,
 //     gray 5, and 24 for any other model. A progressive file keeps 32-bit
 //     coefficients for each component.
 //   - PNG: 8 bytes a pixel for a 16-bit file, else 4; twice that for an
@@ -206,7 +208,7 @@ func chargeKiB(f format, cfg image.Config, interlaced bool) uint64 {
 	perPixel := uint64(4)
 	switch f {
 	case fmtJPEG:
-		w, h = (w+15)&^15, (h+15)&^15
+		w, h = (w+31)&^31, (h+31)&^31
 		switch cfg.ColorModel {
 		case color.GrayModel:
 			perPixel = 5

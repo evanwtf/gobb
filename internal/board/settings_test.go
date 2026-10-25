@@ -383,3 +383,28 @@ func TestSettingsAvatarPath(t *testing.T) {
 		}
 	}
 }
+
+// ValidAvatarPath is the rule for a stored path that gobb may delete: under
+// avatars/, no empty element, no element that starts with a dot. It accepts the
+// names of an importer, and refuses everything that could leave the folder.
+func TestValidAvatarPath(t *testing.T) {
+	for _, p := range []string{
+		"avatars/u3-0123456789abcdef.png", "avatars/a.gif", "avatars/Old_Name-1.JPG",
+		"avatars/gallery/a.png", "avatars/a.b.c", "avatars/x",
+	} {
+		if !board.ValidAvatarPath(p) {
+			t.Errorf("ValidAvatarPath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{
+		"", "avatars", "avatars/", "avatars/.", "avatars/..", "avatars/.x", "avatars/a/.b",
+		"avatars/a/../b", "avatars/../etc/passwd", "avatars//a.png", "avatars/a/", "avatars/a//b",
+		"/avatars/a.png", "Avatars/a.png", "x/avatars/a.png", "avatars\\a.png", "avatars/a b.png",
+		"avatars/a\x00.png", "avatars/a\n.png", "avatars/é.png", "avatars/a?b.png", "avatars/a%2e.png",
+		"uploads/a.png", "http://x/avatars/a.png",
+	} {
+		if board.ValidAvatarPath(p) {
+			t.Errorf("ValidAvatarPath(%q) = true, want false", p)
+		}
+	}
+}

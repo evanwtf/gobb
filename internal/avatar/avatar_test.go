@@ -240,9 +240,11 @@ func TestMakeRefusesHugeBeforeDecode(t *testing.T) {
 		t.Errorf("4000x4000, free gate: error = %v, want ErrFormat (no pixels)", err)
 	}
 	// Nothing is held after the refusals.
-	if rel, err = g.Acquire(context.Background(), 1<<20, 0); err != nil {
+	last, err := g.Acquire(context.Background(), 1<<20, 0)
+	if err != nil {
 		t.Fatalf("the gate is held after the refusals: %v", err)
 	}
+	last()
 }
 
 // A side of 1 pixel is legal: the center square is 1 x 1 and grows to 128 x 128.

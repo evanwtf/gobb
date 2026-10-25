@@ -188,12 +188,13 @@ func nullZero(n int) any {
 	return n
 }
 
-// validAvatarPath reports whether p is a site path under avatars/: one or more
-// elements of letters, digits, hyphens, dots and underscores, separated by single
-// slashes, none empty and none starting with a dot (so no ".", no ".." and no
-// hidden file). Imported avatars keep the names of the converter, so this is the
-// general rule; SetAvatar asks for more.
-func validAvatarPath(p string) bool {
+// ValidAvatarPath reports whether p is a stored avatar path that gobb may delete:
+// it is under "avatars/", every element is non-empty and made of letters, digits,
+// hyphens, dots and underscores, and no element starts with a dot (so no ".", no
+// ".." and no hidden file). Imported avatars keep the names of the converter, so
+// this is the rule for a path read from the database; [SetAvatar] asks for more
+// of a new path. A caller deletes a file only when this returns true.
+func ValidAvatarPath(p string) bool {
 	rest, ok := strings.CutPrefix(p, "avatars/")
 	if !ok || rest == "" {
 		return false
@@ -242,7 +243,7 @@ func SetAvatar(ctx context.Context, pool *pgxpool.Pool, v Viewer, path string) (
 	if err := mayAccount(v, "account.avatar"); err != nil {
 		return "", err
 	}
-	if !validAvatarPath(path) || !ownAvatarPath(v.UserID, path) {
+	if !ValidAvatarPath(path) || !ownAvatarPath(v.UserID, path) {
 		return "", fmt.Errorf("board: %q is not an avatar path", path)
 	}
 	return swapAvatar(ctx, pool, v, path)
