@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/htmlcheck"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/password"
@@ -1216,5 +1217,53 @@ func TestLegacySignInInFlightDoesNotSurviveAPasswordChange(t *testing.T) {
 	}
 	if n := sessionsOf(t, pool, 2); n != 1 {
 		t.Errorf("bob has %d sessions, want exactly the one from the change", n)
+	}
+}
+
+// A sign-in that verified the password and is held before it inserts its session
+// gets no session when an administrator resets the password in that gap. The
+// reset adds one to the epoch, so the held sign-in is refused like a wrong
+// password. Alice ends with no session at all.
+func TestSignInInFlightDoesNotSurviveAReset(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   int
+	}{{"gobb hash", 1}, {"legacy hash", 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, pool := siteWithPool(t, postingBoard(), Options{})
+			reached, release, answer := holdSignIn(t, h, map[int]string{1: "alice", 2: "bob"}[tc.id], true)
+			waitFor(t, reached)
+			if _, err := board.ResetPassword(t.Context(), pool, int64(tc.id), time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			release()
+			rec, cookies := answer()
+			if rec.Code != http.StatusOK || !strings.Contains(bodyOf(t, rec), "The name or password is wrong.") {
+				t.Errorf("the sign-in held across a reset = %d, want the wrong-password answer", rec.Code)
+			}
+			if sessionValue(cookies) != "" || sessionsOf(t, pool, tc.id) != 0 {
+				t.Errorf("a session survived the reset: cookie %q, %d rows", sessionValue(cookies), sessionsOf(t, pool, tc.id))
+			}
+		})
+	}
+}
+
+// The same gap with a ban from the command-line write. The sign-in answers like a
+// wrong password, and no session remains.
+func TestSignInInFlightDoesNotSurviveABanCommand(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	reached, release, answer := holdSignIn(t, h, "carol", true)
+	waitFor(t, reached)
+	if err := board.BanUser(t.Context(), pool, 3, "testing", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	rec, cookies := answer()
+	page := bodyOf(t, rec)
+	if rec.Code != http.StatusOK || !strings.Contains(page, "The name or password is wrong.") || strings.Contains(page, "banned") {
+		t.Errorf("the sign-in held across a ban = %d", rec.Code)
+	}
+	if sessionValue(cookies) != "" || sessionsOf(t, pool, 3) != 0 {
+		t.Errorf("a session survived the ban: cookie %q, %d rows", sessionValue(cookies), sessionsOf(t, pool, 3))
 	}
 }

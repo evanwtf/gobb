@@ -63,6 +63,14 @@ var errUsage = errors.New("usage")
 // stdout receives the results of commands. The tests replace it.
 var stdout io.Writer = os.Stdout
 
+// stderr receives the messages of the user commands, which keep stdout for the
+// one thing they print. The tests replace it.
+var stderr io.Writer = os.Stderr
+
+// errReported is the error of a command that has told the operator what went
+// wrong on its own. run exits 1 and adds no log line.
+var errReported = errors.New("reported")
+
 // commands maps a subcommand name to its handler.
 var commands = map[string]command{
 	"version": func(_ context.Context, _ []string) error {
@@ -73,6 +81,7 @@ var commands = map[string]command{
 	"migrate":     migrate,
 	"perms":       perms,
 	"serve":       serve,
+	"user":        user,
 	"healthcheck": healthcheck,
 }
 
@@ -456,6 +465,9 @@ func run(ctx context.Context, args []string) int {
 	if err := cmd(ctx, args[1:]); err != nil {
 		if errors.Is(err, errUsage) {
 			return 2
+		}
+		if errors.Is(err, errReported) {
+			return 1
 		}
 		slog.Error("command failed", "command", args[0], "err", err)
 		return 1

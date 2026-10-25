@@ -52,6 +52,9 @@ sh scripts/check-public.sh                                               # the p
 ./gobb serve                                                             # run the server; needs GOBB_DSN, see the README
 ./gobb import [--replace] <bundle>                                       # load a bundle (directory or .tar.gz) into an empty database; --replace empties the database first
 ./gobb perms export > perms.jsonl                                        # write the effective permissions as JSON Lines
+./gobb user reset-password <name>                                        # new random password, printed once on stdout; ends the member's sessions
+./gobb user ban <name> [-reason TEXT]                                    # ban a member (no end date) and end the sessions
+./gobb user unban <name>                                                 # remove the member's bans that have not ended
 ```
 
 Tests that need PostgreSQL read `GOBB_TEST_DATABASE_URL` and skip when it is unset.

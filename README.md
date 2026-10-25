@@ -216,6 +216,44 @@ from the same origin: the browser's `Origin` or `Sec-Fetch-Site` header is check
 against the `Host` header. A reverse proxy has to pass the `Host` header of the visitor
 on to gobb.
 
+### Reset a password, ban or unban a member
+
+Password reset by email is not built yet, so the administrator resets a password
+from the command line. Run the commands where the database is. With Docker Compose,
+run them in the running container. The `-T` flag keeps Compose from adding a
+terminal, which would change the line endings:
+
+```sh
+export NAME=alice
+docker compose exec -T gobb gobb user reset-password "$NAME"
+docker compose exec -T gobb gobb user ban "$NAME" -reason "spam run"
+docker compose exec -T gobb gobb user unban "$NAME"
+```
+
+Without Docker, run `./gobb user ...` with `GOBB_DSN` set, as for `gobb import`.
+
+`<name>` is the username. Case and spacing do not matter, as at sign-in. A name that
+no member has exits 1 with `no member named <name>` on stderr, and changes nothing.
+
+- **`reset-password`** gives the member a new random password of 16 letters and
+  digits, with no look-alike characters (no `0`, `O`, `1`, `l`, `I`). It prints the
+  password once, as the only line on stdout. It ends every session of the member. Give
+  the password to the member by a private route, and tell the member to change it on
+  the account page. The password is never an argument, so it is not in the shell
+  history. It is in no log and in no row of the moderation log. To keep it out of the
+  scrollback too, capture it: `PW=$(docker compose exec -T gobb gobb user reset-password "$NAME")`.
+- **`ban`** adds a ban with no end date and ends every session of the member. The
+  member cannot sign in. `-reason` is for staff: the banned member does not see it.
+  The flag may come before or after the name. A member who is banned already gets no
+  second ban: the command exits 0 and says so on stderr.
+- **`unban`** removes the bans on the member that have not ended. A member with no
+  such ban: the command exits 0 and says so on stderr.
+
+Each command that changes something writes one row to the moderation log (`user.reset_password`,
+`user.ban`, `user.unban`) with no actor and `{"via":"cli"}` as details. Messages go to
+stderr. The exit code is 0 on success, 1 on an unknown name or a failure, and 2 on a
+wrong call. A failed command changes nothing.
+
 ### Old addresses
 
 A bundle carries the address patterns of the old board (`legacy_routes`) and the paths

@@ -1,0 +1,406 @@
+package board_test
+
+import (
+	"context"
+	"errors"
+	"net/netip"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/evanwtf/gobb/internal/board"
+	"github.com/evanwtf/gobb/internal/boardtest"
+	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/password"
+	"github.com/evanwtf/gobb/internal/session"
+)
+
+type modRow struct {
+	Actor      *int64
+	Action     string
+	TargetType string
+	Target     int64
+	Details    string
+}
+
+func modRows(t *testing.T, pool *pgxpool.Pool) []modRow {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select actor_id, action, target_type, target_id, details::text from mod_log order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []modRow
+	for rows.Next() {
+		var m modRow
+		if err := rows.Scan(&m.Actor, &m.Action, &m.TargetType, &m.Target, &m.Details); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// seedSessions gives alice two sessions and bob one.
+func seedSessions(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ip := netip.MustParseAddr("10.1.2.3")
+	for _, id := range []int64{alice, alice, bob} {
+		if _, _, err := session.Create(context.Background(), pool, id, false, ip, "t", t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestUserByName(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	for _, name := range []string{"alice", "  ALICE ", "Alice"} {
+		if id, err := board.UserByName(ctx, pool, name); err != nil || id != alice {
+			t.Errorf("UserByName(%q) = %d, %v, want alice", name, id, err)
+		}
+	}
+	for _, name := range []string{"nobody", "", "alice\x00", "\xff\xfe"} {
+		if id, err := board.UserByName(ctx, pool, name); !errors.Is(err, board.ErrNotFound) || id != 0 {
+			t.Errorf("UserByName(%q) = %d, %v, want ErrNotFound", name, id, err)
+		}
+	}
+}
+
+func TestResetPassword(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	seedSessions(t, pool)
+	before := readUser(t, pool, alice)
+
+	pw, err := board.ResetPassword(ctx, pool, alice, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pw) != 16 {
+		t.Errorf("password %q has %d characters, want 16", pw, len(pw))
+	}
+	after := readUser(t, pool, alice)
+	if after.Hash == before.Hash || after.Scheme != "gobb" {
+		t.Errorf("hash changed = %v, scheme = %q", after.Hash != before.Hash, after.Scheme)
+	}
+	if ok, _ := password.Verify(pw, after.Hash, after.Scheme); !ok {
+		t.Error("the stored hash does not verify the printed password")
+	}
+	if ok, _ := password.Verify("example-password", after.Hash, after.Scheme); ok {
+		t.Error("the old password still verifies")
+	}
+	if e := epochOf(t, pool, alice); e != 1 {
+		t.Errorf("epoch = %d, want 1", e)
+	}
+	if n := sessionCount(t, pool, alice); n != 0 {
+		t.Errorf("alice has %d sessions, want 0", n)
+	}
+	if n := sessionCount(t, pool, bob); n != 1 {
+		t.Errorf("bob has %d sessions, want 1", n)
+	}
+	if e := epochOf(t, pool, bob); e != 0 {
+		t.Errorf("bob's epoch = %d, want 0", e)
+	}
+	rows := modRows(t, pool)
+	if len(rows) != 1 || rows[0].Actor != nil || rows[0].Action != "user.reset_password" ||
+		rows[0].TargetType != "user" || rows[0].Target != alice || rows[0].Details != `{"via": "cli"}` {
+		t.Errorf("mod_log = %+v", rows)
+	}
+	for _, r := range rows {
+		if strings.Contains(r.Details, pw) {
+			t.Error("the mod_log row holds the password")
+		}
+	}
+
+	// A legacy account (bob) moves to the gobb scheme. A second reset gives
+	// another password and adds one to the epoch again.
+	pw2, err := board.ResetPassword(ctx, pool, bob, t0)
+	if err != nil || pw2 == pw {
+		t.Fatalf("second reset = %q, %v", pw2, err)
+	}
+	if u := readUser(t, pool, bob); u.Scheme != "gobb" || !strings.HasPrefix(u.Hash, "$argon2id$") {
+		t.Errorf("bob's scheme = %q, hash = %.12q", u.Scheme, u.Hash)
+	}
+}
+
+func TestResetPasswordUnknownMemberChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	seedSessions(t, pool)
+	pw, err := board.ResetPassword(ctx, pool, 9999, t0)
+	if !errors.Is(err, board.ErrNotFound) || pw != "" {
+		t.Errorf("ResetPassword(9999) = %q, %v, want ErrNotFound", pw, err)
+	}
+	if rows := modRows(t, pool); len(rows) != 0 {
+		t.Errorf("mod_log = %+v", rows)
+	}
+	if n := sessionCount(t, pool, alice); n != 2 {
+		t.Errorf("alice has %d sessions", n)
+	}
+}
+
+func TestBanUser(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	seedSessions(t, pool)
+
+	if err := board.BanUser(ctx, pool, alice, "spam run", t0); err != nil {
+		t.Fatal(err)
+	}
+	var (
+		n        int
+		reason   string
+		shown    string
+		ends     *time.Time
+		creator  *int64
+		userID   *int64
+		created  time.Time
+		identity string
+	)
+	if err := pool.QueryRow(ctx, `select count(*) from bans where kind = 'user' and user_id = $1`, alice).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("%d user bans of alice, %v, want 1", n, err)
+	}
+	if err := pool.QueryRow(ctx, `select user_id, reason, reason_shown, ends_at, created_by, created_at, kind from bans where user_id = $1`, alice).
+		Scan(&userID, &reason, &shown, &ends, &creator, &created, &identity); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "spam run" || shown != "" || ends != nil || creator != nil || !created.Equal(t0) {
+		t.Errorf("ban = reason %q, shown %q, ends %v, creator %v, created %v", reason, shown, ends, creator, created)
+	}
+	if n := sessionCount(t, pool, alice); n != 0 {
+		t.Errorf("alice has %d sessions after the ban, want 0", n)
+	}
+	if n := sessionCount(t, pool, bob); n != 1 {
+		t.Errorf("bob has %d sessions, want 1", n)
+	}
+	rows := modRows(t, pool)
+	if len(rows) != 1 || rows[0].Actor != nil || rows[0].Action != "user.ban" || rows[0].TargetType != "user" ||
+		rows[0].Target != alice || rows[0].Details != `{"via": "cli"}` {
+		t.Errorf("mod_log = %+v", rows)
+	}
+
+	// A second ban adds nothing: no ban, no log row.
+	if err := board.BanUser(ctx, pool, alice, "again", t0); !errors.Is(err, board.ErrAlreadyBanned) {
+		t.Errorf("second ban = %v, want ErrAlreadyBanned", err)
+	}
+	if err := pool.QueryRow(ctx, `select count(*) from bans where kind = 'user' and user_id = $1`, alice).Scan(&n); err != nil || n != 1 {
+		t.Errorf("%d user bans of alice after the second, %v, want 1", n, err)
+	}
+	if rows := modRows(t, pool); len(rows) != 1 {
+		t.Errorf("%d mod_log rows after the second ban, want 1", len(rows))
+	}
+
+	// A ban that has ended does not count: a new ban goes in. A ban of another
+	// kind does not count either.
+	if _, err := pool.Exec(ctx, `delete from bans where user_id = $1`, alice); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `insert into bans (kind, user_id, created_at, ends_at) values ('user', $1, $2, $3)`, alice, t0.Add(-time.Hour), t0.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `insert into bans (kind, email, created_at) values ('email', 'alice@example.com', $1)`, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.BanUser(ctx, pool, alice, "", t0); err != nil {
+		t.Errorf("ban after an ended ban: %v", err)
+	}
+}
+
+func TestBanUserRefusals(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	seedSessions(t, pool)
+	if err := board.BanUser(ctx, pool, 9999, "x", t0); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("ban of an unknown member = %v, want ErrNotFound", err)
+	}
+	for _, reason := range []string{"bad \xff text", "nul \x00 byte", strings.Repeat("x", 256)} {
+		var in *board.InputError
+		if err := board.BanUser(ctx, pool, alice, reason, t0); !errors.As(err, &in) || in.Field != "reason" {
+			t.Errorf("ban with reason %q = %v, want an input error on reason", reason, err)
+		}
+	}
+	if err := board.BanUser(ctx, pool, alice, strings.Repeat("é", 255), t0); err != nil {
+		t.Errorf("ban with a reason of 255 characters: %v", err)
+	}
+	// Only the last call changed anything.
+	var n int
+	if err := pool.QueryRow(context.Background(), `select count(*) from bans where user_id = $1`, alice).Scan(&n); err != nil || n != 1 {
+		t.Errorf("%d bans of alice, %v, want 1", n, err)
+	}
+	if rows := modRows(t, pool); len(rows) != 1 {
+		t.Errorf("%d mod_log rows, want 1", len(rows))
+	}
+}
+
+func TestUnbanUser(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	if err := board.UnbanUser(ctx, pool, alice, t0); !errors.Is(err, board.ErrNotBanned) {
+		t.Errorf("unban of a member with no ban = %v, want ErrNotBanned", err)
+	}
+	if rows := modRows(t, pool); len(rows) != 0 {
+		t.Errorf("mod_log after a no-op unban = %+v", rows)
+	}
+	if err := board.BanUser(ctx, pool, alice, "r", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.BanUser(ctx, pool, bob, "r", t0); err != nil {
+		t.Fatal(err)
+	}
+	// Bans of other kinds and of other members stay.
+	if _, err := pool.Exec(ctx, `insert into bans (kind, email, created_at) values ('email', 'alice@example.com', $1)`, t0); err != nil {
+		t.Fatal(err)
+	}
+	var kept int
+	if err := pool.QueryRow(ctx, `select count(*) from bans where user_id is distinct from $1`, alice).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.UnbanUser(ctx, pool, alice, t0); err != nil {
+		t.Fatal(err)
+	}
+	var n, others int
+	if err := pool.QueryRow(ctx, `select count(*) from bans where user_id = $1`, alice).Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d bans of alice after the unban, %v", n, err)
+	}
+	if err := pool.QueryRow(ctx, `select count(*) from bans where user_id is distinct from $1`, alice).Scan(&others); err != nil || others != kept {
+		t.Errorf("%d other bans after, want %d (%v)", others, kept, err)
+	}
+	rows := modRows(t, pool)
+	if len(rows) != 3 || rows[2].Action != "user.unban" || rows[2].Actor != nil || rows[2].Target != alice ||
+		rows[2].TargetType != "user" || rows[2].Details != `{"via": "cli"}` {
+		t.Errorf("mod_log = %+v", rows)
+	}
+	if err := board.UnbanUser(ctx, pool, 9999, t0); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("unban of an unknown member = %v, want ErrNotFound", err)
+	}
+	// A ban that has ended is history: the unban leaves it, and says there is no
+	// ban to remove.
+	if _, err := pool.Exec(ctx, `insert into bans (kind, user_id, created_at, ends_at) values ('user', $1, $2, $3)`, carol, t0.Add(-time.Hour), t0.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.UnbanUser(ctx, pool, carol, t0); !errors.Is(err, board.ErrNotBanned) {
+		t.Errorf("unban with only an ended ban = %v, want ErrNotBanned", err)
+	}
+}
+
+// waitForRowLockWait blocks until a statement of this test's database waits on a
+// lock, or done reports that the call ended without waiting.
+func waitForRowLockWait(t *testing.T, pool *pgxpool.Pool, done <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		if err := pool.QueryRow(context.Background(), `
+select exists (select 1 from pg_stat_activity
+ where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock')`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the call ended without waiting for the row lock: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the call never waited for the row lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A sign-in that holds the user row (FOR SHARE, as session.CreateChecked does) and
+// has inserted its session is ordered before a reset or a ban: the write waits for
+// the commit, then deletes that session with the others.
+func TestResetAndBanWaitForASignInAndEndItsSession(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context, pool *pgxpool.Pool) error
+	}{
+		{"reset", func(ctx context.Context, pool *pgxpool.Pool) error {
+			_, err := board.ResetPassword(ctx, pool, alice, t0)
+			return err
+		}},
+		{"ban", func(ctx context.Context, pool *pgxpool.Pool) error {
+			return board.BanUser(ctx, pool, alice, "r", t0)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool, _ := boardtest.Load(t, bundletest.Small())
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := tx.Exec(ctx, `select 1 from users where id = $1 for share`, alice); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := session.Create(ctx, tx, alice, false, netip.MustParseAddr("10.1.2.3"), "t", t0); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.run(ctx, pool) }()
+			waitForRowLockWait(t, pool, done)
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if n := sessionCount(t, pool, alice); n != 0 {
+				t.Errorf("alice has %d sessions after the %s, want 0", n, tc.name)
+			}
+		})
+	}
+}
+
+// The other order: a reset or a ban holds the row. A sign-in that checks its epoch
+// and the bans (session.CreateChecked) waits, and is refused.
+func TestSignInWaitsForAResetAndForABan(t *testing.T) {
+	for _, tc := range []string{"reset", "ban"} {
+		t.Run(tc, func(t *testing.T) {
+			ctx := context.Background()
+			pool, _ := boardtest.Load(t, bundletest.Small())
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			// What the write does under its lock, before it commits.
+			if _, err := tx.Exec(ctx, `select 1 from users where id = $1 for update`, alice); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := session.CreateChecked(ctx, pool, alice, 0, false, netip.MustParseAddr("10.1.2.3"), "t", t0)
+				done <- err
+			}()
+			waitForRowLockWait(t, pool, done)
+			if tc == "reset" {
+				_, err = tx.Exec(ctx, `update users set password_epoch = password_epoch + 1 where id = $1`, alice)
+			} else {
+				_, err = tx.Exec(ctx, `insert into bans (kind, user_id, created_at) values ('user', $1, $2)`, alice, t0)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; !errors.Is(err, session.ErrStale) {
+				t.Errorf("sign-in after the %s = %v, want ErrStale", tc, err)
+			}
+			if n := sessionCount(t, pool, alice); n != 0 {
+				t.Errorf("%d sessions", n)
+			}
+		})
+	}
+}
