@@ -657,7 +657,7 @@ designer's call):
   - The image builds on Chainguard: build stage `cgr.dev/chainguard/go`, runtime
     `cgr.dev/chainguard/static`, user `nonroot`, CGO off. The data directory is a volume
     owned by `nonroot`.
-  - The PostgreSQL service uses the official `postgres:16` image, pinned to the major
+  - The PostgreSQL service uses the official `postgres:18` image **(owner, 2026-10-24)**, pinned to the major
     version, because a data directory cannot cross major versions unattended. This
     reason covers only this service.
   - The release binaries remain for anyone who runs gobb without Docker.

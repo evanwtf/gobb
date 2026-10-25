@@ -14,7 +14,7 @@ uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 ## Run with Docker Compose
 
-The stack is gobb and PostgreSQL 16. Inside the container, gobb listens on `0.0.0.0`.
+The stack is gobb and PostgreSQL 18. Inside the container, gobb listens on `0.0.0.0`.
 Compose publishes the port on `127.0.0.1` of the host only. Put a reverse proxy in
 front of it.
 
@@ -118,7 +118,7 @@ new board first. The gobb image
 has no shell, so delete the folders with a container that has one:
 
 ```sh
-docker run --rm -v gobb_gobb-data:/data --entrypoint sh postgres:16 \
+docker run --rm -v gobb_gobb-data:/data --entrypoint sh postgres:18 \
   -c 'rm -rf /data/.import-* /data/.replaced-*'
 ```
 
@@ -164,7 +164,7 @@ mkdir -p "$BACKUP_DIR"
 
    ```sh
    docker run --rm --volumes-from "$(docker compose ps -q gobb):ro" -v "$BACKUP_DIR:/backup" \
-     --entrypoint sh postgres:16 \
+     --entrypoint sh postgres:18 \
      -c 'tar czf "/backup/$1" -C /var/lib/gobb . && chown "$2" "/backup/$1" && chmod 600 "/backup/$1"' \
      sh "gobb-data-$STAMP.tar.gz" "$(id -u):$(id -g)" || echo "tar failed; do not upgrade"
    ```
@@ -198,7 +198,7 @@ export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p'
 docker compose stop gobb
 docker compose exec -T postgres pg_restore -U gobb -d gobb --clean --if-exists --exit-on-error < "$BACKUP_DIR/gobb-$STAMP.dump"
 docker run --rm --volumes-from "$(docker compose ps -aq gobb)" -v "$BACKUP_DIR:/backup:ro" \
-  --entrypoint sh postgres:16 \
+  --entrypoint sh postgres:18 \
   -c 'find /var/lib/gobb -mindepth 1 -delete && tar xzf "/backup/gobb-data-$1.tar.gz" -C /var/lib/gobb' sh "$STAMP"
 ```
 

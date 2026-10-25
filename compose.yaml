@@ -2,14 +2,16 @@ name: gobb
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:18
     environment:
       POSTGRES_USER: gobb
       POSTGRES_DB: gobb
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     command: ["postgres", "-c", "shared_buffers=64MB"]
     volumes:
-      - gobb-pg:/var/lib/postgresql/data
+      # The 18 image keeps its data in a version folder below this path, and declares
+      # this path as its volume (the 16 image used .../data).
+      - gobb-pg:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gobb -d gobb"]
       interval: 5s
