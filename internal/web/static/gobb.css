@@ -1145,3 +1145,5 @@ fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
 .js .save-fallback { display: none; }
 .avatar-img { width: 96px; height: 96px; border-radius: 4px; object-fit: cover; }
 .birthday-row select { width: auto; display: inline-block; margin-right: 0.4rem; }
+
+.birthdays { margin: 1rem 0 0; }

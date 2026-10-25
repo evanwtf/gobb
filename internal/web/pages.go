@@ -59,13 +59,21 @@ func (s *site) index(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	p.Data = indexData{Groups: groupForums(forums)}
+	birthdays, err := board.Birthdays(r.Context(), s.pool, p.Viewer, s.opt.Now())
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	p.Data = indexData{Groups: groupForums(forums), Birthdays: birthdays}
 	s.render(w, http.StatusOK, "index.html", p)
 }
 
 // indexData is the data of index.html.
 type indexData struct {
 	Groups []*forumGroup
+	// Birthdays lists the members whose birthday is today. It is empty for a
+	// viewer who may not see profiles.
+	Birthdays []board.BirthdayRow
 }
 
 // forumGroup is a bar and the rows under it.

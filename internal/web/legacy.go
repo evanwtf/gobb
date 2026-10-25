@@ -211,7 +211,7 @@ func (s *site) legacyTarget(w http.ResponseWriter, r *http.Request, rt legacy.Ro
 		}
 		s.moved(w, r, s.path("p", idText))
 	case "user":
-		_, err := board.Profile(ctx, s.pool, p.Viewer, id)
+		_, err := board.Profile(ctx, s.pool, p.Viewer, id, s.opt.Now())
 		if s.profileFailed(w, r, p, err) {
 			return
 		}

@@ -72,7 +72,7 @@ func TestProfile(t *testing.T) {
 	bob := memberOn(t, pool, 2, "bob")
 	guest := guestOn(t, pool)
 
-	p, err := board.Profile(ctx, pool, bob, 1)
+	p, err := board.Profile(ctx, pool, bob, 1, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestProfile(t *testing.T) {
 
 	// Carol never visited, has no signature, and her request to join Beta testers
 	// is pending.
-	p, err = board.Profile(ctx, pool, bob, 3)
+	p, err = board.Profile(ctx, pool, bob, 3, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,20 +104,20 @@ func TestProfile(t *testing.T) {
 		t.Errorf("carol = last visit %v, signature %v, groups %v", p.LastVisit, p.Signature, p.Groups)
 	}
 	// A confirmed member of a group that members may join shows it.
-	if p, err = board.Profile(ctx, pool, bob, 2); err != nil || !slices.Equal(p.Groups, []string{"Beta testers", "members", "moderators"}) {
+	if p, err = board.Profile(ctx, pool, bob, 2, time.Now()); err != nil || !slices.Equal(p.Groups, []string{"Beta testers", "members", "moderators"}) {
 		t.Errorf("bob = %v, %v", p.Groups, err)
 	}
 
 	// An inactive member cannot sign in, but the posts are on the board and so is the
 	// profile. The member list still leaves the member out (see TestMembers).
-	dave, err := board.Profile(ctx, pool, bob, 4)
+	dave, err := board.Profile(ctx, pool, bob, 4, time.Now())
 	if err != nil {
 		t.Fatalf("inactive user: %v", err)
 	}
 	if dave.Card.Name != "dave" || dave.Card.ID != 4 || !slices.Equal(dave.Groups, []string{"members"}) {
 		t.Errorf("dave = %+v, groups %v", dave.Card, dave.Groups)
 	}
-	if _, err := board.Profile(ctx, pool, guest, 4); !errors.Is(err, board.ErrForbidden) {
+	if _, err := board.Profile(ctx, pool, guest, 4, time.Now()); !errors.Is(err, board.ErrForbidden) {
 		t.Errorf("guest, inactive user: err = %v, want ErrForbidden", err)
 	}
 
@@ -133,7 +133,7 @@ func TestProfile(t *testing.T) {
 		{"bob, a gone user", bob, 8, board.ErrGone},
 		{"bob, an unknown ID", bob, 99, board.ErrNotFound},
 	} {
-		if _, err := board.Profile(ctx, pool, c.v, c.id); !errors.Is(err, c.want) {
+		if _, err := board.Profile(ctx, pool, c.v, c.id, time.Now()); !errors.Is(err, c.want) {
 			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
 		}
 	}
@@ -146,7 +146,7 @@ func TestProfileHidesHiddenGroups(t *testing.T) {
 	pool, _ := boardtest.Load(t, hiddenGroupBoard())
 	for _, viewer := range []board.Viewer{memberOn(t, pool, 1, "alice"), memberOn(t, pool, 2, "bob")} {
 		for _, id := range []int64{1, 2} {
-			p, err := board.Profile(ctx, pool, viewer, id)
+			p, err := board.Profile(ctx, pool, viewer, id, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -163,7 +163,7 @@ func TestProfileStatementCount(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	c := counting{pool: pool}
-	if _, err := board.Profile(ctx, &c, memberOn(t, pool, 2, "bob"), 1); err != nil {
+	if _, err := board.Profile(ctx, &c, memberOn(t, pool, 2, "bob"), 1, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if c.n != 3 {
@@ -424,7 +424,7 @@ func TestProfileLastVisitIsTheLatest(t *testing.T) {
 		{2, ptrTime(time.Date(2026, 9, 30, 19, 15, 0, 0, time.UTC))}, // not seen since: the imported visit
 		{3, nil}, // never
 	} {
-		p, err := board.Profile(ctx, pool, bob, c.id)
+		p, err := board.Profile(ctx, pool, bob, c.id, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -18,9 +18,23 @@ type profileData struct {
 	board.ProfilePage
 	// SigHTML comes from markup.Render, which escapes everything.
 	SigHTML template.HTML
+	// WebsiteText is the text of the website link: the host and the path, with
+	// no scheme.
+	WebsiteText string
 	// FindHref is the link to the posts of the member, or empty for a viewer
 	// without account.search, whom search would refuse.
 	FindHref string
+}
+
+// websiteText returns the host and the path of a website address, without the
+// scheme, for the text of a link. The query and the fragment stay out. An address
+// that does not parse shows as it is.
+func websiteText(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return u.Host + u.Path
 }
 
 // denied answers 403 for a page that the viewer may not see: a page that needs
@@ -71,11 +85,11 @@ func (s *site) profile(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	pp, err := board.Profile(r.Context(), s.pool, p.Viewer, id)
+	pp, err := board.Profile(r.Context(), s.pool, p.Viewer, id, s.opt.Now())
 	if s.profileFailed(w, r, p, err) {
 		return
 	}
-	d := profileData{ProfilePage: pp}
+	d := profileData{ProfilePage: pp, WebsiteText: websiteText(pp.Website)}
 	if p.Viewer.Perms.Has("account.search", 0) {
 		d.FindHref = s.path("search") + "?" + url.Values{"author": {pp.Card.Name}}.Encode()
 	}

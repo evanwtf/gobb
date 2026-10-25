@@ -49,6 +49,15 @@ type ProfilePage struct {
 	Signature *markup.Node
 	// Groups lists the names of the confirmed groups whose kind is not hidden.
 	Groups []string
+	// Location, Occupation, Interests and Website are plain text. Each is empty
+	// when the member set none.
+	Location, Occupation, Interests, Website string
+	// Age is the age in whole years on the date of now in the viewer's zone. It
+	// is nil when the member gave no birth year.
+	Age *int
+	// CanMessage is true when the viewer has pm.send, the member is active, and
+	// the member is not the viewer.
+	CanMessage bool
 }
 
 // AvatarPath returns the stored path of the avatar of user userID, relative to
@@ -72,7 +81,8 @@ func AvatarPath(ctx context.Context, q db.Querier, userID int64) (string, error)
 // Without account.view_profiles the viewer gets [ErrForbidden], whatever the ID.
 // A user who does not exist gives [ErrNotFound]. An inactive member has a profile
 // like an active one: the member cannot sign in, but the posts are on the board.
-func Profile(ctx context.Context, q db.Querier, v Viewer, userID int64) (ProfilePage, error) {
+// The age is the age on now, on the calendar of the viewer's zone.
+func Profile(ctx context.Context, q db.Querier, v Viewer, userID int64, now time.Time) (ProfilePage, error) {
 	var gone bool
 	if err := q.QueryRow(ctx, `select exists (select 1 from gone_users where id = $1)`, userID).Scan(&gone); err != nil {
 		return ProfilePage{}, fmt.Errorf("board: check user %d: %w", userID, err)
@@ -84,20 +94,31 @@ func Profile(ctx context.Context, q db.Querier, v Viewer, userID int64) (Profile
 		return ProfilePage{}, ErrForbidden
 	}
 	var (
-		out ProfilePage
-		sig []byte
+		out        ProfilePage
+		sig        []byte
+		state      string
+		bday, bmon *int
+		byear      *int
 	)
 	// The last visit is the last time the member was on the board. last_visit_at
 	// alone is the start of the "new since" window: the visit before.
-	err := scanCard(q.QueryRow(ctx, `select `+cardColumns+`, coalesce(u.last_active_at, u.last_visit_at), u.signature_tree
+	err := scanCard(q.QueryRow(ctx, `select `+cardColumns+`, coalesce(u.last_active_at, u.last_visit_at), u.signature_tree,
+       coalesce(u.location, ''), coalesce(u.occupation, ''), coalesce(u.interests, ''), coalesce(u.website, ''),
+       u.birth_day, u.birth_month, u.birth_year, u.state
   from users u`+cardJoins+`
- where u.id = $1`, userID), &out.Card, &out.LastVisit, &sig)
+ where u.id = $1`, userID), &out.Card, &out.LastVisit, &sig,
+		&out.Location, &out.Occupation, &out.Interests, &out.Website, &bday, &bmon, &byear, &state)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProfilePage{}, ErrNotFound
 	}
 	if err != nil {
 		return ProfilePage{}, fmt.Errorf("board: read profile %d: %w", userID, err)
 	}
+	if bday != nil && bmon != nil {
+		y, m, d := calendarDay(v, now)
+		out.Age = ageOn(*bday, *bmon, byear, y, m, d)
+	}
+	out.CanMessage = v.Perms.Has("pm.send", 0) && state == "active" && userID != v.UserID
 	if len(sig) > 0 {
 		if n := decodeTree(sig, "signature of user", userID); len(n.Children) > 0 {
 			out.Signature = n
