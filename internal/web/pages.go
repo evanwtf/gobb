@@ -17,6 +17,13 @@ func (s *site) parseTemplates() error {
 		"path": s.path,
 		"time": func(t time.Time, c clock) template.HTML { return timeTag(t, c, false) },
 		"date": func(t time.Time, c clock) template.HTML { return timeTag(t, c, true) },
+		// stdtime shows a time in the standard format in the zone of the clock,
+		// whatever the date format of the viewer. A sentence that says "since" with
+		// an age would read "since 3 hours ago".
+		"stdtime": func(t time.Time, c clock) template.HTML {
+			c.Format = "standard"
+			return timeTag(t, c, false)
+		},
 		"rows": func(rows []*board.Forum, v board.Viewer, c clock) forumRows {
 			return forumRows{Rows: rows, Clock: c, Member: v.UserID != 0}
 		},
@@ -106,8 +113,8 @@ func groupForums(top []*board.Forum) []*forumGroup {
 	return groups
 }
 
-// forumRows is the data of the forum table partial: the rows, the zone in
-// which it shows times, and whether the viewer is a member. A forum that the
+// forumRows is the data of the forum table partial: the rows, the clock of the
+// viewer (zone, date format and "now"), and whether the viewer is a member. A forum that the
 // viewer may list and not read shows "Members only" to a guest and "No access"
 // to a member, for whom signing in would change nothing.
 type forumRows struct {

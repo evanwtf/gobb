@@ -48,10 +48,59 @@ func TestRelativeBands(t *testing.T) {
 		{"30 s ahead", now.Add(30 * time.Second), "just now"},
 		{"60 s ahead", now.Add(60 * time.Second), "just now"},
 		{"5 min ahead", now.Add(5 * time.Minute), "Oct 25, 2026, 5:12 pm"},
+		// The edges of the bands: the last value of one and the first of the next.
+		{"119 min", ago(119 * time.Minute), "119 minutes ago"},
+		{"47 h", ago(47 * time.Hour), "47 hours ago"},
+		{"exactly 180 days", ago(180 * 24 * time.Hour), "5 months ago"},
+		{"61 s ahead", now.Add(61 * time.Second), "Oct 25, 2026, 5:08 pm"},
 	}
 	for _, tt := range tests {
-		if got := relText(tt.t, now, ny); got != tt.want {
+		if got := relText(tt.t, now, ny, timeLayout); got != tt.want {
 			t.Errorf("%s: relText = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestMonthEnd pins the month-end rule: a month is whole only when its day of the
+// month and time of day have come, so a time on the 31st does not complete a month
+// on the 28th, even when the 28th is the last day of the month.
+func TestMonthEnd(t *testing.T) {
+	ny := loadZone(t, "America/New_York")
+	at := func(y int, m time.Month, d int) time.Time { return time.Date(y, m, d, 12, 0, 0, 0, ny) }
+	tests := []struct {
+		name   string
+		t, now time.Time
+		want   string
+	}{
+		{"31 August to 28 February", at(2026, time.August, 31), at(2027, time.February, 28), "5 months ago"},
+		{"31 August to 1 March", at(2026, time.August, 31), at(2027, time.March, 1), "6 months ago"},
+		{"30 August to 28 February", at(2026, time.August, 30), at(2027, time.February, 28), "5 months ago"},
+		{"28 August to 28 February", at(2026, time.August, 28), at(2027, time.February, 28), "6 months ago"},
+	}
+	for _, tt := range tests {
+		if got := relText(tt.t, tt.now, ny, timeLayout); got != tt.want {
+			t.Errorf("%s: relText = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestFutureTimeKeepsItsLayout pins that a relative time more than a minute ahead
+// shows the standard text in the layout of the call: a date stays a date.
+func TestFutureTimeKeepsItsLayout(t *testing.T) {
+	ny := loadZone(t, "America/New_York")
+	now := time.Date(2026, 10, 25, 17, 7, 0, 0, ny)
+	ahead := now.Add(5 * time.Minute)
+	c := clock{Loc: ny, Format: "relative", Now: now}
+	for _, tt := range []struct {
+		name     string
+		dateOnly bool
+		want     string
+	}{
+		{"time", false, `<time datetime="2026-10-25T21:12:00Z" title="Oct 25, 2026, 5:12 pm">Oct 25, 2026, 5:12 pm</time>`},
+		{"date", true, `<time datetime="2026-10-25T21:12:00Z" title="Oct 25, 2026">Oct 25, 2026</time>`},
+	} {
+		if got := string(timeTag(ahead, c, tt.dateOnly)); got != tt.want {
+			t.Errorf("%s:\n got %s\nwant %s", tt.name, got, tt.want)
 		}
 	}
 }
@@ -60,7 +109,7 @@ func TestRelativeAcrossDST(t *testing.T) {
 	ny := loadZone(t, "America/New_York")
 	tt := time.Date(2026, 10, 31, 20, 0, 0, 0, ny)
 	now := time.Date(2026, 11, 1, 20, 0, 0, 0, ny)
-	if got := relText(tt, now, ny); got != "25 hours ago" {
+	if got := relText(tt, now, ny, timeLayout); got != "25 hours ago" {
 		t.Errorf("relText = %q, want 25 hours ago", got)
 	}
 }

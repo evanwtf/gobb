@@ -2,8 +2,8 @@
 <header class="page-head">
   <h1>New since your last visit</h1>
   <p class="page-sub">
-    {{- if .Data.Topics}}{{plural .Data.Total "topic" "topics"}} with posts since {{time .Data.Since $.Clock}}. A topic you have not read has a New badge.
-    {{- else}}Nothing has been posted since {{time .Data.Since $.Clock}}.{{end -}}
+    {{- if .Data.Topics}}{{plural .Data.Total "topic" "topics"}} with posts since {{stdtime .Data.Since $.Clock}}. A topic you have not read has a New badge.
+    {{- else}}Nothing has been posted since {{stdtime .Data.Since $.Clock}}.{{end -}}
   </p>
   <div class="toolbar">
     {{template "markform" markForm (path "read") "Mark all read" .}}

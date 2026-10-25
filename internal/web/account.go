@@ -239,9 +239,9 @@ func (s *site) accountData(r *http.Request, p *page) (accountData, error) {
 	d.Samples = dateSamples{
 		Standard: now.In(loc).Format(timeLayout),
 		Relative: []string{
-			relText(now.Add(-98*time.Minute), now, loc),
-			relText(now.Add(-39*time.Hour), now, loc),
-			relText(now.In(loc).AddDate(0, -14, 0), now, loc),
+			relText(now.Add(-98*time.Minute), now, loc, timeLayout),
+			relText(now.Add(-39*time.Hour), now, loc, timeLayout),
+			relText(now.In(loc).AddDate(0, -14, 0), now, loc, timeLayout),
 		},
 		ISO: now.In(loc).Format(isoTimeLayout),
 	}

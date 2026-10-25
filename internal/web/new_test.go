@@ -628,3 +628,21 @@ func TestNewInAccessibleName(t *testing.T) {
 		t.Error("a read topic link says New")
 	}
 }
+
+// TestNewSinceIsStandardForRelativeMember pins that the "since" sentence shows the
+// time of the last visit in the standard format, even for a member whose date
+// format is relative: "since 3 hours ago" reads wrong. The <time> element holds
+// the exact time.
+func TestNewSinceIsStandardForRelativeMember(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	if _, err := pool.Exec(context.Background(),
+		`update users set last_visit_at = '2019-06-01T00:00:00Z' where id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	carol := signIn(t, h, "carol", "example-password") // date format: relative
+	body := bodyOf(t, getAs(t, h, "/new", carol))
+	want := `posts since <time datetime="2019-06-01T00:00:00Z">Jun 1, 2019, 12:00 am</time>.`
+	if !strings.Contains(body, want) {
+		t.Errorf("carol /new lacks %q", want)
+	}
+}
