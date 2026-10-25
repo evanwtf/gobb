@@ -96,11 +96,16 @@ func HiddenFormat(r rune) bool {
 // [HiddenFormat]).
 func HasHiddenFormat(s string) bool { return strings.IndexFunc(s, HiddenFormat) >= 0 }
 
-// isControl reports whether r is a control character or a line or paragraph
-// separator (Zl, Zp).
-func isControl(r rune) bool {
+// IsControl reports whether r is a control character or a line or paragraph
+// separator (Zl, Zp). This is the one rule for it: the profile checks, the checks
+// of titles and subjects, and the bundle checks all call it (ruling R52).
+func IsControl(r rune) bool {
 	return unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp)
 }
+
+// HasControl reports whether s holds a control character or a line or paragraph
+// separator (see [IsControl]).
+func HasControl(s string) bool { return strings.IndexFunc(s, IsControl) >= 0 }
 
 // hiddenFault returns [ErrControl] or [ErrFormat] for the first character of s
 // that is a control character or a hidden formatting character, and nil when s
@@ -108,7 +113,7 @@ func isControl(r rune) bool {
 func hiddenFault(s string) error {
 	for _, r := range s {
 		switch {
-		case isControl(r):
+		case IsControl(r):
 			return ErrControl
 		case HiddenFormat(r):
 			return ErrFormat

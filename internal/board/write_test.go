@@ -682,6 +682,11 @@ func TestNewTopicAndReplyInput(t *testing.T) {
 		_, err := board.NewTopic(ctx, pool, v, 2, board.Draft{Title: title, Source: "text", IP: ip1}, t0)
 		wantInput(t, err, "title", "Remove the hidden formatting character.")
 	}
+	// Ruling R52: a title also refuses the line and paragraph separators.
+	for _, title := range []string{"a\u2028b", "a\u2029b"} {
+		_, err := board.NewTopic(ctx, pool, v, 2, board.Draft{Title: title, Source: "text", IP: ip1}, t0)
+		wantInput(t, err, "title", "The title may not hold control characters or line breaks.")
+	}
 	// The joiners of emoji sequences pass.
 	if _, err := board.NewTopic(ctx, pool, v, 2, board.Draft{Title: "Family \U0001F468\u200d\U0001F469", Source: "text", IP: ip1}, t0); err != nil {
 		t.Errorf("a title with a zero-width joiner: %v", err)

@@ -1161,3 +1161,14 @@ func TestSendSubjectRefusesHiddenFormat(t *testing.T) {
 		wantInput(t, err, "subject", "Remove the hidden formatting character.")
 	}
 }
+
+// Ruling R52: a message subject refuses the line and paragraph separators.
+func TestSendSubjectRefusesLineSeparators(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	a := viewerFor(t, pool, alice)
+	for _, subject := range []string{"a\u2028b", "a\u2029b"} {
+		_, err := board.SendMessage(ctx, pool, a, board.MessageDraft{To: "bob", Subject: subject, Source: "x", IP: ip1}, t0)
+		wantInput(t, err, "subject", "The subject may not hold control characters or line breaks.")
+	}
+}

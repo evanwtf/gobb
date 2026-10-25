@@ -117,11 +117,19 @@ func (v *vet) label(field, s string) {
 	}
 }
 
-// title checks a topic title or a subject: a label with no hidden formatting
-// character (ruling R46), by the rule of account.HiddenFormat.
+// title checks a topic title or a subject: a label with no line or paragraph
+// separator (ruling R52, by the rule of account.IsControl) and no hidden
+// formatting character (ruling R46, by the rule of account.HiddenFormat).
 func (v *vet) title(field, s string) {
 	v.label(field, s)
-	if utf8.ValidString(s) && account.HasHiddenFormat(s) {
+	if !utf8.ValidString(s) {
+		return
+	}
+	// label reports a control character. A separator is the rest of the rule.
+	if account.HasControl(s) && !hasControl(s) {
+		v.add(field, "holds a control character or a line break")
+	}
+	if account.HasHiddenFormat(s) {
 		v.add(field, "holds a hidden formatting character")
 	}
 }

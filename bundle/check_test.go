@@ -828,6 +828,40 @@ func TestHiddenCharacterMessages(t *testing.T) {
 	}
 }
 
+// TestLineSeparatorInTitles pins ruling R52: a topic title, a post subject and a
+// message subject refuse the line and paragraph separators, with the message of
+// the profile fields for a line break.
+func TestLineSeparatorInTitles(t *testing.T) {
+	for _, tt := range []struct{ file, field string }{
+		{"topics.jsonl", "title"}, {"posts.jsonl", "subject"}, {"pms.jsonl", "subject"},
+	} {
+		for _, bad := range []string{"a\u2028b", "a\u2029b"} {
+			t.Run(tt.file+" "+tt.field+" "+strconv.QuoteToASCII(bad), func(t *testing.T) {
+				dir := bundletest.Write(t, bundletest.Small())
+				editLines(t, dir, tt.file, func(line int, m map[string]any) {
+					if line == 1 {
+						m[tt.field] = bad
+					}
+				})
+				err := openAndCheck(dir)
+				var errs bundle.Errors
+				var one *bundle.Error
+				switch {
+				case errors.As(err, &errs) && len(errs) == 1:
+					one = errs[0]
+				case errors.As(err, &one):
+				default:
+					t.Fatalf("Check = %v, want one error", err)
+				}
+				const msg = "holds a control character or a line break"
+				if one.File != tt.file || one.Line != 1 || one.Field != tt.field || one.Msg != msg {
+					t.Errorf("error = %v, want %s:1: %s: %s", one, tt.file, tt.field, msg)
+				}
+			})
+		}
+	}
+}
+
 // TestHiddenCharacterInTitles pins ruling R46: a topic title, a post subject and a
 // message subject refuse a hidden formatting character, with the message of the
 // profile fields. The joiners of emoji sequences pass.
