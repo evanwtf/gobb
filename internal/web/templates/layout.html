@@ -24,11 +24,22 @@
       {{- if .Settings.BoardDescription}}<span class="brand-desc">{{.Settings.BoardDescription}}</span>{{end}}
       {{- end}}
     </a>
+    {{- if .Viewer.UserID}}
+    <div class="header-user">
+      <span class="nav-who">Signed in as <a href="{{.AccountHref}}"{{if .AccountCurrent}} aria-current="page"{{end}}><bdi>{{.Viewer.Name}}</bdi></a></span>
+      <form method="post" action="{{path "logout"}}">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button type="submit" class="nav-button">Sign out</button>
+      </form>
+    </div>
+    {{- else if and .Controls .LoginHref}}
+    <div class="header-user"><a href="{{.LoginHref}}">Sign in</a></div>
+    {{- end}}
   </div>
   <nav class="site-nav" aria-label="Main">
     <ul class="wrap">
       {{- range .Nav}}
-      <li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a></li>
+      <li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}{{if .Badge}} <span class="badge-new">{{.Badge}}</span>{{end}}</a></li>
       {{- end}}
       {{- if .SearchHref}}
       <li class="nav-search">
@@ -39,17 +50,6 @@
         </form>
         <a href="{{.SearchHref}}"{{if .SearchCurrent}} aria-current="page"{{end}}>Advanced</a>
       </li>
-      {{- end}}
-      {{- if .Viewer.UserID}}
-      <li class="nav-end"><span class="nav-who">Signed in as <bdi>{{.Viewer.Name}}</bdi></span></li>
-      <li class="nav-out">
-        <form method="post" action="{{path "logout"}}">
-          <input type="hidden" name="csrf" value="{{.CSRF}}">
-          <button type="submit" class="nav-button">Sign out</button>
-        </form>
-      </li>
-      {{- else if and .Controls .LoginHref}}
-      <li class="nav-end"><a href="{{.LoginHref}}">Sign in</a></li>
       {{- end}}
     </ul>
   </nav>

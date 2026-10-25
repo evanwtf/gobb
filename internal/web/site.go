@@ -381,6 +381,10 @@ type page struct {
 	// without account.search. The nav then holds a search box.
 	SearchHref    string
 	SearchCurrent bool
+	// AccountHref is the site path of the account page, where the member's name
+	// in the header links. AccountCurrent is true on that page.
+	AccountHref    string
+	AccountCurrent bool
 	// Pages are the static pages that the footer lists. render fills them in.
 	Pages []board.StaticPage
 	// Data holds the data of the page template.
@@ -419,6 +423,8 @@ func (p *page) addRendered(r markup.Rendered) {
 type navLink struct {
 	Label, Href string
 	Current     bool
+	// Badge is a short note after the label, such as "2 new", or empty.
+	Badge string
 }
 
 // begin loads what every page needs: the settings and the viewer. The viewer is
@@ -481,22 +487,24 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 	}
 	ret := s.returnPath(r)
 	p := &page{
-		Title:      title,
-		Scheme:     scheme,
-		Settings:   settings,
-		Viewer:     v,
-		Clock:      clock{Loc: v.Loc, Format: v.DateFormat, Now: s.opt.Now()},
-		CSS:        s.path("static", "gobb.css") + "?v=" + s.assetVersion,
-		JS:         s.path("static", "gobb.js") + "?v=" + s.assetVersion,
-		Icon:       s.path("static", "icon.svg") + "?v=" + s.assetVersion,
-		Home:       s.path(),
-		Nav:        []navLink{{Label: "Index", Href: s.path(), Current: nav == "index"}},
-		Controls:   true,
-		Return:     ret,
-		Schemes:    choices(scheme),
-		csrfSecret: id.secret(),
-		ctx:        ctx,
-		navKey:     nav,
+		Title:          title,
+		Scheme:         scheme,
+		Settings:       settings,
+		Viewer:         v,
+		Clock:          clock{Loc: v.Loc, Format: v.DateFormat, Now: s.opt.Now()},
+		CSS:            s.path("static", "gobb.css") + "?v=" + s.assetVersion,
+		JS:             s.path("static", "gobb.js") + "?v=" + s.assetVersion,
+		Icon:           s.path("static", "icon.svg") + "?v=" + s.assetVersion,
+		Home:           s.path(),
+		AccountHref:    s.path("account"),
+		AccountCurrent: nav == "account",
+		Nav:            []navLink{{Label: "Index", Href: s.path(), Current: nav == "index"}},
+		Controls:       true,
+		Return:         ret,
+		Schemes:        choices(scheme),
+		csrfSecret:     id.secret(),
+		ctx:            ctx,
+		navKey:         nav,
 	}
 	if id.token == "" && nav != "login" {
 		p.LoginHref = s.loginHref(ret)

@@ -6,6 +6,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -151,6 +152,75 @@ func TestSignInFlow(t *testing.T) {
 	// The old cookie is worth nothing.
 	if strings.Contains(bodyOf(t, getAs(t, h, "/", cookies)), "Signed in as") {
 		t.Error("the old session cookie still works")
+	}
+}
+
+// headerParts splits the header of a page into the part above the nav (the
+// brand and the member's links) and the nav. It fails the test when the markup
+// has no nav.
+func headerParts(t *testing.T, page string) (top, nav string) {
+	t.Helper()
+	start := strings.Index(page, `<header class="site-header">`)
+	i := strings.Index(page, `<nav class="site-nav"`)
+	end := strings.Index(page, `</header>`)
+	if start < 0 || i < start || end < i {
+		t.Fatalf("the page has no header with a nav:\n%s", page)
+	}
+	return page[start:i], page[i:end]
+}
+
+// The member's links sit in the header row, at the right of the board name,
+// and not in the nav.
+func TestHeaderUser(t *testing.T) {
+	h, _ := siteAndPool(t, bundletest.Small(), Options{})
+	cookies := signIn(t, h, "alice", testPassword)
+
+	// A member: the name links to the account page, and Sign out is there.
+	top, nav := headerParts(t, bodyOf(t, getAs(t, h, "/", cookies)))
+	user := regexp.MustCompile(`(?s)<div class="header-user">.*?</div>`).FindString(top)
+	if user == "" {
+		t.Fatalf("the header row of a member has no .header-user:\n%s", top)
+	}
+	if !strings.Contains(user, `Signed in as <a href="/account"><bdi>alice</bdi></a>`) {
+		t.Errorf("the name of a member is no link to the account page:\n%s", user)
+	}
+	if strings.Contains(user, "aria-current") {
+		t.Errorf("the link to the account page is current on the index:\n%s", user)
+	}
+	if !strings.Contains(user, `action="/logout"`) || !strings.Contains(user, `name="csrf"`) || !strings.Contains(user, ">Sign out</button>") {
+		t.Errorf("the Sign out form is not in .header-user:\n%s", user)
+	}
+	for _, gone := range []string{"Signed in as", "Sign out", `action="/logout"`, "nav-who", "nav-end", "nav-out"} {
+		if strings.Contains(nav, gone) {
+			t.Errorf("the nav of a member still holds %q", gone)
+		}
+	}
+
+	// On the account page the name link is the current page.
+	top, _ = headerParts(t, bodyOf(t, getAs(t, h, "/account", cookies)))
+	if !strings.Contains(top, `<a href="/account" aria-current="page"><bdi>alice</bdi></a>`) {
+		t.Errorf("the name link lacks aria-current on /account:\n%s", top)
+	}
+
+	// A guest: the Sign in link is in .header-user, and the nav holds none.
+	top, nav = headerParts(t, bodyOf(t, get(t, h, "/")))
+	user = regexp.MustCompile(`(?s)<div class="header-user">.*?</div>`).FindString(top)
+	if !strings.Contains(user, `>Sign in</a>`) {
+		t.Errorf("the header row of a guest has no Sign in link:\n%s", top)
+	}
+	if strings.Contains(user, "Signed in as") || strings.Contains(user, "Sign out") {
+		t.Errorf("the header row of a guest shows a member's links:\n%s", user)
+	}
+	for _, gone := range []string{"Sign in", "Signed in as", "nav-end"} {
+		if strings.Contains(nav, gone) {
+			t.Errorf("the nav of a guest still holds %q", gone)
+		}
+	}
+
+	// The sign-in page itself offers no link to itself.
+	top, _ = headerParts(t, bodyOf(t, get(t, h, "/login")))
+	if strings.Contains(top, "Sign in</a>") {
+		t.Errorf("the sign-in page links to itself:\n%s", top)
 	}
 }
 

@@ -142,7 +142,28 @@ p { margin: 0; }
   border-bottom: 3px solid var(--accent);
 }
 
-.header-inner { padding-top: 1rem; padding-bottom: 1rem; }
+.header-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+
+/* The member's links: "Signed in as" and Sign out, or a guest's Sign in. They sit
+   at the right of the brand and wrap under it on a narrow screen. */
+.header-user { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; }
+.header-user a { color: var(--header-text); font-weight: 600; }
+.header-user .nav-who { padding: 0; white-space: nowrap; }
+.header-user .nav-who a { text-decoration: underline; text-underline-offset: 3px; }
+.header-user .nav-who a[aria-current="page"] {
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 3px;
+}
+.header-user form { display: flex; margin: 0; }
+.header-user .nav-button { margin: 0; border-radius: 6px; }
 
 .brand {
   display: inline-flex;
@@ -292,9 +313,6 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
 
 /* ---- Account controls: nav, sign-in card, scheme picker ----------------- */
 
-/* The sign-in and sign-out items sit at the right end of the nav bar, and wrap
-   under the links on a narrow screen. */
-.site-nav .nav-end { margin-left: auto; }
 .site-nav li { display: flex; align-items: stretch; }
 .nav-who {
   align-self: center;
@@ -1115,3 +1133,15 @@ mark {
 .account-section { max-width: 52rem; margin-bottom: 2rem; }
 .account-section h2 { margin-bottom: 0.75rem; font-size: 1.2rem; }
 .account-section .field input[type="password"], .account-section .field input[type="email"] { max-width: 26rem; }
+
+/* ---- Settings forms: groups, save status, birthday, avatar --------------- */
+
+fieldset.field { border: 0; padding: 0; margin: 0 0 1.1rem; min-width: 0; }
+fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
+.account-section .field-check { margin-bottom: 0.5rem; }
+.account-section .field-check label { font-weight: 400; }
+.save-status { min-height: 1.4em; margin-top: 0.25rem; font-weight: 600; color: var(--muted); }
+.save-status:empty { min-height: 0; margin: 0; }
+.js .save-fallback { display: none; }
+.avatar-img { width: 96px; height: 96px; border-radius: 4px; object-fit: cover; }
+.birthday-row select { width: auto; display: inline-block; margin-right: 0.4rem; }

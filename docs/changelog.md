@@ -29,6 +29,14 @@
   `clock` from the viewer and the request time, and the `time` and `date` template
   functions take it in place of a zone. The `<time>` element keeps `datetime` in UTC.
 
+- The member's links move into the header, at the right of the board name: "Signed in
+  as {name}" and Sign out, or a guest's Sign in link. The name links to `/account`, and
+  carries `aria-current="page"` there. The nav keeps the other links, and a nav link can
+  carry a `badge-new` pill (`navLink.Badge`). `gobb.css` gains the styles of the
+  settings forms: `fieldset.field` and its `legend`, `.save-status`, `.save-fallback`,
+  `.birthday-row` and `.avatar-img`; the checkbox labels of the account page are regular
+  weight.
+
 ## 0.1.0 (2026-10-25)
 
 The first release. gobb is one Go server for a forum, backed by PostgreSQL 16 or later

@@ -101,7 +101,7 @@ type accountData struct {
 // account serves GET /account: a guest goes to sign in and comes back here; a
 // member sees the three forms.
 func (s *site) account(w http.ResponseWriter, r *http.Request) {
-	p, err := s.begin(w, r, "Account", "")
+	p, err := s.begin(w, r, "Account", "account")
 	if err != nil {
 		s.serverError(w, r, err)
 		return
@@ -141,7 +141,7 @@ func (s *site) renderAccount(w http.ResponseWriter, status int, p *page, d accou
 // and the data, or answers and reports false. A guest, and a member who lacks
 // option, get 403 before any check of a password or any hash.
 func (s *site) accountMember(w http.ResponseWriter, r *http.Request, option, action string) (*page, accountData, bool) {
-	p, err := s.begin(w, r, "Account", "")
+	p, err := s.begin(w, r, "Account", "account")
 	if err != nil {
 		s.serverError(w, r, err)
 		return nil, accountData{}, false
@@ -374,7 +374,7 @@ func (s *site) changeEmail(w http.ResponseWriter, r *http.Request) {
 func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 	const action = "change your signature"
 	text := r.PostForm.Get("signature")
-	p, err := s.begin(w, r, "Account", "")
+	p, err := s.begin(w, r, "Account", "account")
 	if err != nil {
 		slog.Error("account: page", "path", r.URL.Path, "err", err)
 		s.bareForm(w, r, nil, failStatus(r, err), msgSignatureFail, text)
