@@ -126,7 +126,8 @@ func destinationLen(line []byte, limit int) int {
 }
 
 // boundedInlineParsers is goldmark's list of inline parsers, with the link
-// parser wrapped in the scan budget.
+// parser wrapped in the scan budget and the emphasis parser wrapped in the
+// delimiter budget (delimscan.go).
 func boundedInlineParsers() []util.PrioritizedValue {
 	list := parser.DefaultInlineParsers()
 	for i, v := range list {
@@ -134,5 +135,5 @@ func boundedInlineParsers() []util.PrioritizedValue {
 			list[i].Value = boundedLinkParser{v.Value.(parser.InlineParser)}
 		}
 	}
-	return list
+	return boundDelimiters(list)
 }

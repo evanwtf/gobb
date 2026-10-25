@@ -47,6 +47,8 @@ func FuzzParse(f *testing.F) {
 		strings.Repeat("- > ", 12) + "x\n" + strings.Repeat("  ", 24) + "y\n\n" + strings.Repeat("> ", 30) + "z",
 		"[x](/a?x=1&copy=2)", "![a](/a.png?x&times=1)", "https://example.com/?x=1&shy=1", "<https://example.com/?a=1&amp;b>",
 		"<x\u202e@c.example>", "<x\\y@c.example>", ":\t)", "a\xffb", "[<https://a.b>](/c)", "![[a](/b)](/c)",
+		// Mixed delimiters that never pair (A-I1): the shape that took 1.6 s at 60,000 bytes.
+		strings.Repeat("*_a", 5000), strings.Repeat("_*a", 3000), strings.Repeat("||*_a", 2000), strings.Repeat("~a", 4000),
 		"[a](" + strings.Repeat("[a](", 50), "[a](<" + strings.Repeat("[a](<", 50), "[a](b \"" + strings.Repeat("[a](b \"", 20),
 	}
 	for _, s := range seeds {
@@ -98,6 +100,7 @@ func FuzzRender(f *testing.F) {
 		"[x](javascript:alert(1)) [y](JaVaScRiPt&colon;x) ![z](data:text/html,<script>)",
 		"https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nhttps://x.com/a/status/1\n\nhttps://open.spotify.com/track/abc",
 		"<script>alert(1)</script> <SCRIPT src=x>",
+		strings.Repeat("*_a", 5000),
 		"> **A** [wrote](/p/1):\n>\n> ||spoiler|| \\*x\\*\n\n```go\n<script>\n```",
 	}
 	for _, s := range seeds {

@@ -96,10 +96,14 @@ func newEngineWith(markdown, autolink, bounded bool) goldmark.Markdown {
 	}
 	var exts []goldmark.Extender
 	if markdown {
-		exts = append(exts, spoilerExtension{})
+		exts = append(exts, spoilerExtension{bounded: bounded})
 	}
 	if autolink {
-		exts = append(exts, extension.Linkify)
+		if bounded {
+			exts = append(exts, linkifyExtension{})
+		} else {
+			exts = append(exts, extension.Linkify)
+		}
 	}
 	opts = append(opts, goldmark.WithExtensions(exts...))
 	return goldmark.New(opts...)

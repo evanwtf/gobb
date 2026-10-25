@@ -60,11 +60,15 @@ func (spoilerParser) Parse(_ ast.Node, block text.Reader, pc parser.Context) ast
 }
 
 // spoilerExtension adds ||text|| to a goldmark instance.
-type spoilerExtension struct{}
+type spoilerExtension struct {
+	bounded bool // wrap the parser in the delimiter budget
+}
 
 // Extend implements goldmark.Extender.
-func (spoilerExtension) Extend(m goldmark.Markdown) {
-	m.Parser().AddOptions(parser.WithInlineParsers(
-		util.Prioritized(spoilerParser{}, 500),
-	))
+func (e spoilerExtension) Extend(m goldmark.Markdown) {
+	var p parser.InlineParser = spoilerParser{}
+	if e.bounded {
+		p = boundedDelimiterParser{p}
+	}
+	m.Parser().AddOptions(parser.WithInlineParsers(util.Prioritized(p, 500)))
 }
