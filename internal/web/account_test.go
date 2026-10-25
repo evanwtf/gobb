@@ -1145,3 +1145,76 @@ func TestSignatureDivsSeesAnEarlyClose(t *testing.T) {
 		t.Error("a stray end tag after the signature went unseen")
 	}
 }
+
+const secondPassword = "the second pass phrase"
+
+// A password change whose check of the current password read an older epoch is
+// refused: it answers as a wrong current password and changes nothing. Here a
+// second browser of the same member changes the password in the gap between the
+// check and the write. The late change must not overwrite it.
+func TestPasswordChangeWithAnOlderEpochIsRefused(t *testing.T) {
+	h, _ := siteWithPool(t, postingBoard(), Options{})
+	first := signIn(t, h, "alice", testPassword)
+	second := signIn(t, h, "alice", testPassword)
+	beforeHold = func() {
+		beforeHold = nil
+		if rec := send(t, h, "/account/password", second, passwordForm(testPassword, secondPassword)); rec.Code != http.StatusSeeOther {
+			t.Errorf("the change in the gap = %d", rec.Code)
+		}
+	}
+	t.Cleanup(func() { beforeHold = nil })
+	rec := send(t, h, "/account/password", first, passwordForm(testPassword, newPassword))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(bodyOf(t, rec), "That is not your current password.") {
+		t.Fatalf("the late change = %d, want 400 as a wrong current password", rec.Code)
+	}
+	// The password of the change in the gap stands, and the late one never took.
+	if sessionValue(signIn(t, h, "alice", secondPassword)) == "" {
+		t.Error("the password of the first change no longer works")
+	}
+	if rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {newPassword}}); rec.Code == http.StatusSeeOther {
+		t.Error("the late change took the password")
+	}
+}
+
+// The same rule for the email change.
+func TestEmailChangeWithAnOlderEpochIsRefused(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	first := signIn(t, h, "alice", testPassword)
+	second := signIn(t, h, "alice", testPassword)
+	before := userCol(t, pool, 1, "email")
+	beforeEmailChange = func() {
+		beforeEmailChange = nil
+		if rec := send(t, h, "/account/password", second, passwordForm(testPassword, secondPassword)); rec.Code != http.StatusSeeOther {
+			t.Errorf("the change in the gap = %d", rec.Code)
+		}
+	}
+	t.Cleanup(func() { beforeEmailChange = nil })
+	rec := send(t, h, "/account/email", first, url.Values{"email": {"late@example.org"}, "current": {testPassword}})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(bodyOf(t, rec), "That is not your current password.") {
+		t.Fatalf("the late email change = %d, want 400 as a wrong current password", rec.Code)
+	}
+	if got := userCol(t, pool, 1, "email"); got != before {
+		t.Errorf("the email is %q, want it unchanged (%q)", got, before)
+	}
+}
+
+// A sign-in in flight on a legacy hash (bob's), held after the rehash, does not
+// survive a password change either: the rehash leaves the epoch, and the change
+// bumps it.
+func TestLegacySignInInFlightDoesNotSurviveAPasswordChange(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	b := signIn(t, h, "bob", testPassword)
+	reached, release, answer := holdSignIn(t, h, "bob", false)
+	waitFor(t, reached)
+	if rec := send(t, h, "/account/password", b, passwordForm(testPassword, newPassword)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("change = %d", rec.Code)
+	}
+	release()
+	late, cookies := answer()
+	if late.Code != http.StatusOK || !strings.Contains(bodyOf(t, late), "The name or password is wrong.") || sessionValue(cookies) != "" {
+		t.Errorf("the late sign-in = %d", late.Code)
+	}
+	if n := sessionsOf(t, pool, 2); n != 1 {
+		t.Errorf("bob has %d sessions, want exactly the one from the change", n)
+	}
+}

@@ -285,20 +285,20 @@ func (s *site) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
 	now := s.opt.Now()
 	// The session starts inside the check, as its last step, and only while the
-	// account still holds the hash that was verified and no user ban holds. A
-	// password change or a ban that lands between the check and the insert makes
-	// the sign-in a wrong password, counted and under the floor.
+	// account still holds the password epoch that the check read and no user ban
+	// holds. A password change, a reset or a ban that lands between the check and
+	// the insert makes the sign-in a wrong password, counted and under the floor.
 	var (
 		token string
 		sess  session.Session
 	)
 	userID, err := s.login.CheckWith(r.Context(), d.Name, form.Get("password"), ip, now,
-		func(ctx context.Context, id int64, hash string) error {
+		func(ctx context.Context, id, epoch int64) error {
 			if beforeSession != nil {
 				beforeSession()
 			}
 			var err error
-			token, sess, err = session.CreateChecked(ctx, s.pool, id, hash, d.Remember, ip, r.UserAgent(), now)
+			token, sess, err = session.CreateChecked(ctx, s.pool, id, epoch, d.Remember, ip, r.UserAgent(), now)
 			if errors.Is(err, session.ErrStale) {
 				return login.ErrStale
 			}

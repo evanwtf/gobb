@@ -82,9 +82,9 @@ func cutUserAgent(ua string) string {
 	return ua[:cut]
 }
 
-// ErrStale means that [CreateChecked] did not start a session: the user row no
-// longer holds the hash that the sign-in verified, the user is not active, or a
-// user ban holds. The sign-in answers it like a wrong password.
+// ErrStale means that [CreateChecked] did not start a session: the password of
+// the user changed since the sign-in read it, the user is not active, or a user
+// ban holds. The sign-in answers it like a wrong password.
 var ErrStale = errors.New("session: the account changed during the sign-in")
 
 // Create starts a session for userID and returns the token for the cookie. It
@@ -97,32 +97,38 @@ func Create(ctx context.Context, q db.Querier, userID int64, remember bool, ip n
 }
 
 // CreateChecked is [Create] for a sign-in. It starts the session only while the
-// user row still holds wantHash (the hash that the sign-in verified), the user is
-// active, and no user ban that has not ended holds the user; otherwise it returns
-// [ErrStale] and writes nothing. The check and the insert run in one transaction,
-// and the check reads the user row with FOR SHARE.
+// password epoch of the user row still equals wantEpoch (the epoch that the
+// sign-in read with the hash it verified), the user is active, and no user ban
+// that has not ended holds the user; otherwise it returns [ErrStale] and writes
+// nothing. The check and the insert run in one transaction, and the check reads
+// the user row with FOR SHARE.
 //
-// That lock orders the sign-in against every write that ends the sessions of a
+// The epoch counts the changes of the password: a change on the account page and
+// a reset by an administrator each add one. A rehash (the same password stored in
+// the gobb form) adds none, so two sign-ins at once on a legacy hash both pass.
+// The check compares the epoch, not the hash, for that reason.
+//
+// The lock orders the sign-in against every write that ends the sessions of a
 // member: such a write takes the row FOR UPDATE first (a password change, and
 // the ban and the reset of an administrator). If the sign-in holds the row, the
 // write waits, and then deletes the new session with the others. If the write
-// holds it, the sign-in waits, then sees the new hash or the ban, and is refused.
-// A sign-in that proved a password cannot outlive a change of it.
-func CreateChecked(ctx context.Context, pool *pgxpool.Pool, userID int64, wantHash string, remember bool, ip netip.Addr, userAgent string, now time.Time) (string, Session, error) {
+// holds it, the sign-in waits, then sees the new epoch or the ban, and is
+// refused. A sign-in that proved a password cannot outlive a change of it.
+func CreateChecked(ctx context.Context, pool *pgxpool.Pool, userID, wantEpoch int64, remember bool, ip netip.Addr, userAgent string, now time.Time) (string, Session, error) {
 	var (
 		token string
 		sess  Session
 	)
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		var hash string
-		err := tx.QueryRow(ctx, `select password_hash from users where id = $1 and state = 'active' for share`, userID).Scan(&hash)
+		var epoch int64
+		err := tx.QueryRow(ctx, `select password_epoch from users where id = $1 and state = 'active' for share`, userID).Scan(&epoch)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrStale
 		}
 		if err != nil {
 			return fmt.Errorf("session: check user %d: %w", userID, err)
 		}
-		if wantHash == "" || subtle.ConstantTimeCompare([]byte(hash), []byte(wantHash)) != 1 {
+		if epoch != wantEpoch {
 			return ErrStale
 		}
 		var banned bool

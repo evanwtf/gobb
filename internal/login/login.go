@@ -223,6 +223,7 @@ type candidate struct {
 	id          int64
 	hash        string
 	scheme      string
+	epoch       int64
 	state       string
 	emailClean  string
 	matched     bool
@@ -286,9 +287,13 @@ func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now
 
 // CheckWith is [Service.Check] with one more step for a sign-in that starts a
 // session. After the password is verified, ban and rehash included, it calls
-// finish with the ID of the user and the hash that is stored for the user now
-// (the new hash, when the check replaced a legacy one). Nothing is refunded
-// before finish returns, so the step runs inside the limits and the floor.
+// finish with the ID of the user and the password epoch that the check read
+// together with the hash it verified. The epoch counts the changes of the
+// password (a change, a reset). A rehash is no change: the same password is
+// stored in the gobb form, and the epoch stays. So two sign-ins at once on a
+// legacy hash read the same epoch, and both may start a session. Nothing is
+// refunded before finish returns, so the step runs inside the limits and the
+// floor.
 //
 //   - finish returns [ErrStale]: the account changed after the check (a new
 //     password, a ban). CheckWith answers [ErrWrong], keeps the two limit events
@@ -300,16 +305,16 @@ func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now
 //     name.
 //
 // A nil finish is Check.
-func (s *Service) CheckWith(ctx context.Context, name, pw string, ip netip.Addr, now time.Time, finish func(ctx context.Context, userID int64, hash string) error) (int64, error) {
+func (s *Service) CheckWith(ctx context.Context, name, pw string, ip netip.Addr, now time.Time, finish func(ctx context.Context, userID, epoch int64) error) (int64, error) {
 	c := &clock{from: time.Now()}
 	k := s.keys(name, ip)
 	held, err := s.reserve(ctx, name, k, now)
 	if err != nil {
 		return 0, err
 	}
-	id, hash, err := s.check(ctx, c, name, pw, ip, now)
+	id, epoch, err := s.check(ctx, c, name, pw, ip, now)
 	if err == nil && finish != nil {
-		if err = finish(ctx, id, hash); errors.Is(err, ErrStale) {
+		if err = finish(ctx, id, epoch); errors.Is(err, ErrStale) {
 			err = ErrWrong
 		}
 		if err != nil {
@@ -716,22 +721,22 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	}, nil
 }
 
-func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time) (int64, string, error) {
+func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time) (int64, int64, error) {
 	if !utf8.ValidString(name) || len(name) > maxName {
 		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {
-			return 0, "", err
+			return 0, 0, err
 		}
-		return 0, "", ErrWrong
+		return 0, 0, ErrWrong
 	}
 	users, err := s.find(ctx, name)
 	if err != nil {
-		return 0, "", err
+		return 0, 0, err
 	}
 	if len(users) == 0 {
 		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {
-			return 0, "", err
+			return 0, 0, err
 		}
-		return 0, "", ErrWrong
+		return 0, 0, ErrWrong
 	}
 
 	// One job per account, in one hold of the gate. An account with no hash
@@ -744,7 +749,7 @@ func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip
 		}
 	}
 	if err := s.runJobs(ctx, c, pw, jobs); err != nil {
-		return 0, "", err
+		return 0, 0, err
 	}
 	matches := 0
 	for i := range users {
@@ -755,33 +760,32 @@ func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip
 	}
 	switch {
 	case matches == 0:
-		return 0, "", ErrWrong
+		return 0, 0, ErrWrong
 	case len(users) > 1:
-		return 0, "", ErrAmbiguous
+		return 0, 0, ErrAmbiguous
 	}
 
 	u := users[0]
 	if u.state != "active" {
-		return 0, "", ErrInactive
+		return 0, 0, ErrInactive
 	}
 	reason, banned, err := s.banned(ctx, u, ip, now)
 	if err != nil {
-		return 0, "", err
+		return 0, 0, err
 	}
 	if banned {
-		return 0, "", &BannedError{Reason: reason}
+		return 0, 0, &BannedError{Reason: reason}
 	}
-	hash := u.hash
 	if u.needsRehash {
-		hash = s.rehash(ctx, u, pw)
+		s.rehash(ctx, u, pw)
 	}
-	return u.id, hash, nil
+	return u.id, u.epoch, nil
 }
 
 // find returns the users that name can mean: the one with that username, or if
 // none, the ones with that email address.
 func (s *Service) find(ctx context.Context, name string) ([]candidate, error) {
-	const cols = `select id, password_hash, password_scheme, state, email_clean from users where `
+	const cols = `select id, password_hash, password_scheme, password_epoch, state, email_clean from users where `
 	users, err := s.query(ctx, cols+`username_clean = $1 order by id`, account.CleanUsername(name))
 	if err != nil || len(users) > 0 {
 		return users, err
@@ -802,7 +806,7 @@ func (s *Service) query(ctx context.Context, sql string, arg string) ([]candidat
 	var out []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.hash, &c.scheme, &c.state, &c.emailClean); err != nil {
+		if err := rows.Scan(&c.id, &c.hash, &c.scheme, &c.epoch, &c.state, &c.emailClean); err != nil {
 			return nil, fmt.Errorf("login: find user: %w", err)
 		}
 		out = append(out, c)
@@ -862,37 +866,36 @@ func inetArg(ip netip.Addr) any {
 }
 
 // rehash replaces the stored hash of u with a gobb hash of pw. The hash runs
-// inside the gate. The update names the old hash, so that two sign-ins at once, or a password change in between,
-// do not overwrite a newer hash. A failure is logged and does not fail the
-// sign-in: the member has proved the password. It returns the hash that is
-// stored afterward: the new one, or the old one when nothing was replaced.
-func (s *Service) rehash(ctx context.Context, u candidate, pw string) string {
+// inside the gate. The update names the old hash and the epoch that the check
+// read, so a password change in between is not overwritten. It leaves the epoch
+// alone: the password is the same. A failure is logged and does not fail the
+// sign-in: the member has proved the password.
+//
+// An update that matches no row is not an error. Either another sign-in at once
+// stored its own rehash of the same password (the epoch is unchanged, and this
+// sign-in may go on), or a password change came in (the epoch is higher, and the
+// caller's insert of the session refuses). The epoch tells the two apart, not
+// the hash.
+func (s *Service) rehash(ctx context.Context, u candidate, pw string) {
 	// The hash needs memory like any check, so it holds the gate. When the gate
 	// stays full, skip: the password is right, and the next sign-in tries again.
 	release, err := s.acquire(ctx, s.chargeKiB("gobb", ""))
 	if err != nil {
 		slog.Warn("login: skipped a rehash", "user", u.id, "err", err)
-		return u.hash
+		return
 	}
 	fresh, err := s.hash(pw)
 	release()
 	if err != nil {
 		slog.Warn("login: cannot rehash a password", "user", u.id, "err", err)
-		return u.hash
+		return
 	}
-	tag, err := s.q.Exec(ctx, `
+	_, err = s.q.Exec(ctx, `
 update users set password_hash = $2, password_scheme = 'gobb'
- where id = $1 and password_hash = $3`, u.id, fresh, u.hash)
+ where id = $1 and password_hash = $3 and password_epoch = $4`, u.id, fresh, u.hash, u.epoch)
 	if err != nil {
 		slog.Warn("login: cannot store a rehashed password", "user", u.id, "err", err)
-		return u.hash
 	}
-	if tag.RowsAffected() != 1 {
-		// A password change came in between. The stored hash is not the one that was
-		// verified, so the caller's conditional insert refuses.
-		return u.hash
-	}
-	return fresh
 }
 
 // Hold takes the share of the gate that one new gobb hash needs, for the code

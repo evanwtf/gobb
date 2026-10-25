@@ -3,6 +3,7 @@ package board_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"strings"
 	"sync"
@@ -297,11 +298,10 @@ func TestChangeEmailRace(t *testing.T) {
 
 // The lock is what stops the race, so the test holds it. The wait is looked up by
 // this test's own database and its own key, so a waiter of another test on the
-// same server cannot end the loop early.
-// A second member takes
-// the address while alice's change waits on the lock; when the lock is released,
-// alice must see the committed row and be refused. Without the lock, her check
-// runs at once, finds nothing, and the address is taken twice.
+// same server cannot end the loop early. A second member takes the address while
+// alice's change waits on the lock; when the lock is released, alice must see the
+// committed row and be refused. Without the lock, her check runs at once, finds
+// nothing, and the address is taken twice.
 func TestChangeEmailWaitsForTheAddressLock(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
@@ -445,4 +445,75 @@ func TestAccountPage(t *testing.T) {
 	}
 	_, err = board.Account(ctx, pool, asGuest(t, pool))
 	wantIs(t, err, board.ErrForbidden, "Account of a guest")
+}
+
+func epochOf(t *testing.T, pool *pgxpool.Pool, id int64) int64 {
+	t.Helper()
+	var e int64
+	if err := pool.QueryRow(context.Background(), `select password_epoch from users where id = $1`, id).Scan(&e); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// A password change adds one to the epoch, in the same transaction as the hash,
+// and ChangePasswordWith returns the epoch it stored.
+func TestChangePasswordBumpsTheEpoch(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	a := viewerFor(t, pool, alice)
+	if e := epochOf(t, pool, alice); e != 0 {
+		t.Fatalf("epoch at the start = %d", e)
+	}
+	got, err := board.ChangePasswordWith(ctx, pool, a, "a brand new password", 0, nil, t0)
+	if err != nil || got != 1 || epochOf(t, pool, alice) != 1 {
+		t.Fatalf("first change = %d, %v, row epoch %d, want 1", got, err, epochOf(t, pool, alice))
+	}
+	if err := board.ChangePassword(ctx, pool, a, "another brand new one", t0); err != nil || epochOf(t, pool, alice) != 2 {
+		t.Fatalf("second change: %v, row epoch %d, want 2", err, epochOf(t, pool, alice))
+	}
+	if e := epochOf(t, pool, bob); e != 0 {
+		t.Errorf("bob's epoch = %d, want 0", e)
+	}
+}
+
+// A change that carries an epoch the row no longer holds writes nothing: no hash,
+// no epoch, and the sessions stay.
+func TestChangeWithAnOlderEpochChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ip := netip.MustParseAddr("10.1.2.3")
+	if _, _, err := session.Create(ctx, pool, alice, false, ip, "t", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `update users set password_epoch = 5 where id = $1`, alice); err != nil {
+		t.Fatal(err)
+	}
+	a := viewerFor(t, pool, alice)
+	before := readUser(t, pool, alice)
+	for _, stale := range []int64{4, 6} {
+		if _, err := board.ChangePasswordWith(ctx, pool, a, "a brand new password", stale, nil, t0); !errors.Is(err, board.ErrPasswordChanged) {
+			t.Errorf("password change with epoch %d: %v, want ErrPasswordChanged", stale, err)
+		}
+		if err := board.ChangeEmailWith(ctx, pool, a, "late@elsewhere.example", stale, t0); !errors.Is(err, board.ErrPasswordChanged) {
+			t.Errorf("email change with epoch %d: %v, want ErrPasswordChanged", stale, err)
+		}
+		// The own address, unchanged, is checked first: a stale epoch is refused too.
+		if err := board.ChangeEmailWith(ctx, pool, a, before.Email, stale, t0); !errors.Is(err, board.ErrPasswordChanged) {
+			t.Errorf("same email with epoch %d: %v, want ErrPasswordChanged", stale, err)
+		}
+	}
+	if after := readUser(t, pool, alice); after.Hash != before.Hash || after.Scheme != before.Scheme || after.Email != before.Email || after.Verified != before.Verified || epochOf(t, pool, alice) != 5 {
+		t.Errorf("a refused change wrote: %+v, epoch %d", readUser(t, pool, alice), epochOf(t, pool, alice))
+	}
+	if n := sessionCount(t, pool, alice); n != 1 {
+		t.Errorf("alice has %d sessions, want 1", n)
+	}
+	// The right epoch goes through.
+	if _, err := board.ChangePasswordWith(ctx, pool, a, "a brand new password", 5, nil, t0); err != nil {
+		t.Errorf("password change with the right epoch: %v", err)
+	}
+	if err := board.ChangeEmailWith(ctx, pool, a, "late@elsewhere.example", 6, t0); err != nil {
+		t.Errorf("email change with the right epoch: %v", err)
+	}
 }

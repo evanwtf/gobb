@@ -349,15 +349,15 @@ func TestDeleteUser(t *testing.T) {
 	}
 }
 
-// CreateChecked inserts the session only while the user row holds the hash that
-// the sign-in verified, the user is active, and no user ban holds. A refusal is
+// CreateChecked inserts the session only while the user row holds the password epoch
+// that the sign-in read, the user is active, and no user ban holds. A refusal is
 // ErrStale and writes nothing.
 func TestCreateChecked(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	ctx := t.Context()
 	ip := netip.MustParseAddr("10.1.2.3")
-	var hash string
-	if err := pool.QueryRow(ctx, `select password_hash from users where id = 1`).Scan(&hash); err != nil {
+	const epoch = 3
+	if _, err := pool.Exec(ctx, `update users set password_epoch = $1 where id = 1`, epoch); err != nil {
 		t.Fatal(err)
 	}
 	count := func() int {
@@ -368,7 +368,7 @@ func TestCreateChecked(t *testing.T) {
 		return n
 	}
 
-	token, s, err := session.CreateChecked(ctx, pool, 1, hash, true, ip, "ua", t0)
+	token, s, err := session.CreateChecked(ctx, pool, 1, epoch, true, ip, "ua", t0)
 	if err != nil || !s.Remember || s.UserID != 1 {
 		t.Fatalf("CreateChecked = %+v, %v", s, err)
 	}
@@ -383,7 +383,7 @@ func TestCreateChecked(t *testing.T) {
 		t.Fatalf("%d sessions", count())
 	}
 
-	refuse := func(what string, userID int64, want string) {
+	refuse := func(what string, userID, want int64) {
 		t.Helper()
 		before := count()
 		if _, _, err := session.CreateChecked(ctx, pool, userID, want, false, ip, "ua", t0); !errors.Is(err, session.ErrStale) {
@@ -393,9 +393,17 @@ func TestCreateChecked(t *testing.T) {
 			t.Errorf("%s: a session was written", what)
 		}
 	}
-	refuse("another hash", 1, "$argon2id$not-the-stored-one")
-	refuse("an empty hash", 1, "")
-	refuse("an unknown user", 9999, hash)
+	refuse("an older epoch", 1, epoch-1)
+	refuse("a newer epoch", 1, epoch+1)
+	refuse("an unknown user", 9999, epoch)
+	// The hash is no part of the check: a new hash under the same epoch (a
+	// rehash) still passes.
+	if _, err := pool.Exec(ctx, `update users set password_hash = 'rehashed', password_scheme = 'gobb' where id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := session.CreateChecked(ctx, pool, 1, epoch, false, ip, "ua", t0); err != nil {
+		t.Errorf("after a rehash under the same epoch: %v", err)
+	}
 
 	// A user ban that has not ended refuses; an ended one, an email ban and an ip
 	// ban do not (the sign-in check owns those two).
@@ -408,17 +416,17 @@ func TestCreateChecked(t *testing.T) {
 	exec(`insert into bans (kind, user_id, created_at, ends_at) values ('user', 1, $1, $2)`, t0.Add(-time.Hour), t0.Add(-time.Minute))
 	exec(`insert into bans (kind, email, created_at) values ('email', 'alice@example.com', $1)`, t0)
 	exec(`insert into bans (kind, ip, created_at) values ('ip', '10.0.0.0/8', $1)`, t0)
-	if _, _, err := session.CreateChecked(ctx, pool, 1, hash, false, ip, "ua", t0); err != nil {
+	if _, _, err := session.CreateChecked(ctx, pool, 1, epoch, false, ip, "ua", t0); err != nil {
 		t.Errorf("with only ended, email and ip bans: %v", err)
 	}
 	exec(`insert into bans (kind, user_id, created_at) values ('user', 1, $1)`, t0)
-	refuse("a user ban with no end", 1, hash)
+	refuse("a user ban with no end", 1, epoch)
 	exec(`delete from bans where kind = 'user'`)
 	exec(`insert into bans (kind, user_id, created_at, ends_at) values ('user', 1, $1, $2)`, t0, t0.Add(time.Hour))
-	refuse("a user ban that ends later", 1, hash)
+	refuse("a user ban that ends later", 1, epoch)
 	exec(`delete from bans where kind = 'user'`)
 	exec(`update users set state = 'inactive' where id = 1`)
-	refuse("an inactive user", 1, hash)
+	refuse("an inactive user", 1, epoch)
 }
 
 // The check and the insert are ordered against a write that holds the row for
@@ -428,10 +436,6 @@ func TestCreateCheckedWaitsForTheRowLock(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	ctx := t.Context()
 	ip := netip.MustParseAddr("10.1.2.3")
-	var hash string
-	if err := pool.QueryRow(ctx, `select password_hash from users where id = 1`).Scan(&hash); err != nil {
-		t.Fatal(err)
-	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +446,7 @@ func TestCreateCheckedWaitsForTheRowLock(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := session.CreateChecked(ctx, pool, 1, hash, false, ip, "ua", t0)
+		_, _, err := session.CreateChecked(ctx, pool, 1, 0, false, ip, "ua", t0)
 		done <- err
 	}()
 	// Wait until the insert is blocked on a lock in this test's own database.
@@ -467,7 +471,7 @@ select exists (select 1 from pg_stat_activity
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := tx.Exec(ctx, `update users set password_hash = 'changed' where id = 1`); err != nil {
+	if _, err := tx.Exec(ctx, `update users set password_epoch = password_epoch + 1 where id = 1`); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -68,6 +68,11 @@ var beforeHold func()
 // new session of the browser is inserted. A test uses it to write a ban there.
 var beforeNewSession func()
 
+// beforeEmailChange, when set, runs in an email change after the current password
+// is verified and before the address is written. A test uses it to change the
+// password of the member at that point.
+var beforeEmailChange func()
+
 // afterBegin, when set, runs in the signature form after the page of the member
 // is built and before the stored values are read. A test uses it to remove the
 // member at that point.
@@ -165,8 +170,12 @@ func limitMessage(l *login.LimitedError) string {
 // failed sign-in. It reports whether the password is right; when it is not, it
 // has answered. The notice and field functions put the message on the form that
 // was sent.
+//
+// On success it returns the password epoch that the check read with the hash it
+// verified. The write that follows hands it back, and the write refuses when the
+// password changed in between (board.ErrPasswordChanged).
 func (s *site) verifyCurrent(w http.ResponseWriter, r *http.Request, p *page, d accountData, route, pw string,
-	wrong func(*accountData, string), notice func(*accountData, string)) bool {
+	wrong func(*accountData, string), notice func(*accountData, string)) (epoch int64, ok bool) {
 	// The try is counted before the check, so parallel tries cannot pass the limit,
 	// and it is never given back: a refusal counts as much as a success.
 	now := s.opt.Now()
@@ -174,14 +183,16 @@ func (s *site) verifyCurrent(w http.ResponseWriter, r *http.Request, p *page, d 
 		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(wait)))
 		notice(&d, msgTooManyTries)
 		s.renderAccount(w, http.StatusTooManyRequests, p, d)
-		return false
+		return 0, false
 	}
-	id, err := s.login.Check(r.Context(), p.Viewer.Name, pw, s.clientIP(r), now)
+	// The step after the check only keeps the epoch. It asks the database nothing.
+	id, err := s.login.CheckWith(r.Context(), p.Viewer.Name, pw, s.clientIP(r), now,
+		func(_ context.Context, _, e int64) error { epoch = e; return nil })
 	var banned *login.BannedError
 	var limited *login.LimitedError
 	switch {
 	case err == nil && id == p.Viewer.UserID:
-		return true
+		return epoch, true
 	case errors.As(err, &limited):
 		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(limited.RetryAfter)))
 		notice(&d, limitMessage(limited))
@@ -204,7 +215,7 @@ func (s *site) verifyCurrent(w http.ResponseWriter, r *http.Request, p *page, d 
 	default:
 		s.serverError(w, r, err)
 	}
-	return false
+	return 0, false
 }
 
 // writeRefused answers the error of a board account write and reports whether it
@@ -256,7 +267,8 @@ func (s *site) changePassword(w http.ResponseWriter, r *http.Request) {
 		s.renderAccount(w, http.StatusBadRequest, p, d)
 		return
 	}
-	if !s.verifyCurrent(w, r, p, d, "password", current, func(d *accountData, m string) { d.Pass.Current = m }, passNotice) {
+	epoch, ok := s.verifyCurrent(w, r, p, d, "password", current, func(d *accountData, m string) { d.Pass.Current = m }, passNotice)
+	if !ok {
 		return
 	}
 	// The gate share covers the hash and nothing else (ChangePasswordWith).
@@ -266,18 +278,25 @@ func (s *site) changePassword(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.login.Hold(ctx)
 	}
-	hash, err := board.ChangePasswordWith(r.Context(), s.pool, p.Viewer, next, hold, s.opt.Now())
+	newEpoch, err := board.ChangePasswordWith(r.Context(), s.pool, p.Viewer, next, epoch, hold, s.opt.Now())
+	if errors.Is(err, board.ErrPasswordChanged) {
+		// The password changed after the check read it. The answer is the one for a
+		// wrong current password, and nothing was changed.
+		d.Pass.Current = msgWrongCurrent
+		s.renderAccount(w, http.StatusBadRequest, p, d)
+		return
+	}
 	if s.writeRefused(w, r, p, d, err, passField, passNotice, action) {
 		return
 	}
-	s.startNewSession(w, r, p, hash)
+	s.startNewSession(w, r, p, newEpoch)
 }
 
 // startNewSession ends the password change: every session of the member is gone
 // (ChangePassword deleted them with the new hash), so one new session starts
 // for this browser, with the "remember me" choice of the old one. The csrf token
 // follows the session, so the page after the redirect carries a new token.
-func (s *site) startNewSession(w http.ResponseWriter, r *http.Request, p *page, hash string) {
+func (s *site) startNewSession(w http.ResponseWriter, r *http.Request, p *page, epoch int64) {
 	id, err := s.identify(w, r)
 	if err != nil {
 		s.serverError(w, r, err)
@@ -289,7 +308,7 @@ func (s *site) startNewSession(w http.ResponseWriter, r *http.Request, p *page, 
 	}
 	// The insert is conditional like a sign-in: a ban or another change that
 	// landed since the commit leaves the member signed out.
-	token, sess, err := session.CreateChecked(r.Context(), s.pool, p.Viewer.UserID, hash, id.sess.Remember, s.clientIP(r), r.UserAgent(), now)
+	token, sess, err := session.CreateChecked(r.Context(), s.pool, p.Viewer.UserID, epoch, id.sess.Remember, s.clientIP(r), r.UserAgent(), now)
 	if err != nil {
 		// The password is changed and the old sessions are gone. Send the member
 		// to sign in with the new one.
@@ -323,10 +342,19 @@ func (s *site) changeEmail(w http.ResponseWriter, r *http.Request) {
 	if _, _, err := board.CleanEmailInput(d.Email); s.writeRefused(w, r, p, d, err, mailField, mailNotice, action) {
 		return
 	}
-	if !s.verifyCurrent(w, r, p, d, "email", form.Get("current"), func(d *accountData, m string) { d.Mail.Current = m }, mailNotice) {
+	epoch, ok := s.verifyCurrent(w, r, p, d, "email", form.Get("current"), func(d *accountData, m string) { d.Mail.Current = m }, mailNotice)
+	if !ok {
 		return
 	}
-	err := board.ChangeEmail(r.Context(), s.pool, p.Viewer, d.Email, s.opt.Now())
+	if beforeEmailChange != nil {
+		beforeEmailChange()
+	}
+	err := board.ChangeEmailWith(r.Context(), s.pool, p.Viewer, d.Email, epoch, s.opt.Now())
+	if errors.Is(err, board.ErrPasswordChanged) {
+		d.Mail.Current = msgWrongCurrent
+		s.renderAccount(w, http.StatusBadRequest, p, d)
+		return
+	}
 	if s.writeRefused(w, r, p, d, err, mailField, mailNotice, action) {
 		return
 	}

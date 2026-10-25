@@ -114,54 +114,78 @@ func CheckNewPassword(ctx context.Context, q db.Querier, v Viewer, next string) 
 	return nil
 }
 
+// ErrPasswordChanged means that a change which needs the current password found
+// the password epoch of the member higher than the one that the check of the
+// current password read: the password changed in between (another browser, an
+// administrator's reset). The write is refused and changes nothing. The web layer
+// answers it like a wrong current password.
+var ErrPasswordChanged = errors.New("board: the password changed since it was checked")
+
 // ChangePassword stores next as the password of member v. It needs
-// account.password and applies [CheckNewPassword]. The caller has checked the
-// current password (login.Service.Check); this function does not.
+// account.password and applies [CheckNewPassword]. It checks no current password
+// and no epoch: it is for code that has no check to confirm. A server uses
+// [ChangePasswordWith].
 //
 // The new hash is a gobb hash and password_scheme becomes "gobb". In the same
-// transaction the function deletes every session of the member, so the old
-// sessions end at the moment the new password starts. The caller then creates
-// one new session for the browser that made the change. now is part of the
-// signature of the board writes; a password change records no time.
+// transaction the function adds one to the password epoch and deletes every
+// session of the member, so the old sessions end at the moment the new password
+// starts. now is part of the signature of the board writes; a password change
+// records no time.
 func ChangePassword(ctx context.Context, pool *pgxpool.Pool, v Viewer, next string, now time.Time) error {
-	_, err := ChangePasswordWith(ctx, pool, v, next, nil, now)
+	_, err := changePassword(ctx, pool, v, next, nil, nil, now)
 	return err
 }
 
-// ChangePasswordWith is [ChangePassword] for a server. It returns the new hash,
-// for the caller that starts a session with [session.CreateChecked], and it takes
-// hold, when not nil, around the hash and nowhere else: the argon2 run needs
-// memory, and the caller's gate bounds it. An error from hold is returned as it
-// is, before anything is written. The release runs before the transaction opens,
-// so the gate share is not held across the database work.
+// ChangePasswordWith is [ChangePassword] for a server, for a change that the
+// member asked for after a check of the current password. epoch is the password
+// epoch that the check read ([login.Service.CheckWith]); under the row lock, the
+// function confirms that the row still holds it. If not, it returns
+// [ErrPasswordChanged] and writes nothing. It returns the epoch it stored, for
+// the caller that starts a session with [session.CreateChecked]. It takes hold,
+// when not nil, around the hash and nowhere else: the argon2 run needs memory,
+// and the caller's gate bounds it. An error from hold is returned as it is,
+// before anything is written. The release runs before the transaction opens, so
+// the gate share is not held across the database work.
 //
 // The transaction reads the user row FOR UPDATE before it writes or deletes. A
 // sign-in that verified the old password and is about to insert a session holds
 // or wants the row FOR SHARE (session.CreateChecked), so each such pair runs in
 // one order: the sign-in's session is in the table before the delete, or the
-// sign-in sees the new hash and is refused. Any write that ends the sessions of
-// a member (a ban, a reset by an administrator) takes the same lock first.
-func ChangePasswordWith(ctx context.Context, pool *pgxpool.Pool, v Viewer, next string, hold func(context.Context) (release func(), err error), _ time.Time) (string, error) {
+// sign-in sees the new epoch and is refused. Any write that ends the sessions of
+// a member (a ban, a reset by an administrator) takes the same lock first, and a
+// reset adds one to the epoch, as a change does.
+func ChangePasswordWith(ctx context.Context, pool *pgxpool.Pool, v Viewer, next string, epoch int64, hold func(context.Context) (release func(), err error), now time.Time) (int64, error) {
+	return changePassword(ctx, pool, v, next, &epoch, hold, now)
+}
+
+func changePassword(ctx context.Context, pool *pgxpool.Pool, v Viewer, next string, want *int64, hold func(context.Context) (release func(), err error), _ time.Time) (int64, error) {
 	if err := mayAccount(v, "account.password"); err != nil {
-		return "", err
+		return 0, err
 	}
 	if err := CheckNewPassword(ctx, pool, v, next); err != nil {
-		return "", err
+		return 0, err
 	}
 	hash, err := hashHeld(ctx, next, hold)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
+	var stored int64
 	err = inTx(ctx, pool, func(tx pgx.Tx) error {
-		var id int64
-		err := tx.QueryRow(ctx, `select id from users where id = $1 and state = 'active' for update`, v.UserID).Scan(&id)
+		var epoch int64
+		err := tx.QueryRow(ctx, `select password_epoch from users where id = $1 and state = 'active' for update`, v.UserID).Scan(&epoch)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("board: lock user %d: %w", v.UserID, err)
 		}
-		if _, err := tx.Exec(ctx, `update users set password_hash = $2, password_scheme = 'gobb' where id = $1`, v.UserID, hash); err != nil {
+		if want != nil && epoch != *want {
+			return ErrPasswordChanged
+		}
+		err = tx.QueryRow(ctx, `
+update users set password_hash = $2, password_scheme = 'gobb', password_epoch = password_epoch + 1
+ where id = $1 returning password_epoch`, v.UserID, hash).Scan(&stored)
+		if err != nil {
 			return fmt.Errorf("board: store a password for %d: %w", v.UserID, err)
 		}
 		if _, err := session.DeleteUser(ctx, tx, v.UserID); err != nil {
@@ -170,9 +194,9 @@ func ChangePasswordWith(ctx context.Context, pool *pgxpool.Pool, v Viewer, next 
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return 0, err
 	}
-	return hash, nil
+	return stored, nil
 }
 
 // hashHeld hashes next with the gate share of hold, when there is one.
@@ -212,7 +236,7 @@ func CleanEmailInput(email string) (stored, clean string, err error) {
 }
 
 // ChangeEmail stores email as the address of member v. It needs account.email.
-// The caller has checked the current password.
+// It checks no current password and no epoch; a server uses [ChangeEmailWith].
 //
 //   - An address that another account holds, compared with
 //     [account.CleanEmail] and a different user ID, is an [*InputError] on the
@@ -223,7 +247,21 @@ func CleanEmailInput(email string) (stored, clean string, err error) {
 //
 // The check and the write run under a lock on the address, so two members who
 // ask for one free address at once cannot both get it.
-func ChangeEmail(ctx context.Context, pool *pgxpool.Pool, v Viewer, email string, _ time.Time) error {
+func ChangeEmail(ctx context.Context, pool *pgxpool.Pool, v Viewer, email string, now time.Time) error {
+	return changeEmail(ctx, pool, v, email, nil, now)
+}
+
+// ChangeEmailWith is [ChangeEmail] for a change that the member asked for after
+// a check of the current password. epoch is the password epoch that the check
+// read. Under the lock on the user row, before anything else, the function
+// confirms that the row still holds it; if not, it returns [ErrPasswordChanged]
+// and writes nothing. The row lock (FOR NO KEY UPDATE) conflicts with the FOR
+// UPDATE of a password change, so the epoch it reads is the committed one.
+func ChangeEmailWith(ctx context.Context, pool *pgxpool.Pool, v Viewer, email string, epoch int64, now time.Time) error {
+	return changeEmail(ctx, pool, v, email, &epoch, now)
+}
+
+func changeEmail(ctx context.Context, pool *pgxpool.Pool, v Viewer, email string, want *int64, _ time.Time) error {
 	if err := mayAccount(v, "account.email"); err != nil {
 		return err
 	}
@@ -235,13 +273,19 @@ func ChangeEmail(ctx context.Context, pool *pgxpool.Pool, v Viewer, email string
 		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, "gobb:email:"+clean); err != nil {
 			return fmt.Errorf("board: lock an email address: %w", err)
 		}
-		var current string
-		err := tx.QueryRow(ctx, `select email_clean from users where id = $1 and state = 'active' for no key update`, v.UserID).Scan(&current)
+		var (
+			current string
+			epoch   int64
+		)
+		err := tx.QueryRow(ctx, `select email_clean, password_epoch from users where id = $1 and state = 'active' for no key update`, v.UserID).Scan(&current, &epoch)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("board: read the address of %d: %w", v.UserID, err)
+		}
+		if want != nil && epoch != *want {
+			return ErrPasswordChanged
 		}
 		if current == clean {
 			return nil

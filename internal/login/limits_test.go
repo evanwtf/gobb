@@ -876,28 +876,34 @@ func TestCheckFloorHoldsOnEveryFailure(t *testing.T) {
 	}
 }
 
-// CheckWith hands the finish step the ID and the hash that the check verified.
-// For a legacy account the check replaces the hash first, so the step sees the
-// hash that is now stored: the one a conditional insert must compare.
-func TestCheckWithPassesTheVerifiedHash(t *testing.T) {
+// CheckWith hands the finish step the ID and the password epoch that the check
+// read. A rehash of a legacy hash (bob's) leaves the epoch, so the step sees the
+// epoch that is stored now, and that is the one a conditional insert compares.
+func TestCheckWithPassesTheVerifiedEpoch(t *testing.T) {
 	svc, pool := newService(t)
 	svc.Floor = 0
-	for _, name := range []string{"alice", "bob"} { // bob's hash is a legacy one
-		var gotID int64
-		var gotHash string
-		id, err := svc.CheckWith(t.Context(), name, pw, ip, now, func(_ context.Context, id int64, hash string) error {
-			gotID, gotHash = id, hash
+	exec(t, pool, `update users set password_epoch = 7 where id = 2`)
+	for _, c := range []struct {
+		name  string
+		epoch int64
+	}{{"alice", 0}, {"bob", 7}} { // bob's hash is a legacy one
+		var gotID, gotEpoch int64
+		id, err := svc.CheckWith(t.Context(), c.name, pw, ip, now, func(_ context.Context, id, epoch int64) error {
+			gotID, gotEpoch = id, epoch
 			return nil
 		})
 		if err != nil || id != gotID || id == 0 {
-			t.Fatalf("%s: CheckWith = %d, %v (finish saw %d)", name, id, err, gotID)
+			t.Fatalf("%s: CheckWith = %d, %v (finish saw %d)", c.name, id, err, gotID)
 		}
-		var stored string
-		if err := pool.QueryRow(t.Context(), `select password_hash from users where id = $1`, id).Scan(&stored); err != nil {
+		if gotEpoch != c.epoch {
+			t.Errorf("%s: finish saw epoch %d, want %d", c.name, gotEpoch, c.epoch)
+		}
+		var stored int64
+		if err := pool.QueryRow(t.Context(), `select password_epoch from users where id = $1`, id).Scan(&stored); err != nil {
 			t.Fatal(err)
 		}
-		if gotHash == "" || gotHash != stored {
-			t.Errorf("%s: finish saw hash %.20q, the row holds %.20q", name, gotHash, stored)
+		if stored != c.epoch {
+			t.Errorf("%s: the row holds epoch %d after the sign-in, want %d", c.name, stored, c.epoch)
 		}
 	}
 	// A plain Check still works.
@@ -912,7 +918,7 @@ func TestCheckWithPassesTheVerifiedHash(t *testing.T) {
 func TestCheckWithStaleIsWrong(t *testing.T) {
 	svc, _, _ := limitedService(t, 3, 100, nil)
 	svc.Floor = 80 * time.Millisecond
-	stale := func(context.Context, int64, string) error { return login.ErrStale }
+	stale := func(context.Context, int64, int64) error { return login.ErrStale }
 	start := time.Now()
 	_, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, stale)
 	if !errors.Is(err, login.ErrWrong) || errors.Is(err, login.ErrStale) {
@@ -935,7 +941,7 @@ func TestCheckWithStaleIsWrong(t *testing.T) {
 	// A database error in the step is not a wrong password, and takes no event.
 	svc2, _, _ := limitedService(t, 1, 100, nil)
 	boom := errors.New("boom")
-	if _, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, func(context.Context, int64, string) error { return boom }); !errors.Is(err, boom) {
+	if _, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, func(context.Context, int64, int64) error { return boom }); !errors.Is(err, boom) {
 		t.Fatalf("step error = %v", err)
 	}
 	if id, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, nil); err != nil || id != 1 {
