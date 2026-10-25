@@ -314,12 +314,12 @@ func hasControl(s string) bool {
 
 // cleanTitle trims a title and applies the rules: 1 to 120 characters, valid
 // UTF-8, and no control character.
-func cleanTitle(s string) (string, error) { return cleanLine(s, "title") }
+func cleanTitle(s string) (string, error) { return cleanLine(s, "title", maxTitleRunes) }
 
 // cleanLine trims a one-line field and applies the rules of titles and subjects:
-// 1 to 120 characters, valid UTF-8, and no control character. field is the name
+// 1 to limit characters, valid UTF-8, and no control character. field is the name
 // of the form field, and it is the word in the messages.
-func cleanLine(s, field string) (string, error) {
+func cleanLine(s, field string, limit int) (string, error) {
 	s = strings.TrimSpace(s)
 	n := utf8.RuneCountInString(s)
 	switch {
@@ -327,8 +327,8 @@ func cleanLine(s, field string) (string, error) {
 		return "", inputError(field, "The "+field+" may not hold control characters or line breaks.")
 	case n == 0:
 		return "", inputError(field, "Enter a "+field+".")
-	case n > maxTitleRunes:
-		return "", inputError(field, "The "+field+" is longer than 120 characters.")
+	case n > limit:
+		return "", inputError(field, fmt.Sprintf("The %s is longer than %d characters.", field, limit))
 	}
 	return s, nil
 }

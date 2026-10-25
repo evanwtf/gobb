@@ -217,8 +217,8 @@ type storedMessage struct {
 
 // loadParty reads message id as v may see it. It gives [ErrNotFound] when v is
 // not a party. The party rule is in the query, so a message of someone else is
-// neither loaded nor locked. When lock is true it locks the message row to the end of the
-// transaction.
+// neither loaded nor locked. When lock is true, it locks the message row to the
+// end of the transaction.
 func loadParty(ctx context.Context, q db.Querier, v Viewer, id int64, lock bool) (storedMessage, error) {
 	suffix := ""
 	if lock {
@@ -381,7 +381,9 @@ func DeleteMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int64) 
 	})
 }
 
-// ReplyDraft returns the start of a reply to message id. To is the name of the
+// ReplyDraft returns the start of a reply to message id. When the viewer is the
+// author, To holds the names of the "to" recipients, separated by commas, without
+// the blind-copy recipients and without the viewer. Else To is the name of the
 // author, and it is empty when the author is gone. The subject is "Re: " and the
 // subject of the message, unless that starts with "Re: " in any case already, and
 // at most 120 characters. With quote, Source is "> **{author}** wrote:" and the
@@ -447,7 +449,7 @@ select u.username
 
 // cleanSubject trims a subject and applies the rules of titles: 1 to 120
 // characters, valid UTF-8, and no control character.
-func cleanSubject(s string) (string, error) { return cleanLine(s, "subject") }
+func cleanSubject(s string) (string, error) { return cleanLine(s, "subject", maxSubjectRunes) }
 
 // splitRecipients splits the To field into names: at commas, trimmed, with
 // empty items dropped, and each name once by its clean form. It returns the

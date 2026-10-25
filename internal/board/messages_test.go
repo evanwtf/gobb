@@ -1098,3 +1098,45 @@ func TestPeekMessageWritesNothing(t *testing.T) {
 	denyOpts(t, pool, bob, 0, "pm.read")
 	wantIs(t, board.MarkMessageRead(ctx, pool, viewerFor(t, pool, bob), 1), board.ErrForbidden, "mark without pm.read")
 }
+
+// A viewer who is not a party locks nothing: the party rule is in the query, so a
+// message that another transaction holds with select ... for update does not make
+// the delete of a stranger wait. A party does wait, which shows that the test would
+// see a lock.
+func TestDeleteByANonPartyLocksNothing(t *testing.T) {
+	pool := loadMessages(t)
+	grantOpts(t, pool, carol, 0, "pm.delete")
+	grantOpts(t, pool, alice, 0, "pm.delete")
+	var party int
+	if err := pool.QueryRow(context.Background(), `select count(*) from pms p
+		where p.id = 2 and (p.author_id = $1 or exists (select 1 from pm_recipients r where r.pm_id = 2 and r.user_id = $1))`, carol).Scan(&party); err != nil || party != 0 {
+		t.Fatalf("carol is a party to message 2 (%d, %v): the test needs a stranger", party, err)
+	}
+
+	holder, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(context.Background(), `select id from pms where id = 2 for update`); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	err = board.DeleteMessage(ctx, pool, viewerFor(t, pool, carol), 2)
+	if !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("delete by a non-party = %v, want ErrNotFound", err)
+	}
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Errorf("delete by a non-party took %v: it waited for the lock", took)
+	}
+
+	// A party waits for the lock until the deadline.
+	ctx, cancel = context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := board.DeleteMessage(ctx, pool, viewerFor(t, pool, alice), 2); err == nil || errors.Is(err, board.ErrNotFound) {
+		t.Errorf("delete by a party under a lock = %v, want a deadline error", err)
+	}
+}
