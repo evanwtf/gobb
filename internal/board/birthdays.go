@@ -18,17 +18,27 @@ func calendarDay(v Viewer, now time.Time) (year int, month time.Month, day int) 
 	return now.In(loc).Date()
 }
 
+// birthdayIn returns the day of the month on which a birthday on the given day
+// and month falls in year y. A 29 February birthday falls on 28 February in a
+// year that is not a leap year. [ageOn] and [Birthdays] both use it, so the age
+// and the list agree.
+func birthdayIn(day, month, y int) int {
+	if month == 2 && day == 29 && !isLeap(y) {
+		return 28
+	}
+	return day
+}
+
 // ageOn returns the whole years that a member born on the given day, month and
 // year has reached on the date (y, m, d). The birthday counts as reached when
-// (m, d) is not before (month, day) in the calendar, so a member born on
-// 29 February reaches the birthday on 1 March in a year that is not a leap year.
-// It is nil when the year is not set or lies in the future.
+// (m, d) is not before the day that [birthdayIn] gives. It is nil when the year
+// is not set or lies in the future.
 func ageOn(day, month int, year *int, y int, m time.Month, d int) *int {
 	if year == nil {
 		return nil
 	}
 	age := y - *year
-	if int(m) < month || (int(m) == month && d < day) {
+	if int(m) < month || (int(m) == month && d < birthdayIn(day, month, y)) {
 		age--
 	}
 	if age < 0 {
@@ -52,8 +62,8 @@ type BirthdayRow struct {
 
 // Birthdays returns the active members whose birthday is today, on the calendar
 // date of now in the zone of v, in name order. A 29 February birthday counts as
-// today on 28 February in a year that is not a leap year. The age is the age that
-// [ageOn] gives, so on that 28 February it is still the age before the birthday.
+// today on 28 February in a year that is not a leap year ([birthdayIn]), and the
+// age from [ageOn] counts that day as the birthday.
 //
 // A viewer without account.view_profiles gets no rows and no error, because the
 // names link to profiles that the viewer may not see.

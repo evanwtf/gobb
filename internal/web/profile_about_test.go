@@ -129,6 +129,7 @@ func TestIndexBirthdaysLeapDay(t *testing.T) {
 		d    int
 		want bool
 	}{
+		{2027, 2, 27, false},
 		{2027, 2, 28, true},
 		{2027, 3, 1, false},
 		{2028, 2, 28, false},
@@ -140,6 +141,18 @@ func TestIndexBirthdaysLeapDay(t *testing.T) {
 		page := bodyOf(t, getAs(t, h, "/", bob))
 		if got := strings.Contains(page, `<bdi>carol</bdi>`); got != c.want {
 			t.Errorf("%d-%02d-%02d: carol listed = %v, want %v", c.y, c.m, c.d, got, c.want)
+		}
+		// Born 2000-02-29: 27 on 2027-02-28, 28 on 2028-02-29.
+		want := map[int]string{2027: `<bdi>carol</bdi></a> (27)`, 2028: `<bdi>carol</bdi></a> (28)`}[c.y]
+		if c.want && !strings.Contains(page, want) {
+			t.Errorf("%d-%02d-%02d: index lacks %q", c.y, c.m, c.d, want)
+		}
+		if c.want {
+			age := map[int]string{2027: "27", 2028: "28"}[c.y]
+			prof := bodyOf(t, getAs(t, h, "/u/3", bob))
+			if !strings.Contains(prof, `<dt>Age</dt><dd>`+age+`</dd>`) {
+				t.Errorf("%d-%02d-%02d: profile age is not %s", c.y, c.m, c.d, age)
+			}
 		}
 	}
 }

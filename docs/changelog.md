@@ -31,12 +31,11 @@
 
 - A profile shows the age, the location, the occupation, the interests and the website of
   the member, each only when set, after "Last visit". The age counts whole years on the
-  calendar date of the viewer's zone; a member born on 29 February reaches the birthday on
-  1 March in a year that is not a leap year. The website link shows the host and the path
-  without the scheme, and carries `rel="nofollow ugc noopener"`. The board index lists
+  calendar date of the viewer's zone; a member born on 29 February has the birthday on
+  28 February in a year that is not a leap year, for the age and for the list alike. The website link shows the host and the
+  path without the scheme, and carries `rel="nofollow ugc noopener"`. The board index lists
   "Birthdays today" for a viewer with `account.view_profiles`: active members whose day and
-  month are today in the viewer's zone, with the age when the member gave a year. A
-  29 February birthday shows on 28 February in a year that is not a leap year.
+  month are today in the viewer's zone, with the age when the member gave a year.
   `board.Profile` takes the current time, and `ProfilePage.CanMessage` tells whether the
   viewer may send the member a message.
 

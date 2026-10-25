@@ -153,10 +153,13 @@ func TestBirthdaysLeapDay(t *testing.T) {
 		}
 		return nil
 	}
-	// Not a leap year: the list shows her on 28 February, with the age before the
-	// birthday, and not on 1 March.
-	if r := carol(at(2027, 2, 28)); r == nil || r.Age == nil || *r.Age != 26 {
-		t.Errorf("28 Feb 2027 = %+v, want age 26", r)
+	// Not a leap year: the birthday falls on 28 February, so the list shows her
+	// that day with the new age, and not on 1 March or the day before.
+	if r := carol(at(2027, 2, 28)); r == nil || r.Age == nil || *r.Age != 27 {
+		t.Errorf("28 Feb 2027 = %+v, want age 27", r)
+	}
+	if r := carol(at(2027, 2, 27)); r != nil {
+		t.Errorf("27 Feb 2027 = %+v, want none", r)
 	}
 	if r := carol(at(2027, 3, 1)); r != nil {
 		t.Errorf("1 Mar 2027 = %+v, want none", r)
@@ -169,7 +172,8 @@ func TestBirthdaysLeapDay(t *testing.T) {
 		t.Errorf("29 Feb 2028 = %+v, want age 28", r)
 	}
 
-	// The profile age: reached on 1 March in a year that is not a leap year.
+	// The profile age: reached on 28 February in a year that is not a leap year,
+	// the same day as the list.
 	age := func(now time.Time) int {
 		p, err := board.Profile(ctx, pool, bob, 3, now)
 		if err != nil || p.Age == nil {
@@ -177,8 +181,17 @@ func TestBirthdaysLeapDay(t *testing.T) {
 		}
 		return *p.Age
 	}
-	if got := age(at(2027, 2, 28)); got != 26 {
-		t.Errorf("age on 28 Feb 2027 = %d, want 26", got)
+	if got := age(at(2027, 2, 27)); got != 26 {
+		t.Errorf("age on 27 Feb 2027 = %d, want 26", got)
+	}
+	if got := age(at(2027, 2, 28)); got != 27 {
+		t.Errorf("age on 28 Feb 2027 = %d, want 27", got)
+	}
+	if got := age(at(2028, 2, 28)); got != 27 {
+		t.Errorf("age on 28 Feb 2028 = %d, want 27", got)
+	}
+	if got := age(at(2028, 2, 29)); got != 28 {
+		t.Errorf("age on 29 Feb 2028 = %d, want 28", got)
 	}
 	if got := age(at(2027, 3, 1)); got != 27 {
 		t.Errorf("age on 1 Mar 2027 = %d, want 27", got)
