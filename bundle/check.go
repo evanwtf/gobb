@@ -368,16 +368,31 @@ func (w *whole) rank(line int, r Rank) {
 	}
 }
 
+// birthYear checks the latest birth year with account.CheckBirthday. The per-row
+// check has already reported any other fault of the birthday, so this reports only
+// a year that is too late.
+func (w *whole) birthYear(file string, line int, u User) {
+	val := func(p *int) int {
+		if p == nil {
+			return 0
+		}
+		return *p
+	}
+	latest := w.r.manifest.CreatedAt.UTC().Year() - account.MinAge
+	err := account.CheckBirthday(val(u.BirthDay), val(u.BirthMonth), val(u.BirthYear), latest)
+	if errors.Is(err, account.ErrYearTooLate) {
+		w.bad(file, line, "birth_year", "is %d; the latest year is %d, which is the year of manifest.created_at minus %d",
+			*u.BirthYear, latest, account.MinAge)
+	}
+}
+
 func (w *whole) user(line int, u User) {
 	const file = "users.jsonl"
 	if !w.unique(file, line, w.users, u.ID) {
 		return
 	}
 	w.optRef(file, line, "rank_id", w.ranks, u.RankID, "ranks.jsonl")
-	if latest := w.r.manifest.CreatedAt.UTC().Year() - account.MinAge; u.BirthYear != nil && *u.BirthYear > latest {
-		w.bad(file, line, "birth_year", "is %d; the latest year is %d, which is the year of manifest.created_at minus %d",
-			*u.BirthYear, latest, account.MinAge)
-	}
+	w.birthYear(file, line, u)
 	if u.Avatar != nil {
 		w.nameFile(file, line, "avatar", *u.Avatar)
 	}
