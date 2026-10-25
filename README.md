@@ -203,6 +203,13 @@ that are in the dump, so a table that a newer migration added would stay, and th
 upgrade would try to create it again. The restore then empties the data volume and
 unpacks the archive.
 
+Set the folder of the backups first. This is the line of the backup section. Change it
+if your backups live in another folder, because a new shell does not keep it:
+
+```sh
+export BACKUP_DIR="$HOME/gobb-backups"
+```
+
 The first command picks the newest stamp for which both files exist and are not empty.
 To restore an older backup, set `STAMP` to its date.
 
@@ -214,16 +221,17 @@ export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p'
 The second command is one chain, and the first failure stops it. Nothing is stopped or
 deleted until these checks pass: `STAMP` is not empty, the dump and the archive both
 exist and are not empty, `pg_restore --list` reads the dump, and `tar tzf` reads the
-archive. If the chain stops, read the message, fix the cause and run it again. The
+archive. Each check prints its own message on stderr when it fails, and the chain exits
+with a non-zero status. Read the message, fix the cause and run it again. The
 `postgres` service must be running.
 
 <!-- block: restore -->
 ```sh
-test -n "$STAMP" && \
-test -s "$BACKUP_DIR/gobb-$STAMP.dump" && \
-test -s "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" && \
-docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$STAMP.dump" > /dev/null && \
-tar tzf "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" > /dev/null && \
+{ test -n "$STAMP" || { echo "STAMP is empty: no backup in $BACKUP_DIR has both a dump and an archive" >&2; false; }; } && \
+{ test -s "$BACKUP_DIR/gobb-$STAMP.dump" || { echo "no dump for $STAMP in $BACKUP_DIR" >&2; false; }; } && \
+{ test -s "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" || { echo "no archive for $STAMP in $BACKUP_DIR" >&2; false; }; } && \
+{ docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$STAMP.dump" > /dev/null || { echo "pg_restore cannot read the dump for $STAMP" >&2; false; }; } && \
+{ tar tzf "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" > /dev/null || { echo "tar cannot read the archive for $STAMP" >&2; false; }; } && \
 docker compose stop gobb && \
 docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database if exists gobb with (force)' -c 'create database gobb' && \
 docker compose exec -T postgres pg_restore -U gobb -d gobb --exit-on-error < "$BACKUP_DIR/gobb-$STAMP.dump" && \
@@ -298,7 +306,9 @@ error, or a page that redirects), shows `gobb 0.1.0 · build 0f0f0fac`, so the 4
 hidden topic looks the same as the 404 of a missing one. The time runs from the moment
 the request enters the server until just before the last run of the page template,
 rounded up to the next 10 ms. The line holds no member name, host name, address, memory
-figure or timing of a query. Guests, members and crawlers see the same thing.
+figure or timing of a query. Guests and members see the time, and an admin also sees
+the query count. Every POST answer and every error page shows only the version and the
+build.
 
 The build is the first 8 hex characters of the commit. The image build takes it from the
 `GOBB_COMMIT` build argument, and CI and the release workflow pass the commit SHA. To
@@ -493,7 +503,7 @@ the database pool, inside 20 seconds. A second signal exits at once.
 ## Release
 
 A release is a tag `vX.Y.Z`. The release workflow publishes binaries for `linux/amd64`,
-`linux/arm64` and `darwin/arm64` with a SHA-256 sum for each, the image
+`linux/arm64`, `darwin/amd64` and `darwin/arm64` with a SHA-256 sum for each, the image
 `ghcr.io/evanwtf/gobb` as `:X.Y.Z` and `:latest` for `linux/amd64` and `linux/arm64`,
 and a GitHub release. The release notes are the section of `docs/changelog.md` for the
 version, never the message of the tag.
@@ -548,7 +558,10 @@ board index, forums, topics and single posts, profiles, the member list, the tea
 other data files. Members sign in and out and pick a color scheme. Old addresses
 redirect to the new ones, and a gone member's profile answers 410. Every page carries
 the security headers and a Content-Security-Policy, and every error page uses the
-board's layout. Nobody can post yet: Plan 4, the write side, comes next. The design is in
+board's layout.
+
+Plan 4, the write side, is built for v0.1.0: members post, edit and moderate, and private
+messages, uploads and email come later. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in
 [docs/superpowers/plans/2026-10-23-gobb-roadmap.md](docs/superpowers/plans/2026-10-23-gobb-roadmap.md).

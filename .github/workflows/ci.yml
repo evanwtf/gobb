@@ -409,6 +409,13 @@ jobs:
               --entrypoint sh postgres:18 -c 'find /var/lib/gobb -type f | wc -l'
           }
 
+          # The Restore section sets BACKUP_DIR itself, because a new shell has none.
+          # That line is outside every block, so this step does not run it: it would
+          # replace the folder of this step.
+          awk '/^### Restore/ { on = 1; next } /^##+ / { on = 0 } on' README.md \
+            | grep -F -x 'export BACKUP_DIR="$HOME/gobb-backups"' > /dev/null \
+            || { echo "the Restore section of the README does not set BACKUP_DIR"; exit 1; }
+
           # 1. Back up.
           export STAMP
           STAMP=$(date +%Y%m%d-%H%M%S)
@@ -432,10 +439,15 @@ jobs:
           sql -d gobb -c 'create table newer_table (id int primary key, user_id int references users (id))' -c 'insert into newer_table (id) values (1)'
 
           # 4. Each broken input must stop the restore before it deletes anything.
+          # The second argument is the message that the failed check must print on
+          # stderr, so a restore that stops in silence fails this step.
           refuses() {
-            local why=$1 status=0
-            block restore || status=$?
+            local why=$1 want=$2 status=0 err="$BACKUP_DIR/refusal.err"
+            block restore 2> "$err" || status=$?
+            cat "$err" >&2
             [ "$status" -ne 0 ] || { echo "the restore passed with $why"; exit 1; }
+            grep -F -- "$want" "$err" > /dev/null || { echo "$why: the restore did not print \"$want\""; exit 1; }
+            rm -f "$err"
             [ "$(sql -d gobb -c 'select count(*) from newer_table')" = 1 ] || { echo "$why: the restore dropped the database"; exit 1; }
             [ "$(files)" = "$before" ] || { echo "$why: the restore changed the data volume"; exit 1; }
             echo "refused with $why, and deleted nothing"
@@ -447,16 +459,16 @@ jobs:
           block restore-pick
           [ "$STAMP" = "$good" ] || { echo "the picker chose $STAMP, want $good"; exit 1; }
           STAMP=$bad
-          refuses "the archive missing"
+          refuses "the archive missing" "no archive for $bad in $BACKUP_DIR"
           STAMP=
-          refuses "an empty STAMP"
+          refuses "an empty STAMP" "STAMP is empty"
           printf 'not a dump' > "$BACKUP_DIR/gobb-$bad.dump"
           cp "$BACKUP_DIR/gobb-data-$good.tar.gz" "$BACKUP_DIR/gobb-data-$bad.tar.gz"
           STAMP=$bad
-          refuses "a dump that pg_restore cannot read"
+          refuses "a dump that pg_restore cannot read" "pg_restore cannot read the dump for $bad"
           cp "$BACKUP_DIR/gobb-$good.dump" "$BACKUP_DIR/gobb-$bad.dump"
           printf 'not an archive' > "$BACKUP_DIR/gobb-data-$bad.tar.gz"
-          refuses "an archive that tar cannot read"
+          refuses "an archive that tar cannot read" "tar cannot read the archive for $bad"
           rm -f "$BACKUP_DIR/gobb-$bad.dump" "$BACKUP_DIR/gobb-data-$bad.tar.gz"
 
           # 5. The restore.
