@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/dbtest"
+	"github.com/evanwtf/gobb/internal/mail"
+	"github.com/evanwtf/gobb/internal/mail/mailtest"
 	"github.com/evanwtf/gobb/internal/memlimit"
 )
 
@@ -333,5 +336,84 @@ func TestComposeCapsMemory(t *testing.T) {
 		if !strings.Contains(string(b), "GOBB_MEM_LIMIT") {
 			t.Errorf("%s does not name GOBB_MEM_LIMIT", file)
 		}
+	}
+}
+
+// With email off, startMail starts nothing and hands back a wake channel that
+// nobody reads: a non-blocking send on it falls through to the default case.
+func TestStartMailOff(t *testing.T) {
+	wake, stop := startMail(t.Context(), nil, nil)
+	defer stop()
+	select {
+	case wake <- struct{}{}:
+		t.Error("a send on the wake channel of a board with no email went through")
+	default:
+	}
+}
+
+// With email on, the worker sends a queued row on a wake, the wake channel has
+// room for one value, and stop returns after the worker has ended.
+func TestStartMailSendsOnWake(t *testing.T) {
+	pool := dbtest.New(t)
+	srv := mailtest.Start(t, mailtest.Options{})
+	old := mailRoots
+	mailRoots = srv.CertPool()
+	t.Cleanup(func() { mailRoots = old })
+	cfg := &config.Mail{
+		Host: "127.0.0.1", Port: srv.Port(), TLS: "starttls",
+		From: "board@example.org", PublicURL: "https://board.example.org/",
+	}
+	wake, stop := startMail(t.Context(), pool, cfg)
+	stopped := false
+	defer func() {
+		if !stopped {
+			stop()
+		}
+	}()
+
+	// The channel holds one value without a reader.
+	if cap(wake) != 1 {
+		t.Fatalf("cap(wake) = %d, want 1", cap(wake))
+	}
+	id, err := mail.Enqueue(t.Context(), pool, mail.Message{To: "someone@example.org", Subject: "s", Body: "b\r\n"},
+		0, time.Time{}, time.Now().Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+		t.Fatal("the wake channel is full")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var sent bool
+		if err := pool.QueryRow(t.Context(), `select sent_at is not null from email_queue where id = $1`, id).Scan(&sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the worker did not send the row")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stop()
+	stopped = true
+	// After stop, a row that comes due is not sent.
+	id2, err := mail.Enqueue(t.Context(), pool, mail.Message{To: "someone@example.org", Subject: "s", Body: "b\r\n"},
+		0, time.Time{}, time.Now().Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+	time.Sleep(200 * time.Millisecond)
+	var sent bool
+	if err := pool.QueryRow(t.Context(), `select sent_at is not null from email_queue where id = $1`, id2).Scan(&sent); err != nil || sent {
+		t.Errorf("a row was sent after stop (sent = %v, err = %v)", sent, err)
 	}
 }

@@ -89,3 +89,30 @@ func TestCleanupLogsCounts(t *testing.T) {
 		t.Errorf("sessions left = %d (%v), want 0", n, err)
 	}
 }
+
+// cleanup also deletes the old email rows and the expired reset links, and logs
+// how many.
+func TestCleanupLogsMailCount(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-31 * 24 * time.Hour)
+	if _, err := pool.Exec(t.Context(),
+		`insert into email_queue (to_addr, created_at, next_attempt_at, sent_at)
+		 values ('someone@example.org', $1, $1, $1)`, old); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	cleanup(t.Context(), pool, func() time.Time { return now })
+
+	if out := buf.String(); !strings.Contains(out, "email cleanup") || !strings.Contains(out, "rows=1") {
+		t.Errorf("log = %q, want an email cleanup line with rows=1", out)
+	}
+	var n int
+	if err := pool.QueryRow(t.Context(), `select count(*) from email_queue`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("email rows left = %d (%v), want 0", n, err)
+	}
+}

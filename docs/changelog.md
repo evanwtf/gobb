@@ -17,6 +17,17 @@
   `gobb mail test <address>` sends one test email at once and needs no `GOBB_DSN`.
   `compose.yaml` passes the seven variables through, and the README has an "Email"
   section.
+- **The email queue.** Migration 0014 adds the table `password_resets` and three columns
+  to `email_queue` (`user_id`, `send_by`, `dropped_at`). `mail.Enqueue` writes a message
+  to the queue inside the caller's transaction and refuses a bad address first. With
+  email on, `gobb serve` runs one worker. It wakes every 30 s, claims up to 10 due rows
+  with a 5-minute lease and sends each row with no database connection open. A failed
+  send waits 1, 5, 15 and then 30 minutes. A 5xx reply, a passed `send_by` or the 8th
+  failed attempt drops the row and clears its body. A stop of the server during a send
+  does not count as a failure. `last_error` holds `smtp 550 5.1.1`, `timeout` or
+  another short summary, and the log holds the row ID and the member ID, never the
+  address, the subject or the body. The hourly cleanup deletes rows 30 days after they
+  were sent or dropped, and the reset links that have expired.
 
 ## 0.2.0 (2026-10-25)
 

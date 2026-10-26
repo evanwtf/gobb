@@ -28,6 +28,7 @@ import (
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/importer"
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/mail"
 	"github.com/evanwtf/gobb/internal/memlimit"
 	"github.com/evanwtf/gobb/internal/session"
 	"github.com/evanwtf/gobb/internal/version"
@@ -273,12 +274,44 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		defer ticker.Stop()
 		cleanupLoop(cleanCtx, ticker.C, func(c context.Context) { cleanup(c, pool, time.Now) })
 	}()
+	// The email worker stops with the server, before the pool closes. The web layer will
+	// get wake and send on it without blocking.
+	wake, stopMail := startMail(ctx, pool, cfg.Mail)
+	_ = wake
 	closePool := func() {
+		stopMail()
 		stopClean()
 		<-cleaned
 		pool.Close()
 	}
 	return serveUntil(ctx, newHTTPServer(h), ln, closePool, sigs, exit)
+}
+
+// startMail starts the email worker when m is not nil. It returns the channel
+// that wakes the worker, which has room for one value, and a function that stops
+// the worker and waits for it to end. A send that is in progress is not a
+// failure of its message: the worker leaves the row, and its lease runs out.
+// With m nil, no worker runs, and the channel is nil, so a non-blocking send on
+// it always falls to the default case.
+func startMail(ctx context.Context, pool *pgxpool.Pool, m *config.Mail) (chan<- struct{}, func()) {
+	if m == nil {
+		return nil, func() {}
+	}
+	wake := make(chan struct{}, 1)
+	sender := mail.NewSMTP(*m)
+	sender.RootCAs = mailRoots
+	q := &mail.Queue{Pool: pool, Sender: sender, Wake: wake}
+	mailCtx, stop := context.WithCancel(ctx)
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		q.Run(mailCtx)
+	}()
+	slog.Info("email is on", "host", m.Host, "port", m.Port, "tls", m.TLS)
+	return wake, func() {
+		stop()
+		<-ended
+	}
 }
 
 // cleanupEvery is the time between two runs of the session cleanup.
@@ -300,17 +333,25 @@ func cleanupLoop(ctx context.Context, tick <-chan time.Time, run func(context.Co
 	}
 }
 
-// cleanup deletes the expired sessions and the old user_ips rows, and logs how
-// many of each it removed. A failure is logged and does not stop the server.
+// cleanup deletes the expired sessions, the old user_ips rows, the old email
+// rows and the expired reset links, and logs how many of each kind it removed. A failure is logged and does not stop the server.
 func cleanup(ctx context.Context, q db.Querier, now func() time.Time) {
 	sessions, ips, err := session.Cleanup(ctx, q, now())
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Error("session cleanup failed", "err", err)
 		}
+	} else {
+		slog.Info("session cleanup", "sessions", sessions, "ips", ips)
+	}
+	rows, err := mail.Cleanup(ctx, q, now())
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Error("email cleanup failed", "err", err)
+		}
 		return
 	}
-	slog.Info("session cleanup", "sessions", sessions, "ips", ips)
+	slog.Info("email cleanup", "rows", rows)
 }
 
 // gateFor logs the Go memory limit of the process (see [memlimit.Apply]), its
