@@ -19,7 +19,8 @@ import (
 	"github.com/evanwtf/gobb/internal/session"
 )
 
-// The writes of the command line: a password reset, a ban and an unban. They
+// The writes of the command line: a password reset, a ban, an unban, an activate
+// and a deactivate. They
 // belong to the administrator who runs `gobb user ...`, not to a viewer, so they
 // take a member ID and no [Viewer]. Each one writes one mod_log row with a null
 // actor and the details {"via":"cli"}, and only when it changed something.
@@ -50,6 +51,12 @@ var (
 	// ErrNotBanned means that [UnbanUser] removed nothing: no user ban that has
 	// not ended holds the member. Nothing was written.
 	ErrNotBanned = errors.New("board: the member has no ban")
+	// ErrAlreadyActive means that [ActivateUser] changed nothing: the account is
+	// active. Nothing was written.
+	ErrAlreadyActive = errors.New("board: the account is already active")
+	// ErrAlreadyInactive means that [DeactivateUser] changed nothing: the account
+	// is inactive. Nothing was written.
+	ErrAlreadyInactive = errors.New("board: the account is already inactive")
 )
 
 // newPassword returns a password of 16 characters, each drawn from
@@ -215,5 +222,54 @@ func UnbanUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.T
 			return ErrNotBanned
 		}
 		return logMod(ctx, tx, Viewer{}, "user.unban", "user", userID, viaCLI, now)
+	})
+}
+
+// ActivateUser makes the account of member userID active, and writes one mod_log
+// row ("user.activate", null actor, {"via":"cli"}), in one transaction under FOR
+// UPDATE on the user row. The member can then sign in and ask for a reset email.
+// The password, the email address and the bans stay as they are, so a banned
+// member stays banned. A member who does not exist is [ErrNotFound]. An account
+// that is active already gets [ErrAlreadyActive], and nothing is written.
+func ActivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) error {
+	return inTx(ctx, pool, func(tx pgx.Tx) error {
+		if err := lockUser(ctx, tx, userID); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `update users set state = 'active' where id = $1 and state <> 'active'`, userID)
+		if err != nil {
+			return fmt.Errorf("board: activate %d: %w", userID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrAlreadyActive
+		}
+		return logMod(ctx, tx, Viewer{}, "user.activate", "user", userID, viaCLI, now)
+	})
+}
+
+// DeactivateUser makes the account of member userID inactive, ends every session
+// of the member and writes one mod_log row ("user.deactivate", null actor,
+// {"via":"cli"}), all in one transaction under FOR UPDATE on the user row. An
+// inactive member cannot sign in, gets no reset email, and a reset link sent
+// earlier stops working. The posts, the password and the email address stay, so
+// [ActivateUser] gives the same sign-in back. A member who does not exist is
+// [ErrNotFound]. An account that is inactive already gets [ErrAlreadyInactive],
+// and nothing is written.
+func DeactivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) error {
+	return inTx(ctx, pool, func(tx pgx.Tx) error {
+		if err := lockUser(ctx, tx, userID); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `update users set state = 'inactive' where id = $1 and state <> 'inactive'`, userID)
+		if err != nil {
+			return fmt.Errorf("board: deactivate %d: %w", userID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrAlreadyInactive
+		}
+		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
+			return err
+		}
+		return logMod(ctx, tx, Viewer{}, "user.deactivate", "user", userID, viaCLI, now)
 	})
 }

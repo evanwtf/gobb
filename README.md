@@ -441,7 +441,7 @@ only a hash:
   included. A link works once and for 1 hour, but logs last longer. Configure the proxy
   not to log paths that start with `/reset/` (under `GOBB_BASE_PATH`, if it is set).
 
-### Reset a password, ban or unban a member
+### Reset a password, ban or deactivate a member
 
 A member resets the password by email. With email on (see "Email" above), the
 sign-in page shows "Forgot your password?". That link opens a form for the username
@@ -470,6 +470,8 @@ export NAME=alice
 docker compose exec -T gobb gobb user reset-password "$NAME"
 docker compose exec -T gobb gobb user ban "$NAME" -reason "spam run"
 docker compose exec -T gobb gobb user unban "$NAME"
+docker compose exec -T gobb gobb user activate "$NAME"
+docker compose exec -T gobb gobb user deactivate "$NAME"
 ```
 
 Without Docker, run `./gobb user ...` with `GOBB_DSN` set, as for `gobb import`.
@@ -491,9 +493,18 @@ no member has exits 1 with `no member named <name>` on stderr, and changes nothi
   second ban: the command exits 0 and says so on stderr.
 - **`unban`** removes the bans on the member that have not ended. A member with no
   such ban: the command exits 0 and says so on stderr.
+- **`activate`** makes an inactive account active. The member can then sign in with
+  the old password, or ask for a reset email. An account can arrive inactive from an
+  imported board. The bans stay: `activate` is not `unban`. An active account: the
+  command exits 0 and says so on stderr.
+- **`deactivate`** makes the account inactive and ends every session of the member.
+  An inactive member cannot sign in and gets no reset email, and a reset link sent
+  earlier stops working. The member list leaves the member out. The posts, the
+  password and the email address stay, so `activate` gives the same sign-in back. An
+  inactive account: the command exits 0 and says so on stderr.
 
 Each command that changes something writes one row to the moderation log (`user.reset_password`,
-`user.ban`, `user.unban`) with no actor and `{"via":"cli"}` as details. Messages go to
+`user.ban`, `user.unban`, `user.activate`, `user.deactivate`) with no actor and `{"via":"cli"}` as details. Messages go to
 stderr. The exit code is 0 on success, 1 on an unknown name or a failure, and 2 on a
 wrong call. A failed command changes nothing, with one exception: if `reset-password`
 cannot print the new password (the write to stdout fails), the reset has committed and
@@ -659,7 +670,8 @@ board's layout.
 
 Plan 4, the write side, is built for v0.1.0: members post, edit and moderate. v0.2.0
 adds private messages and the account settings (roadmap row 4b). v0.3.0 adds email and
-the password reset by email (row 4c). Attachment uploads and email notifications come
+the password reset by email (row 4c). v0.4.0 adds `gobb user activate` and
+`gobb user deactivate`. Attachment uploads and email notifications come
 later. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in

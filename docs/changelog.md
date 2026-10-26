@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.0 (2026-10-26)
+
+Administrators activate and deactivate accounts from the command line. An inactive
+member cannot sign in and gets no reset email. Until now, an account that arrived
+inactive from an imported board stayed inactive unless someone changed the database.
+
+Operators: no migration and no new setting. The bundle format does not change.
+
+### Operators
+
+- **`gobb user activate <name>` and `gobb user deactivate <name>`.** The name matches as
+  for the other `gobb user` commands. `activate` sets the account active; the password,
+  the email address and the bans stay, so a banned member stays banned. `deactivate`
+  sets the account inactive and ends every session of the member; a reset link sent
+  earlier stops working, because the link page reads only active accounts. The posts,
+  the password and the address stay, so `activate` gives the same sign-in back. Each
+  change writes one `mod_log` row (`user.activate`, `user.deactivate`) with a null actor
+  and `{"via":"cli"}`. An account that is in the state already exits 0, says so on
+  stderr and writes nothing. `board.ActivateUser` and `board.DeactivateUser` take
+  `for update` on the user row first, as the reset and the ban do. A sign-in in flight
+  holds that row `for share` and reads the state in `session.CreateChecked`, so it
+  either finishes first and loses its session to the deactivate, or waits and is
+  refused. Tests: `TestActivateUser`, `TestDeactivateUser`, `TestDeactivateAndActivate`;
+  the deactivate joins the two lock-order tests, now named
+  `TestCLIWritesWaitForASignInAndEndItsSession` and
+  `TestCreateCheckedWaitsForTheRowLockOfACLIWrite`.
+
 ## 0.3.0 (2026-10-26)
 
 Members who forgot their password reset it themselves. The sign-in page links to a form
