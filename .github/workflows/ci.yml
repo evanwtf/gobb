@@ -213,8 +213,10 @@ jobs:
       # The commit that the build line of every page shows. docker build and
       # compose.yaml pass it as the GOBB_COMMIT build argument.
       GOBB_COMMIT: ${{ github.sha }}
-      # Every compose command uses the CI port override and the 256 MiB cap.
-      COMPOSE_FILE: compose.yaml:.github/compose.ci.yaml:.github/compose.memcap.yaml
+      # Every compose command uses the shipped metrics file, the CI port override
+      # and the 256 MiB cap. compose.ci.yaml comes after compose.metrics.yaml and
+      # moves its fixed port to a free one.
+      COMPOSE_FILE: compose.yaml:compose.metrics.yaml:.github/compose.ci.yaml:.github/compose.memcap.yaml
     steps:
       - uses: actions/checkout@v7
         with:

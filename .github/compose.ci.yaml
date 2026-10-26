@@ -1,5 +1,5 @@
-# CI override for compose.yaml. The runner is shared, so a run must not claim a
-# fixed host port or the pinned subnet.
+# CI override for compose.yaml and compose.metrics.yaml. The runner is shared, so a
+# run must not claim a fixed host port or the pinned subnet.
 services:
   postgres:
     # The round-trip step of CI counts rows from the runner, over localhost.
@@ -10,8 +10,6 @@ services:
       - "127.0.0.1::8080"
       - "127.0.0.1::9187"
     environment:
-      # The image step scrapes the metrics listener of the container.
-      GOBB_METRICS_LISTEN: "0.0.0.0:9187"
       # The network below has no fixed subnet, so the address of the gateway is
       # not known in advance. Trust every IPv4 peer as a proxy: the burst step of
       # CI sends each sign-in from its own IPv6 address in X-Forwarded-For. Never
