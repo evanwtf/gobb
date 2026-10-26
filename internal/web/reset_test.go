@@ -768,23 +768,26 @@ func TestResetLimits(t *testing.T) {
 				t.Fatalf("request for %s = %d to %q, want 303 to /reset?sent=1", name, rec.Code, locate(rec))
 			}
 		}
-		want := func(queued, skipped int, when string) {
+		want := func(queued, perHour, perDay int, when string) {
 			t.Helper()
 			if n := len(e.queue(t)); n != queued {
 				t.Errorf("%s: the queue holds %d emails, want %d", when, n, queued)
 			}
-			if n := strings.Count(logs.String(), "reset email skipped: board limit"); n != skipped {
-				t.Errorf("%s: %d log lines for the board limit, want %d:\n%s", when, n, skipped, logs.String())
+			if n := strings.Count(logs.String(), "reset email skipped: board limit"); n != perHour+perDay {
+				t.Errorf("%s: %d log lines for the board limit, want %d:\n%s", when, n, perHour+perDay, logs.String())
+			}
+			if h, d := strings.Count(logs.String(), "per=hour"), strings.Count(logs.String(), "per=day"); h != perHour || d != perDay {
+				t.Errorf("%s: per=hour %d times and per=day %d times, want %d and %d", when, h, d, perHour, perDay)
 			}
 		}
 		for _, name := range []string{"member0", "member0", "member0", "member1", "member1"} {
 			ask(name)
 		}
-		want(5, 0, "5 emails in the first hour")
+		want(5, 0, 0, "5 emails in the first hour")
 		// The 6th email in the hour is a quiet skip: the same 303, no row, no Wake.
 		wakes := e.wakes.Load()
 		ask("member1")
-		want(5, 1, "the 6th email in the hour")
+		want(5, 1, 0, "the 6th email in the hour")
 		if e.wakes.Load() != wakes {
 			t.Error("Wake ran for a request that queued nothing")
 		}
@@ -793,19 +796,33 @@ func TestResetLimits(t *testing.T) {
 		for _, name := range []string{"member1", "member2", "member2"} {
 			ask(name)
 		}
-		want(8, 1, "8 emails in the day")
+		want(8, 1, 0, "8 emails in the day")
 		// The 9th email in the day is a quiet skip, though the hour has room, and
 		// it is still a skip two hours later.
+		wakes = e.wakes.Load()
 		ask("member3")
+		// The day's refusal gave back the slot of the hour: this hour holds 3
+		// emails, so 2 more fit and a 3rd does not.
+		for i := range 3 {
+			if ok, _ := e.site.resets.hour.Take(resetBoardKey, now()); ok != (i < 2) {
+				t.Errorf("slot %d of the hour after a refusal of the day: ok = %v, want %v", i+4, ok, i < 2)
+			}
+		}
+		for range 2 {
+			e.site.resets.hour.Refund(resetBoardKey, now())
+		}
 		clock.Add(int64(2 * time.Hour))
 		ask("member3")
-		want(8, 3, "the 9th email in the day")
+		want(8, 1, 2, "the 9th email in the day")
+		if e.wakes.Load() != wakes {
+			t.Error("Wake ran for a request that the day refused")
+		}
 		for _, secret := range []string{"member3", "member3@example.org", "2001:db8:e"} {
 			if strings.Contains(logs.String(), secret) {
 				t.Errorf("the log holds %q", secret)
 			}
 		}
-		// The skipped requests keep no slot of the account or of the hour.
+		// The skipped requests keep no slot of the account.
 		for i := range 3 {
 			if ok, _ := e.site.resets.account.Take("103", now()); !ok {
 				t.Errorf("the account of the skipped requests has no slot %d", i+1)
@@ -817,7 +834,7 @@ func TestResetLimits(t *testing.T) {
 		// A day after the first emails, the board has room again.
 		clock.Add(int64(21 * time.Hour))
 		ask("member3")
-		want(9, 3, "a day later")
+		want(9, 1, 2, "a day later")
 	})
 	t.Run("unknown names do not count against the board", func(t *testing.T) {
 		e := newResetEnv(t, Options{})

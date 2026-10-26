@@ -269,6 +269,25 @@ func TestMailFromEnv(t *testing.T) {
 			wantErr: "GOBB_MAIL_PER_HOUR",
 		},
 		{
+			name:    "a daily limit over 100,000",
+			env:     mailEnv(map[string]string{"GOBB_MAIL_PER_DAY": "100001"}),
+			wantErr: "GOBB_MAIL_PER_DAY",
+		},
+		{
+			name:    "a negative hourly limit",
+			env:     mailEnv(map[string]string{"GOBB_MAIL_PER_HOUR": "-1"}),
+			wantErr: "GOBB_MAIL_PER_HOUR",
+		},
+		{
+			name: "an hourly limit equal to the daily limit",
+			env:  mailEnv(map[string]string{"GOBB_MAIL_PER_HOUR": "100000", "GOBB_MAIL_PER_DAY": "100000"}),
+			check: func(t *testing.T, m *config.Mail) {
+				if m.PerHour != 100000 || m.PerDay != 100000 {
+					t.Errorf("PerHour, PerDay = %d, %d; want 100000, 100000", m.PerHour, m.PerDay)
+				}
+			},
+		},
+		{
 			name:    "an hourly limit over the daily limit",
 			env:     mailEnv(map[string]string{"GOBB_MAIL_PER_HOUR": "30", "GOBB_MAIL_PER_DAY": "20"}),
 			wantErr: "GOBB_MAIL_PER_HOUR",
