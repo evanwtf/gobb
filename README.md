@@ -415,13 +415,43 @@ Without Docker, run `./gobb mail test "$ADDRESS"` with the same variables set. T
 command needs no `GOBB_DSN`. The exit code is 0 when the server accepted the message,
 1 on a missing setting or a failed send, and 2 on a wrong call.
 
+If the SMTP password holds `$`, `#` or a quote, wrap it in single quotes in `.env`:
+`GOBB_SMTP_PASSWORD='pa$s#word'`. Compose expands `$`, and treats ` #` as the start of
+a comment.
+
+To see why a send failed, read the log. The worker logs a WARN line `email failed`
+(with the row `id`, `user_id`, `attempt` and `reason`) for each failed try, and
+`email dropped` when it gives up on a message. Neither line holds an address:
+
+```sh
+docker compose logs gobb | grep -E 'email (failed|dropped)'
+```
+
+The column `email_queue.last_error` holds the last reason of each row.
+
+Two places hold the plain text of a live reset link. The table `password_resets` holds
+only a hash:
+
+- **The queue.** A queued reset email holds its link until the worker sends it: a few
+  seconds normally, and up to 1 hour during an SMTP outage. A database dump taken in
+  that window holds the link too.
+- **A reverse proxy's access log.** The proxy records each `/reset/` request, token
+  included. A link works once and for 1 hour, but logs last longer. Configure the proxy
+  not to log paths that start with `/reset/` (under `GOBB_BASE_PATH`, if it is set).
+
 ### Reset a password, ban or unban a member
 
 A member resets the password by email. With email on (see "Email" above), the
-sign-in page shows "Forgot your password?". The link opens a form for the username
-or the email address, and gobb emails a link that works once, for 1 hour. Opening
-the link changes nothing; saving a new password ends every session of the member.
-With email off, the link and the pages do not exist.
+sign-in page shows "Forgot your password?". That link opens a form for the username
+or the email address, and gobb emails a second link to the member. The emailed
+link works once, for 1 hour. Opening it changes nothing; saving a new password
+ends every session of the member. With email off, the links and the pages do not
+exist.
+
+An administrator (a member with the board-wide `admin` right) gets no reset email,
+and an emailed link to an account that becomes an administrator stops working. An
+old imported address must not be a way to take an administrator account. An
+administrator resets the password from the command line, as below.
 
 The administrator resets a password from the command line. Run the commands where
 the database is. With Docker Compose, run them in the running container. The `-T` flag keeps Compose from adding a
