@@ -218,6 +218,64 @@ func TestBanTwiceAndUnbanWithoutBan(t *testing.T) {
 	}
 }
 
+// TestDeactivateAndActivate: a deactivate ends alice's session and her right
+// password answers ErrInactive; an activate gives her the same sign-in back. Each
+// writes one mod_log row. A repeat of either exits 0, says so on stderr and writes
+// no row.
+func TestDeactivateAndActivate(t *testing.T) {
+	pool := userBoard(t)
+	live := seedSession(t, pool, alice)
+	svc := login.New(pool)
+	svc.Floor = 0
+
+	code, out, errOut := runUser(t, "user", "deactivate", "alice")
+	if code != 0 || out != "" {
+		t.Fatalf("deactivate = exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	if _, err := session.Lookup(t.Context(), pool, live, testNow); !errors.Is(err, session.ErrNone) {
+		t.Errorf("the live session of alice after the deactivate: %v, want ErrNone (a guest)", err)
+	}
+	if _, err := svc.Check(t.Context(), "alice", alicePassword, testIP, testNow); !errors.Is(err, login.ErrInactive) {
+		t.Errorf("sign-in of an inactive member = %v, want ErrInactive", err)
+	}
+	code, out, errOut = runUser(t, "user", "deactivate", "alice")
+	if code != 0 || out != "" || !strings.Contains(errOut, "already inactive") {
+		t.Errorf("second deactivate = exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+
+	code, out, errOut = runUser(t, "user", "activate", "alice")
+	if code != 0 || out != "" {
+		t.Fatalf("activate = exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	if id, err := svc.Check(t.Context(), "alice", alicePassword, testIP, testNow); err != nil || id != alice {
+		t.Errorf("sign-in after the activate = %d, %v", id, err)
+	}
+	code, out, errOut = runUser(t, "user", "activate", "alice")
+	if code != 0 || out != "" || !strings.Contains(errOut, "already active") {
+		t.Errorf("second activate = exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+
+	rows, err := pool.Query(t.Context(), `select action from mod_log where actor_id is null and details = '{"via":"cli"}'::jsonb order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var action string
+		if err := rows.Scan(&action); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, action)
+	}
+	if want := "user.deactivate|user.activate"; strings.Join(got, "|") != want {
+		t.Errorf("mod_log = %q, want %q", got, want)
+	}
+	if n := count(t, pool, `select count(*) from mod_log`); n != 2 {
+		t.Errorf("%d mod_log rows, want 2", n)
+	}
+}
+
 // An unknown name exits 1 with the message on stderr, nothing on stdout, and
 // no change.
 func TestUserCommandUnknownName(t *testing.T) {
@@ -226,7 +284,7 @@ func TestUserCommandUnknownName(t *testing.T) {
 	snapshot := func() string {
 		var s string
 		err := pool.QueryRow(t.Context(), `select
- (select string_agg(password_hash || password_epoch::text, ',' order by id) from users) || '|' ||
+ (select string_agg(password_hash || password_epoch::text || state, ',' order by id) from users) || '|' ||
  (select count(*) from sessions) || '|' || (select count(*) from bans) || '|' || (select count(*) from mod_log)`).Scan(&s)
 		if err != nil {
 			t.Fatal(err)
@@ -238,6 +296,8 @@ func TestUserCommandUnknownName(t *testing.T) {
 		{"user", "reset-password", "nobody"},
 		{"user", "ban", "nobody", "-reason", "x"},
 		{"user", "unban", "nobody"},
+		{"user", "activate", "nobody"},
+		{"user", "deactivate", "nobody"},
 	} {
 		code, out, errOut := runUser(t, args...)
 		if code != 1 || out != "" || !strings.Contains(errOut, "no member named nobody") {
@@ -267,6 +327,12 @@ func TestUserCommandUsage(t *testing.T) {
 		{"user", "unban"},
 		{"user", "unban", "a", "b"},
 		{"user", "unban", "a", "-reason", "x"},
+		{"user", "activate"},
+		{"user", "activate", "a", "b"},
+		{"user", "activate", "a", "-reason", "x"},
+		{"user", "deactivate"},
+		{"user", "deactivate", "a", "b"},
+		{"user", "deactivate", "a", "-reason", "x"},
 	} {
 		code, out, errOut := runUser(t, args...)
 		if code != 2 || out != "" || !strings.Contains(errOut, "usage:") {
@@ -284,6 +350,8 @@ func TestUserCommandDatabaseFailure(t *testing.T) {
 		{"user", "reset-password", "alice"},
 		{"user", "ban", "alice"},
 		{"user", "unban", "alice"},
+		{"user", "activate", "alice"},
+		{"user", "deactivate", "alice"},
 	} {
 		code, out, errOut := runUser(t, args...)
 		if code != 1 || out != "" || errOut == "" {
@@ -345,6 +413,10 @@ func TestUserCommandsLogTheMatchedMember(t *testing.T) {
 		{"user", "ban", "ALICE"},                  // already banned: a no-op
 		{"user", "unban", "Alice"},                // lifts the ban
 		{"user", "unban", "alice"},                // no ban: a no-op
+		{"user", "deactivate", "ALICE"},           // ends her sessions
+		{"user", "deactivate", "alice"},           // already inactive: a no-op
+		{"user", "activate", " Alice"},            // active again
+		{"user", "activate", "alice"},             // already active: a no-op
 		{"user", "reset-password", "a\u200blice"}, // a zero-width space is folded away
 	} {
 		code, _, errOut := runUser(t, args...)

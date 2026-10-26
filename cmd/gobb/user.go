@@ -17,10 +17,12 @@ import (
 
 const userUsage = `usage: gobb user reset-password <name>
        gobb user ban <name> [-reason TEXT]
-       gobb user unban <name>`
+       gobb user unban <name>
+       gobb user activate <name>
+       gobb user deactivate <name>`
 
-// user runs a member command: reset-password, ban or unban. The administrator
-// runs it on the host that holds the database, with GOBB_DSN set.
+// user runs a member command: reset-password, ban, unban, activate or deactivate.
+// The administrator runs it on the host that holds the database, with GOBB_DSN set.
 //
 // Output has two channels. Stdout carries one thing only: the new password of
 // reset-password, as one line. Every message goes to stderr through slog, and no
@@ -37,7 +39,9 @@ func user(ctx context.Context, args []string) error {
 		return errUsage
 	}
 	sub := args[0]
-	if sub != "reset-password" && sub != "ban" && sub != "unban" {
+	switch sub {
+	case "reset-password", "ban", "unban", "activate", "deactivate":
+	default:
 		fmt.Fprintf(stderr, "gobb user: unknown command %q\n%s\n", sub, userUsage)
 		return errUsage
 	}
@@ -147,6 +151,26 @@ func execUser(ctx context.Context, log *slog.Logger, sub, name, reason string) e
 			return err
 		}
 		log.Info("member unbanned")
+	case "activate":
+		err := board.ActivateUser(ctx, pool, id, now)
+		if errors.Is(err, board.ErrAlreadyActive) {
+			log.Info("the account is already active; nothing changed")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		log.Info("account activated; the member can sign in")
+	case "deactivate":
+		err := board.DeactivateUser(ctx, pool, id, now)
+		if errors.Is(err, board.ErrAlreadyInactive) {
+			log.Info("the account is already inactive; nothing changed")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		log.Info("account deactivated; their sessions are ended")
 	}
 	return nil
 }

@@ -349,6 +349,99 @@ func TestUnbanUser(t *testing.T) {
 	}
 }
 
+func stateOf(t *testing.T, pool *pgxpool.Pool, id int64) string {
+	t.Helper()
+	var s string
+	if err := pool.QueryRow(context.Background(), `select state from users where id = $1`, id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// An activate makes an inactive member active, once, and writes one mod_log row.
+// It is not an unban: a ban stays.
+func TestActivateUser(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	const dave = int64(4) // inactive in the small bundle
+	if got := stateOf(t, pool, dave); got != "inactive" {
+		t.Fatalf("dave starts %q, want inactive", got)
+	}
+	if err := board.BanUser(ctx, pool, dave, "r", t0); err != nil {
+		t.Fatal(err)
+	}
+	bans := func() int {
+		var n int
+		if err := pool.QueryRow(ctx, `select count(*) from bans where user_id = $1`, dave).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := bans()
+	if err := board.ActivateUser(ctx, pool, dave, t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOf(t, pool, dave); got != "active" {
+		t.Errorf("dave after the activate = %q, want active", got)
+	}
+	if after := bans(); after != before || after == 0 {
+		t.Errorf("%d bans of dave after the activate, want %d (unchanged, not 0)", after, before)
+	}
+	rows := modRows(t, pool)
+	if len(rows) != 2 || rows[1].Action != "user.activate" || rows[1].Actor != nil || rows[1].Target != dave ||
+		rows[1].TargetType != "user" || rows[1].Details != `{"via": "cli"}` {
+		t.Errorf("mod_log = %+v", rows)
+	}
+	for _, id := range []int64{dave, alice} {
+		if err := board.ActivateUser(ctx, pool, id, t0); !errors.Is(err, board.ErrAlreadyActive) {
+			t.Errorf("activate of active member %d = %v, want ErrAlreadyActive", id, err)
+		}
+	}
+	if rows := modRows(t, pool); len(rows) != 2 {
+		t.Errorf("mod_log after two no-op activates = %+v", rows)
+	}
+	if err := board.ActivateUser(ctx, pool, 9999, t0); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("activate of an unknown member = %v, want ErrNotFound", err)
+	}
+}
+
+// A deactivate makes an active member inactive and ends that member's sessions,
+// once. The password stays, so an activate later gives the same sign-in back.
+func TestDeactivateUser(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	seedSessions(t, pool)
+	if err := board.DeactivateUser(ctx, pool, alice, t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOf(t, pool, alice); got != "inactive" {
+		t.Errorf("alice after the deactivate = %q, want inactive", got)
+	}
+	if n := sessionCount(t, pool, alice); n != 0 {
+		t.Errorf("alice has %d sessions after the deactivate, want 0", n)
+	}
+	if n := sessionCount(t, pool, bob); n != 1 {
+		t.Errorf("bob has %d sessions, want 1", n)
+	}
+	if e := epochOf(t, pool, alice); e != 0 {
+		t.Errorf("alice's password epoch = %d, want 0 (unchanged)", e)
+	}
+	rows := modRows(t, pool)
+	if len(rows) != 1 || rows[0].Action != "user.deactivate" || rows[0].Actor != nil || rows[0].Target != alice ||
+		rows[0].TargetType != "user" || rows[0].Details != `{"via": "cli"}` {
+		t.Errorf("mod_log = %+v", rows)
+	}
+	if err := board.DeactivateUser(ctx, pool, alice, t0); !errors.Is(err, board.ErrAlreadyInactive) {
+		t.Errorf("second deactivate = %v, want ErrAlreadyInactive", err)
+	}
+	if rows := modRows(t, pool); len(rows) != 1 {
+		t.Errorf("mod_log after a no-op deactivate = %+v", rows)
+	}
+	if err := board.DeactivateUser(ctx, pool, 9999, t0); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("deactivate of an unknown member = %v, want ErrNotFound", err)
+	}
+}
+
 // waitForRowLockWait blocks until a statement of this test's database waits on a
 // lock, or done reports that the call ended without waiting.
 func waitForRowLockWait(t *testing.T, pool *pgxpool.Pool, done <-chan error) {
@@ -377,9 +470,9 @@ select exists (select 1 from pg_stat_activity
 }
 
 // A sign-in that holds the user row (FOR SHARE, as session.CreateChecked does) and
-// has inserted its session is ordered before a reset or a ban: the write waits for
-// the commit, then deletes that session with the others.
-func TestResetAndBanWaitForASignInAndEndItsSession(t *testing.T) {
+// has inserted its session is ordered before a reset, a ban or a deactivate: the
+// write waits for the commit, then deletes that session with the others.
+func TestCLIWritesWaitForASignInAndEndItsSession(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		run  func(ctx context.Context, pool *pgxpool.Pool) error
@@ -390,6 +483,9 @@ func TestResetAndBanWaitForASignInAndEndItsSession(t *testing.T) {
 		}},
 		{"ban", func(ctx context.Context, pool *pgxpool.Pool) error {
 			return board.BanUser(ctx, pool, alice, "r", t0)
+		}},
+		{"deactivate", func(ctx context.Context, pool *pgxpool.Pool) error {
+			return board.DeactivateUser(ctx, pool, alice, t0)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -424,15 +520,16 @@ values ('test-session', $1, $2, $2, $3, '10.1.2.3', 't', false)`, alice, t0, t0.
 	}
 }
 
-// The other order: a reset or a ban holds the row. A sign-in that checks its epoch
-// and the bans (session.CreateChecked) waits, and is refused.
+// The other order: a reset, a ban or a deactivate holds the row. A sign-in that
+// checks the state, its epoch and the bans (session.CreateChecked) waits, and is
+// refused.
 //
-// The writer side here is hand-written SQL that takes the lock and writes the epoch
-// or the ban, as ResetPassword and BanUser do. The test proves the side of
+// The writer side here is hand-written SQL that takes the lock and writes the epoch,
+// the ban or the state, as ResetPassword, BanUser and DeactivateUser do. The test proves the side of
 // CreateChecked only. The web tests TestSignInInFlightDoesNotSurviveAReset and
 // TestSignInInFlightDoesNotSurviveABanCommand call the real functions.
-func TestCreateCheckedWaitsForTheRowLockOfAResetAndOfABan(t *testing.T) {
-	for _, tc := range []string{"reset", "ban"} {
+func TestCreateCheckedWaitsForTheRowLockOfACLIWrite(t *testing.T) {
+	for _, tc := range []string{"reset", "ban", "deactivate"} {
 		t.Run(tc, func(t *testing.T) {
 			ctx := context.Background()
 			pool, _ := boardtest.Load(t, bundletest.Small())
@@ -451,10 +548,13 @@ func TestCreateCheckedWaitsForTheRowLockOfAResetAndOfABan(t *testing.T) {
 				done <- err
 			}()
 			waitForRowLockWait(t, pool, done)
-			if tc == "reset" {
+			switch tc {
+			case "reset":
 				_, err = tx.Exec(ctx, `update users set password_epoch = password_epoch + 1 where id = $1`, alice)
-			} else {
+			case "ban":
 				_, err = tx.Exec(ctx, `insert into bans (kind, user_id, created_at) values ('user', $1, $2)`, alice, t0)
+			case "deactivate":
+				_, err = tx.Exec(ctx, `update users set state = 'inactive' where id = $1`, alice)
 			}
 			if err != nil {
 				t.Fatal(err)
