@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,17 @@ func TestRegisterReplaces(t *testing.T) {
 	}
 }
 
+func TestRegisterOtherTypePanics(t *testing.T) {
+	r := NewRegistry()
+	r.Gauge("t_x", "A gauge.")
+	defer func() {
+		if recover() == nil {
+			t.Error("a counter under the name of a gauge did not panic")
+		}
+	}()
+	r.CounterVec("t_x", "A counter.")
+}
+
 func TestWrongLabelCountPanics(t *testing.T) {
 	c := NewRegistry().CounterVec("t_total", "T.", "a")
 	defer func() {
@@ -141,11 +153,65 @@ func TestCached(t *testing.T) {
 	if v, ok := f(); !ok || v != 1 || calls != 1 {
 		t.Errorf("second = %v, %v after %d calls, want the cached 1", v, ok, calls)
 	}
-	fail = true
-	g := Cached("t", 0, time.Second, func(context.Context) (float64, error) { return 0, errors.New("down") })
-	if _, ok := g(); ok {
-		t.Error("a failed run gave a sample")
+	// With no interval, each call runs f. A failure after a success leaves the
+	// gauge out, and the next success brings it back.
+	n := 0
+	g := Cached("t", 0, time.Second, func(context.Context) (float64, error) {
+		n++
+		if fail {
+			return 0, errors.New("down")
+		}
+		return float64(n), nil
+	})
+	if v, ok := g(); !ok || v != 1 {
+		t.Fatalf("first = %v, %v", v, ok)
 	}
+	fail = true
+	if _, ok := g(); ok {
+		t.Error("a failed run after a success gave a sample")
+	}
+	fail = false
+	if v, ok := g(); !ok || v != 3 {
+		t.Errorf("after the failure = %v, %v; want 3, true", v, ok)
+	}
+}
+
+// A scrape during Observe calls never shows a bucket above the count, and the
+// buckets never go down from one bound to the next.
+func TestHistogramScrapeDuringObserve(t *testing.T) {
+	r := NewRegistry()
+	h := r.HistogramVec("t_seconds", "T.", []float64{0.1, 1}, "route")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				h.Observe(float64(i%3), "/a")
+			}
+		}
+	}()
+	for range 200 {
+		var prev float64 = -1
+		for _, line := range strings.Split(written(t, r), "\n") {
+			if !strings.HasPrefix(line, "t_seconds_bucket") {
+				continue
+			}
+			v, err := strconv.ParseFloat(line[strings.LastIndexByte(line, ' ')+1:], 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v < prev {
+				t.Fatalf("a bucket went down: %q after %v", line, prev)
+			}
+			prev = v
+		}
+	}
+	close(stop)
+	<-done
 }
 
 func TestStatusClassAndMethod(t *testing.T) {

@@ -43,8 +43,10 @@ func (l *Limiter) Named(name string) *Limiter {
 	return l
 }
 
-// full counts one refusal of a named limiter.
-func (l *Limiter) full() {
+// Refused counts one refusal of a named limiter in gobb_rate_limited_total.
+// [Limiter.Take] counts its own refusals. A caller of [Limiter.TryTake] calls
+// Refused when it refuses the request.
+func (l *Limiter) Refused() {
 	if l.name != "" {
 		metrics.RateLimited.Inc(l.name)
 	}
@@ -60,7 +62,6 @@ func (l *Limiter) Over(key string, now time.Time) (over bool, wait time.Duration
 	if len(events) < l.limit {
 		return false, 0
 	}
-	l.full()
 	return true, events[0].Add(l.window).Sub(now)
 }
 
@@ -69,13 +70,24 @@ func (l *Limiter) Over(key string, now time.Time) (over bool, wait time.Duration
 // it has limit events, Take records nothing and returns false with the wait until
 // the oldest leaves the window. A caller that must not let parallel requests pass
 // a limit takes the event first, before the work, and gives it back with
-// [Limiter.Refund] when the work does not count.
+// [Limiter.Refund] when the work does not count. A false Take counts as a refusal
+// of a named limiter (gobb_rate_limited_total).
 func (l *Limiter) Take(key string, now time.Time) (ok bool, wait time.Duration) {
+	ok, wait = l.TryTake(key, now)
+	if !ok {
+		l.Refused()
+	}
+	return ok, wait
+}
+
+// TryTake is [Limiter.Take] with no count: for a caller that may let the request
+// through when the key is full. That caller calls [Limiter.Refused] when it
+// refuses.
+func (l *Limiter) TryTake(key string, now time.Time) (ok bool, wait time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	events := l.live(key, now)
 	if len(events) >= l.limit {
-		l.full()
 		return false, events[0].Add(l.window).Sub(now)
 	}
 	if events == nil && len(l.keys) >= l.maxKeys {

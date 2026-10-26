@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -35,8 +34,9 @@ func withRoute(pattern string, h http.Handler) http.Handler {
 // metered counts each request in gobb_http_requests_total and times it in
 // gobb_http_request_duration_seconds. The route label is the pattern of the
 // handler that answered, or "none" when no pattern matched and a mux answered
-// by itself (a 405 for a method that no pattern takes). The path itself is never
-// a label. A handler that panics counts as a 500, and the panic goes on.
+// by itself (a redirect to a clean path). The path itself is never a label. A
+// handler that panics counts with the status it sent already, or as a 500 when it
+// sent none, and the panic goes on.
 func metered(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -48,7 +48,11 @@ func metered(next http.Handler) http.Handler {
 		}
 		defer func() {
 			if p := recover(); p != nil {
-				record(http.StatusInternalServerError)
+				code := http.StatusInternalServerError
+				if sw.status != 0 {
+					code = sw.status
+				}
+				record(code)
 				panic(p)
 			}
 		}()
@@ -75,15 +79,6 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 		w.status = http.StatusOK
 	}
 	return w.ResponseWriter.Write(b)
-}
-
-// ReadFrom lets io.Copy reach the ReadFrom of the writer below, which can send
-// a file with no copy through user space.
-func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	return io.Copy(w.ResponseWriter, r)
 }
 
 // Unwrap returns the writer below, for [http.NewResponseController].

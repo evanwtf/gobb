@@ -107,13 +107,21 @@ func startMetrics(addr string) (stop func(context.Context) error, bound string, 
 	}()
 	bound = ln.Addr().String()
 	logMetricsAddr(bound)
-	return srv.Shutdown, bound, nil
+	stop = func(ctx context.Context) error {
+		err := srv.Shutdown(ctx)
+		if err != nil {
+			// A slow scrape keeps its connection past the window: drop it.
+			_ = srv.Close()
+		}
+		return err
+	}
+	return stop, bound, nil
 }
 
 // logMetricsAddr logs the address of the metrics listener in one line. The
-// endpoint has no auth, so a public address gets a WARN line. Every interface
-// (the address inside a container) gets a note to publish the port on loopback
-// only.
+// endpoint has no auth, so an address that is not loopback or private gets a WARN
+// line. Every interface is one of those: inside a container it is the usual
+// address, and the line says to publish the port on loopback only.
 func logMetricsAddr(addr string) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -126,7 +134,8 @@ func logMetricsAddr(addr string) {
 		// A name, such as localhost.
 		slog.Info("metrics listening", "addr", addr)
 	case ip.IsUnspecified():
-		slog.Info("metrics listening", "addr", addr, "note", "every interface: publish the port on loopback only")
+		slog.Warn("metrics listening on every interface; the endpoint has no auth", "addr", addr,
+			"note", "in a container this is usual: publish the port on loopback only")
 	case ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast():
 		slog.Info("metrics listening", "addr", addr)
 	default:

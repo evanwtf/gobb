@@ -130,8 +130,8 @@ func TestLogMetricsAddr(t *testing.T) {
 	for addr, want := range map[string]string{
 		"127.0.0.1:9187":   "level=INFO",
 		"10.0.0.5:9187":    "level=INFO",
-		"[::]:9187":        "every interface",
-		"0.0.0.0:9187":     "every interface",
+		"[::]:9187":        "level=WARN",
+		"0.0.0.0:9187":     "level=WARN",
 		"localhost:9187":   "level=INFO",
 		"203.0.113.9:9187": "level=WARN",
 	} {
@@ -140,6 +140,32 @@ func TestLogMetricsAddr(t *testing.T) {
 		out := strings.TrimSpace(buf.String())
 		if strings.Count(out, "\n") != 0 || !strings.Contains(out, want) || !strings.Contains(out, addr) {
 			t.Errorf("%s: log = %q, want one line with %q", addr, out, want)
+		}
+	}
+}
+
+// compose.yaml publishes no metrics port, so an upgrade claims no new host port.
+// compose.metrics.yaml turns the listener on and publishes it on loopback only.
+func TestComposeMetricsLoopbackOnly(t *testing.T) {
+	base, err := os.ReadFile("../../compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(base), ":9187") {
+		t.Error("compose.yaml publishes the metrics port; only compose.metrics.yaml may")
+	}
+	m, err := os.ReadFile("../../compose.metrics.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"GOBB_METRICS_LISTEN: 0.0.0.0:9187", `- "127.0.0.1:${GOBB_METRICS_PORT:-9187}:9187"`} {
+		if !strings.Contains(string(m), want) {
+			t.Errorf("compose.metrics.yaml lacks %q", want)
+		}
+	}
+	for _, line := range strings.Split(string(m), "\n") {
+		if strings.Contains(line, ":9187\"") && !strings.Contains(line, "127.0.0.1:") {
+			t.Errorf("compose.metrics.yaml publishes off loopback: %q", line)
 		}
 	}
 }

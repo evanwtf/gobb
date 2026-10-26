@@ -283,7 +283,7 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_METRICS_LISTEN` | Address of the metrics listener, such as `127.0.0.1:9187` (see "Metrics"). | off |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
-| `GOBB_METRICS_PORT` | Compose only: the host port of the metrics listener, on 127.0.0.1. | `9187` |
+| `GOBB_METRICS_PORT` | Compose only, with `compose.metrics.yaml`: the host port of the metrics listener, on 127.0.0.1. | `9187` |
 
 Run it from a clone, against a local database. The import uses the same variables:
 
@@ -621,9 +621,17 @@ The endpoint has no auth. It holds no member data, but it shows the shape of the
 traffic. Bind it to a loopback or a private address. A public address logs a WARN
 line at start.
 
-With Docker Compose, set `GOBB_METRICS_LISTEN=0.0.0.0:9187` in `.env`. That is the
-address inside the container. Compose publishes the port on the host's `127.0.0.1`
-only, at `GOBB_METRICS_PORT` (`9187` unless set). Then:
+With Docker Compose, add `compose.metrics.yaml` to `COMPOSE_FILE` in `.env`:
+
+```sh
+COMPOSE_FILE=compose.yaml:compose.metrics.yaml
+```
+
+It sets `GOBB_METRICS_LISTEN=0.0.0.0:9187`, the address inside the container, and
+publishes the port on the host's `127.0.0.1` only, at `GOBB_METRICS_PORT` (`9187`
+unless set). The start-up line warns about every interface; in a container that is
+the usual address. With `COMPOSE_FILE` set, Compose reads only the files it names, so
+name `compose.override.yaml` there too if you have one. Then:
 
 ```sh
 curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
@@ -650,8 +658,8 @@ curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
 A label holds a fixed value only. `route` is the pattern that answered, without its
 method (`/t/{id}`), and never the path. `none` is a request that no pattern took.
 `method` is `GET`, `HEAD`, `POST` or `other`. `code` is the status class, `2xx` to
-`5xx`. `gobb_rate_limited_total` counts each check that found a limit full, so one
-request can count more than once. The queue and session gauges each run one query
+`5xx`. `gobb_rate_limited_total` counts each request that a limit refused. A sign-in
+at a locked name from an address that the account has used is no refusal. The queue and session gauges each run one query
 at most every 15 s; a failed query leaves the gauge out of the scrape and logs one
 WARN line. CI runs `promtool check metrics` on a scrape.
 

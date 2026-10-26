@@ -68,6 +68,20 @@ func TestMeteredEdges(t *testing.T) {
 		t.Errorf("/boom/POST/5xx = %d, want %d", got, before+1)
 	}
 
+	// A panic after the status went out counts with that status.
+	late := metered(withRoute("GET /late", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		panic(http.ErrAbortHandler)
+	})))
+	before = metrics.HTTPRequests.Value("/late", "GET", "2xx")
+	func() {
+		defer func() { _ = recover() }()
+		late.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/late", nil))
+	}()
+	if got := metrics.HTTPRequests.Value("/late", "GET", "2xx"); got != before+1 {
+		t.Errorf("/late/GET/2xx = %d, want %d", got, before+1)
+	}
+
 	// The first final status wins; a 1xx does not count.
 	two := metered(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusEarlyHints)

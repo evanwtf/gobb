@@ -433,7 +433,9 @@ func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now tim
 		h.ip = true
 	}
 	if s.opt.NameLimit != nil && k.nameOK {
-		ok, nameWait := s.opt.NameLimit.Take(k.name, now)
+		// A full name limit refuses only an address that the account has not
+		// used, so the metric counts the refusal here and not in the limiter.
+		ok, nameWait := s.opt.NameLimit.TryTake(k.name, now)
 		if ok {
 			h.name = true
 			return h, nil
@@ -444,6 +446,7 @@ func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now tim
 			return held{}, err
 		}
 		if !known {
+			s.opt.NameLimit.Refused()
 			return held{}, &LimitedError{RetryAfter: nameWait}
 		}
 	}

@@ -45,13 +45,11 @@ services:
       GOBB_PUBLIC_URL: ${GOBB_PUBLIC_URL:-}
       GOBB_MAIL_PER_HOUR: ${GOBB_MAIL_PER_HOUR:-}
       GOBB_MAIL_PER_DAY: ${GOBB_MAIL_PER_DAY:-}
-      # Empty keeps the metrics listener off. Set 0.0.0.0:9187 in .env to turn it on.
+      # Empty keeps the metrics listener off. compose.metrics.yaml turns it on and
+      # publishes its port.
       GOBB_METRICS_LISTEN: ${GOBB_METRICS_LISTEN:-}
     ports:
       - "127.0.0.1:${GOBB_PORT:-8080}:8080"
-      # The metrics listener, on the host's loopback only. Nothing answers here
-      # while GOBB_METRICS_LISTEN is empty.
-      - "127.0.0.1:${GOBB_METRICS_PORT:-9187}:9187"
     volumes:
       - gobb-data:/var/lib/gobb
     healthcheck:

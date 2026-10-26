@@ -34,6 +34,7 @@ type Registry struct {
 // family is one metric name with its HELP, its TYPE and its samples.
 type family interface {
 	write(w *bufio.Writer)
+	kind() string
 }
 
 // NewRegistry returns an empty Registry.
@@ -43,11 +44,15 @@ func NewRegistry() *Registry { return &Registry{fams: map[string]family{}} }
 // listener.
 var Default = NewRegistry()
 
-// register adds f under name. A second family with the same name replaces the
-// first, so a test that builds the server twice registers again with no error.
+// register adds f under name. A second family of the same type replaces the
+// first, so a test that builds the server twice registers again with no error. A
+// family of another type under a name in use is a bug, and panics.
 func (r *Registry) register(name string, f family) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if old, ok := r.fams[name]; ok && old.kind() != f.kind() {
+		panic("metrics: " + name + " is a " + old.kind() + ", not a " + f.kind())
+	}
 	r.fams[name] = f
 }
 
@@ -110,6 +115,8 @@ func Handler(r *Registry) http.Handler {
 type meta struct {
 	name, help, typ string
 }
+
+func (m meta) kind() string { return m.typ }
 
 func (m meta) header(w *bufio.Writer) {
 	w.WriteString("# HELP ")
