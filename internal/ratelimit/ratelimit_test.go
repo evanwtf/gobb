@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 )
 
@@ -300,4 +301,37 @@ func BenchmarkAddNewKeyFull(b *testing.B) {
 	for i := 0; b.Loop(); i++ {
 		l.Add(fmt.Sprintf("flood-%d", i), now)
 	}
+}
+
+// A named limiter counts each refused Take under its name. Over only reads, and
+// TryTake leaves the count to its caller, who calls Refused. The test reads
+// deltas, so it passes on a second run in one process.
+func TestNamedCountsRefusals(t *testing.T) {
+	l := ratelimit.New(1, time.Minute, 10).Named("test_named")
+	before := metrics.RateLimited.Value("test_named")
+	count := func() uint64 { return metrics.RateLimited.Value("test_named") - before }
+	if ok, _ := l.Take("k", t0); !ok {
+		t.Fatal("the first Take was refused")
+	}
+	if ok, _ := l.Take("k", t0); ok {
+		t.Fatal("the second Take passed a limit of 1")
+	}
+	if over, _ := l.Over("k", t0); !over {
+		t.Fatal("Over = false at the limit")
+	}
+	if ok, _ := l.TryTake("k", t0); ok {
+		t.Fatal("TryTake passed a limit of 1")
+	}
+	if got := count(); got != 1 {
+		t.Errorf("refusals = %d, want 1 (the Take only)", got)
+	}
+	l.Refused()
+	if got := count(); got != 2 {
+		t.Errorf("refusals after Refused = %d, want 2", got)
+	}
+	// A limiter with no name counts nothing and does not panic.
+	plain := ratelimit.New(1, time.Minute, 10)
+	plain.Take("k", t0)
+	plain.Take("k", t0)
+	plain.Refused()
 }

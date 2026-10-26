@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/db"
+	"github.com/evanwtf/gobb/internal/metrics"
 )
 
 const (
@@ -157,6 +158,16 @@ func (q *Queue) Process(ctx context.Context) (sent, failed, dropped int, err err
 			return sent, failed, dropped, ctx.Err()
 		}
 		outcome, werr := q.handle(ctx, j)
+		// The metric counts what happened to the message, even when its row could
+		// not be updated after it.
+		switch outcome {
+		case outcomeSent:
+			metrics.Emails.Inc("sent")
+		case outcomeFailed:
+			metrics.Emails.Inc("failed")
+		case outcomeDropped:
+			metrics.Emails.Inc("dropped")
+		}
 		if werr != nil {
 			writeErr = werr
 			continue
@@ -267,6 +278,17 @@ func (q *Queue) Run(ctx context.Context) {
 		case <-q.Wake:
 		}
 	}
+}
+
+// Pending returns the number of queue rows that are not sent and not dropped:
+// the ones waiting for their first try or for a retry.
+func Pending(ctx context.Context, q db.Querier) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `select count(*) from email_queue where sent_at is null and dropped_at is null`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("mail: count the pending rows: %w", err)
+	}
+	return n, nil
 }
 
 // Cleanup deletes the queue rows that were sent or dropped more than 30 days

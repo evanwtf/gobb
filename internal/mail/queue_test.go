@@ -16,6 +16,7 @@ import (
 	"github.com/evanwtf/gobb/internal/dbtest"
 	"github.com/evanwtf/gobb/internal/mail"
 	"github.com/evanwtf/gobb/internal/mail/mailtest"
+	"github.com/evanwtf/gobb/internal/metrics"
 )
 
 // queueDB returns a migrated database with one member, and that member's ID.
@@ -552,5 +553,28 @@ func TestMailCleanup(t *testing.T) {
 	}
 	if q != 3 {
 		t.Errorf("left %d queue rows, want 3", q)
+	}
+}
+
+// Each pass adds what happened to each message to gobb_emails_total.
+func TestProcessCountsOutcomes(t *testing.T) {
+	pool, uid := queueDB(t)
+	var fail error
+	fs := &fakeSender{fn: func(context.Context, mail.Message) error { return fail }}
+	q := &mail.Queue{Pool: pool, Sender: fs, Now: func() time.Time { return now }}
+	sent0, failed0, dropped0 := metrics.Emails.Value("sent"), metrics.Emails.Value("failed"), metrics.Emails.Value("dropped")
+	for _, f := range []error{nil, timeoutErr, &textproto.Error{Code: 550, Msg: "5.1.1 no such user"}} {
+		fail = f
+		enqueue(t, pool, uid, now.Add(time.Hour))
+		// The row that failed waits for its retry, so each pass sends only the new row.
+		if _, _, _, err := q.Process(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s, f, d := metrics.Emails.Value("sent")-sent0, metrics.Emails.Value("failed")-failed0, metrics.Emails.Value("dropped")-dropped0; s != 1 || f != 1 || d != 1 {
+		t.Errorf("sent %d, failed %d, dropped %d; want 1 each", s, f, d)
+	}
+	if n, err := mail.Pending(t.Context(), pool); err != nil || n != 1 {
+		t.Errorf("Pending = %d, %v; want 1 (the row that waits for a retry)", n, err)
 	}
 }

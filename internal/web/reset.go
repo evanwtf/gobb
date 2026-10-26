@@ -12,6 +12,7 @@ import (
 
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 )
 
@@ -65,11 +66,11 @@ func newResetLimits(m *MailOptions) resetLimits {
 		perHour, perDay = m.PerHour, m.PerDay
 	}
 	return resetLimits{
-		addr:    ratelimit.New(resetAddrLimit, resetWindow, resetLimitMaxKeys),
-		hour:    ratelimit.New(perHour, resetWindow, 1),
-		day:     ratelimit.New(perDay, resetDayWindow, 1),
-		account: ratelimit.New(resetAccountLimit, resetAccountWindow, resetLimitMaxKeys),
-		dead:    ratelimit.New(resetDeadLimit, resetWindow, resetLimitMaxKeys),
+		addr:    ratelimit.New(resetAddrLimit, resetWindow, resetLimitMaxKeys).Named("reset_address"),
+		hour:    ratelimit.New(perHour, resetWindow, 1).Named("reset_board_hour"),
+		day:     ratelimit.New(perDay, resetDayWindow, 1).Named("reset_board_day"),
+		account: ratelimit.New(resetAccountLimit, resetAccountWindow, resetLimitMaxKeys).Named("reset_account"),
+		dead:    ratelimit.New(resetDeadLimit, resetWindow, resetLimitMaxKeys).Named("reset_dead_link"),
 	}
 }
 
@@ -218,16 +219,19 @@ func (s *site) resetSubmit(w http.ResponseWriter, r *http.Request) {
 	allow := func(userID int64) bool {
 		key := strconv.FormatInt(userID, 10)
 		if ok, _ := s.resets.account.Take(key, now); !ok {
+			metrics.ResetSkipped.Inc("account_day")
 			return false
 		}
 		if ok, _ := s.resets.hour.Take(resetBoardKey, now); !ok {
 			s.resets.account.Refund(key, now)
+			metrics.ResetSkipped.Inc("board_hour")
 			slog.Warn("reset email skipped: board limit", "per", "hour")
 			return false
 		}
 		if ok, _ := s.resets.day.Take(resetBoardKey, now); !ok {
 			s.resets.hour.Refund(resetBoardKey, now)
 			s.resets.account.Refund(key, now)
+			metrics.ResetSkipped.Inc("board_day")
 			slog.Warn("reset email skipped: board limit", "per", "day")
 			return false
 		}

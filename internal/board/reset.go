@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/evanwtf/gobb/internal/metrics"
+
 	"github.com/evanwtf/gobb/internal/account"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/mail"
@@ -52,6 +54,14 @@ type ResetAccount struct {
 // errResetSkip ends the transaction of one account that gets no email. It is
 // not an error of the request.
 var errResetSkip = errors.New("board: no reset email for this account")
+
+// errResetAdmin and errResetRefused are errResetSkip for an administrator, whom a
+// reset email never reaches, and for an account that allow refused. The metric
+// counts each of them apart from the other skips.
+var (
+	errResetAdmin   = errors.New("board: no reset email for an administrator")
+	errResetRefused = errors.New("board: the limits refused a reset email")
+)
 
 // resetID returns the key of the link that has token: the SHA-256 in hex.
 func resetID(token string) string {
@@ -122,7 +132,15 @@ func RequestReset(ctx context.Context, pool *pgxpool.Pool, name string, allow fu
 		err := inTx(ctx, pool, func(tx pgx.Tx) error {
 			return requestResetFor(ctx, tx, id, s, allow, mailFor, now)
 		})
-		if errors.Is(err, errResetSkip) {
+		switch {
+		case errors.Is(err, errResetSkip):
+			metrics.ResetSkipped.Inc("ineligible")
+			continue
+		case errors.Is(err, errResetAdmin):
+			metrics.ResetSkipped.Inc("admin")
+			continue
+		case errors.Is(err, errResetRefused):
+			// allow counted the limit that refused.
 			continue
 		}
 		if err != nil {
@@ -211,11 +229,14 @@ select username, email, email_clean, state, password_epoch from users where id =
 	if err != nil {
 		return err
 	}
-	if mayAccount(v, "account.password") != nil || v.Perms.IsAdmin() {
+	if v.Perms.IsAdmin() {
+		return errResetAdmin
+	}
+	if mayAccount(v, "account.password") != nil {
 		return errResetSkip
 	}
 	if allow != nil && !allow(id) {
-		return errResetSkip
+		return errResetRefused
 	}
 	token, err := newResetToken()
 	if err != nil {

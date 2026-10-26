@@ -6,6 +6,8 @@ package ratelimit
 import (
 	"sync"
 	"time"
+
+	"github.com/evanwtf/gobb/internal/metrics"
 )
 
 // Limiter counts events per key. A key is over the limit when it has limit
@@ -15,6 +17,9 @@ type Limiter struct {
 	limit   int
 	window  time.Duration
 	maxKeys int
+	// name labels the refusals of the limiter in gobb_rate_limited_total. A
+	// Limiter with no name is not counted.
+	name string
 
 	mu   sync.Mutex
 	keys map[string][]time.Time // events of a key, oldest first; at most limit
@@ -26,6 +31,24 @@ func New(limit int, window time.Duration, maxKeys int) *Limiter {
 	return &Limiter{
 		limit: max(limit, 1), window: window, maxKeys: max(maxKeys, 1),
 		keys: make(map[string][]time.Time),
+	}
+}
+
+// Named sets the name that labels the refusals of l in the metric
+// gobb_rate_limited_total, and returns l. The name is fixed text, such as
+// "signin_address", never a key.
+func (l *Limiter) Named(name string) *Limiter {
+	l.name = name
+	metrics.RateLimited.Init(name)
+	return l
+}
+
+// Refused counts one refusal of a named limiter in gobb_rate_limited_total.
+// [Limiter.Take] counts its own refusals. A caller of [Limiter.TryTake] calls
+// Refused when it refuses the request.
+func (l *Limiter) Refused() {
+	if l.name != "" {
+		metrics.RateLimited.Inc(l.name)
 	}
 }
 
@@ -47,8 +70,20 @@ func (l *Limiter) Over(key string, now time.Time) (over bool, wait time.Duration
 // it has limit events, Take records nothing and returns false with the wait until
 // the oldest leaves the window. A caller that must not let parallel requests pass
 // a limit takes the event first, before the work, and gives it back with
-// [Limiter.Refund] when the work does not count.
+// [Limiter.Refund] when the work does not count. A false Take counts as a refusal
+// of a named limiter (gobb_rate_limited_total).
 func (l *Limiter) Take(key string, now time.Time) (ok bool, wait time.Duration) {
+	ok, wait = l.TryTake(key, now)
+	if !ok {
+		l.Refused()
+	}
+	return ok, wait
+}
+
+// TryTake is [Limiter.Take] with no count: for a caller that may let the request
+// through when the key is full. That caller calls [Limiter.Refused] when it
+// refuses.
+func (l *Limiter) TryTake(key string, now time.Time) (ok bool, wait time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	events := l.live(key, now)

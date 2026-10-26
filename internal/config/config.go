@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/mail"
 	"net/netip"
 	"net/url"
@@ -31,6 +32,9 @@ type Config struct {
 	// Mail holds the email settings. It is nil when email is off, which is when
 	// GOBB_SMTP_HOST is unset.
 	Mail *Mail
+	// MetricsListen is the address of the metrics listener, which serves only
+	// GET /metrics. Empty, the default, means no metrics listener.
+	MetricsListen string
 }
 
 const (
@@ -79,7 +83,29 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+
+	if c.MetricsListen = strings.TrimSpace(getenv("GOBB_METRICS_LISTEN")); c.MetricsListen != "" {
+		if err := checkListen(c.MetricsListen); err != nil {
+			return Config{}, fmt.Errorf("config: GOBB_METRICS_LISTEN: %w", err)
+		}
+		if c.MetricsListen == c.Listen {
+			return Config{}, errors.New("config: GOBB_METRICS_LISTEN is the same address as GOBB_LISTEN")
+		}
+	}
 	return c, nil
+}
+
+// checkListen checks that addr is host:port with a port from 1 to 65535. The
+// host may be empty (every interface), an IP address or a name.
+func checkListen(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%q is not host:port: %w", addr, err)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%q has no port from 1 to 65535", addr)
+	}
+	return nil
 }
 
 // cookieSecure reads GOBB_COOKIE_SECURE: "true" (the default) or "false".

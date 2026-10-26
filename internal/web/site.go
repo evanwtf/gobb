@@ -26,6 +26,7 @@ import (
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/legacy"
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 	"github.com/evanwtf/gobb/internal/session"
 	"github.com/evanwtf/gobb/markup"
@@ -290,7 +291,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if onNew != nil {
 		onNew(s)
 	}
-	return timed(secure(s.guard(root))), nil
+	metrics.SigninFloor.Set(s.login.Floor.Seconds())
+	return metered(timed(secure(s.guard(root)))), nil
 }
 
 // routes is a ServeMux that remembers the patterns registered on it, so a test
@@ -304,12 +306,11 @@ func newRoutes() *routes { return &routes{ServeMux: http.NewServeMux()} }
 
 func (r *routes) Handle(pattern string, h http.Handler) {
 	r.patterns = append(r.patterns, pattern)
-	r.ServeMux.Handle(pattern, h)
+	r.ServeMux.Handle(pattern, withRoute(pattern, h))
 }
 
 func (r *routes) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
-	r.patterns = append(r.patterns, pattern)
-	r.ServeMux.HandleFunc(pattern, h)
+	r.Handle(pattern, http.HandlerFunc(h))
 }
 
 // stripBase removes the base path from the path of a request, as

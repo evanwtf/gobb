@@ -19,6 +19,7 @@ import (
 
 	"github.com/evanwtf/gobb/internal/account"
 	"github.com/evanwtf/gobb/internal/db"
+	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/password"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 )
@@ -197,8 +198,8 @@ func (c *clock) waited(d time.Duration) {
 // services share no counts.
 func DefaultOptions() Options {
 	return Options{
-		IPLimit:   ratelimit.New(DefaultIPFailures, DefaultIPWindow, DefaultMaxKeys),
-		NameLimit: ratelimit.New(DefaultNameFailures, DefaultNameWindow, DefaultMaxKeys),
+		IPLimit:   ratelimit.New(DefaultIPFailures, DefaultIPWindow, DefaultMaxKeys).Named("signin_address"),
+		NameLimit: ratelimit.New(DefaultNameFailures, DefaultNameWindow, DefaultMaxKeys).Named("signin_name"),
 		Gate:      NewGate(DefaultBudgetKiB),
 		Verify:    password.Verify,
 	}
@@ -305,7 +306,41 @@ func (s *Service) Check(ctx context.Context, name, pw string, ip netip.Addr, now
 //     name.
 //
 // A nil finish is Check.
+//
+// Every call adds one to gobb_signin_attempts_total, labeled with its result.
 func (s *Service) CheckWith(ctx context.Context, name, pw string, ip netip.Addr, now time.Time, finish func(ctx context.Context, userID, epoch int64) error) (int64, error) {
+	id, err := s.checkWith(ctx, name, pw, ip, now, finish)
+	metrics.SigninAttempts.Inc(signinResult(err))
+	return id, err
+}
+
+// signinResult names the result of a sign-in check, for the metric.
+func signinResult(err error) string {
+	var (
+		limited *LimitedError
+		banned  *BannedError
+	)
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, ErrWrong):
+		return "wrong"
+	case errors.Is(err, ErrAmbiguous):
+		return "ambiguous"
+	case errors.As(err, &limited):
+		return "limited"
+	case errors.As(err, &banned):
+		return "banned"
+	case errors.Is(err, ErrInactive):
+		return "inactive"
+	case errors.Is(err, ErrBusy):
+		return "busy"
+	}
+	return "error"
+}
+
+// checkWith is [Service.CheckWith] without the metric.
+func (s *Service) checkWith(ctx context.Context, name, pw string, ip netip.Addr, now time.Time, finish func(ctx context.Context, userID, epoch int64) error) (int64, error) {
 	c := &clock{from: time.Now()}
 	k := s.keys(name, ip)
 	held, err := s.reserve(ctx, name, k, now)
@@ -398,7 +433,9 @@ func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now tim
 		h.ip = true
 	}
 	if s.opt.NameLimit != nil && k.nameOK {
-		ok, nameWait := s.opt.NameLimit.Take(k.name, now)
+		// A full name limit refuses only an address that the account has not
+		// used, so the metric counts the refusal here and not in the limiter.
+		ok, nameWait := s.opt.NameLimit.TryTake(k.name, now)
 		if ok {
 			h.name = true
 			return h, nil
@@ -409,6 +446,7 @@ func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now tim
 			return held{}, err
 		}
 		if !known {
+			s.opt.NameLimit.Refused()
 			return held{}, &LimitedError{RetryAfter: nameWait}
 		}
 	}

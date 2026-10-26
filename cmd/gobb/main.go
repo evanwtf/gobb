@@ -267,6 +267,15 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		return err
 	}
 	slog.Info("listening", "addr", ln.Addr().String(), "base_path", cfg.BasePath)
+	// The metrics listener starts with the server, and stops before the pool
+	// closes: some of its gauges read the pool.
+	registerServeMetrics(pool, gate)
+	stopMetrics, _, err := startMetrics(cfg.MetricsListen)
+	if err != nil {
+		_ = ln.Close()
+		pool.Close()
+		return err
+	}
 	// The cleanup stops with the server. The pool closes after it has stopped.
 	cleanCtx, stopClean := context.WithCancel(ctx)
 	cleaned := make(chan struct{})
@@ -282,6 +291,11 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 	wake, stopMail := startMail(ctx, pool, cfg.Mail)
 	waker.set(wake)
 	closePool := func() {
+		metricsCtx, cancelMetrics := context.WithTimeout(context.Background(), metricsStopTimeout)
+		if err := stopMetrics(metricsCtx); err != nil {
+			slog.Warn("metrics listener did not stop cleanly", "err", err)
+		}
+		cancelMetrics()
 		stopMail()
 		stopClean()
 		<-cleaned
@@ -340,6 +354,9 @@ func startMail(ctx context.Context, pool *pgxpool.Pool, m *config.Mail) (chan<- 
 		<-ended
 	}
 }
+
+// metricsStopTimeout is how long the metrics listener has to stop at shutdown.
+const metricsStopTimeout = 2 * time.Second
 
 // cleanupEvery is the time between two runs of the session cleanup.
 const cleanupEvery = time.Hour

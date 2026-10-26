@@ -1,0 +1,13 @@
+# Turns the metrics listener on and publishes it on the host's loopback only
+# (README, "Metrics"). Add it to COMPOSE_FILE in .env:
+#
+#   COMPOSE_FILE=compose.yaml:compose.metrics.yaml
+#
+# With COMPOSE_FILE set, Compose reads only the files it names, so name
+# compose.override.yaml there too if you have one.
+services:
+  gobb:
+    environment:
+      GOBB_METRICS_LISTEN: 0.0.0.0:9187
+    ports:
+      - "127.0.0.1:${GOBB_METRICS_PORT:-9187}:9187"
