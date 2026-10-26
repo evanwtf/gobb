@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-10-25)
 
 Members change their own settings and send private messages. The account page saves each
 setting as it changes: a time zone (a place, with its daylight saving time), a date format

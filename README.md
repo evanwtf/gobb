@@ -1,6 +1,8 @@
 # gobb
 
-A small forum server in Go.
+A small forum server in Go. Members read and write topics, keep their own settings on
+the account page (time zone, date format, avatar, "About you", birthday, signature), and
+send each other private messages.
 
 ## Bootstrap
 
@@ -26,7 +28,8 @@ curl -fsS http://127.0.0.1:8080/healthz
 ```
 
 `up --build` builds the image from this checkout. To run a published image instead, set
-`GOBB_VERSION` in `.env` to a version without the `v` (for example `0.1.0`; the release tag is `v0.1.0`), or leave it at `latest`, once a release exists. Then run
+`GOBB_VERSION` in `.env` to a version without the `v` (for example `0.2.0`; the release
+tag is `v0.2.0`), or leave it at `latest`. Then run
 `docker compose pull && docker compose up -d --wait`. The image comes from
 `ghcr.io/evanwtf/gobb`.
 
@@ -47,7 +50,8 @@ too, run `docker compose down -v`.
 `gobb import [--replace] <bundle>` loads a bundle into the database and the data
 volume. The bundle is a directory or a `.tar.gz` file. Put the flag before the path.
 The format is in [docs/bundle.md](docs/bundle.md), and
-[docs/example-bundle/](docs/example-bundle/) is a small example.
+[docs/example-bundle/](docs/example-bundle/) is a small example. gobb 0.2.0 reads format
+version 2 and refuses a bundle of version 1.
 
 A bundle, a database dump and a permission export hold real member data. Keep them in
 a folder outside this clone, so that git and the image build never see them. A converter
@@ -184,7 +188,7 @@ mkdir -p "$BACKUP_DIR"
    ```
 
 4. **Upgrade.** Set `GOBB_VERSION` in `.env` to the new version without the `v`, for
-   example `0.1.0` (the release tag is `v0.1.0`, the image tag is `0.1.0`), or leave it
+   example `0.2.0` (the release tag is `v0.2.0`, the image tag is `0.2.0`), or leave it
    at `latest`. Write down the version that you leave: a rollback needs it. Pull the
    image and start the stack. gobb applies the new migrations at start. A migration is
    not undone when you go back to an older image, so to go back you restore the dump

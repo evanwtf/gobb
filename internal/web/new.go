@@ -62,9 +62,9 @@ func isOwnNavigation(r *http.Request) bool {
 
 // countView does the bookkeeping of a topic page that a person opened: it adds
 // a view, and for a member who opened it from this site (see [isOwnNavigation]) it
-// marks the topic read up to the newest post on the page. A page that shows only old posts leaves the newer posts unread. The
-// caller runs it after the page is built (see [site.renderThen]). A failure is
-// logged; the page still shows.
+// marks the topic read up to the newest post on the page. A page that shows only
+// old posts leaves the newer posts unread. The caller runs it after the page is
+// built (see [site.renderThen]). A failure is logged; the page still shows.
 func (s *site) countView(r *http.Request, v board.Viewer, tp *board.TopicPage) {
 	ctx := r.Context()
 	if err := board.CountView(ctx, s.pool, tp.Topic.ID); err != nil {
