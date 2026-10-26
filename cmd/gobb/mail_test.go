@@ -131,3 +131,29 @@ func TestMailTestCommandUsage(t *testing.T) {
 		}
 	}
 }
+
+// TestMailTestCommandKeepsServerTextOut: the server answers RCPT with a malformed
+// line that holds the address in upper case. Stderr holds none of it, only the
+// summary and the stage.
+func TestMailTestCommandKeepsServerTextOut(t *testing.T) {
+	srv := mailtest.Start(t, mailtest.Options{
+		User: "board", Password: mailPassword,
+		Raw: map[string]string{"RCPT": "XYZ " + strings.ToUpper(mailAddress)},
+	})
+	mailEnvFor(t, srv, "starttls")
+	code, out, errOut := runUser(t, "mail", "test", mailAddress)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+	for _, bad := range []string{mailPassword, mailAddress, strings.ToUpper(mailAddress), "EXAMPLE.ORG", "XYZ"} {
+		if strings.Contains(errOut, bad) {
+			t.Errorf("stderr holds %q:\n%s", bad, errOut)
+		}
+	}
+	if !strings.Contains(errOut, "reason=network") || !strings.Contains(errOut, "stage=RCPT") {
+		t.Errorf("stderr lacks the reason and the stage:\n%s", errOut)
+	}
+}

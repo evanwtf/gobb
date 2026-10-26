@@ -42,7 +42,7 @@ var _ Sender = (*SMTP)(nil)
 func NewSMTP(c config.Mail) *SMTP { return &SMTP{c: c} }
 
 // Error is a failed send. Its text holds the stage and a reason, never the
-// password, the recipient or the text of a reply.
+// password, the recipient or any text from the server.
 type Error struct {
 	// Stage names the step that failed, such as "RCPT".
 	Stage string
@@ -136,6 +136,13 @@ func (s *send) fail(stage, kind string, err error) error {
 	e := &Error{Stage: stage, cause: err}
 	if code, enh, ok := reply(err); ok {
 		e.Code, e.Enhanced, e.cause = code, enh, nil
+		return e
+	}
+	// A malformed reply carries the raw line of the server in its text, and that
+	// line can hold the recipient in any case or encoding. Keep none of it.
+	var pe textproto.ProtocolError
+	if errors.As(err, &pe) {
+		e.cause, e.reason = nil, "malformed reply"
 		return e
 	}
 	// A deadline or a cancel closes the connection, so the error that the

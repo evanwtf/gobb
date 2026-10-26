@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -51,7 +52,14 @@ func mailCommand(ctx context.Context, args []string) error {
 		Body:    "This is a test email from gobb " + version.Version + ". Email works.\n",
 	})
 	if err != nil {
-		log.Error("test email failed", "reason", mail.Summary(err), "err", err)
+		// The summary and the stage only: nothing from the error text, which could
+		// hold what the server sent.
+		attrs := []any{"reason", mail.Summary(err)}
+		var me *mail.Error
+		if errors.As(err, &me) {
+			attrs = append(attrs, "stage", me.Stage)
+		}
+		log.Error("test email failed", attrs...)
 		return errReported
 	}
 	log.Info("test email sent", "server", cfg.Host, "port", cfg.Port)

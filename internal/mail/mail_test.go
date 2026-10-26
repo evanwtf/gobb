@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/quotedprintable"
@@ -466,5 +467,32 @@ func TestPermanentAndSummaryOfOtherErrors(t *testing.T) {
 	}
 	if got := mail.Summary(context.DeadlineExceeded); got != "timeout" {
 		t.Errorf("Summary = %q", got)
+	}
+}
+
+// TestSendMalformedReplyKeepsNoServerText: a reply that is not valid SMTP holds
+// the recipient in upper case. No part of it reaches the error text.
+func TestSendMalformedReplyKeepsNoServerText(t *testing.T) {
+	for name, line := range map[string]string{
+		"bad code":       "XYZ SOMEONE@EXAMPLE.ORG",
+		"short response": "SOMEONE@EXAMPLE.ORG",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, s := sender(t, mailtest.Options{Raw: map[string]string{"RCPT": line}}, "", "")
+			err := send(s, mail.Message{To: recipient, Subject: "hi", Body: "hello\r\n"})
+			if err == nil {
+				t.Fatal("Send worked after a malformed reply")
+			}
+			if strings.Contains(strings.ToLower(err.Error()), "example.org") ||
+				strings.Contains(strings.ToLower(fmt.Sprintf("%+v %#v", err, err)), "someone") {
+				t.Errorf("the error holds text of the reply: %v", err)
+			}
+			if got := mail.Summary(err); got != "network" {
+				t.Errorf("Summary = %q, want network", got)
+			}
+			if mail.Permanent(err) {
+				t.Error("a malformed reply counts as permanent")
+			}
+		})
 	}
 }

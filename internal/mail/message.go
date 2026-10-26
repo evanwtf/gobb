@@ -1,8 +1,8 @@
 // Package mail builds email messages and sends them over SMTP with TLS.
 //
 // An error from this package never holds the SMTP password, the recipient
-// address or a message body. It holds no text of a server's reply either, since
-// that text can name the recipient.
+// address or a message body. It holds no text of a server's reply either, not
+// even a malformed one, since that text can name the recipient.
 package mail
 
 import (

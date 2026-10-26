@@ -36,6 +36,10 @@ type Options struct {
 	// code from 400 refuses the command: for DATA the server sends it in place
 	// of 354 and reads no data. A command with no entry gets the usual reply.
 	Reply map[string]int
+	// Raw maps a command (MAIL, RCPT or DATA) to a line that the server sends as
+	// its reply, as it is, in place of any other. Use it for a malformed reply.
+	// It beats Reply.
+	Raw map[string]string
 	// Silent accepts a connection and never answers.
 	Silent bool
 }
@@ -288,6 +292,10 @@ func (s *Server) handle(raw net.Conn) {
 			from = address(arg)
 			werr = ss.reply("MAIL", "<"+from+">: sender refused")
 		case "RCPT":
+			if line, ok := s.o.Raw["RCPT"]; ok {
+				werr = ss.say("%s", line)
+				break
+			}
 			if code, ok := s.o.Reply["RCPT"]; ok && code >= 400 {
 				werr = ss.say("%s", refusal(code, "<"+address(arg)+">: recipient refused"))
 				break
@@ -295,6 +303,10 @@ func (s *Server) handle(raw net.Conn) {
 			rcpts = append(rcpts, address(arg))
 			werr = ss.say("250 2.1.5 ok")
 		case "DATA":
+			if line, ok := s.o.Raw["DATA"]; ok {
+				werr = ss.say("%s", line)
+				break
+			}
 			if code, ok := s.o.Reply["DATA"]; ok && code >= 400 {
 				werr = ss.say("%s", refusal(code, "message refused"))
 				break
@@ -334,6 +346,9 @@ func (s *Server) tlsConfig() *tls.Config {
 
 // reply answers a command with the code in Options.Reply, or 250.
 func (ss *session) reply(cmd, detail string) error {
+	if line, ok := ss.s.o.Raw[cmd]; ok {
+		return ss.say("%s", line)
+	}
 	if code, ok := ss.s.o.Reply[cmd]; ok && code >= 400 {
 		return ss.say("%s", refusal(code, detail))
 	}
