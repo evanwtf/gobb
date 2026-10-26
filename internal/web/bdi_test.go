@@ -12,9 +12,9 @@ import (
 // element stays as it is.
 func TestSubjectsPrintInBdi(t *testing.T) {
 	const (
-		title   = "Topic ‮evil⁦ end"
-		subject = "Subject ⁦odd‮ end"
-		pmSubj  = "Message ‮odd⁦ end"
+		title   = "Topic \u202eevil\u2066 end"
+		subject = "Subject \u2066odd\u202e end"
+		pmSubj  = "Message \u202eodd\u2066 end"
 	)
 	h, pool := siteWithPool(t, searchSiteBoard(), Options{})
 	exec(t, pool, `update topics set title = '`+title+`' where id = 1`)

@@ -224,7 +224,9 @@ jobs:
           docker build --build-arg GOBB_COMMIT="$GOBB_COMMIT" -t "$IMAGE" .
           out=$(docker run --rm "$IMAGE" version)
           echo "$out"
-          [ "$out" = "gobb 0.1.0" ]
+          # The version comes from internal/version, so a bump needs no edit here.
+          want="gobb $(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/version/version.go)"
+          [ "$out" = "$want" ] || { echo "want $want"; exit 1; }
 
       # --wait returns once postgres and gobb both report healthy.
       - name: Start the stack

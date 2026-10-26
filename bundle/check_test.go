@@ -869,7 +869,7 @@ func TestHiddenCharacterInTitles(t *testing.T) {
 	for _, tt := range []struct{ file, field string }{
 		{"topics.jsonl", "title"}, {"posts.jsonl", "subject"}, {"pms.jsonl", "subject"},
 	} {
-		for _, bad := range []string{"a‮b", "a⁦b"} {
+		for _, bad := range []string{"a\u202eb", "a\u2066b"} {
 			t.Run(tt.file+" "+tt.field+" "+strconv.QuoteToASCII(bad), func(t *testing.T) {
 				dir := bundletest.Write(t, bundletest.Small())
 				editLines(t, dir, tt.file, func(line int, m map[string]any) {
@@ -896,7 +896,7 @@ func TestHiddenCharacterInTitles(t *testing.T) {
 			dir := bundletest.Write(t, bundletest.Small())
 			editLines(t, dir, tt.file, func(line int, m map[string]any) {
 				if line == 1 {
-					m[tt.field] = "Family \U0001F468‍\U0001F469"
+					m[tt.field] = "Family \U0001F468\u200d\U0001F469"
 				}
 			})
 			if err := openAndCheck(dir); err != nil {
