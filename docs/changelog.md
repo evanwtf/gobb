@@ -27,7 +27,21 @@
   does not count as a failure. `last_error` holds `smtp 550 5.1.1`, `timeout` or
   another short summary, and the log holds the row ID and the member ID, never the
   address, the subject or the body. The hourly cleanup deletes rows 30 days after they
-  were sent or dropped, and the reset links that have expired.
+  were sent or dropped.
+- **Password reset in the board.** `board.RequestReset` looks a name up as sign-in does (a
+  username, then an email address, at most 5 accounts) and queues one email for each
+  active account that has a valid address, has `account.password` and is under no user
+  ban and no email ban. Everything else does nothing, and the answer is the same. A link
+  is 32 random bytes in base64url, lives 1 hour, and the database holds only its
+  SHA-256. `board.CompleteReset` checks the new password with the account page's rules,
+  then in one transaction stores a gobb hash, adds one to the password epoch, sets
+  `email_verified`, deletes every session and every link of the member, and writes one
+  `user.reset_password` row (`{"via":"email"}`) to the moderation log. A link works once.
+  It dies when the password epoch moves (a reset, an account page change, an
+  administrator's reset), when the member changes the email address and when a user ban
+  lands. No token, link, address or password is in a log line, an error or a log row. The
+  hourly cleanup logs the email rows and the expired reset links as two counts. The web
+  pages come in the next change.
 
 ## 0.2.0 (2026-10-25)
 

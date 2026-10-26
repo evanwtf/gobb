@@ -91,7 +91,7 @@ func TestCleanupLogsCounts(t *testing.T) {
 }
 
 // cleanup also deletes the old email rows and the expired reset links, and logs
-// how many.
+// a count for each.
 func TestCleanupLogsMailCount(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
@@ -100,6 +100,13 @@ func TestCleanupLogsMailCount(t *testing.T) {
 		`insert into email_queue (to_addr, created_at, next_attempt_at, sent_at)
 		 values ('someone@example.org', $1, $1, $1)`, old); err != nil {
 		t.Fatal(err)
+	}
+	for i, exp := range []time.Time{now.Add(-time.Minute), now, now.Add(time.Minute)} {
+		if _, err := pool.Exec(t.Context(),
+			`insert into password_resets (id, user_id, epoch, created_at, expires_at)
+			 values ($1, 1, 0, $2, $3)`, string(rune('a'+i)), now.Add(-time.Hour), exp); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -111,8 +118,14 @@ func TestCleanupLogsMailCount(t *testing.T) {
 	if out := buf.String(); !strings.Contains(out, "email cleanup") || !strings.Contains(out, "rows=1") {
 		t.Errorf("log = %q, want an email cleanup line with rows=1", out)
 	}
+	if out := buf.String(); !strings.Contains(out, "reset link cleanup") || !strings.Contains(out, "links=2") {
+		t.Errorf("log = %q, want a reset link cleanup line with links=2", out)
+	}
 	var n int
 	if err := pool.QueryRow(t.Context(), `select count(*) from email_queue`).Scan(&n); err != nil || n != 0 {
 		t.Errorf("email rows left = %d (%v), want 0", n, err)
+	}
+	if err := pool.QueryRow(t.Context(), `select count(*) from password_resets`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("reset links left = %d (%v), want 1", n, err)
 	}
 }

@@ -330,6 +330,10 @@ func changeEmail(ctx context.Context, pool *pgxpool.Pool, v Viewer, email string
 		if _, err := tx.Exec(ctx, `update users set email = $2, email_clean = $3, email_verified = false where id = $1`, v.UserID, stored, clean); err != nil {
 			return fmt.Errorf("board: store an address for %d: %w", v.UserID, err)
 		}
+		// A reset link goes to the old address, so it dies with it.
+		if _, err := tx.Exec(ctx, `delete from password_resets where user_id = $1`, v.UserID); err != nil {
+			return fmt.Errorf("board: delete the reset links of %d: %w", v.UserID, err)
+		}
 		return nil
 	})
 }

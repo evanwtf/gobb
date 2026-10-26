@@ -24,6 +24,7 @@ import (
 
 	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/acldb"
+	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/importer"
@@ -333,8 +334,9 @@ func cleanupLoop(ctx context.Context, tick <-chan time.Time, run func(context.Co
 	}
 }
 
-// cleanup deletes the expired sessions, the old user_ips rows, the old email
-// rows and the expired reset links, and logs how many of each kind it removed. A failure is logged and does not stop the server.
+// cleanup deletes the expired sessions, the old user_ips rows, the old email rows
+// and the expired reset links. It logs one count line for each step. A failure
+// is logged and does not stop the server or the later steps.
 func cleanup(ctx context.Context, q db.Querier, now func() time.Time) {
 	sessions, ips, err := session.Cleanup(ctx, q, now())
 	if err != nil {
@@ -349,9 +351,17 @@ func cleanup(ctx context.Context, q db.Querier, now func() time.Time) {
 		if ctx.Err() == nil {
 			slog.Error("email cleanup failed", "err", err)
 		}
+	} else {
+		slog.Info("email cleanup", "rows", rows)
+	}
+	links, err := board.CleanupResets(ctx, q, now())
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Error("reset link cleanup failed", "err", err)
+		}
 		return
 	}
-	slog.Info("email cleanup", "rows", rows)
+	slog.Info("reset link cleanup", "links", links)
 }
 
 // gateFor logs the Go memory limit of the process (see [memlimit.Apply]), its

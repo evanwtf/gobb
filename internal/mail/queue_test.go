@@ -542,24 +542,15 @@ func TestMailCleanup(t *testing.T) {
 	add(at(29*day), nil)
 	add(nil, at(29*day))
 	add(nil, nil)
-	for _, exp := range []time.Time{now.Add(-time.Minute), now.Add(time.Minute)} {
-		if _, err := pool.Exec(ctx,
-			`insert into password_resets (id, user_id, epoch, created_at, expires_at)
-			 values ($1, $2, 0, $3, $4)`, exp.Format(time.RFC3339), uid, now.Add(-time.Hour), exp); err != nil {
-			t.Fatal(err)
-		}
-	}
 	n, err := mail.Cleanup(ctx, pool, now)
-	if err != nil || n != 3 {
-		t.Fatalf("Cleanup = %d, %v; want 3 (two queue rows, one reset)", n, err)
+	if err != nil || n != 2 {
+		t.Fatalf("Cleanup = %d, %v; want 2", n, err)
 	}
-	var q, r int
-	if err := pool.QueryRow(ctx,
-		`select (select count(*) from email_queue), (select count(*) from password_resets)`).
-		Scan(&q, &r); err != nil {
+	var q int
+	if err := pool.QueryRow(ctx, `select count(*) from email_queue`).Scan(&q); err != nil {
 		t.Fatal(err)
 	}
-	if q != 3 || r != 1 {
-		t.Errorf("left %d queue rows and %d resets, want 3 and 1", q, r)
+	if q != 3 {
+		t.Errorf("left %d queue rows, want 3", q)
 	}
 }

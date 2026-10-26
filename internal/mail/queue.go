@@ -270,18 +270,13 @@ func (q *Queue) Run(ctx context.Context) {
 }
 
 // Cleanup deletes the queue rows that were sent or dropped more than 30 days
-// before now, and the reset links that expired by now. It returns the number of
-// rows it deleted, both kinds together.
+// before now. It returns the number of rows it deleted. The reset links belong to
+// the board ([board.CleanupResets]).
 func Cleanup(ctx context.Context, q db.Querier, now time.Time) (int64, error) {
 	tag, err := q.Exec(ctx,
 		`delete from email_queue where sent_at < $1 or dropped_at < $1`, now.Add(-keepFor))
 	if err != nil {
 		return 0, fmt.Errorf("mail: cleanup queue: %w", err)
 	}
-	n := tag.RowsAffected()
-	tag, err = q.Exec(ctx, `delete from password_resets where expires_at <= $1`, now)
-	if err != nil {
-		return n, fmt.Errorf("mail: cleanup resets: %w", err)
-	}
-	return n + tag.RowsAffected(), nil
+	return tag.RowsAffected(), nil
 }
