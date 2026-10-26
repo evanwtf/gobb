@@ -64,7 +64,9 @@ const (
 )
 
 // newTries returns the limiter of the account changes.
-func newTries() *ratelimit.Limiter { return ratelimit.New(triesPerHour, triesWindow, triesMaxKeys) }
+func newTries() *ratelimit.Limiter {
+	return ratelimit.New(triesPerHour, triesWindow, triesMaxKeys).Named("account_password_tries")
+}
 
 // beforeHold, when set, runs in a password change after the current password is
 // verified and before the gate is taken for the new hash. A test uses it to fill

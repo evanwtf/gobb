@@ -51,7 +51,7 @@ func newMessageSends(opt Options) *ratelimit.Limiter {
 	if opt.MessageSends > 0 {
 		n = opt.MessageSends
 	}
-	return ratelimit.New(n, messageSendWindow, messageLimitMaxKeys)
+	return ratelimit.New(n, messageSendWindow, messageLimitMaxKeys).Named("message_sends")
 }
 
 // messagesData is the data of messages.html.

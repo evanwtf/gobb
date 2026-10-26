@@ -253,3 +253,43 @@ func TestAcquireCollectedBusy(t *testing.T) {
 		t.Errorf("error = %v, want ErrBusy", err)
 	}
 }
+
+// Stats reports the holders, the KiB they hold and the waiters, as the metrics
+// read them.
+func TestGateStats(t *testing.T) {
+	g := login.NewGate(100)
+	if h, used, w := g.Stats(); h != 0 || used != 0 || w != 0 {
+		t.Fatalf("empty gate: %d, %d, %d", h, used, w)
+	}
+	first, err := g.Acquire(context.Background(), 60, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := acquireAsync(g, 60, 5*time.Second)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, _, w := g.Stats(); w == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second call never waited")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if h, used, _ := g.Stats(); h != 1 || used != 60 {
+		t.Errorf("one holder, one waiter: %d holders, %d KiB", h, used)
+	}
+	first()
+	gr := <-second
+	if gr.err != nil {
+		t.Fatal(gr.err)
+	}
+	if h, used, w := g.Stats(); h != 1 || used != 60 || w != 0 {
+		t.Errorf("after the hand-over: %d, %d, %d; want 1, 60, 0", h, used, w)
+	}
+	gr.release()
+	gr.release() // twice is safe, and counts once
+	if h, used, w := g.Stats(); h != 0 || used != 0 || w != 0 {
+		t.Errorf("after the releases: %d, %d, %d", h, used, w)
+	}
+}

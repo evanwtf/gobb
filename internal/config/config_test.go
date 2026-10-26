@@ -41,6 +41,27 @@ func TestFromEnvDefaults(t *testing.T) {
 	}
 }
 
+// GOBB_METRICS_LISTEN is off by default. Set, it must be host:port with a port
+// from 1 to 65535, and not the address of GOBB_LISTEN.
+func TestFromEnvMetricsListen(t *testing.T) {
+	c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x"}))
+	if err != nil || c.MetricsListen != "" {
+		t.Fatalf("default MetricsListen = %q, %v; want empty", c.MetricsListen, err)
+	}
+	for _, ok := range []string{"127.0.0.1:9187", " 127.0.0.1:9187 ", ":9187", "0.0.0.0:9187", "[::1]:9187", "localhost:9187"} {
+		c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_METRICS_LISTEN": ok}))
+		if err != nil || c.MetricsListen != strings.TrimSpace(ok) {
+			t.Errorf("%q: MetricsListen = %q, %v", ok, c.MetricsListen, err)
+		}
+	}
+	for _, bad := range []string{"9187", "127.0.0.1", "127.0.0.1:", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:http", "127.0.0.1:8080"} {
+		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_METRICS_LISTEN": bad}))
+		if err == nil || !strings.Contains(err.Error(), "GOBB_METRICS_LISTEN") {
+			t.Errorf("%q: err = %v, want an error that names GOBB_METRICS_LISTEN", bad, err)
+		}
+	}
+}
+
 func TestFromEnvNormalizesBasePath(t *testing.T) {
 	for in, want := range map[string]string{
 		"forums":   "/forums/",

@@ -271,6 +271,15 @@ func CheckCSRF(secret, got string) bool {
 // (spec 10).
 const ipKeepFor = 90 * 24 * time.Hour
 
+// CountLive returns the number of sessions that have not expired at now.
+func CountLive(ctx context.Context, q db.Querier, now time.Time) (int64, error) {
+	var n int64
+	if err := q.QueryRow(ctx, `select count(*) from sessions where expires_at > $1`, now).Scan(&n); err != nil {
+		return 0, fmt.Errorf("session: count the live sessions: %w", err)
+	}
+	return n, nil
+}
+
 // Cleanup deletes the sessions that have expired by now, and the user_ips rows
 // last seen more than 90 days before now. It returns how many of each. A session
 // that has expired is dead to [Lookup] already, so the delete only frees space.

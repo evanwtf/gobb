@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 )
 
@@ -299,5 +300,29 @@ func BenchmarkAddNewKeyFull(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
 		l.Add(fmt.Sprintf("flood-%d", i), now)
+	}
+}
+
+// A named limiter counts each check that finds the key full, by Take and by
+// Over, under its name. Its series exists at 0 from the start.
+func TestNamedCountsRefusals(t *testing.T) {
+	l := ratelimit.New(1, time.Minute, 10).Named("test_named")
+	if got := metrics.RateLimited.Value("test_named"); got != 0 {
+		t.Fatalf("a new name starts at %d, want 0", got)
+	}
+	if ok, _ := l.Take("k", t0); !ok {
+		t.Fatal("the first Take was refused")
+	}
+	if over, _ := l.Over("other", t0); over {
+		t.Fatal("another key is full")
+	}
+	if ok, _ := l.Take("k", t0); ok {
+		t.Fatal("the second Take passed a limit of 1")
+	}
+	if over, _ := l.Over("k", t0); !over {
+		t.Fatal("Over = false at the limit")
+	}
+	if got := metrics.RateLimited.Value("test_named"); got != 2 {
+		t.Errorf("refusals = %d, want 2 (one Take, one Over)", got)
 	}
 }

@@ -70,8 +70,8 @@ func newSaveLimits(opt Options) saveLimits {
 		saves = opt.MemberSaves
 	}
 	return saveLimits{
-		saves:   ratelimit.New(saves, saveWindow, saveLimitMaxKeys),
-		uploads: ratelimit.New(uploadsPerWindow, uploadWindow, saveLimitMaxKeys),
+		saves:   ratelimit.New(saves, saveWindow, saveLimitMaxKeys).Named("settings_saves"),
+		uploads: ratelimit.New(uploadsPerWindow, uploadWindow, saveLimitMaxKeys).Named("avatar_uploads"),
 	}
 }
 

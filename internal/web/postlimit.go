@@ -54,9 +54,9 @@ func newPostLimits(opt Options) postLimits {
 		return n
 	}
 	return postLimits{
-		members: ratelimit.New(or(opt.MemberPosts, defaultMemberPosts), postWindow, postLimitMaxKeys),
-		guests:  ratelimit.New(or(opt.GuestPosts, defaultGuestPosts), postWindow, postLimitMaxKeys),
-		names:   ratelimit.New(or(opt.NameChecks, defaultNameChecks), postWindow, postLimitMaxKeys),
+		members: ratelimit.New(or(opt.MemberPosts, defaultMemberPosts), postWindow, postLimitMaxKeys).Named("posts_member"),
+		guests:  ratelimit.New(or(opt.GuestPosts, defaultGuestPosts), postWindow, postLimitMaxKeys).Named("posts_guest"),
+		names:   ratelimit.New(or(opt.NameChecks, defaultNameChecks), postWindow, postLimitMaxKeys).Named("guest_name_checks"),
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/password"
 )
 
@@ -759,6 +760,7 @@ func TestResetLimits(t *testing.T) {
 		now := func() time.Time { return time.Unix(0, clock.Load()) }
 		e := newResetEnvFor(t, Options{Now: now, Mail: &MailOptions{PerHour: 5, PerDay: 8}}, b)
 		logs := captureAllLogs(t)
+		hour0, day0 := metrics.ResetSkipped.Value("board_hour"), metrics.ResetSkipped.Value("board_day")
 		addr := 0
 		ask := func(name string) {
 			t.Helper()
@@ -778,6 +780,9 @@ func TestResetLimits(t *testing.T) {
 			}
 			if h, d := strings.Count(logs.String(), "per=hour"), strings.Count(logs.String(), "per=day"); h != perHour || d != perDay {
 				t.Errorf("%s: per=hour %d times and per=day %d times, want %d and %d", when, h, d, perHour, perDay)
+			}
+			if h, d := metrics.ResetSkipped.Value("board_hour")-hour0, metrics.ResetSkipped.Value("board_day")-day0; h != uint64(perHour) || d != uint64(perDay) {
+				t.Errorf("%s: the skip metric counted board_hour %d and board_day %d, want %d and %d", when, h, d, perHour, perDay)
 			}
 		}
 		for _, name := range []string{"member0", "member0", "member0", "member1", "member1"} {
@@ -853,6 +858,8 @@ func TestResetLimits(t *testing.T) {
 	})
 	t.Run("account", func(t *testing.T) {
 		e := newResetEnv(t, Options{})
+		skipped := metrics.ResetSkipped.Value("account_day")
+		limited := metrics.RateLimited.Value("reset_account")
 		for i := range 4 {
 			c := e.guest(t, "2001:db8:f"+strconv.Itoa(i)+"::1")
 			if rec := c.ask("alice"); rec.Code != http.StatusSeeOther || locate(rec) != "/reset?sent=1" {
@@ -864,6 +871,12 @@ func TestResetLimits(t *testing.T) {
 		}
 		if n := e.wakes.Load(); n != 3 {
 			t.Errorf("Wake ran %d times, want 3", n)
+		}
+		if n := metrics.ResetSkipped.Value("account_day") - skipped; n != 1 {
+			t.Errorf("the skip metric counted account_day %d times, want 1", n)
+		}
+		if n := metrics.RateLimited.Value("reset_account") - limited; n != 1 {
+			t.Errorf("the rate-limit metric counted reset_account %d times, want 1", n)
 		}
 	})
 	t.Run("dead link", func(t *testing.T) {

@@ -6,6 +6,8 @@ package ratelimit
 import (
 	"sync"
 	"time"
+
+	"github.com/evanwtf/gobb/internal/metrics"
 )
 
 // Limiter counts events per key. A key is over the limit when it has limit
@@ -15,6 +17,9 @@ type Limiter struct {
 	limit   int
 	window  time.Duration
 	maxKeys int
+	// name labels the refusals of the limiter in gobb_rate_limited_total. A
+	// Limiter with no name is not counted.
+	name string
 
 	mu   sync.Mutex
 	keys map[string][]time.Time // events of a key, oldest first; at most limit
@@ -29,6 +34,22 @@ func New(limit int, window time.Duration, maxKeys int) *Limiter {
 	}
 }
 
+// Named sets the name that labels the refusals of l in the metric
+// gobb_rate_limited_total, and returns l. The name is fixed text, such as
+// "signin_address", never a key.
+func (l *Limiter) Named(name string) *Limiter {
+	l.name = name
+	metrics.RateLimited.Init(name)
+	return l
+}
+
+// full counts one refusal of a named limiter.
+func (l *Limiter) full() {
+	if l.name != "" {
+		metrics.RateLimited.Inc(l.name)
+	}
+}
+
 // Over reports whether key has limit events inside the window ending at now. If
 // it does, wait is the time until the oldest of them leaves the window, which is
 // when the key has room again.
@@ -39,6 +60,7 @@ func (l *Limiter) Over(key string, now time.Time) (over bool, wait time.Duration
 	if len(events) < l.limit {
 		return false, 0
 	}
+	l.full()
 	return true, events[0].Add(l.window).Sub(now)
 }
 
@@ -53,6 +75,7 @@ func (l *Limiter) Take(key string, now time.Time) (ok bool, wait time.Duration) 
 	defer l.mu.Unlock()
 	events := l.live(key, now)
 	if len(events) >= l.limit {
+		l.full()
 		return false, events[0].Add(l.window).Sub(now)
 	}
 	if events == nil && len(l.keys) >= l.maxKeys {

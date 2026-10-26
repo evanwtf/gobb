@@ -22,6 +22,7 @@ type Gate struct {
 
 	mu      sync.Mutex
 	used    uint64
+	holders int       // the calls that hold a share now
 	waiters list.List // of *waiter, oldest first
 }
 
@@ -43,6 +44,14 @@ func NewGate(budgetKiB uint64) *Gate {
 // the whole budget) may refuse the work before it calls Acquire.
 func (g *Gate) Budget() uint64 { return g.budget }
 
+// Stats returns the calls that hold a share now, the KiB that they hold, and the
+// calls that wait. The metrics read it at each scrape.
+func (g *Gate) Stats() (holders int, usedKiB uint64, waiting int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.holders, g.used, g.waiters.Len()
+}
+
 // Acquire waits up to wait for kib of the budget. A cost above the budget counts
 // as the whole budget, so that check runs alone. On success it returns a release
 // function, which gives the memory back; calling it twice is safe. When the wait
@@ -53,6 +62,7 @@ func (g *Gate) Acquire(ctx context.Context, kib uint64, wait time.Duration) (rel
 	g.mu.Lock()
 	if g.waiters.Len() == 0 && g.used+cost <= g.budget {
 		g.used += cost
+		g.holders++
 		g.mu.Unlock()
 		return g.releaser(cost), nil
 	}
@@ -128,6 +138,7 @@ func (g *Gate) releaser(cost uint64) func() {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			g.used -= cost
+			g.holders--
 			g.wake()
 		})
 	}
@@ -142,6 +153,7 @@ func (g *Gate) wake() {
 			return
 		}
 		g.used += w.cost
+		g.holders++
 		w.granted = true
 		close(w.ready)
 		g.waiters.Remove(e)

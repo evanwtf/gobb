@@ -280,8 +280,10 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies to trust. | `127.0.0.1/32,::1/128` |
 | `GOBB_COOKIE_SECURE` | `true` or `false`. Mark the cookies Secure. | `true` |
 | `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS`, `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM`, `GOBB_PUBLIC_URL`, `GOBB_MAIL_PER_HOUR`, `GOBB_MAIL_PER_DAY` | Email settings (see "Email"). | email off |
+| `GOBB_METRICS_LISTEN` | Address of the metrics listener, such as `127.0.0.1:9187` (see "Metrics"). | off |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
+| `GOBB_METRICS_PORT` | Compose only: the host port of the metrics listener, on 127.0.0.1. | `9187` |
 
 Run it from a clone, against a local database. The import uses the same variables:
 
@@ -608,6 +610,51 @@ WARN line stays, because the gate never holds more than 128 MiB.
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 20 seconds. A second signal exits at once.
 
+### Metrics
+
+gobb serves Prometheus metrics on a second listener. It is off until
+`GOBB_METRICS_LISTEN` is set, for example to `127.0.0.1:9187`. That listener serves only
+`GET /metrics`, in the Prometheus text format. It is outside the base path and outside
+the main listener, so a reverse proxy in front of the board does not show it.
+
+The endpoint has no auth. It holds no member data, but it shows the shape of the
+traffic. Bind it to a loopback or a private address. A public address logs a WARN
+line at start.
+
+With Docker Compose, set `GOBB_METRICS_LISTEN=0.0.0.0:9187` in `.env`. That is the
+address inside the container. Compose publishes the port on the host's `127.0.0.1`
+only, at `GOBB_METRICS_PORT` (`9187` unless set). Then:
+
+```sh
+curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
+```
+
+| Metric | Type | Labels |
+|---|---|---|
+| `gobb_http_requests_total` | counter | `route`, `method`, `code` |
+| `gobb_http_request_duration_seconds` | histogram, 5 ms to 10 s | `route` |
+| `gobb_signin_attempts_total` | counter | `result`: `ok`, `wrong`, `ambiguous`, `limited`, `banned`, `inactive`, `busy`, `error` |
+| `gobb_rate_limited_total` | counter | `limit`: the name of each limit, such as `signin_address` or `reset_account` |
+| `gobb_emails_total` | counter | `result`: `sent`, `failed` (to be tried again), `dropped` |
+| `gobb_reset_emails_skipped_total` | counter | `reason`: `board_hour`, `board_day`, `account_day`, `admin`, `ineligible` |
+| `gobb_email_queue_depth` | gauge | none |
+| `gobb_sessions_active` | gauge | none |
+| `gobb_signin_floor_seconds` | gauge | none |
+| `gobb_memory_gate_holders`, `_waiting`, `_used_bytes`, `_budget_bytes` | gauges | none |
+| `gobb_db_pool_conns`, `_acquired_conns`, `_idle_conns`, `_max_conns` | gauges | none |
+| `gobb_db_pool_acquires_total`, `_empty_acquires_total`, `_canceled_acquires_total`, `_acquire_seconds_total`, `_new_conns_total` | counters | none |
+| `gobb_build_info` | gauge, value 1 | `version`, `commit` |
+| `go_goroutines`, `go_memstats_heap_alloc_bytes`, `go_memstats_sys_bytes`, `go_gc_heap_goal_bytes`, `go_memory_limit_bytes`, `go_gc_cycles_total` | Go runtime | none |
+| `process_start_time_seconds`, `process_cpu_seconds_total`, `process_resident_memory_bytes` (Linux) | process | none |
+
+A label holds a fixed value only. `route` is the pattern that answered, without its
+method (`/t/{id}`), and never the path. `none` is a request that no pattern took.
+`method` is `GET`, `HEAD`, `POST` or `other`. `code` is the status class, `2xx` to
+`5xx`. `gobb_rate_limited_total` counts each check that found a limit full, so one
+request can count more than once. The queue and session gauges each run one query
+at most every 15 s; a failed query leaves the gauge out of the scrape and logs one
+WARN line. CI runs `promtool check metrics` on a scrape.
+
 ## Release
 
 A release is a tag `vX.Y.Z`. The release workflow publishes binaries for `linux/amd64`,
@@ -671,7 +718,7 @@ board's layout.
 Plan 4, the write side, is built for v0.1.0: members post, edit and moderate. v0.2.0
 adds private messages and the account settings (roadmap row 4b). v0.3.0 adds email and
 the password reset by email (row 4c). v0.4.0 adds `gobb user activate` and
-`gobb user deactivate`. Attachment uploads and email notifications come
+`gobb user deactivate`. v0.5.0 adds the metrics listener. Attachment uploads and email notifications come
 later. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in

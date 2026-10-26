@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.5.0 (2026-10-26)
+
+gobb serves Prometheus metrics on a second listener, so an operator can see requests,
+errors, sign-ins, rate limits and the email queue from outside the log
+(evanwtf/gobb#14). The listener is off until `GOBB_METRICS_LISTEN` is set.
+
+Operators: no migration. With `GOBB_METRICS_LISTEN` unset, 0.5.0 serves as 0.4.0 did.
+The bundle format does not change.
+
+### Operators
+
+- **The metrics listener.** `GOBB_METRICS_LISTEN` (for example `127.0.0.1:9187`)
+  starts a second HTTP listener that serves only `GET` and `HEAD /metrics`; every other
+  path is 404 and every other method 405. It is outside the base path and the main
+  listener. The endpoint has no auth, and a public address logs a WARN line at start;
+  an address on every interface (inside a container) logs a note to publish the port
+  on loopback only. The value must be `host:port` with a port from 1 to 65535, and not
+  the address of `GOBB_LISTEN`. The listener stops at shutdown before the pool closes.
+  `compose.yaml` passes the variable through and publishes container port 9187 on the
+  host's `127.0.0.1` at `GOBB_METRICS_PORT`. The README has a "Metrics" section.
+- **No client library.** `internal/metrics` writes the text format, version 0.0.4:
+  counters, gauges, histograms and values read at scrape time, sorted by name and by
+  label values, with escaped label values and help text. A whole number prints as an
+  integer. CI runs `promtool check metrics` (Prometheus 3.15.1) on the scrape of
+  `TestMetricsEndpoint`, and the image job scrapes `/metrics` from the running
+  container.
+- **What is counted.** Requests and their durations by route pattern (never the path),
+  method and status class; sign-in checks by result; each check that finds a named
+  rate limit full (`ratelimit.Limiter.Named`; all 14 limits have names); emails sent,
+  failed and dropped; reset emails skipped by reason (the board's hour and day, the
+  account's day, an administrator, an ineligible account). Gauges: the email queue and
+  the live sessions (one query each, at most every 15 s), the sign-in floor, the
+  memory gate (`login.Gate.Stats`), the database pool, the build, the Go runtime and the
+  process. A request whose handler panics counts as a 500.
+- **Tests.** `TestMetricsEndpoint`, `TestStartMetricsOff`, `TestLogMetricsAddr`,
+  `TestFromEnvMetricsListen`, `TestWriteFormat`, `TestHandler`, `TestCached`,
+  `TestMeteredCountsByPattern`, `TestMeteredEdges`, `TestCheckCountsResults`,
+  `TestCheckCountsLimited`, `TestSigninResult`, `TestNamedCountsRefusals`,
+  `TestGateStats`, `TestProcessCountsOutcomes`, `TestRequestResetCountsSkips`, and the
+  skip counts in `TestResetLimits`.
+
 ## 0.4.0 (2026-10-26)
 
 Administrators activate and deactivate accounts from the command line. An inactive
