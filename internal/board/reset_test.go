@@ -173,6 +173,9 @@ func TestRequestResetQuiet(t *testing.T) {
 		{name: "empty address", ask: "carol", allow: true, setup: func(t *testing.T, p *pgxpool.Pool) {
 			exec(t, p, `update users set email = '', email_clean = '' where id = $1`, carol)
 		}},
+		{name: "non-ASCII address", ask: "carol", allow: true, setup: func(t *testing.T, p *pgxpool.Pool) {
+			exec(t, p, `update users set email = 'jörg@example.com', email_clean = 'jörg@example.com' where id = $1`, carol)
+		}},
 		{name: "no account.password", ask: "carol", allow: true, setup: func(t *testing.T, p *pgxpool.Pool) {
 			denyOpts(t, p, carol, 0, "account.password")
 		}},

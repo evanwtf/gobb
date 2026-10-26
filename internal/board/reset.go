@@ -86,7 +86,7 @@ func newResetToken() (string, error) {
 // (every account that shares it, at most 5). An account gets an email only when
 // all of these hold; otherwise the account is skipped and nothing shows:
 //   - it is active;
-//   - it has an address that [CleanEmailInput] accepts;
+//   - it has an address that [CleanEmailInput] and [mail.Check] accept;
 //   - no user ban and no email ban that has not ended holds it (an email ban
 //     compares through [account.CleanEmail], as sign-in does; a ban on the
 //     client's address does not count, because the member may ask from elsewhere);
@@ -187,6 +187,11 @@ select username, email, email_clean, state, password_epoch from users where id =
 	}
 	to, _, err := CleanEmailInput(email)
 	if err != nil {
+		return errResetSkip
+	}
+	// The queue sends only addresses that mail.Check accepts (ASCII). Skip the rest
+	// here, before allow, so that the answer is the same for every account.
+	if mail.Check(mail.Message{To: to}) != nil {
 		return errResetSkip
 	}
 	held, err := resetBanned(ctx, tx, id, emailClean, now)
