@@ -415,9 +415,10 @@ Without Docker, run `./gobb mail test "$ADDRESS"` with the same variables set. T
 command needs no `GOBB_DSN`. The exit code is 0 when the server accepted the message,
 1 on a missing setting or a failed send, and 2 on a wrong call.
 
-If the SMTP password holds `$`, `#` or a quote, wrap it in single quotes in `.env`:
-`GOBB_SMTP_PASSWORD='pa$s#word'`. Compose expands `$`, and treats ` #` as the start of
-a comment.
+If the SMTP password holds `$`, `#` or a double quote, wrap it in single quotes in
+`.env`: `GOBB_SMTP_PASSWORD='pa$s#word'`. Compose expands `$`, and treats ` #` as the
+start of a comment. A password with a single quote cannot go in single quotes: make a
+new password without one.
 
 To see why a send failed, read the log. The worker logs a WARN line `email failed`
 (with the row `id`, `user_id`, `attempt` and `reason`) for each failed try, and
@@ -649,9 +650,10 @@ redirect to the new ones, and a gone member's profile answers 410. Every page ca
 the security headers and a Content-Security-Policy, and every error page uses the
 board's layout.
 
-Plan 4, the write side, is built for v0.1.0: members post, edit and moderate. Before the
-cutover, members also get private messages, a time zone setting and avatar upload
-(roadmap row 4b). Attachment uploads and email come later. The design is in
+Plan 4, the write side, is built for v0.1.0: members post, edit and moderate. v0.2.0
+adds private messages and the account settings (roadmap row 4b). v0.3.0 adds email and
+the password reset by email (row 4c). Attachment uploads and email notifications come
+later. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in
 [docs/superpowers/plans/2026-10-23-gobb-roadmap.md](docs/superpowers/plans/2026-10-23-gobb-roadmap.md).

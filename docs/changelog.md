@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-10-26)
+
+Members who forgot their password reset it themselves. The sign-in page links to a form
+that takes a username or an email address, and the board emails a link that works once
+and for 1 hour. The form gives the same answer whether or not the name has an account.
+Administrators get no reset email and reset with `gobb user reset-password`.
+
+Operators: a 0.2.0 database migrates in place (migration 0014) when the server starts.
+Email is off until `GOBB_SMTP_HOST` is set; with it off, 0.3.0 serves as 0.2.0 did, and
+the reset pages answer 404. The bundle format does not change.
 
 ### Operators
 

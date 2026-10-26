@@ -95,7 +95,7 @@ A config error names the variable and never holds the value of `GOBB_SMTP_PASSWO
 | What | Limit | Over the limit |
 |---|---|---|
 | Requests (`POST /reset`) from one client address | 5 in an hour | 429 with `Retry-After`: "Too many requests from your address. Try again in N minutes." |
-| Requests on the whole board | 30 in an hour | 429 with `Retry-After`: "The board is sending too many emails. Try again in N minutes." |
+| Emails on the whole board (changed by ruling R9 after the final review: only an email about to be queued counts, and requests for unknown names do not) | 30 in an hour | the usual 303; no email (a 429 that moved only for real accounts would tell which names exist) |
 | Emails to one account | 3 in 24 hours | the usual 303; no email |
 | Dead-link hits (GET or POST of a link that `board.ResetLink` refuses) from one address | 20 in an hour | 429 with `Retry-After` |
 | Answer time of `POST /reset` | at least 400 ms from its start (`Options.ResetFloor`; tests set it lower) | — |
