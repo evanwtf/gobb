@@ -748,6 +748,9 @@ designer's call):
   - moderation on the page: delete or restore a post, edit a post, lock a topic, and
     approve a held post;
   - admin commands: reset a password, and ban or unban a user;
+  - password reset by email, added by the owner on 2026-10-25: a member who forgets a
+    password resets it without the administrator. This brings the email queue and SMTP
+    ("Email", section 7). Notifications stay off;
   - the release of the image on a tag, a rehearsal on the production host, and the
     cutover.
 
@@ -779,8 +782,7 @@ designer's call):
   waits. This covers:
   - creating polls, and voting;
   - attachment uploads;
-  - email, with notifications and password reset by email (until then, a member who
-    forgets a password asks the admin);
+  - email notifications of replies and private messages;
   - the admin panel;
   - load protection, crawler readiness and trust bands.
 - **Release 2 — reopen sign-up.** Turn on registration with every defense in section 10,
