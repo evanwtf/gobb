@@ -731,6 +731,8 @@ var tokenRows = []tokenRow{
 	{"/scheme", "alice", url.Values{"scheme": {"slate-deep"}}, ""},
 	{"/read", "alice", url.Values{}, ""},
 	{"/f/2/read", "alice", url.Values{}, ""},
+	{"/reset", "", url.Values{"name": {"alice"}}, ""},
+	{"/reset/" + testResetToken, "", url.Values{"password": {"a new pass phrase"}, "again": {"a new pass phrase"}}, testResetTokenRow()},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post
@@ -740,7 +742,7 @@ func tokenSite(t *testing.T, row tokenRow) (http.Handler, *pgxpool.Pool) {
 	b := postingBoard()
 	b.Grants = append(b.Grants, guestGrant(2, "topic.start"), guestGrant(2, "topic.reply"),
 		guestGrant(2, "post.no_approval"), guestGrant(2, "post.markdown"))
-	h, pool := siteWithPool(t, b, Options{})
+	h, pool := siteWithPool(t, b, testMailOptions())
 	for _, o := range []string{"mod.delete", "mod.approve", "mod.edit", "mod.lock"} {
 		exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (2, 2, '`+o+`', 3)`)
 	}
@@ -760,7 +762,8 @@ func routePatterns(t *testing.T) (post, methodless []string) {
 	var s *site
 	onNew = func(got *site) { s = got }
 	t.Cleanup(func() { onNew = nil })
-	smallSite(t)
+	// A site with email on, so that the reset routes are on the mux.
+	newTestSite(t, bundletest.Small(), testMailOptions())
 	onNew = nil
 	if s == nil || len(s.patterns) == 0 {
 		t.Fatal("the site recorded no pattern")

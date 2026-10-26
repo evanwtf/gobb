@@ -1,6 +1,9 @@
 {{define "content"}}
 <section class="auth-card" aria-labelledby="login-title">
   <h1 id="login-title">Sign in</h1>
+  {{- if .Data.Reset}}
+  <p class="notice-inline" role="status">Your password is changed. Sign in with the new password.</p>
+  {{- end}}
   {{- if .Data.Error}}
   <div class="form-error" role="alert" id="login-error">
     <p class="form-error-text">{{.Data.Error}}</p>
@@ -28,5 +31,8 @@
     </div>
     <button class="button" type="submit">Sign in</button>
   </form>
+  {{- if .Data.Forgot}}
+  <p class="hint"><a href="{{path "reset"}}">Forgot your password?</a></p>
+  {{- end}}
 </section>
 {{end}}

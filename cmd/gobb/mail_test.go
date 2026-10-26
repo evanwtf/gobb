@@ -157,3 +157,25 @@ func TestMailTestCommandKeepsServerTextOut(t *testing.T) {
 		t.Errorf("stderr lacks the reason and the stage:\n%s", errOut)
 	}
 }
+
+// The wake-up from the web layer never blocks: not with email off (no channel),
+// not before the worker runs, and not when a value already waits.
+func TestMailWakerNeverBlocks(t *testing.T) {
+	var w mailWaker
+	w.wake() // no channel yet
+	w.set(nil)
+	w.wake() // email off: still no channel
+
+	ch := make(chan struct{}, 1)
+	w.set(ch)
+	w.wake()
+	w.wake() // the channel is full; the second send is dropped
+	if len(ch) != 1 {
+		t.Fatalf("the channel holds %d values, want 1", len(ch))
+	}
+	<-ch
+	w.wake()
+	if len(ch) != 1 {
+		t.Errorf("the channel holds %d values after a drain and a wake, want 1", len(ch))
+	}
+}

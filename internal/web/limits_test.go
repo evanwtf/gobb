@@ -299,12 +299,14 @@ var bodyCaps = []struct {
 	{"/account/avatar/remove", "/account/avatar/remove", maxPostBody},
 	{"/messages/new", "/messages/new", maxPostingBody},
 	{"/messages/{id}/delete", "/messages/1/delete", maxPostBody},
+	{"/reset", "/reset", maxLoginBody},
+	{"/reset/{token}", "/reset/x", maxLoginBody},
 }
 
 // Every POST route has a cap on its body. A body over it answers 413 in the
 // layout, even without a csrf token. A body just under it reaches the csrf check.
 func TestPostBodyCaps(t *testing.T) {
-	h, _ := smallSite(t)
+	h, _ := newTestSite(t, bundletest.Small(), testMailOptions())
 	for _, tc := range bodyCaps {
 		t.Run(tc.route, func(t *testing.T) {
 			// The upload reads no body for a visitor who is not signed in (it

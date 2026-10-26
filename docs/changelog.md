@@ -40,8 +40,21 @@
   It dies when the password epoch moves (a reset, an account page change, an
   administrator's reset), when the member changes the email address and when a user ban
   lands. No token, link, address or password is in a log line, an error or a log row. The
-  hourly cleanup logs the email rows and the expired reset links as two counts. The web
-  pages come in the next change.
+  hourly cleanup logs the email rows and the expired reset links as two counts.
+- **Forgot-password pages.** With email on, the sign-in page links to `/reset`. The form
+  takes a username or an email address and always answers `303` to `/reset?sent=1`, after
+  at least 400 ms, whatever the name finds. A link opens `/reset/{token}`: a GET or HEAD
+  changes nothing, and the POST that saves the new password (typed twice) uses the link
+  up, ends every session of the member and sends the member to sign in with a notice. A
+  dead link gets a 404 page. The link in the email is built from `GOBB_PUBLIC_URL` and
+  nothing in the request. Limits, in memory: 5 requests an hour from one address, 30 an
+  hour on the whole board and 20 dead-link hits an hour from one address. A request over
+  one of these answers `429` with `Retry-After`. An account that has had 3 emails in a
+  day gets the usual answer and no email. The pages carry `noindex` and `no-store`, and
+  the link page also carries `Referrer-Policy: no-referrer`. A board name with a control
+  character is folded to spaces in the subject. With email off, the four routes answer
+  404 and the sign-in page has no link. A request never waits on SMTP: it queues the
+  email and wakes the worker.
 
 ## 0.2.0 (2026-10-25)
 

@@ -364,6 +364,8 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
 }
 .auth-card h1 { font-size: 1.5rem; margin-bottom: 1.1rem; }
+.auth-card > .hint { margin-top: 0.9rem; color: var(--muted); font-size: 0.875rem; }
+.auth-card > p:not(.hint, .notice-inline) { margin-bottom: 1.1rem; }
 
 .form-error {
   margin-bottom: 1.1rem;

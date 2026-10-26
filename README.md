@@ -417,9 +417,14 @@ command needs no `GOBB_DSN`. The exit code is 0 when the server accepted the mes
 
 ### Reset a password, ban or unban a member
 
-Password reset by email is not built yet, so the administrator resets a password
-from the command line. Run the commands where the database is. With Docker Compose,
-run them in the running container. The `-T` flag keeps Compose from adding a
+A member resets the password by email. With email on (see "Email" above), the
+sign-in page shows "Forgot your password?". The link opens a form for the username
+or the email address, and gobb emails a link that works once, for 1 hour. Opening
+the link changes nothing; saving a new password ends every session of the member.
+With email off, the link and the pages do not exist.
+
+The administrator resets a password from the command line. Run the commands where
+the database is. With Docker Compose, run them in the running container. The `-T` flag keeps Compose from adding a
 terminal, which would change the line endings:
 
 ```sh

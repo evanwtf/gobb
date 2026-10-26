@@ -1,0 +1,28 @@
+{{define "content"}}
+<section class="auth-card" aria-labelledby="reset-title">
+  {{- if .Data.Sent}}
+  <h1 id="reset-title">Check your email</h1>
+  <p>If an account matches, we sent a link to its email address. The link works for 1 hour. If no email comes, look in your spam folder.</p>
+  {{- else}}
+  <h1 id="reset-title">Reset your password</h1>
+  {{- if .Data.Error}}
+  <div class="form-error" role="alert" id="reset-error">
+    <p class="form-error-text">{{.Data.Error}}</p>
+  </div>
+  {{- end}}
+  <form class="auth-form" method="post" action="{{path "reset"}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="field">
+      <label for="reset-name">Username or email address</label>
+      <input id="reset-name" name="name" type="text" required autofocus
+        autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+        aria-describedby="reset-name-hint{{if .Data.NameError}} reset-name-error{{end}}"
+        {{- if .Data.NameError}} aria-invalid="true"{{end}}>
+      {{- if .Data.NameError}}<p class="field-error" id="reset-name-error" role="alert">{{.Data.NameError}}</p>{{end}}
+      <p class="hint" id="reset-name-hint">We email a link to the address of the account. The link works for 1 hour.</p>
+    </div>
+    <button class="button" type="submit">Email me a link</button>
+  </form>
+  {{- end}}
+</section>
+{{end}}

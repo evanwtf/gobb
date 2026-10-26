@@ -240,6 +240,9 @@ type loginData struct {
 	Remember bool
 	// Error is the headline of a failed sign-in, and Detail the line under it.
 	Error, Detail string
+	// Reset shows the notice that a reset changed the password. Forgot shows the
+	// link to the reset form; renderLogin sets it when email is on.
+	Reset, Forgot bool
 }
 
 // loginPage serves GET /login. A member who opens it goes on to next at once.
@@ -254,7 +257,7 @@ func (s *site) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, next, http.StatusSeeOther)
 		return
 	}
-	s.renderLogin(w, p, http.StatusOK, loginData{Next: next})
+	s.renderLogin(w, p, http.StatusOK, loginData{Next: next, Reset: r.URL.Query().Get("reset") == "1"})
 }
 
 // renderLogin draws the sign-in page. The page is never cached: it holds a csrf
@@ -264,6 +267,8 @@ func (s *site) renderLogin(w http.ResponseWriter, p *page, status int, d loginDa
 	if d.Next != s.path() {
 		p.Return += "?next=" + url.QueryEscape(d.Next)
 	}
+	d.Forgot = s.opt.Mail != nil
+	d.Reset = d.Reset && d.Forgot
 	p.Data = d
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, status, "login.html", p)

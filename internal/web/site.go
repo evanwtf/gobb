@@ -73,6 +73,12 @@ type Options struct {
 	// LoginGateWait is how long a password check waits for the gate. Zero means
 	// the default of 5 seconds. Tests set it small.
 	LoginGateWait time.Duration
+	// Mail turns the password reset by email on. Nil turns it off: the reset
+	// routes answer 404 and the sign-in page has no link to them.
+	Mail *MailOptions
+	// ResetFloor is the least time that a request for a reset takes. Zero means
+	// 400 ms. Tests set it lower.
+	ResetFloor time.Duration
 }
 
 // site holds what the handlers share: the pool, the options and the parsed
@@ -111,6 +117,8 @@ type site struct {
 	saves saveLimits
 	// messageSends counts the messages that each member sends.
 	messageSends *ratelimit.Limiter
+	// resets counts the requests for a password reset and the hits on dead links.
+	resets resetLimits
 	// gate is the memory gate of the password checks. An avatar decode takes its
 	// share from the same gate, so one budget covers both.
 	gate *login.Gate
@@ -142,7 +150,7 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -156,7 +164,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		lo.Gate = opt.LoginGate
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
-		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
+		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
@@ -236,6 +244,14 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /messages/{id}/reply", s.messageReply)
 	inner.Handle("POST /messages/{id}/delete", s.protect(maxPostBody, s.messageDelete))
 	inner.HandleFunc("GET /search", s.search)
+	if opt.Mail != nil {
+		// The reset pages exist only when email is on. The token is in the path
+		// of the last two, so their answers carry Referrer-Policy: no-referrer.
+		inner.HandleFunc("GET /reset", s.resetForm)
+		inner.Handle("POST /reset", s.protect(maxLoginBody, s.resetSubmit))
+		inner.Handle("GET /reset/{token}", noReferrer(http.HandlerFunc(s.resetLinkPage)))
+		inner.Handle("POST /reset/{token}", noReferrer(s.protect(maxLoginBody, s.resetComplete)))
+	}
 	inner.HandleFunc("GET /login", s.loginPage)
 	inner.Handle("POST /login", s.protect(maxLoginBody, s.loginSubmit))
 	inner.Handle("POST /logout", s.protectOr(maxPostBody, s.logout, s.toIndex))
@@ -895,6 +911,15 @@ func (s *site) serverError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusServiceUnavailable, "No data yet", "This board has no data yet. Run `gobb import`.")
 		return
 	}
-	slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	slog.Error("request failed", "method", r.Method, "path", logPath(r), "err", err)
 	s.fail(w, r, http.StatusInternalServerError, "Something went wrong", "The server could not build this page. Try again in a moment.")
+}
+
+// logPath returns the path of r for a log line. The path of a reset link holds
+// the token, so a log line gets "/reset/{token}" in its place.
+func logPath(r *http.Request) string {
+	if strings.HasPrefix(r.URL.Path, "/reset/") {
+		return "/reset/{token}"
+	}
+	return r.URL.Path
 }

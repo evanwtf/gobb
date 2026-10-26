@@ -1,0 +1,26 @@
+{{define "content"}}
+<section class="auth-card" aria-labelledby="reset-link-title">
+  <h1 id="reset-link-title">Choose a new password</h1>
+  <p>For the account <bdi>{{.Data.Username}}</bdi>.</p>
+  {{- if .Data.Notice}}
+  <div class="form-error" role="alert"><p class="form-error-text">{{.Data.Notice}}</p></div>
+  {{- end}}
+  <form class="auth-form" method="post" action="{{path "reset" .Data.Token}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="username" value="{{.Data.Username}}" autocomplete="username">
+    <div class="field">
+      <label for="reset-password">New password</label>
+      <input id="reset-password" name="password" type="password" required autofocus autocomplete="new-password"
+        {{- if .Data.PasswordError}} aria-invalid="true" aria-describedby="reset-password-error"{{end}}>
+      {{- if .Data.PasswordError}}<p class="field-error" id="reset-password-error" role="alert">{{.Data.PasswordError}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="reset-again">Type it again</label>
+      <input id="reset-again" name="again" type="password" required autocomplete="new-password"
+        {{- if .Data.AgainError}} aria-invalid="true" aria-describedby="reset-again-error"{{end}}>
+      {{- if .Data.AgainError}}<p class="field-error" id="reset-again-error" role="alert">{{.Data.AgainError}}</p>{{end}}
+    </div>
+    <button class="button" type="submit">Save the password</button>
+  </form>
+</section>
+{{end}}

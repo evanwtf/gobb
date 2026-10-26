@@ -181,7 +181,7 @@ func (s *site) guardRefused(w http.ResponseWriter, r *http.Request, status int, 
 // with a fixed text for a request from gobb.js, the error page otherwise.
 func (s *site) identifyFailed(w http.ResponseWriter, r *http.Request, err error) {
 	if saveRequested(r) {
-		slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+		slog.Error("request failed", "method", r.Method, "path", logPath(r), "err", err)
 		saveMessage(w, http.StatusInternalServerError, msgWriteFailed)
 		return
 	}

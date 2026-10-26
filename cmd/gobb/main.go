@@ -247,7 +247,8 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 			}
 		}
 	}()
-	pool, h, err := setup(setupCtx, cfg, gate)
+	var waker mailWaker
+	pool, h, err := setup(setupCtx, cfg, gate, waker.wake)
 	close(done)
 	<-exited
 	if interrupted.Load() {
@@ -275,10 +276,11 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		defer ticker.Stop()
 		cleanupLoop(cleanCtx, ticker.C, func(c context.Context) { cleanup(c, pool, time.Now) })
 	}()
-	// The email worker stops with the server, before the pool closes. The web layer will
-	// get wake and send on it without blocking.
+	// The email worker stops with the server, before the pool closes. The web layer
+	// wakes it through waker, with a send that never blocks. The server does not
+	// serve before this point, so no request finds the worker missing.
 	wake, stopMail := startMail(ctx, pool, cfg.Mail)
-	_ = wake
+	waker.set(wake)
 	closePool := func() {
 		stopMail()
 		stopClean()
@@ -286,6 +288,30 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		pool.Close()
 	}
 	return serveUntil(ctx, newHTTPServer(h), ln, closePool, sigs, exit)
+}
+
+// mailWaker passes a wake-up from the web layer to the email worker. The channel
+// is set once the worker runs; a wake before that, or with email off, does
+// nothing.
+type mailWaker struct {
+	ch atomic.Pointer[chan<- struct{}]
+}
+
+func (m *mailWaker) set(ch chan<- struct{}) {
+	if ch != nil {
+		m.ch.Store(&ch)
+	}
+}
+
+// wake sends on the channel without blocking: a value already waiting is
+// enough, because one pass of the worker claims every due row.
+func (m *mailWaker) wake() {
+	if ch := m.ch.Load(); ch != nil {
+		select {
+		case *ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // startMail starts the email worker when m is not nil. It returns the channel
@@ -376,7 +402,7 @@ func gateFor(m memlimit.Result) *login.Gate {
 // setup opens the pool, applies the migrations and builds the handler, with
 // gate as the memory gate of the password checks. On an error it closes the
 // pool and returns it as nil.
-func setup(ctx context.Context, cfg config.Config, gate *login.Gate) (*pgxpool.Pool, http.Handler, error) {
+func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()) (*pgxpool.Pool, http.Handler, error) {
 	pool, err := db.Open(ctx, cfg.DSN)
 	if err != nil {
 		return nil, nil, err
@@ -385,13 +411,18 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate) (*pgxpool.P
 		pool.Close()
 		return nil, nil, err
 	}
-	h, err := web.New(ctx, pool, web.Options{
+	opt := web.Options{
 		BasePath:       cfg.BasePath,
 		DataDir:        cfg.DataDir,
 		TrustedProxies: cfg.TrustedProxies,
 		CookieSecure:   cfg.CookieSecure,
 		LoginGate:      gate,
-	})
+	}
+	// With no email settings, Mail stays nil and the reset pages are off.
+	if cfg.Mail != nil {
+		opt.Mail = &web.MailOptions{PublicURL: cfg.Mail.PublicURL, Wake: wake}
+	}
+	h, err := web.New(ctx, pool, opt)
 	if err != nil {
 		pool.Close()
 		return nil, nil, err
