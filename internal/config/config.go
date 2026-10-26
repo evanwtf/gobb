@@ -137,7 +137,18 @@ type Mail struct {
 	// PublicURL is the address of the site for links in email. It starts with
 	// "http://" or "https://" and ends with the base path, which ends with "/".
 	PublicURL string
+	// PerHour and PerDay are the most emails the board queues in any hour and in
+	// any 24 hours. Each is at least 1, and PerHour is not more than PerDay.
+	PerHour, PerDay int
 }
+
+// The defaults of GOBB_MAIL_PER_HOUR and GOBB_MAIL_PER_DAY, and the largest value
+// of each.
+const (
+	defaultMailPerHour = 10
+	defaultMailPerDay  = 20
+	maxMailLimit       = 100_000
+)
 
 func (m Mail) passwordState() string {
 	if m.Password == "" {
@@ -148,8 +159,8 @@ func (m Mail) passwordState() string {
 
 // String lists every field, with the password as [set] or [unset].
 func (m Mail) String() string {
-	return fmt.Sprintf("{Host:%s Port:%d TLS:%s User:%s Password:%s From:%s PublicURL:%s}",
-		m.Host, m.Port, m.TLS, m.User, m.passwordState(), m.From, m.PublicURL)
+	return fmt.Sprintf("{Host:%s Port:%d TLS:%s User:%s Password:%s From:%s PublicURL:%s PerHour:%d PerDay:%d}",
+		m.Host, m.Port, m.TLS, m.User, m.passwordState(), m.From, m.PublicURL, m.PerHour, m.PerDay)
 }
 
 // GoString makes %#v print what String prints.
@@ -166,13 +177,15 @@ func (m Mail) LogValue() slog.Value {
 		slog.String("password", m.passwordState()),
 		slog.String("from", m.From),
 		slog.String("public_url", m.PublicURL),
+		slog.Int("per_hour", m.PerHour),
+		slog.Int("per_day", m.PerDay),
 	)
 }
 
 // mailVars lists the variables that only make sense with GOBB_SMTP_HOST.
 var mailVars = []string{
 	"GOBB_SMTP_PORT", "GOBB_SMTP_TLS", "GOBB_SMTP_USER", "GOBB_SMTP_PASSWORD",
-	"GOBB_MAIL_FROM", "GOBB_PUBLIC_URL",
+	"GOBB_MAIL_FROM", "GOBB_PUBLIC_URL", "GOBB_MAIL_PER_HOUR", "GOBB_MAIL_PER_DAY",
 }
 
 // MailFromEnv reads only the email settings, with GOBB_BASE_PATH and
@@ -252,7 +265,30 @@ func mailFromEnv(getenv func(string) string, basePath string, secure bool) (*Mai
 		return nil, err
 	}
 	m.PublicURL = pub
+
+	if m.PerHour, err = mailLimit("GOBB_MAIL_PER_HOUR", get("GOBB_MAIL_PER_HOUR"), defaultMailPerHour); err != nil {
+		return nil, err
+	}
+	if m.PerDay, err = mailLimit("GOBB_MAIL_PER_DAY", get("GOBB_MAIL_PER_DAY"), defaultMailPerDay); err != nil {
+		return nil, err
+	}
+	if m.PerHour > m.PerDay {
+		return nil, fmt.Errorf("config: GOBB_MAIL_PER_HOUR: %d is more than GOBB_MAIL_PER_DAY (%d)", m.PerHour, m.PerDay)
+	}
 	return m, nil
+}
+
+// mailLimit reads one limit on the emails of the board: def when v is empty,
+// otherwise a number from 1 to maxMailLimit.
+func mailLimit(key, v string, def int) (int, error) {
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > maxMailLimit {
+		return 0, fmt.Errorf("config: %s: must be a number from 1 to %d", key, maxMailLimit)
+	}
+	return n, nil
 }
 
 // validHost reports whether s can be the host of a dial address: an IP address,

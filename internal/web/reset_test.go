@@ -39,7 +39,7 @@ const (
 // RFC 2606, a floor of 1 ms and a Wake that does nothing.
 func testMailOptions() Options {
 	return Options{
-		Mail:       &MailOptions{PublicURL: resetPublic, Wake: func() {}},
+		Mail:       &MailOptions{PublicURL: resetPublic, Wake: func() {}, PerHour: 100, PerDay: 100},
 		ResetFloor: time.Millisecond,
 	}
 }
@@ -81,7 +81,12 @@ func newResetEnv(t *testing.T, opt Options) *resetEnv {
 func newResetEnvFor(t *testing.T, opt Options, b *bundletest.Board) *resetEnv {
 	t.Helper()
 	e := &resetEnv{wakes: new(atomic.Int32)}
-	opt.Mail = &MailOptions{PublicURL: resetPublic, Wake: func() { e.wakes.Add(1) }}
+	// The limits of the board are high unless the test sets its own.
+	perHour, perDay := 100, 100
+	if opt.Mail != nil {
+		perHour, perDay = opt.Mail.PerHour, opt.Mail.PerDay
+	}
+	opt.Mail = &MailOptions{PublicURL: resetPublic, Wake: func() { e.wakes.Add(1) }, PerHour: perHour, PerDay: perDay}
 	if opt.ResetFloor == 0 {
 		opt.ResetFloor = resetFloor
 	}
@@ -740,54 +745,79 @@ func TestResetLimits(t *testing.T) {
 		}
 	})
 	t.Run("board", func(t *testing.T) {
-		// Ten members at 3 emails each are 30 emails, the limit of the board. The
-		// 11th member is a real account that has used none of its own slots.
+		// The board allows 5 emails an hour and 8 a day. Four members can get
+		// 3 emails each, which is more than either limit.
 		b := resetBoard()
-		for i := range 11 {
+		for i := range 4 {
 			u := b.Users[2]
 			u.ID, u.Username, u.Email = int64(100+i), "member"+strconv.Itoa(i), "member"+strconv.Itoa(i)+"@example.org"
 			b.Users = append(b.Users, u)
 			b.GroupMembers = append(b.GroupMembers, bundle.GroupMember{GroupID: 2, UserID: u.ID})
 		}
-		e := newResetEnvFor(t, Options{}, b)
+		var clock atomic.Int64
+		clock.Store(time.Now().UnixNano())
+		now := func() time.Time { return time.Unix(0, clock.Load()) }
+		e := newResetEnvFor(t, Options{Now: now, Mail: &MailOptions{PerHour: 5, PerDay: 8}}, b)
 		logs := captureAllLogs(t)
-		for i := range 30 {
-			c := e.guest(t, "2001:db8:e"+strconv.Itoa(i/5)+"::1")
-			if rec := c.ask("member" + strconv.Itoa(i/3)); rec.Code != http.StatusSeeOther || locate(rec) != "/reset?sent=1" {
-				t.Fatalf("request %d = %d to %q, want 303 to /reset?sent=1", i+1, rec.Code, locate(rec))
+		addr := 0
+		ask := func(name string) {
+			t.Helper()
+			addr++
+			c := e.guest(t, "2001:db8:e"+strconv.Itoa(addr)+"::1")
+			if rec := c.ask(name); rec.Code != http.StatusSeeOther || locate(rec) != "/reset?sent=1" {
+				t.Fatalf("request for %s = %d to %q, want 303 to /reset?sent=1", name, rec.Code, locate(rec))
 			}
 		}
-		if n := len(e.queue(t)); n != 30 {
-			t.Fatalf("the queue holds %d emails, want 30", n)
+		want := func(queued, skipped int, when string) {
+			t.Helper()
+			if n := len(e.queue(t)); n != queued {
+				t.Errorf("%s: the queue holds %d emails, want %d", when, n, queued)
+			}
+			if n := strings.Count(logs.String(), "reset email skipped: board limit"); n != skipped {
+				t.Errorf("%s: %d log lines for the board limit, want %d:\n%s", when, n, skipped, logs.String())
+			}
 		}
-		// The 31st email is a quiet skip: the same 303, no row, no Wake.
+		for _, name := range []string{"member0", "member0", "member0", "member1", "member1"} {
+			ask(name)
+		}
+		want(5, 0, "5 emails in the first hour")
+		// The 6th email in the hour is a quiet skip: the same 303, no row, no Wake.
 		wakes := e.wakes.Load()
-		c := e.guest(t, "2001:db8:ef::1")
-		rec := c.ask("member10")
-		if rec.Code != http.StatusSeeOther || locate(rec) != "/reset?sent=1" {
-			t.Fatalf("request for the 31st email = %d to %q, want 303 to /reset?sent=1", rec.Code, locate(rec))
-		}
-		if n := len(e.queue(t)); n != 30 {
-			t.Errorf("the queue holds %d emails after the board limit, want 30", n)
-		}
+		ask("member1")
+		want(5, 1, "the 6th email in the hour")
 		if e.wakes.Load() != wakes {
 			t.Error("Wake ran for a request that queued nothing")
 		}
-		if n := strings.Count(logs.String(), "reset email skipped: board limit"); n != 1 {
-			t.Errorf("%d log lines for the board limit, want 1:\n%s", n, logs.String())
+		// An hour later the hour has room, and the day takes 3 more.
+		clock.Add(int64(61 * time.Minute))
+		for _, name := range []string{"member1", "member2", "member2"} {
+			ask(name)
 		}
-		for _, secret := range []string{"member10", "2001:db8:ef"} {
+		want(8, 1, "8 emails in the day")
+		// The 9th email in the day is a quiet skip, though the hour has room, and
+		// it is still a skip two hours later.
+		ask("member3")
+		clock.Add(int64(2 * time.Hour))
+		ask("member3")
+		want(8, 3, "the 9th email in the day")
+		for _, secret := range []string{"member3", "member3@example.org", "2001:db8:e"} {
 			if strings.Contains(logs.String(), secret) {
 				t.Errorf("the log holds %q", secret)
 			}
 		}
-		// The skipped request keeps no slot of the account: the account limiter
-		// has room for 3 emails still.
+		// The skipped requests keep no slot of the account or of the hour.
 		for i := range 3 {
-			if ok, _ := e.site.resets.account.Take("110", time.Now()); !ok {
-				t.Errorf("the account of the skipped request has no slot %d", i+1)
+			if ok, _ := e.site.resets.account.Take("103", now()); !ok {
+				t.Errorf("the account of the skipped requests has no slot %d", i+1)
 			}
 		}
+		for range 3 {
+			e.site.resets.account.Refund("103", now())
+		}
+		// A day after the first emails, the board has room again.
+		clock.Add(int64(21 * time.Hour))
+		ask("member3")
+		want(9, 3, "a day later")
 	})
 	t.Run("unknown names do not count against the board", func(t *testing.T) {
 		e := newResetEnv(t, Options{})
@@ -976,4 +1006,15 @@ func testResetTokenRow() string {
 	sum := sha256.Sum256([]byte(testResetToken))
 	return `insert into password_resets (id, user_id, epoch, created_at, expires_at)
  select '` + hex.EncodeToString(sum[:]) + `', id, password_epoch, now(), now() + interval '1 hour' from users where username = 'carol'`
+}
+
+func TestNewRefusesMailWithoutLimits(t *testing.T) {
+	for _, m := range []MailOptions{
+		{PublicURL: resetPublic, PerDay: 20},
+		{PublicURL: resetPublic, PerHour: 10},
+	} {
+		if _, err := New(context.Background(), nil, Options{Mail: &m}); err == nil || !strings.Contains(err.Error(), "PerHour") {
+			t.Errorf("New with %+v: err = %v, want an error that names PerHour and PerDay", m, err)
+		}
+	}
 }

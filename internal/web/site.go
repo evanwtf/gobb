@@ -159,12 +159,15 @@ var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "
 // the stored hashes ([login.Service.LoadCharge]), and times the checks to set the
 // floor of a failed sign-in ([login.Service.LoadFloor]).
 func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, error) {
+	if opt.Mail != nil && (opt.Mail.PerHour < 1 || opt.Mail.PerDay < 1) {
+		return nil, errors.New("web: MailOptions.PerHour and PerDay must be at least 1")
+	}
 	lo := login.DefaultOptions()
 	if opt.LoginGate != nil {
 		lo.Gate = opt.LoginGate
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
-		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
+		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(opt.Mail), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))

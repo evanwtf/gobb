@@ -25,19 +25,23 @@ type MailOptions struct {
 	// Wake tells the email worker that a message is waiting. It must not block.
 	// It may be nil.
 	Wake func()
+	// PerHour and PerDay are the most reset emails the board queues in any hour
+	// and in any 24 hours. Each must be at least 1.
+	PerHour, PerDay int
 }
 
 // The limits of the reset pages. Each count lives in memory in a sliding window
 // and starts over with the server, like the limits on sign-in.
 const (
 	resetAddrLimit    = 5  // requests from one client address in resetWindow
-	resetBoardLimit   = 30 // emails on the whole board in resetWindow
 	resetDeadLimit    = 20 // dead-link hits from one client address in resetWindow
 	resetAccountLimit = 3  // emails to one account in resetAccountWindow
 	resetWindow       = time.Hour
 	// resetAccountWindow is the window of the limit on emails to one account.
 	resetAccountWindow = 24 * time.Hour
-	resetLimitMaxKeys  = 10_000
+	// resetDayWindow is the window of MailOptions.PerDay.
+	resetDayWindow    = 24 * time.Hour
+	resetLimitMaxKeys = 10_000
 	// defaultResetFloor is the least time that a request for a reset takes.
 	defaultResetFloor = 400 * time.Millisecond
 	// resetBoardKey is the one key of the limit on the whole board.
@@ -46,16 +50,24 @@ const (
 
 // resetLimits holds the limiters of the reset pages.
 type resetLimits struct {
-	// addr counts the requests of each client address, board the emails of the
-	// whole board, account the emails to each account (by user ID), and dead the
-	// hits on a link that board.ResetLink refuses, for each client address.
-	addr, board, account, dead *ratelimit.Limiter
+	// addr counts the requests of each client address, hour and day the emails
+	// of the whole board, account the emails to each account (by user ID), and
+	// dead the hits on a link that board.ResetLink refuses, for each client
+	// address.
+	addr, hour, day, account, dead *ratelimit.Limiter
 }
 
-func newResetLimits() resetLimits {
+// newResetLimits builds the limiters. With email off the reset pages do not
+// exist, and the limits of the board are 1.
+func newResetLimits(m *MailOptions) resetLimits {
+	perHour, perDay := 1, 1
+	if m != nil {
+		perHour, perDay = m.PerHour, m.PerDay
+	}
 	return resetLimits{
 		addr:    ratelimit.New(resetAddrLimit, resetWindow, resetLimitMaxKeys),
-		board:   ratelimit.New(resetBoardLimit, resetWindow, 1),
+		hour:    ratelimit.New(perHour, resetWindow, 1),
+		day:     ratelimit.New(perDay, resetDayWindow, 1),
 		account: ratelimit.New(resetAccountLimit, resetAccountWindow, resetLimitMaxKeys),
 		dead:    ratelimit.New(resetDeadLimit, resetWindow, resetLimitMaxKeys),
 	}
@@ -198,18 +210,25 @@ func (s *site) resetSubmit(w http.ResponseWriter, r *http.Request) {
 		s.resetTooMany(w, p, wait, "Too many requests from your address. Try again in N minutes.")
 		return
 	}
-	// allow runs only for an account that gets an email. The limit of the board
-	// counts those emails and not the requests, so requests for unknown names
-	// cannot fill it. When it is full, the account is a quiet skip: a 429 that
-	// shows only for a real account would tell a visitor which names exist.
+	// allow runs only for an account that gets an email. The limits of the
+	// board count those emails and not the requests, so requests for unknown
+	// names cannot fill them. When one is full, the account is a quiet skip: a
+	// 429 that shows only for a real account would tell a visitor which names
+	// exist. A refused email gives back the slots it took.
 	allow := func(userID int64) bool {
 		key := strconv.FormatInt(userID, 10)
 		if ok, _ := s.resets.account.Take(key, now); !ok {
 			return false
 		}
-		if ok, _ := s.resets.board.Take(resetBoardKey, now); !ok {
+		if ok, _ := s.resets.hour.Take(resetBoardKey, now); !ok {
 			s.resets.account.Refund(key, now)
-			slog.Warn("reset email skipped: board limit")
+			slog.Warn("reset email skipped: board limit", "per", "hour")
+			return false
+		}
+		if ok, _ := s.resets.day.Take(resetBoardKey, now); !ok {
+			s.resets.hour.Refund(resetBoardKey, now)
+			s.resets.account.Refund(key, now)
+			slog.Warn("reset email skipped: board limit", "per", "day")
 			return false
 		}
 		return true

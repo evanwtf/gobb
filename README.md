@@ -279,7 +279,7 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_BASE_PATH` | URL path prefix, such as `/forum/`. | `/` |
 | `GOBB_TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies to trust. | `127.0.0.1/32,::1/128` |
 | `GOBB_COOKIE_SECURE` | `true` or `false`. Mark the cookies Secure. | `true` |
-| `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS`, `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM`, `GOBB_PUBLIC_URL` | Email settings (see "Email"). | email off |
+| `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS`, `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM`, `GOBB_PUBLIC_URL`, `GOBB_MAIL_PER_HOUR`, `GOBB_MAIL_PER_DAY` | Email settings (see "Email"). | email off |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
 
@@ -380,6 +380,7 @@ Docker Compose passes all of them through from `.env`.
 | `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD` | Both or neither. gobb signs in with AUTH PLAIN, and only after TLS runs. | unset |
 | `GOBB_MAIL_FROM` | The sender: one plain address, with no display name. Required with a host. | none |
 | `GOBB_PUBLIC_URL` | The address of the board, for links in email. It starts with `https://`, names a host, holds no user information, query or fragment, and its path equals `GOBB_BASE_PATH`. It starts with `http://` only when `GOBB_COOKIE_SECURE=false`. gobb stores it with a trailing `/`. Required with a host. | none |
+| `GOBB_MAIL_PER_HOUR`, `GOBB_MAIL_PER_DAY` | The most reset emails the whole board sends in any hour and in any 24 hours, from 1 to 100,000. The hourly limit must not be more than the daily one. To change them, edit `.env` and run `docker compose up -d`. | `10`, `20` |
 
 gobb talks to the server over TLS only. With `starttls`, it sends no AUTH and no
 message to a server that does not offer STARTTLS. It checks the certificate of the
@@ -448,6 +449,12 @@ or the email address, and gobb emails a second link to the member. The emailed
 link works once, for 1 hour. Opening it changes nothing; saving a new password
 ends every session of the member. With email off, the links and the pages do not
 exist.
+
+gobb sends at most 3 reset emails a day to one account, and on the whole board at
+most `GOBB_MAIL_PER_HOUR` an hour and `GOBB_MAIL_PER_DAY` a day (10 and 20 unless
+set). Past any of these limits, a request gets the usual answer and no email. A full
+board limit logs the WARN line `reset email skipped: board limit`, with `per=hour`
+or `per=day`. One client address may ask 5 times an hour.
 
 An administrator (a member with the board-wide `admin` right) gets no reset email,
 and an emailed link to an account that becomes an administrator stops working. An

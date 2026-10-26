@@ -16,7 +16,8 @@ the reset pages answer 404. The bundle format does not change.
 - **Email settings and the SMTP sender.** Seven variables turn email on:
   `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS` (`starttls` or `implicit`; there is
   no plain mode), `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM` and
-  `GOBB_PUBLIC_URL`. With no host, email is off and any other of the seven is an error.
+  `GOBB_PUBLIC_URL`. With no host, email is off and any other of the seven is an error,
+  as is `GOBB_MAIL_PER_HOUR` or `GOBB_MAIL_PER_DAY` (the limits on reset emails, below).
   The password prints as `[set]` or `[unset]` in `String()`, `%+v` and slog, and no error
   holds it. `internal/mail` builds the message (plain text, UTF-8, quoted-printable, CRLF)
   and sends it over TLS only, with AUTH PLAIN after TLS. It sends nothing but QUIT to a
@@ -24,7 +25,7 @@ the reset pages answer 404. The bundle format does not change.
   stage and a summary (`smtp 550 5.1.1`, `timeout`, `tls`, `no starttls` or `network`),
   not the text of the server's reply, the password or the address.
   `gobb mail test <address>` sends one test email at once and needs no `GOBB_DSN`.
-  `compose.yaml` passes the seven variables through, and the README has an "Email"
+  `compose.yaml` passes the nine variables through, and the README has an "Email"
   section.
 - **The email queue.** Migration 0014 adds the table `password_resets` and three columns
   to `email_queue` (`user_id`, `send_by`, `dropped_at`). `mail.Enqueue` writes a message
@@ -59,8 +60,9 @@ the reset pages answer 404. The bundle format does not change.
   up, ends every session of the member and sends the member to sign in with a notice. A
   dead link gets a 404 page. The link in the email is built from `GOBB_PUBLIC_URL` and
   nothing in the request. Limits, in memory: 5 requests an hour from one address, 20
-  dead-link hits an hour from one address, 3 emails a day to one account and 30 emails an
-  hour on the whole board. A request or a dead-link hit over the limit of its address
+  dead-link hits an hour from one address, 3 emails a day to one account, and on the whole
+  board `GOBB_MAIL_PER_HOUR` emails an hour and `GOBB_MAIL_PER_DAY` a day (10 and 20 by
+  default; from 1 to 100,000, and the hourly limit not more than the daily one). A request or a dead-link hit over the limit of its address
   answers `429` with `Retry-After`. An account over its limit, or a request that the limit
   of the board stops, gets the usual answer and no email: a `429` that shows only for a
   real account would tell a visitor which names exist. Requests for unknown names do not

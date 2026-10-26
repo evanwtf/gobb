@@ -241,6 +241,44 @@ func TestMailFromEnv(t *testing.T) {
 			},
 		},
 		{
+			name: "the email limits default to 10 an hour and 20 a day",
+			env:  mailEnv(nil),
+			check: func(t *testing.T, m *config.Mail) {
+				if m.PerHour != 10 || m.PerDay != 20 {
+					t.Errorf("PerHour, PerDay = %d, %d; want 10, 20", m.PerHour, m.PerDay)
+				}
+			},
+		},
+		{
+			name: "explicit email limits",
+			env:  mailEnv(map[string]string{"GOBB_MAIL_PER_HOUR": "3", "GOBB_MAIL_PER_DAY": " 12 "}),
+			check: func(t *testing.T, m *config.Mail) {
+				if m.PerHour != 3 || m.PerDay != 12 {
+					t.Errorf("PerHour, PerDay = %d, %d; want 3, 12", m.PerHour, m.PerDay)
+				}
+			},
+		},
+		{
+			name:    "a daily limit that is not a number",
+			env:     mailEnv(map[string]string{"GOBB_MAIL_PER_DAY": "lots"}),
+			wantErr: "GOBB_MAIL_PER_DAY",
+		},
+		{
+			name:    "an hourly limit of zero",
+			env:     mailEnv(map[string]string{"GOBB_MAIL_PER_HOUR": "0"}),
+			wantErr: "GOBB_MAIL_PER_HOUR",
+		},
+		{
+			name:    "an hourly limit over the daily limit",
+			env:     mailEnv(map[string]string{"GOBB_MAIL_PER_HOUR": "30", "GOBB_MAIL_PER_DAY": "20"}),
+			wantErr: "GOBB_MAIL_PER_HOUR",
+		},
+		{
+			name:    "a daily limit without a host",
+			env:     map[string]string{"GOBB_DSN": "x", "GOBB_MAIL_PER_DAY": "5"},
+			wantErr: "GOBB_MAIL_PER_DAY",
+		},
+		{
 			name: "implicit defaults to port 465",
 			env:  mailEnv(map[string]string{"GOBB_SMTP_TLS": "implicit"}),
 			check: func(t *testing.T, m *config.Mail) {
