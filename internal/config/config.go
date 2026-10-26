@@ -197,7 +197,8 @@ func mailFromEnv(getenv func(string) string, basePath string, secure bool) (*Mai
 	host := get("GOBB_SMTP_HOST")
 	if host == "" {
 		for _, key := range mailVars {
-			if getenv(key) != "" {
+			// A value of spaces counts as unset here, as it does below.
+			if get(key) != "" {
 				return nil, fmt.Errorf("config: %s is set, but GOBB_SMTP_HOST is not: email is off", key)
 			}
 		}
@@ -264,7 +265,8 @@ func validHost(s string) bool {
 }
 
 // plainAddress reports whether s is exactly one ASCII address, with no display
-// name and no angle brackets.
+// name and no angle brackets. internal/mail has a twin of it, because mail
+// imports config and config cannot import mail. Change both together.
 func plainAddress(s string) bool {
 	a, err := mail.ParseAddress(s)
 	if err != nil || a.Name != "" || a.Address != s {

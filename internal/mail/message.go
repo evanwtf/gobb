@@ -24,7 +24,9 @@ type Message struct {
 }
 
 // plainAddress parses s as exactly one ASCII address, with no display name and
-// no angle brackets. It returns the part after the last "@".
+// no angle brackets. It returns the part after the last "@". internal/config has
+// a twin of it (config.plainAddress), because mail imports config and config
+// cannot import mail. Change both together.
 func plainAddress(s string) (domain string, ok bool) {
 	a, err := netmail.ParseAddress(s)
 	if err != nil || a.Name != "" || a.Address != s {

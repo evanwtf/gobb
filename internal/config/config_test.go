@@ -205,6 +205,15 @@ func TestMailFromEnv(t *testing.T) {
 			},
 		},
 		{
+			name: "a whitespace-only port without a host counts as unset",
+			env:  map[string]string{"GOBB_DSN": "x", "GOBB_SMTP_PORT": " "},
+			check: func(t *testing.T, m *config.Mail) {
+				if m != nil {
+					t.Errorf("Mail = %+v, want nil", m)
+				}
+			},
+		},
+		{
 			name:    "the sender without a host",
 			env:     map[string]string{"GOBB_DSN": "x", "GOBB_MAIL_FROM": "board@example.org"},
 			wantErr: "GOBB_MAIL_FROM",
