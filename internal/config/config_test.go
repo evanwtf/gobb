@@ -407,7 +407,7 @@ func TestMailConfigRedacts(t *testing.T) {
 		fmt.Sprintf("%+v", *c.Mail),
 		fmt.Sprintf("%+v", c.Mail),
 		fmt.Sprintf("%#v", *c.Mail),
-		fmt.Sprintf("%s", *c.Mail),
+		fmt.Sprintf("[%s]", *c.Mail),
 		buf.String(),
 	}
 	for i, s := range out {
