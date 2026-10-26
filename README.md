@@ -279,6 +279,7 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_BASE_PATH` | URL path prefix, such as `/forum/`. | `/` |
 | `GOBB_TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies to trust. | `127.0.0.1/32,::1/128` |
 | `GOBB_COOKIE_SECURE` | `true` or `false`. Mark the cookies Secure. | `true` |
+| `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS`, `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM`, `GOBB_PUBLIC_URL` | Email settings (see "Email"). | email off |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
 
@@ -364,6 +365,55 @@ Keep it `true` for any copy that people reach over a network. Every form post mu
 from the same origin: the browser's `Origin` or `Sec-Fetch-Site` header is checked
 against the `Host` header. A reverse proxy has to pass the `Host` header of the visitor
 on to gobb.
+
+### Email
+
+gobb sends email through one SMTP server. Email is off until `GOBB_SMTP_HOST` is set.
+Each variable below is read from the environment. An empty value counts as unset.
+Docker Compose passes all of them through from `.env`.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `GOBB_SMTP_HOST` | The SMTP server. Turns email on. With no host, any other variable in this table is an error. | unset |
+| `GOBB_SMTP_PORT` | The port, 1 to 65535. | `587` for `starttls`, `465` for `implicit` |
+| `GOBB_SMTP_TLS` | `starttls` or `implicit`. There is no plain mode. | `starttls` |
+| `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD` | Both or neither. gobb signs in with AUTH PLAIN, and only after TLS runs. | unset |
+| `GOBB_MAIL_FROM` | The sender: one plain address, with no display name. Required with a host. | none |
+| `GOBB_PUBLIC_URL` | The address of the board, for links in email. It starts with `https://`, names a host, holds no user information, query or fragment, and its path equals `GOBB_BASE_PATH`. It starts with `http://` only when `GOBB_COOKIE_SECURE=false`. gobb stores it with a trailing `/`. Required with a host. | none |
+
+gobb talks to the server over TLS only. With `starttls`, it sends no AUTH and no
+message to a server that does not offer STARTTLS. It checks the certificate of the
+server against the system roots and needs TLS 1.2 or later. A setting that is wrong
+stops the command or the server at start, with an error that names the variable. No
+error and no log line holds the password.
+
+Example values, for a board at `https://board.example.org/forums/`:
+
+```sh
+GOBB_SMTP_HOST=smtp.example.org
+GOBB_SMTP_PORT=587
+GOBB_SMTP_TLS=starttls
+GOBB_SMTP_USER=board@example.org
+GOBB_MAIL_FROM=board@example.org
+GOBB_PUBLIC_URL=https://board.example.org/forums/
+GOBB_BASE_PATH=/forums/
+```
+
+Put `GOBB_SMTP_PASSWORD` in `.env` and nowhere else: not in `compose.yaml`, not in a
+shell history, not in an issue. Keep `.env` out of git. Then send a test email. The
+command sends at once, through the settings above, and prints nothing on stdout. A
+success logs `test email sent` on stderr. A failure exits 1 and logs a short reason
+(`smtp 550 5.1.1`, `timeout`, `tls`, `no starttls` or `network`) with no text of the
+server's reply and no address:
+
+```sh
+export ADDRESS=you@example.org
+docker compose exec -T gobb gobb mail test "$ADDRESS"
+```
+
+Without Docker, run `./gobb mail test "$ADDRESS"` with the same variables set. The
+command needs no `GOBB_DSN`. The exit code is 0 when the server accepted the message,
+1 on a missing setting or a failed send, and 2 on a wrong call.
 
 ### Reset a password, ban or unban a member
 

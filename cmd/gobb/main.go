@@ -78,6 +78,7 @@ var commands = map[string]command{
 		return nil
 	},
 	"import":      importBundle,
+	"mail":        mailCommand,
 	"migrate":     migrate,
 	"perms":       perms,
 	"serve":       serve,

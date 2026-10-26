@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+### Operators
+
+- **Email settings and the SMTP sender.** Seven variables turn email on:
+  `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS` (`starttls` or `implicit`; there is
+  no plain mode), `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM` and
+  `GOBB_PUBLIC_URL`. With no host, email is off and any other of the seven is an error.
+  The password prints as `[set]` or `[unset]` in `String()`, `%+v` and slog, and no error
+  holds it. `internal/mail` builds the message (plain text, UTF-8, quoted-printable, CRLF)
+  and sends it over TLS only, with AUTH PLAIN after TLS. It sends nothing but QUIT to a
+  server that does not offer STARTTLS, and it gives up after 30 s. An error holds the
+  stage and a summary (`smtp 550 5.1.1`, `timeout`, `tls`, `no starttls` or `network`),
+  not the text of the server's reply, the password or the address.
+  `gobb mail test <address>` sends one test email at once and needs no `GOBB_DSN`.
+  `compose.yaml` passes the seven variables through, and the README has an "Email"
+  section.
+
 ## 0.2.0 (2026-10-25)
 
 Members change their own settings and send private messages. The account page saves each
