@@ -73,6 +73,13 @@ type resetEnv struct {
 
 func newResetEnv(t *testing.T, opt Options) *resetEnv {
 	t.Helper()
+	return newResetEnvFor(t, opt, resetBoard())
+}
+
+// newResetEnvFor is newResetEnv for the board b, which must hold the users of
+// resetBoard.
+func newResetEnvFor(t *testing.T, opt Options, b *bundletest.Board) *resetEnv {
+	t.Helper()
 	e := &resetEnv{wakes: new(atomic.Int32)}
 	opt.Mail = &MailOptions{PublicURL: resetPublic, Wake: func() { e.wakes.Add(1) }}
 	if opt.ResetFloor == 0 {
@@ -81,13 +88,18 @@ func newResetEnv(t *testing.T, opt Options) *resetEnv {
 	opt.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}
 	onNew = func(s *site) { e.site = s }
 	t.Cleanup(func() { onNew = nil })
-	e.h, e.pool = siteWithPool(t, resetBoard(), opt)
+	e.h, e.pool = siteWithPool(t, b, opt)
 	onNew = nil
 	ctx := context.Background()
 	if err := board.BanUser(ctx, e.pool, 6, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	exec(t, e.pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (7, 0, 'account.password', 2)`)
+	// alice is an administrator in the small board, and an administrator gets no
+	// reset email, and an owner always has the right. The tests of the reset need
+	// her as an ordinary member.
+	exec(t, e.pool, `update users set is_owner = false where id = 1`)
+	exec(t, e.pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (1, 0, 'admin', 2)`)
 	return e
 }
 
@@ -554,13 +566,7 @@ func resetFlow(t *testing.T, e *resetEnv) {
 	if rec.Code != http.StatusSeeOther || locate(rec) != "/login?reset=1" {
 		t.Fatalf("POST = %d to %q, want 303 to /login?reset=1\n%s", rec.Code, locate(rec), bodyOf(t, rec))
 	}
-	cleared := false
-	for _, ck := range rec.Result().Cookies() {
-		if ck.Name == "gobb_session" && ck.MaxAge < 0 {
-			cleared = true
-		}
-	}
-	if !cleared {
+	if !clearsSession(rec) {
 		t.Error("the answer does not clear the session cookie of the visitor")
 	}
 	// Session A is dead.
@@ -579,6 +585,47 @@ func resetFlow(t *testing.T, e *resetEnv) {
 
 func TestResetFlow(t *testing.T) {
 	resetFlow(t, newResetEnv(t, Options{}))
+}
+
+// clearsSession reports whether rec tells the browser to drop the session cookie.
+func clearsSession(rec *httptest.ResponseRecorder) bool {
+	for _, ck := range rec.Result().Cookies() {
+		if ck.Name == "gobb_session" && ck.MaxAge < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func TestResetClearsOnlyOwnSession(t *testing.T) {
+	t.Run("another member's session stays", func(t *testing.T) {
+		e := newResetEnv(t, Options{})
+		sessionB := e.signedIn(t, "bob", testPassword)
+		c := e.guest(t, "2001:db8:a1::1")
+		token := c.requestLink("alice")
+		c.cookies = sessionB
+		page := c.send(http.MethodGet, "/reset/"+token, nil, nil)
+		if page.Code != http.StatusOK {
+			t.Fatalf("GET link = %d", page.Code)
+		}
+		c.cookies = jar(sessionB, page)
+		c.token = formToken(t, bodyOf(t, page))
+		rec := c.post("/reset/"+token, url.Values{"password": {resetPassword}, "again": {resetPassword}}, nil)
+		if rec.Code != http.StatusSeeOther || locate(rec) != "/login?reset=1" {
+			t.Fatalf("POST = %d to %q, want 303 to /login?reset=1", rec.Code, locate(rec))
+		}
+		if clearsSession(rec) {
+			t.Error("the answer clears the session cookie of bob, who is not alice")
+		}
+		if acct := getAs(t, e.h, "/account", sessionB); acct.Code != http.StatusOK {
+			t.Errorf("GET /account as bob = %d, want 200: bob is still signed in", acct.Code)
+		}
+		e.signedIn(t, "alice", resetPassword)
+	})
+	t.Run("the member's own session goes", func(t *testing.T) {
+		e := newResetEnv(t, Options{})
+		resetFlow(t, e) // signs in alice, completes her link, and checks that the cookie is cleared
+	})
 }
 
 func TestResetPasswordsDiffer(t *testing.T) {
@@ -693,25 +740,69 @@ func TestResetLimits(t *testing.T) {
 		}
 	})
 	t.Run("board", func(t *testing.T) {
+		// Ten members at 3 emails each are 30 emails, the limit of the board. The
+		// 11th member is a real account that has used none of its own slots.
+		b := resetBoard()
+		for i := range 11 {
+			u := b.Users[2]
+			u.ID, u.Username, u.Email = int64(100+i), "member"+strconv.Itoa(i), "member"+strconv.Itoa(i)+"@example.org"
+			b.Users = append(b.Users, u)
+			b.GroupMembers = append(b.GroupMembers, bundle.GroupMember{GroupID: 2, UserID: u.ID})
+		}
+		e := newResetEnvFor(t, Options{}, b)
+		logs := captureAllLogs(t)
+		for i := range 30 {
+			c := e.guest(t, "2001:db8:e"+strconv.Itoa(i/5)+"::1")
+			if rec := c.ask("member" + strconv.Itoa(i/3)); rec.Code != http.StatusSeeOther || locate(rec) != "/reset?sent=1" {
+				t.Fatalf("request %d = %d to %q, want 303 to /reset?sent=1", i+1, rec.Code, locate(rec))
+			}
+		}
+		if n := len(e.queue(t)); n != 30 {
+			t.Fatalf("the queue holds %d emails, want 30", n)
+		}
+		// The 31st email is a quiet skip: the same 303, no row, no Wake.
+		wakes := e.wakes.Load()
+		c := e.guest(t, "2001:db8:ef::1")
+		rec := c.ask("member10")
+		if rec.Code != http.StatusSeeOther || locate(rec) != "/reset?sent=1" {
+			t.Fatalf("request for the 31st email = %d to %q, want 303 to /reset?sent=1", rec.Code, locate(rec))
+		}
+		if n := len(e.queue(t)); n != 30 {
+			t.Errorf("the queue holds %d emails after the board limit, want 30", n)
+		}
+		if e.wakes.Load() != wakes {
+			t.Error("Wake ran for a request that queued nothing")
+		}
+		if n := strings.Count(logs.String(), "reset email skipped: board limit"); n != 1 {
+			t.Errorf("%d log lines for the board limit, want 1:\n%s", n, logs.String())
+		}
+		for _, secret := range []string{"member10", "2001:db8:ef"} {
+			if strings.Contains(logs.String(), secret) {
+				t.Errorf("the log holds %q", secret)
+			}
+		}
+		// The skipped request keeps no slot of the account: the account limiter
+		// has room for 3 emails still.
+		for i := range 3 {
+			if ok, _ := e.site.resets.account.Take("110", time.Now()); !ok {
+				t.Errorf("the account of the skipped request has no slot %d", i+1)
+			}
+		}
+	})
+	t.Run("unknown names do not count against the board", func(t *testing.T) {
 		e := newResetEnv(t, Options{})
-		for a := range 6 {
-			c := e.guest(t, "2001:db8:e"+strconv.Itoa(a)+"::1")
+		for a := range 7 {
+			c := e.guest(t, "2001:db8:d"+strconv.Itoa(a)+"::1")
 			for range 5 {
 				if rec := c.ask("nobody"); rec.Code != http.StatusSeeOther {
 					t.Fatalf("address %d = %d, want 303", a, rec.Code)
 				}
 			}
 		}
-		rec := e.guest(t, "2001:db8:ef::1").ask("nobody")
-		if rec.Code != http.StatusTooManyRequests {
-			t.Fatalf("31st request = %d, want 429", rec.Code)
-		}
-		if rec.Header().Get("Retry-After") == "" {
-			t.Error("the 429 has no Retry-After")
-		}
-		if body := bodyOf(t, rec); !regexp.MustCompile(`The board is sending too many emails\. Try again in \d+ minutes\.`).MatchString(body) {
-			t.Errorf("the 429 lacks the message:\n%s", body)
-		}
+		// 35 requests for an unknown name have passed. A real account still gets
+		// its email.
+		c := e.guest(t, "2001:db8:df::1")
+		c.requestLink("carol")
 	})
 	t.Run("account", func(t *testing.T) {
 		e := newResetEnv(t, Options{})
@@ -828,6 +919,11 @@ func TestResetLogsNoSecret(t *testing.T) {
 	// Failures log too: a dead link, a refused password and a closed database.
 	c := e.guest(t, "2001:db8:13::1")
 	token := c.requestLink("alice")
+	// Every token that the queue holds is a secret, the token of resetFlow too.
+	secrets := []string{token, "alice@example.com", resetPassword, resetPassword + "2", strings.Repeat("C", 43)}
+	for _, m := range e.queue(t) {
+		secrets = append(secrets, tokenOf(t, m.Body))
+	}
 	c.send(http.MethodGet, "/reset/"+strings.Repeat("C", 43), nil, nil)
 	c.post("/reset/"+token, url.Values{"password": {"short"}, "again": {"short"}}, nil)
 	e.pool.Close()
@@ -835,11 +931,42 @@ func TestResetLogsNoSecret(t *testing.T) {
 	c.post("/reset/"+token, url.Values{"password": {resetPassword + "2"}, "again": {resetPassword + "2"}}, nil)
 	c.ask("alice")
 	out := logs.String()
-	for _, secret := range []string{token, "reset/", "alice@example.com", resetPassword, strings.Repeat("C", 43)} {
+	for _, secret := range secrets {
 		if strings.Contains(out, secret) {
 			t.Errorf("a log line holds %q:\n%s", secret, out)
 		}
 	}
+}
+
+func TestLogPath(t *testing.T) {
+	tok := strings.Repeat("T", 43)
+	cases := []struct{ path, want string }{
+		{"/reset/" + tok, "/reset/{token}"},
+		{"/reset/", "/reset/{token}"},
+		{"/reset", "/reset"},
+		{"/resets/" + tok, "/resets/" + tok},
+		{"/topic/" + tok, "/topic/" + tok},
+		{"/", "/"},
+		{"/login", "/login"},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, c.path, nil)
+			if got := logPath(r); got != c.want {
+				t.Errorf("logPath(%q) = %q, want %q", c.path, got, c.want)
+			}
+		})
+	}
+	t.Run("under a base path", func(t *testing.T) {
+		// logPath sees the path after stripBase removed the base path.
+		s := &site{base: "/forums/"}
+		var seen string
+		h := s.stripBase(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = logPath(r) }))
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/forums/reset/"+tok, nil))
+		if seen != "/reset/{token}" {
+			t.Errorf("logPath behind the base path = %q, want /reset/{token}", seen)
+		}
+	})
 }
 
 // The tests of the routes need a token whose hash a test can insert.
@@ -848,5 +975,5 @@ var testResetToken = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}
 func testResetTokenRow() string {
 	sum := sha256.Sum256([]byte(testResetToken))
 	return `insert into password_resets (id, user_id, epoch, created_at, expires_at)
- select '` + hex.EncodeToString(sum[:]) + `', id, password_epoch, now(), now() + interval '1 hour' from users where username = 'alice'`
+ select '` + hex.EncodeToString(sum[:]) + `', id, password_epoch, now(), now() + interval '1 hour' from users where username = 'carol'`
 }

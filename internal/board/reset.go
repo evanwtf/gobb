@@ -91,6 +91,9 @@ func newResetToken() (string, error) {
 //     compares through [account.CleanEmail], as sign-in does; a ban on the
 //     client's address does not count, because the member may ask from elsewhere);
 //   - it has account.password (board-wide);
+//   - it does not have the board-wide admin right: an administrator resets a
+//     password with `gobb user reset-password`, and an old imported address
+//     must not become a way to take an administrator account;
 //   - allow, which is called with the user ID only for an account that passes
 //     every rule above, returns true. allow may be nil.
 //
@@ -208,7 +211,7 @@ select username, email, email_clean, state, password_epoch from users where id =
 	if err != nil {
 		return err
 	}
-	if mayAccount(v, "account.password") != nil {
+	if mayAccount(v, "account.password") != nil || v.Perms.IsAdmin() {
 		return errResetSkip
 	}
 	if allow != nil && !allow(id) {
@@ -268,7 +271,9 @@ select kind, email from bans
 // nothing. A token that is not 43 base64url characters, and a link that is
 // unknown, at or past its expiry, of an older password epoch, of an account that
 // is not active or lacks account.password (board-wide), or of a member whom a
-// user ban holds, all give [ErrNotFound]: the page treats them alike.
+// user ban holds, or of a member who has the board-wide admin right (a link made
+// before the grant dies with it), all give [ErrNotFound]: the page treats them
+// alike.
 func ResetLink(ctx context.Context, q db.Querier, token string, now time.Time) (ResetAccount, error) {
 	acct, _, err := resetLink(ctx, q, token, now)
 	return acct, err
@@ -299,7 +304,7 @@ select u.id, u.username
 	if err != nil {
 		return ResetAccount{}, Viewer{}, err
 	}
-	if mayAccount(v, "account.password") != nil {
+	if mayAccount(v, "account.password") != nil || v.Perms.IsAdmin() {
 		return ResetAccount{}, Viewer{}, ErrNotFound
 	}
 	if err := refuseBanned(ctx, q, acct.UserID, now); err != nil {

@@ -25,9 +25,17 @@ func resetMail(username, token string) (subject, body string) {
 
 func allowAll(int64) bool { return true }
 
+// resetPool loads the small board. alice is an administrator there, and an
+// administrator gets no reset email, so the pool takes the right from her (an
+// owner always has it, so she stops being the owner too): the tests of the reset
+// need her as an ordinary member.
 func resetPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool, _ := boardtest.Load(t, bundletest.Small())
+	if _, err := pool.Exec(context.Background(), `update users set is_owner = false where id = $1`, alice); err != nil {
+		t.Fatal(err)
+	}
+	denyOpts(t, pool, alice, 0, "admin")
 	return pool
 }
 
@@ -179,6 +187,9 @@ func TestRequestResetQuiet(t *testing.T) {
 		{name: "no account.password", ask: "carol", allow: true, setup: func(t *testing.T, p *pgxpool.Pool) {
 			denyOpts(t, p, carol, 0, "account.password")
 		}},
+		{name: "administrator", ask: "carol", allow: true, setup: func(t *testing.T, p *pgxpool.Pool) {
+			grantOpts(t, p, carol, 0, "admin")
+		}},
 		{name: "allow false", ask: "carol", allow: false, wantAllow: true},
 		{name: "name of 513 bytes", ask: strings.Repeat("a", 513), allow: true},
 		{name: "name with a NUL", ask: "car\x00ol", allow: true},
@@ -304,6 +315,11 @@ func TestResetLinkRules(t *testing.T) {
 		{name: "no account.password", at: soon, setup: func(t *testing.T, p *pgxpool.Pool) {
 			denyOpts(t, p, alice, 0, "account.password")
 		}},
+		{name: "the member became an administrator", at: soon, setup: func(t *testing.T, p *pgxpool.Pool) {
+			if _, err := p.Exec(ctx, `delete from acl_user_grants where user_id = $1 and option = 'admin'`, alice); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	}
 	for _, c := range dead {
 		t.Run(c.name, func(t *testing.T) {
@@ -318,6 +334,37 @@ func TestResetLinkRules(t *testing.T) {
 			_, err := board.ResetLink(ctx, pool, token, c.at)
 			wantIs(t, err, board.ErrNotFound, "ResetLink")
 		})
+	}
+}
+
+func TestRequestResetCapsAccounts(t *testing.T) {
+	ctx := context.Background()
+	pool := resetPool(t)
+	// Six active accounts share one address: alice, bob and carol, and three more.
+	if _, err := pool.Exec(ctx, `
+insert into users (id, username, username_clean, email, email_clean, password_hash, password_scheme, state, registered_at)
+select 10 + g, 'extra' || g, 'extra' || g, 'shared@example.com', 'shared@example.com', '', 'gobb', 'active', $1
+  from generate_series(1, 3) g`, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `insert into group_members (group_id, user_id) select g.id, 10 + n from groups g, generate_series(1, 3) n where g.builtin = 'members'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `update users set email = 'shared@example.com', email_clean = 'shared@example.com' where id in ($1, $2, $3)`, alice, bob, carol); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, pool, `select count(*) from users where email_clean = 'shared@example.com' and state = 'active'`); got != 6 {
+		t.Fatalf("%d accounts share the address, want 6", got)
+	}
+	n, err := board.RequestReset(ctx, pool, "shared@example.com", allowAll, resetMail, t0)
+	if err != nil || n != 5 {
+		t.Fatalf("RequestReset = %d, %v; want 5, nil", n, err)
+	}
+	if got := len(readQueue(t, pool)); got != 5 {
+		t.Errorf("queue holds %d emails, want 5", got)
+	}
+	if got := resetCount(t, pool); got != 5 {
+		t.Errorf("%d links, want 5", got)
 	}
 }
 

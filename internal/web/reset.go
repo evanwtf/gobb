@@ -31,7 +31,7 @@ type MailOptions struct {
 // and starts over with the server, like the limits on sign-in.
 const (
 	resetAddrLimit    = 5  // requests from one client address in resetWindow
-	resetBoardLimit   = 30 // requests on the whole board in resetWindow
+	resetBoardLimit   = 30 // emails on the whole board in resetWindow
 	resetDeadLimit    = 20 // dead-link hits from one client address in resetWindow
 	resetAccountLimit = 3  // emails to one account in resetAccountWindow
 	resetWindow       = time.Hour
@@ -46,7 +46,7 @@ const (
 
 // resetLimits holds the limiters of the reset pages.
 type resetLimits struct {
-	// addr counts the requests of each client address, board the requests of the
+	// addr counts the requests of each client address, board the emails of the
 	// whole board, account the emails to each account (by user ID), and dead the
 	// hits on a link that board.ResetLink refuses, for each client address.
 	addr, board, account, dead *ratelimit.Limiter
@@ -176,9 +176,11 @@ func (s *site) resetTooMany(w http.ResponseWriter, p *page, wait time.Duration, 
 
 // resetSubmit serves POST /reset. Whatever the name finds, the answer is the
 // same 303 after the same floor of time: an unknown name, an inactive account, a
-// banned one, one without account.password and one over its email limit all look
-// like a request that queued an email. A refused csrf token (the guard) and an
-// empty name answer before any limit counts.
+// banned one, an administrator, one without account.password, one over its email
+// limit and one that the limit of the board stops all look like a request that
+// queued an email. Only the limit on the client address answers 429, because it
+// counts every request and so shows nothing about a name. A refused csrf token
+// (the guard) and an empty name answer before any limit counts.
 func (s *site) resetSubmit(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	p, err := s.begin(w, r, "Reset your password", "reset")
@@ -196,13 +198,21 @@ func (s *site) resetSubmit(w http.ResponseWriter, r *http.Request) {
 		s.resetTooMany(w, p, wait, "Too many requests from your address. Try again in N minutes.")
 		return
 	}
-	if ok, wait := s.resets.board.Take(resetBoardKey, now); !ok {
-		s.resetTooMany(w, p, wait, "The board is sending too many emails. Try again in N minutes.")
-		return
-	}
+	// allow runs only for an account that gets an email. The limit of the board
+	// counts those emails and not the requests, so requests for unknown names
+	// cannot fill it. When it is full, the account is a quiet skip: a 429 that
+	// shows only for a real account would tell a visitor which names exist.
 	allow := func(userID int64) bool {
-		ok, _ := s.resets.account.Take(strconv.FormatInt(userID, 10), now)
-		return ok
+		key := strconv.FormatInt(userID, 10)
+		if ok, _ := s.resets.account.Take(key, now); !ok {
+			return false
+		}
+		if ok, _ := s.resets.board.Take(resetBoardKey, now); !ok {
+			s.resets.account.Refund(key, now)
+			slog.Warn("reset email skipped: board limit")
+			return false
+		}
+		return true
 	}
 	mailFor := resetMailFor(p.Settings.BoardName, s.opt.Mail.PublicURL)
 	queued, err := board.RequestReset(r.Context(), s.pool, name, allow, mailFor, now)
@@ -321,7 +331,7 @@ func (s *site) resetComplete(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.login.Hold(ctx)
 	}
-	_, err = board.CompleteReset(r.Context(), s.pool, token, next, hold, now)
+	id, err := board.CompleteReset(r.Context(), s.pool, token, next, hold, now)
 	var in *board.InputError
 	switch {
 	case errors.As(err, &in):
@@ -340,9 +350,10 @@ func (s *site) resetComplete(w http.ResponseWriter, r *http.Request) {
 		s.resetError(w, err)
 		return
 	}
-	// CompleteReset deleted every session of the member, so a session cookie that
-	// the request carried names a dead session.
-	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
+	// CompleteReset deleted every session of the member id. Only a visitor who is
+	// that member holds a dead session cookie; the session of another member, or
+	// of nobody, is not touched.
+	if p.Viewer.UserID == id {
 		s.setCookie(w, s.cookie(sessionCookie, "", -1))
 	}
 	http.Redirect(w, r, s.path("login")+"?reset=1", http.StatusSeeOther)

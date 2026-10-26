@@ -30,31 +30,37 @@
   were sent or dropped.
 - **Password reset in the board.** `board.RequestReset` looks a name up as sign-in does (a
   username, then an email address, at most 5 accounts) and queues one email for each
-  active account that has a valid address, has `account.password` and is under no user
-  ban and no email ban. Everything else does nothing, and the answer is the same. A link
-  is 32 random bytes in base64url, lives 1 hour, and the database holds only its
+  active account that has a valid address, has `account.password`, does not have the
+  board-wide `admin` right (an administrator uses `gobb user reset-password`) and is under
+  no user ban and no email ban. Everything else does nothing, and the answer is the same.
+  A link is 32 random bytes in base64url, lives 1 hour, and the database holds only its
   SHA-256. `board.CompleteReset` checks the new password with the account page's rules,
   then in one transaction stores a gobb hash, adds one to the password epoch, sets
   `email_verified`, deletes every session and every link of the member, and writes one
   `user.reset_password` row (`{"via":"email"}`) to the moderation log. A link works once.
   It dies when the password epoch moves (a reset, an account page change, an
   administrator's reset), when the member changes the email address and when a user ban
-  lands. No token, link, address or password is in a log line, an error or a log row. The
-  hourly cleanup logs the email rows and the expired reset links as two counts.
+  lands, and when the member gets the `admin` right. No token, link, address or password
+  is in a log line, an error or a log row. The hourly cleanup logs the email rows and the
+  expired reset links as two counts.
 - **Forgot-password pages.** With email on, the sign-in page links to `/reset`. The form
   takes a username or an email address and always answers `303` to `/reset?sent=1`, after
   at least 400 ms, whatever the name finds. A link opens `/reset/{token}`: a GET or HEAD
   changes nothing, and the POST that saves the new password (typed twice) uses the link
   up, ends every session of the member and sends the member to sign in with a notice. A
   dead link gets a 404 page. The link in the email is built from `GOBB_PUBLIC_URL` and
-  nothing in the request. Limits, in memory: 5 requests an hour from one address, 30 an
-  hour on the whole board and 20 dead-link hits an hour from one address. A request over
-  one of these answers `429` with `Retry-After`. An account that has had 3 emails in a
-  day gets the usual answer and no email. The pages carry `noindex` and `no-store`, and
-  the link page also carries `Referrer-Policy: no-referrer`. A board name with a control
-  character is folded to spaces in the subject. With email off, the four routes answer
-  404 and the sign-in page has no link. A request never waits on SMTP: it queues the
-  email and wakes the worker.
+  nothing in the request. Limits, in memory: 5 requests an hour from one address, 20
+  dead-link hits an hour from one address, 3 emails a day to one account and 30 emails an
+  hour on the whole board. A request or a dead-link hit over the limit of its address
+  answers `429` with `Retry-After`. An account over its limit, or a request that the limit
+  of the board stops, gets the usual answer and no email: a `429` that shows only for a
+  real account would tell a visitor which names exist. Requests for unknown names do not
+  count against the limit of the board. A completed reset clears the session cookie of the
+  visitor only when the visitor is the member whose password changed. The pages carry
+  `noindex` and `no-store`, and the link page also carries `Referrer-Policy: no-referrer`.
+  A board name with a control character is folded to spaces in the subject. With email
+  off, the four routes answer 404 and the sign-in page has no link. A request never waits
+  on SMTP: it queues the email and wakes the worker.
 
 ## 0.2.0 (2026-10-25)
 
