@@ -1,0 +1,44 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1><bdi>{{.Rank.Title}}</bdi></h1>
+  <p class="page-sub">{{plural .Rank.Members "member holds" "members hold"}} this rank by hand.</p>
+</header>
+{{- if .Form.Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Form.Notice}}</p></div>
+{{- end}}
+<form class="post-form" method="post" action="{{.Action}}" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <div class="field">
+    <label for="rank-title">Title</label>
+    <input id="rank-title" name="title" type="text" value="{{.Form.Title}}" maxlength="255" required autocomplete="off"
+      {{- if .Form.Err.title}} aria-invalid="true" aria-describedby="rank-title-error"{{end}}>
+    {{- if .Form.Err.title}}<p class="field-error" id="rank-title-error" role="alert">{{.Form.Err.title}}</p>{{end}}
+  </div>
+  <div class="field">
+    <label for="rank-min">Posts needed</label>
+    <input id="rank-min" name="min_posts" type="text" inputmode="numeric" value="{{.Form.MinPosts}}" maxlength="10" required autocomplete="off"
+      {{- if .Form.Err.min_posts}} aria-invalid="true" aria-describedby="rank-min-error"{{end}}>
+    {{- if .Form.Err.min_posts}}<p class="field-error" id="rank-min-error" role="alert">{{.Form.Err.min_posts}}</p>{{end}}
+  </div>
+  <p class="field-check"><input type="checkbox" id="rank-special" name="special" value="1"{{if .Form.Special}} checked{{end}}> <label for="rank-special">Special rank: an admin gives it, and posts never earn it</label></p>
+  {{- if .Src}}
+  <p><img class="edit-img" src="{{.Src}}" alt="The image of the rank"></p>
+  <p class="field-check"><input type="checkbox" id="rank-remove" name="remove_image" value="1"{{if .Form.Remove}} checked{{end}}> <label for="rank-remove">Remove the image</label></p>
+  {{- end}}
+  <div class="field">
+    <label for="rank-image">{{if .Src}}New image{{else}}Image (optional){{end}}</label>
+    <input id="rank-image" name="image" type="file" accept="image/png,image/jpeg,image/gif"
+      aria-describedby="rank-image-hint{{if .Form.Err.image}} rank-image-error{{end}}"{{if .Form.Err.image}} aria-invalid="true"{{end}}>
+    {{- if .Form.Err.image}}<p class="field-error" id="rank-image-error" role="alert">{{.Form.Err.image}}</p>{{end}}
+    <p class="hint" id="rank-image-hint">A PNG, JPEG or GIF of at most 1 MB and 512 pixels a side.{{if .Src}} Leave it empty to keep the image.{{end}}</p>
+  </div>
+  <div class="form-actions">
+    <button class="button button-inline" type="submit">Save the rank</button>
+    <a class="button-quiet button-link" href="{{path "admin" "ranks"}}">Back to the list</a>
+    <a class="button-quiet button-link" href="{{path "admin" "ranks" (printf "%d" .Rank.ID) "delete"}}">Delete</a>
+  </div>
+</form>
+{{- end}}
+{{end}}

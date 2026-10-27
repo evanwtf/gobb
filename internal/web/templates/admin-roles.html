@@ -1,0 +1,18 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Roles</h1>
+  <p class="page-sub">A role is a named set of options. A forum role is granted on a forum, a board role board-wide, and a moderator role in either place.</p>
+</header>
+<section class="category" aria-label="Roles">
+  <ul class="admin-list">
+    {{- range .Roles}}
+    <li><a href="{{path "admin" "roles" (printf "%d" .ID)}}">{{.Name}}</a> <span class="muted">{{.Kind}} role{{if .Description}}: {{.Description}}{{end}}</span></li>
+    {{- else}}
+    <li class="muted">The board has no roles.</li>
+    {{- end}}
+  </ul>
+</section>
+{{- end}}
+{{end}}

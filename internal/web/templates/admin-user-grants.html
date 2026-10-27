@@ -1,0 +1,74 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Grants of single members</h1>
+  <p class="page-sub">Rights for one member, on top of the groups. A Never here takes an option away even when a group gives it.</p>
+</header>
+{{- if .Done}}<p class="notice-inline" role="status">{{.Done}}</p>{{end}}
+{{- if .Notice}}<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>{{end}}
+{{- if .NeedsPass}}<p class="hint">Changes here need your password. The first change asks for it.</p>{{end}}
+{{- if .Grants}}
+<section class="category" aria-label="Member grants">
+  <table class="member-table log-table">
+    <thead><tr><th scope="col">Member</th><th scope="col">Where</th><th scope="col">Grant</th><th scope="col"></th></tr></thead>
+    <tbody>
+    {{- range .Grants}}
+      <tr>
+        <td data-label="Member">{{template "author" .Holder}}</td>
+        <td data-label="Where">{{if .ForumID}}<bdi>{{.ForumName}}</bdi>{{else}}Board-wide{{end}}</td>
+        <td data-label="Grant">{{if .RoleID}}Role <bdi>{{.RoleName}}</bdi>{{else}}<code>{{.Option}}</code> {{call $.Data.SettingLabel .Setting}}{{end}}</td>
+        <td>
+          <form method="post" action="{{path "admin" "permissions" "revoke"}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="back" value="{{path "admin" "permissions" "members"}}">
+            <input type="hidden" name="kind" value="user">
+            <input type="hidden" name="grant" value="{{.ID}}">
+            <button type="submit" class="button-quiet">Remove</button>
+          </form>
+        </td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+{{- else}}
+<p class="empty standalone">No member has a grant of their own.</p>
+{{- end}}
+<section class="category admin-box" aria-labelledby="ug-add">
+  <h2 id="ug-add">Add a grant</h2>
+  <form class="admin-inline-form" method="post" action="{{path "admin" "permissions" "members" "add"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{path "admin" "permissions" "members"}}">
+    <div class="field">
+      <label for="ug-name">Member</label>
+      <input type="text" id="ug-name" name="name" value="{{.Name}}" maxlength="256" autocomplete="off" required>
+    </div>
+    <div class="field">
+      <label for="ug-forum">Where</label>
+      <select id="ug-forum" name="forum">
+        <option value="0">Board-wide</option>
+        {{- range .Forums}}<option value="{{.ID}}"{{if eq .ID $.Data.Forum}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="ug-role">Role</label>
+      <select id="ug-role" name="role">
+        <option value="0">No role: one option</option>
+        {{- range .Roles}}<option value="{{.ID}}"{{if eq .ID $.Data.Role}} selected{{end}}>{{.Name}} ({{.Kind}})</option>{{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="ug-option">Option</label>
+      <select id="ug-option" name="option">{{range .Options}}<option value="{{.}}"{{if eq . $.Data.Option}} selected{{end}}>{{.}}</option>{{end}}</select>
+    </div>
+    <div class="field">
+      <label for="ug-setting">Setting</label>
+      <select id="ug-setting" name="setting"><option value="yes">Yes</option><option value="no">No</option><option value="never">Never</option></select>
+    </div>
+    <button class="button-quiet" type="submit">Add</button>
+  </form>
+  <p class="hint">With a role, the option and the setting are not used.</p>
+</section>
+{{- end}}
+{{end}}

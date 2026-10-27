@@ -136,11 +136,18 @@ type site struct {
 	// patterns lists every pattern registered on the muxes of the site, for a test
 	// that checks the routes against its tables.
 	patterns []string
-	// staticErrors holds the themed 500 and 503 pages, built once in New. They
-	// answer when even the error template fails.
-	staticErrors map[int][]byte
+	// staticErrors holds the themed 500 and 503 pages. New builds them, and a save
+	// of the board settings builds them again ([site.refreshFrame]). A request
+	// reads the map it finds and never changes it. They answer when even the error
+	// template fails.
+	staticErrors atomic.Pointer[map[int][]byte]
+	// refreshing makes the rebuilds of the frame and the static pages run one
+	// after the other.
+	refreshing sync.Mutex
 	// adminWrites counts the POSTs of each admin to the admin area.
 	adminWrites *ratelimit.Limiter
+	// mailTests counts the test emails of each admin: one a minute.
+	mailTests *ratelimit.Limiter
 	// passes holds the sessions whose admin confirmed the password lately.
 	passes adminPasses
 }
@@ -159,7 +166,7 @@ var onNew func(*site)
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
 var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html",
-	"admin.html", "admin-log.html", "admin-confirm.html", "admin-members.html", "admin-member.html", "admin-bans.html"}
+	"admin.html", "admin-bans.html", "admin-confirm.html", "admin-delete.html", "admin-forum.html", "admin-forums.html", "admin-group.html", "admin-groups.html", "admin-grid.html", "admin-log.html", "admin-member.html", "admin-members.html", "admin-page.html", "admin-pages.html", "admin-perms.html", "admin-rank.html", "admin-ranks.html", "admin-role.html", "admin-roles.html", "admin-settings.html", "admin-smiley.html", "admin-smilies.html", "admin-user-grants.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -177,7 +184,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
 		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(opt.Mail), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight),
-		adminWrites: newAdminWrites(opt)}
+		adminWrites: newAdminWrites(opt), mailTests: newMailTests()}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
@@ -207,9 +214,11 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	case !errors.Is(err, board.ErrNoSettings):
 		return nil, err
 	}
-	if s.staticErrors, err = s.buildStaticErrors(); err != nil {
+	static, err := s.buildStaticErrors(s.frame.Load())
+	if err != nil {
 		return nil, err
 	}
+	s.staticErrors.Store(&static)
 	// The charge of every password check follows the most costly stored hash.
 	// Like the legacy table, it is read once: the server stops for an import.
 	if err := s.login.LoadCharge(ctx); err != nil {
@@ -793,6 +802,30 @@ func (s *site) keepFrame(set board.Settings) {
 	s.frame.Store(&frame{settings: set, loc: loc})
 }
 
+// refreshFrame reads the board settings again and makes the pages that hold the
+// board name follow them: the frame of the error pages ([site.keepFrame]) and the
+// static 500 and 503 pages. An admin's save of the settings calls it, because
+// New built both once. It reads the database itself under a lock, so that two
+// saves at once end with the newest values whatever order they finish in. A
+// request that holds the old map of pages finishes with it; the next one gets the
+// new map. When the settings or the pages cannot be built it returns the error
+// and leaves what it had.
+func (s *site) refreshFrame(ctx context.Context) error {
+	s.refreshing.Lock()
+	defer s.refreshing.Unlock()
+	set, err := board.LoadSettings(ctx, s.pool)
+	if err != nil {
+		return fmt.Errorf("web: refresh the error pages: %w", err)
+	}
+	s.keepFrame(set)
+	static, err := s.buildStaticErrors(s.frame.Load())
+	if err != nil {
+		return err
+	}
+	s.staticErrors.Store(&static)
+	return nil
+}
+
 // framePage returns the page of a guest built from the settings in memory: the
 // board name, the header image, the default scheme (or a valid ?scheme= of r,
 // which may be nil) and the board's time zone. It reads no database, no
@@ -801,8 +834,13 @@ func (s *site) keepFrame(set board.Settings) {
 // database with no board), the frame is gobb's own: the name gobb, the zone
 // UTC and the first scheme.
 func (s *site) framePage(r *http.Request, title string) *page {
+	return s.framePageFrom(s.frame.Load(), r, title)
+}
+
+// framePageFrom is [site.framePage] for the frame f, which may be nil.
+func (s *site) framePageFrom(f *frame, r *http.Request, title string) *page {
 	set, loc, scheme := board.Settings{BoardName: "gobb"}, time.UTC, board.Schemes[0]
-	if f := s.frame.Load(); f != nil {
+	if f != nil {
 		set, loc = f.settings, f.loc
 		if board.ValidScheme(set.DefaultScheme) {
 			scheme = set.DefaultScheme
@@ -877,10 +915,14 @@ func (s *site) writeFailure(w http.ResponseWriter, status int) {
 // writeStatic writes the themed page that New built for status: the 503 for
 // 503, and the 500 for any other status.
 func (s *site) writeStatic(w http.ResponseWriter, status int) {
-	b, ok := s.staticErrors[status]
+	var pages map[int][]byte
+	if m := s.staticErrors.Load(); m != nil {
+		pages = *m
+	}
+	b, ok := pages[status]
 	if !ok {
 		status = http.StatusInternalServerError
-		b = s.staticErrors[status]
+		b = pages[status]
 	}
 	if len(b) == 0 {
 		// New always builds the pages. Only a site that New did not build has
@@ -906,14 +948,15 @@ func writeHTML(w http.ResponseWriter, status int, body []byte) {
 	_, _ = w.Write(body)
 }
 
-// buildStaticErrors builds the themed 500 and 503 pages from the settings in
-// memory, once, at start. A broken error template fails New here.
-func (s *site) buildStaticErrors() (map[int][]byte, error) {
+// buildStaticErrors builds the themed 500 and 503 pages from the frame f, which
+// may be nil. New calls it at start, and a broken error template fails New here.
+// [site.refreshFrame] calls it after a save of the board settings.
+func (s *site) buildStaticErrors(f *frame) (map[int][]byte, error) {
 	out := map[int][]byte{}
 	for _, status := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
 		d := failTexts[status]
 		d.Status = status
-		p := s.framePage(nil, d.Heading)
+		p := s.framePageFrom(f, nil, d.Heading)
 		p.Data = d
 		var buf bytes.Buffer
 		if err := s.pages["error.html"].ExecuteTemplate(&buf, "layout", p); err != nil {

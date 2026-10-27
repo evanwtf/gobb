@@ -1,0 +1,131 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>{{if .New}}New forum{{else}}Edit <bdi>{{.Forum.Name}}</bdi>{{end}}</h1>
+  {{- if not .New}}
+  <p class="page-sub">
+    {{- if eq .Forum.Kind "forum"}}{{plural .Forum.Topics "topic" "topics"}}, {{plural .Forum.Posts "post" "posts"}} (approved, this forum alone). {{end -}}
+    <a href="{{path "f" (printf "%d" .Forum.ID)}}">Open it on the board</a></p>
+  {{- end}}
+</header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
+{{- if .Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>
+{{- end}}
+
+{{- if .NeedsPass}}
+<p class="hint">A new forum copies the grants of another forum, so it needs your password. <a href="{{.ConfirmHref}}">Confirm your password</a>, then come back to this form.</p>
+{{- else}}
+<section class="account-section" aria-labelledby="details-title">
+  <h2 id="details-title">Details</h2>
+  <form class="post-form" method="post" action="{{if .New}}{{path "admin" "forums" "new"}}{{else}}{{path "admin" "forums" (printf "%d" .Forum.ID) "edit"}}{{end}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{path "admin" "forums" "new"}}">
+    <div class="field">
+      <label for="forum-kind">Kind</label>
+      <select id="forum-kind" name="kind" aria-describedby="forum-kind-hint{{if .Err.kind}} forum-kind-error{{end}}"{{if .Err.kind}} aria-invalid="true"{{end}}>
+        {{- range .Kinds}}
+        <option value="{{.}}"{{if eq . $.Data.Kind}} selected{{end}}>{{if eq . "category"}}Category{{else if eq . "link"}}Link{{else}}Forum{{end}}</option>
+        {{- end}}
+      </select>
+      {{- if .Err.kind}}<p class="field-error" id="forum-kind-error" role="alert">{{.Err.kind}}</p>{{end}}
+      <p class="hint" id="forum-kind-hint">A category groups forums. A forum holds topics. A link sends the visitor to an address. A forum with topics cannot become a category or a link.</p>
+    </div>
+    <div class="field">
+      <label for="forum-name">Name</label>
+      <input id="forum-name" name="name" type="text" value="{{.Name}}" maxlength="100" required{{if .Err.name}} aria-invalid="true" aria-describedby="forum-name-error"{{end}}>
+      {{- if .Err.name}}<p class="field-error" id="forum-name-error" role="alert">{{.Err.name}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="forum-description">Description</label>
+      <input id="forum-description" name="description" type="text" value="{{.Description}}" maxlength="500"{{if .Err.description}} aria-invalid="true" aria-describedby="forum-description-error"{{end}}>
+      {{- if .Err.description}}<p class="field-error" id="forum-description-error" role="alert">{{.Err.description}}</p>{{end}}
+      <p class="hint">One line, at most 500 characters. The index shows it under the name.</p>
+    </div>
+    <div class="field">
+      <label for="forum-rules">Rules</label>
+      <textarea id="forum-rules" name="rules" rows="6"{{if .Err.rules}} aria-invalid="true" aria-describedby="forum-rules-error"{{end}}>{{textareaValue .Rules}}</textarea>
+      {{- if .Err.rules}}<p class="field-error" id="forum-rules-error" role="alert">{{.Err.rules}}</p>{{end}}
+      <p class="hint">Plain text, at most 5000 characters. Line breaks stay. The forum page shows it above the topics.</p>
+    </div>
+    <div class="field">
+      <label for="forum-link">Link address</label>
+      <input id="forum-link" name="link_url" type="url" value="{{.LinkURL}}" maxlength="2000" autocomplete="off"{{if .Err.link_url}} aria-invalid="true" aria-describedby="forum-link-error"{{end}}>
+      {{- if .Err.link_url}}<p class="field-error" id="forum-link-error" role="alert">{{.Err.link_url}}</p>{{end}}
+      <p class="hint">For a link only: an address that starts with http:// or https://. Another kind ignores it.</p>
+    </div>
+    {{- if .New}}
+    <div class="field">
+      <label for="forum-parent">Parent</label>
+      <select id="forum-parent" name="parent"{{if .Err.parent}} aria-invalid="true" aria-describedby="forum-parent-error"{{end}}>
+        <option value="">No parent (top level)</option>
+        {{- range .Parents}}
+        <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Data.Parent}} selected{{end}}>{{.Label}}</option>
+        {{- end}}
+      </select>
+      {{- if .Err.parent}}<p class="field-error" id="forum-parent-error" role="alert">{{.Err.parent}}</p>{{end}}
+      <p class="hint">The new forum goes at the end of the forums under the parent.</p>
+    </div>
+    <div class="field">
+      <label for="forum-grants">Copy who can see it from</label>
+      <select id="forum-grants" name="grants_from" aria-describedby="forum-grants-hint{{if .Err.grants_from}} forum-grants-error{{end}}"{{if .Err.grants_from}} aria-invalid="true"{{end}}>
+        <option value="">No forum: nobody can see the new forum yet</option>
+        {{- range .Sources}}
+        <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Data.GrantsFrom}} selected{{end}}>{{.Label}}</option>
+        {{- end}}
+      </select>
+      {{- if .Err.grants_from}}<p class="field-error" id="forum-grants-error" role="alert">{{.Err.grants_from}}</p>{{end}}
+      <p class="hint" id="forum-grants-hint">Without a grant, nobody can see a forum, an admin included on the board. The new forum gets a copy of every group grant and member grant of the forum you pick here. The default is the parent.</p>
+    </div>
+    {{- end}}
+    <div class="form-actions"><button class="button button-inline" type="submit">{{if .New}}Create{{else}}Save{{end}}</button>
+      <a href="{{path "admin" "forums"}}">Back to the forums</a></div>
+  </form>
+</section>
+{{- end}}
+
+{{- if not .New}}
+<section class="account-section" aria-labelledby="move-title">
+  <h2 id="move-title">Place in the tree</h2>
+  <p class="hint">A move changes who sees the forum in the index, so it needs your password. It asks for it first.</p>
+  <form class="post-form" method="post" action="{{path "admin" "forums" (printf "%d" .Forum.ID) "move"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{path "admin" "forums" (printf "%d" .Forum.ID)}}">
+    <div class="field">
+      <label for="move-parent">Parent</label>
+      <select id="move-parent" name="parent"{{if .Err.parent}} aria-invalid="true" aria-describedby="move-parent-error"{{end}}>
+        <option value="">No parent (top level)</option>
+        {{- range .Parents}}
+        <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Data.Parent}} selected{{end}}>{{.Label}}</option>
+        {{- end}}
+      </select>
+      {{- if .Err.parent}}<p class="field-error" id="move-parent-error" role="alert">{{.Err.parent}}</p>{{end}}
+      <p class="hint">The forum goes to the end of the forums under the new parent, and its subforums go with it. It cannot go under itself or under one of its subforums. Use Up and Down on the <a href="{{path "admin" "forums"}}">forum list</a> to change its place among its siblings.</p>
+    </div>
+    <div class="form-actions"><button class="button button-inline" type="submit">Move</button></div>
+  </form>
+</section>
+
+<section class="account-section" aria-labelledby="lock-title">
+  <h2 id="lock-title">Lock</h2>
+  <p>{{if .Forum.Locked}}This forum is <b>locked</b>.{{else}}This forum is open.{{end}}</p>
+  <p class="hint">A locked forum takes no new topics and no replies. Members who hold the moderator right <code>mod.lock</code> in this forum can still post. Reading, edits and deletes are not affected, and neither are the subforums. Only a forum holds topics, so only a forum can be locked.</p>
+  {{- if .Err.locked}}<p class="field-error" role="alert">{{.Err.locked}}</p>{{end}}
+  {{- if .Forum.Locked}}
+  <form method="post" action="{{path "admin" "forums" (printf "%d" .Forum.ID) "unlock"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="form-actions"><button class="button button-inline" type="submit">Unlock</button></div>
+  </form>
+  {{- else if eq .Forum.Kind "forum"}}
+  <form method="post" action="{{path "admin" "forums" (printf "%d" .Forum.ID) "lock"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="form-actions"><button class="button button-inline" type="submit">Lock</button></div>
+  </form>
+  {{- end}}
+</section>
+{{- end}}
+{{- end}}
+{{end}}

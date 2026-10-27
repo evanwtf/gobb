@@ -146,6 +146,9 @@ const (
 	// textMessage is a private message: pm.markdown and pm.smilies set the flags,
 	// and pm.images decides on images. No forum applies.
 	textMessage
+	// textPage is a static page, written by an admin: the flags are given, as for
+	// an import, the images are free and the limit is [maxPageBytes].
+	textPage
 )
 
 // ParseMessage is the path from the text of a private message to a stored tree.
@@ -165,8 +168,8 @@ func ParseMessage(ctx context.Context, q db.Querier, v Viewer, src string) (Body
 // [ParseMessage]. forumID applies to textPost only.
 func parseText(ctx context.Context, q db.Querier, v Viewer, kind textKind, forumID int64, src string, flags *markup.Options, stored *markup.Node) (Body, error) {
 	signature := kind == textSignature
-	if signature && flags == nil {
-		return Body{}, errors.New("board: a signature needs its stored flags")
+	if (signature || kind == textPage) && flags == nil {
+		return Body{}, errors.New("board: a signature or a page needs its flags")
 	}
 	if err := checkSource(src, kind); err != nil {
 		return Body{}, err
@@ -215,6 +218,8 @@ func parseText(ctx context.Context, q db.Querier, v Viewer, kind textKind, forum
 			}
 		case textMessage:
 			may = v.Perms.Has("pm.images", 0)
+		case textPage:
+			may = true
 		default:
 			may = v.Perms.Has("post.images", forumID)
 		}
@@ -254,6 +259,8 @@ func checkSource(src string, kind textKind) error {
 		limit, limitText = maxSignatureBytes, "2,000"
 	case textMessage:
 		limit, limitText = maxMessageBytes, "60,000"
+	case textPage:
+		limit, limitText = maxPageBytes, "100,000"
 	}
 	switch {
 	case !utf8.ValidString(src):

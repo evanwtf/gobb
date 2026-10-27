@@ -1,0 +1,83 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>{{if .ForumID}}<bdi>{{.ForumName}}</bdi>{{else}}Board-wide{{end}}</h1>
+  <p class="page-sub">The grants of each group {{if .ForumID}}in this forum{{else}}board-wide{{end}}. A group gets a role, or single options with a setting.</p>
+</header>
+{{- if .Done}}<p class="notice-inline" role="status">{{.Done}}</p>{{end}}
+{{- if .Notice}}<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>{{end}}
+{{- if .NeedsPass}}<p class="hint">Changes here need your password. The first change asks for it.</p>{{end}}
+<section class="category" aria-label="Roles of the groups">
+  <table class="member-table log-table grid-table">
+    <thead>
+      <tr>
+        <th scope="col">Group</th>
+        {{- range .Roles}}
+        <th scope="col"><a href="{{path "admin" "roles" (printf "%d" .ID)}}">{{.Name}}</a></th>
+        {{- end}}
+        <th scope="col">Single options</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range $g := .Groups}}
+      <tr>
+        <th scope="row"><bdi>{{$g.Name}}</bdi></th>
+        {{- range $.Data.Roles}}
+        <td data-label="{{.Name}}">
+          <form method="post" action="{{$.Data.Href}}/role">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="back" value="{{$.Data.Href}}">
+            <input type="hidden" name="group" value="{{$g.ID}}">
+            <input type="hidden" name="role" value="{{.ID}}">
+            {{- if index $g.Roles .ID}}
+            <input type="hidden" name="on" value="0">
+            <button type="submit" class="button-quiet" aria-label="Take {{.Name}} from {{$g.Name}}">Granted &middot; remove</button>
+            {{- else}}
+            <input type="hidden" name="on" value="1">
+            <button type="submit" class="button-quiet" aria-label="Give {{.Name}} to {{$g.Name}}">Give</button>
+            {{- end}}
+          </form>
+        </td>
+        {{- end}}
+        <td data-label="Single options">
+          {{- range $g.Options}}
+          <form class="grant-line" method="post" action="{{path "admin" "permissions" "revoke"}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="back" value="{{$.Data.Href}}">
+            <input type="hidden" name="kind" value="group">
+            <input type="hidden" name="grant" value="{{.ID}}">
+            <code>{{.Option}}</code> {{call $.Data.SettingLabel .Setting}}
+            <button type="submit" class="button-quiet" aria-label="Remove {{.Option}} from {{$g.Name}}">remove</button>
+          </form>
+          {{- else}}<span class="muted">None</span>{{end}}
+        </td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+<section class="category admin-box" aria-labelledby="grid-option">
+  <h2 id="grid-option">Set one option for a group</h2>
+  <form class="admin-inline-form" method="post" action="{{.Href}}/option">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{.Href}}">
+    <div class="field">
+      <label for="go-group">Group</label>
+      <select id="go-group" name="group">{{range .Groups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>
+    </div>
+    <div class="field">
+      <label for="go-option">Option</label>
+      <select id="go-option" name="option">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+    </div>
+    <div class="field">
+      <label for="go-setting">Setting</label>
+      <select id="go-setting" name="setting">
+        <option value="yes">Yes</option><option value="no">No</option><option value="never">Never</option><option value="unset">Not set (remove)</option>
+      </select>
+    </div>
+    <button class="button-quiet" type="submit">Save</button>
+  </form>
+</section>
+{{- end}}
+{{end}}
