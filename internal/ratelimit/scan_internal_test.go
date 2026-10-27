@@ -47,7 +47,9 @@ func TestScan(t *testing.T) {
 
 // One scrape reads a limiter once, at one time. The clock here jumps two windows
 // ahead after its first reading, so a gauge that read the time again would see
-// the key gone while another gauge saw it at the limit.
+// the key gone while another gauge saw it at the limit. The test swaps the
+// package variable clock, which is safe only because no test in this package
+// runs in parallel.
 func TestScrapeGaugesAgree(t *testing.T) {
 	l := New(2, time.Minute, 10).Named("test_agree")
 	l.Add("k", base)

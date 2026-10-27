@@ -147,6 +147,47 @@ func TestGaugeGroup(t *testing.T) {
 	}
 }
 
+// A plain family under the name of any member of a group is a type clash, so
+// neither a duplicate family nor a silent replacement of the group. The same
+// group registered again replaces the first, and TYPE still says gauge.
+func TestGaugeGroupNamesAreHeld(t *testing.T) {
+	group := func(r *Registry) {
+		r.GaugeGroup([]string{"l"}, []GaugeSpec{{"t_b", "B."}, {"t_a", "A."}, {"t_c", "C."}},
+			func() [][]Sample { return [][]Sample{{{[]string{"x"}, 1}}, {{[]string{"x"}, 2}}, {{[]string{"x"}, 3}}} })
+	}
+	panics := func(name string, f func(r *Registry)) {
+		t.Helper()
+		r := NewRegistry()
+		group(r)
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s did not panic", name)
+			}
+		}()
+		f(r)
+	}
+	for _, n := range []string{"t_a", "t_b", "t_c"} {
+		panics("Gauge "+n, func(r *Registry) { r.Gauge(n, "Plain.") })
+		panics("GaugeFunc "+n, func(r *Registry) { r.GaugeFunc(n, "Plain.", func() (float64, bool) { return 1, true }) })
+	}
+	panics("a group on a name of another group", func(r *Registry) {
+		r.GaugeGroup([]string{"l"}, []GaugeSpec{{"t_z", "Z."}, {"t_c", "C."}}, func() [][]Sample { return nil })
+	})
+
+	r := NewRegistry()
+	group(r)
+	group(r)
+	out := written(t, r)
+	for _, n := range []string{"t_a", "t_b", "t_c"} {
+		if c := strings.Count(out, "# TYPE "+n+" gauge\n"); c != 1 {
+			t.Errorf("%s has %d TYPE lines, want 1:\n%s", n, c, out)
+		}
+	}
+	if !strings.Contains(out, `t_c{l="x"} 3`) {
+		t.Errorf("the group lost a series:\n%s", out)
+	}
+}
+
 // A second family with the same name replaces the first, so building the server
 // twice in one process registers again with no error and no duplicate.
 func TestRegisterReplaces(t *testing.T) {

@@ -56,7 +56,8 @@ func (r *Registry) register(name string, f family) {
 	r.fams[name] = f
 }
 
-// WriteTo writes every family in the text format, sorted by name.
+// WriteTo writes every family in the text format, sorted by name. A gauge group
+// writes all its families at the position of its lowest name.
 func (r *Registry) WriteTo(w io.Writer) (int64, error) {
 	r.mu.Lock()
 	names := make([]string, 0, len(r.fams))
@@ -328,6 +329,18 @@ type samplesGroup struct {
 	f      func() [][]Sample
 }
 
+// kind is not "gauge", so that a plain family under the name of a member of the
+// group is a type clash. The TYPE line of each member still says gauge.
+func (g *samplesGroup) kind() string { return "gauge (group " + g.name + ")" }
+
+// groupAlias holds the name of a member of a group that is not the lowest. It
+// writes nothing: the group does. It has the kind of the group, so that a plain
+// family under the name panics, and the same group registered again replaces it.
+type groupAlias struct{ k string }
+
+func (a groupAlias) write(*bufio.Writer) {}
+func (a groupAlias) kind() string        { return a.k }
+
 func (g *samplesGroup) write(w *bufio.Writer) {
 	rows := g.f()
 	for i, sp := range g.specs {
@@ -384,6 +397,9 @@ func (r *Registry) GaugeGroup(labels []string, specs []GaugeSpec, f func() [][]S
 			}
 			return out
 		}}
+	for _, sp := range sorted[1:] {
+		r.register(sp.Name, groupAlias{g.kind()})
+	}
 	r.register(sorted[0].Name, g)
 }
 
