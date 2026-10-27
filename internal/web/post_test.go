@@ -734,6 +734,8 @@ var tokenRows = []tokenRow{
 	{"/reset", "", url.Values{"name": {"alice"}}, ""},
 	{"/reset/" + testResetToken, "", url.Values{"password": {"a new pass phrase"}, "again": {"a new pass phrase"}}, testResetTokenRow()},
 	{"/admin/confirm", "alice", url.Values{"password": {testPassword}, "next": {"/admin/log"}}, ""},
+	{"/admin/bans", "alice", url.Values{"kind": {"email"}, "target": {"spam@example.net"}}, ""},
+	{"/admin/bans/1/lift", "alice", url.Values{}, ""},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post

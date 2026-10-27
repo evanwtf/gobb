@@ -969,6 +969,7 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 .log-table th:nth-child(2), .log-table th:nth-child(3) { width: auto; text-align: left; }
 .log-table td { vertical-align: top; overflow-wrap: anywhere; }
 .log-table td:first-child { white-space: nowrap; }
+.ban-table td form { margin: 0; }
 
 .team-group { margin: 0 0 1.5rem; }
 .team-group h2 { margin-bottom: 0.6rem; font-size: 1.15rem; }
@@ -1035,6 +1036,7 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
   .member-table .forum-count { font-size: 0.9rem; color: var(--text); }
   .log-table td { margin-top: 0.3rem; }
   .log-table td::before { content: attr(data-label) ": "; color: var(--muted); }
+  .ban-table td.ban-act::before { content: none; }
 
   .static-page { padding: 0.9rem 1rem 1rem; }
   .team-list { grid-template-columns: minmax(0, 1fr); }
