@@ -188,35 +188,85 @@ func newHashedPassword() (pw, hash string, err error) {
 // reason that is not valid UTF-8, that holds a NUL, or that is over 255
 // characters is an [*InputError] on the field "reason".
 func BanUser(ctx context.Context, pool *pgxpool.Pool, userID int64, reason string, now time.Time) error {
-	if !utf8.ValidString(reason) || strings.ContainsRune(reason, 0) {
-		return inputError("reason", "The reason must be valid text.")
-	}
-	if utf8.RuneCountInString(reason) > maxBanReason {
-		return inputError("reason", "The reason is too long.")
+	if err := checkBanText("reason", reason); err != nil {
+		return err
 	}
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
+		if _, err := banUserTx(ctx, tx, userBan{userID: userID, reason: reason}, now); err != nil {
 			return err
-		}
-		var banned bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from bans where kind = 'user' and user_id = $1 and (ends_at is null or ends_at > $2))`,
-			userID, now).Scan(&banned); err != nil {
-			return fmt.Errorf("board: check the bans of %d: %w", userID, err)
-		}
-		if banned {
-			return ErrAlreadyBanned
-		}
-		if _, err := tx.Exec(ctx, `insert into bans (kind, user_id, reason, created_at) values ('user', $1, $2, $3)`, userID, reason, now); err != nil {
-			return fmt.Errorf("board: ban %d: %w", userID, err)
-		}
-		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `delete from user_ips where user_id = $1`, userID); err != nil {
-			return fmt.Errorf("board: remove the addresses of %d: %w", userID, err)
 		}
 		return logMod(ctx, tx, Viewer{}, "user.ban", "user", userID, viaCLI, now)
 	})
+}
+
+// checkBanText returns an [*InputError] on field when text is not valid UTF-8,
+// holds a NUL, or is over 255 characters. Both ban reasons use it.
+func checkBanText(field, text string) error {
+	if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
+		return inputError(field, "The reason must be valid text.")
+	}
+	if utf8.RuneCountInString(text) > maxBanReason {
+		return inputError(field, "The reason is too long.")
+	}
+	return nil
+}
+
+// userBan is what [banUserTx] writes.
+type userBan struct {
+	userID int64
+	// reason is for staff. shown is the reason that the member reads at sign-in.
+	reason, shown string
+	// endsAt is the end of the ban, or nil for a ban with no end.
+	endsAt *time.Time
+	// createdBy is the admin who adds the ban, or 0 for the command line.
+	createdBy int64
+	// refuseOwner makes a ban of an owner an [*InputError] on the field "target".
+	refuseOwner bool
+}
+
+// banUserTx is the one write of a user ban, for the command line and for the
+// admin pages. In the transaction tx it takes the user row FOR UPDATE, inserts
+// the ban, ends every session of the member and removes the addresses that the
+// member used. It returns the ID of the ban. It writes no mod_log row: the caller
+// writes its own. The text of both reasons is the caller's to check.
+//
+// A member who does not exist is [ErrNotFound]. A member whom a user ban that has
+// not ended holds already gets [ErrAlreadyBanned].
+func banUserTx(ctx context.Context, tx pgx.Tx, b userBan, now time.Time) (int64, error) {
+	if err := lockUser(ctx, tx, b.userID); err != nil {
+		return 0, err
+	}
+	if b.refuseOwner {
+		var owner bool
+		if err := tx.QueryRow(ctx, `select is_owner from users where id = $1`, b.userID).Scan(&owner); err != nil {
+			return 0, fmt.Errorf("board: read the owner flag of %d: %w", b.userID, err)
+		}
+		if owner {
+			return 0, inputError("target", "An owner cannot be banned.")
+		}
+	}
+	var banned bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from bans where kind = 'user' and user_id = $1 and (ends_at is null or ends_at > $2))`,
+		b.userID, now).Scan(&banned); err != nil {
+		return 0, fmt.Errorf("board: check the bans of %d: %w", b.userID, err)
+	}
+	if banned {
+		return 0, ErrAlreadyBanned
+	}
+	var id int64
+	if err := tx.QueryRow(ctx, `
+insert into bans (kind, user_id, reason, reason_shown, created_at, ends_at, created_by)
+values ('user', $1, $2, $3, $4, $5, $6) returning id`,
+		b.userID, b.reason, b.shown, now, b.endsAt, nullID(b.createdBy)).Scan(&id); err != nil {
+		return 0, fmt.Errorf("board: ban %d: %w", b.userID, err)
+	}
+	if _, err := session.DeleteUser(ctx, tx, b.userID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `delete from user_ips where user_id = $1`, b.userID); err != nil {
+		return 0, fmt.Errorf("board: remove the addresses of %d: %w", b.userID, err)
+	}
+	return id, nil
 }
 
 // UnbanUser removes the user bans of member userID that have not ended, and

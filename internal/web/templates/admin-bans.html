@@ -1,0 +1,108 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Bans</h1>
+  <p class="page-sub">The bans in force: a member, an email address or an IP address or range.</p>
+</header>
+{{- with .Done}}
+<p class="notice-inline" role="status">{{.}}</p>
+{{- end}}
+
+<section class="account-section" aria-labelledby="ban-add-title">
+  <h2 id="ban-add-title">Add a ban</h2>
+  <form class="post-form" method="post" action="{{path "admin" "bans"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{.AddBack}}">
+    <div class="field">
+      <label for="ban-kind">Kind</label>
+      <select id="ban-kind" name="kind"{{if .Err.Kind}} aria-invalid="true" aria-describedby="ban-kind-error"{{end}}>
+        <option value="user"{{if eq .Form.Kind "user"}} selected{{end}}>Member</option>
+        <option value="email"{{if eq .Form.Kind "email"}} selected{{end}}>Email address</option>
+        <option value="ip"{{if eq .Form.Kind "ip"}} selected{{end}}>IP address or range</option>
+      </select>
+      {{- if .Err.Kind}}<p class="field-error" id="ban-kind-error" role="alert">{{.Err.Kind}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="ban-target">Target</label>
+      <input id="ban-target" name="target" type="text" value="{{.Form.Target}}" maxlength="254" required autocomplete="off"
+        aria-describedby="ban-target-hint{{if .Err.Target}} ban-target-error{{end}}"{{if .Err.Target}} aria-invalid="true"{{end}}>
+      {{- if .Err.Target}}<p class="field-error" id="ban-target-error" role="alert">{{.Err.Target}}</p>{{end}}
+      <p class="hint" id="ban-target-hint">A username, an email address, or an IP address or range such as 192.0.2.0/24.</p>
+    </div>
+    <div class="field-check">
+      <input id="ban-wide" name="confirm_wide" type="checkbox" value="1"{{if .Form.ConfirmWide}} checked{{end}}
+        {{- if .Err.ConfirmWide}} aria-invalid="true" aria-describedby="ban-wide-error"{{end}}>
+      <label for="ban-wide">I confirm a wide range</label>
+      <p class="hint">Needed for a range wider than /16 (IPv4) or /48 (IPv6). A wide range can block many people.</p>
+      {{- if .Err.ConfirmWide}}<p class="field-error" id="ban-wide-error" role="alert">{{.Err.ConfirmWide}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="ban-reason">Reason for staff</label>
+      <input id="ban-reason" name="reason" type="text" value="{{.Form.Reason}}" maxlength="255" autocomplete="off"
+        {{- if .Err.Reason}} aria-invalid="true" aria-describedby="ban-reason-error"{{end}}>
+      {{- if .Err.Reason}}<p class="field-error" id="ban-reason-error" role="alert">{{.Err.Reason}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="ban-shown">Reason the member sees</label>
+      <input id="ban-shown" name="reason_shown" type="text" value="{{.Form.ReasonShown}}" maxlength="255" autocomplete="off"
+        {{- if .Err.ReasonShown}} aria-invalid="true" aria-describedby="ban-shown-error"{{end}}>
+      {{- if .Err.ReasonShown}}<p class="field-error" id="ban-shown-error" role="alert">{{.Err.ReasonShown}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="ban-ends">Ends</label>
+      <input id="ban-ends" name="ends" type="datetime-local" value="{{.Form.Ends}}"
+        aria-describedby="ban-ends-hint{{if .Err.Ends}} ban-ends-error{{end}}"{{if .Err.Ends}} aria-invalid="true"{{end}}>
+      {{- if .Err.Ends}}<p class="field-error" id="ban-ends-error" role="alert">{{.Err.Ends}}</p>{{end}}
+      <p class="hint" id="ban-ends-hint">In your time zone, {{.Zone}}. Leave it empty for a ban with no end.</p>
+    </div>
+    <div class="form-actions"><button class="button button-inline" type="submit">Add ban</button></div>
+  </form>
+</section>
+
+{{- if .Entries}}
+{{template "pager" pagerAt .Pager "Pages, top"}}
+<section class="category" aria-label="Bans in force">
+  <table class="member-table log-table ban-table">
+    <thead>
+      <tr>
+        <th scope="col">Kind</th>
+        <th scope="col">Target</th>
+        <th scope="col">Staff reason</th>
+        <th scope="col">Shown to member</th>
+        <th scope="col">Since</th>
+        <th scope="col">Ends</th>
+        <th scope="col">Added by</th>
+        <th scope="col"><span class="visually-hidden">Lift</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .Entries}}
+      <tr>
+        <td data-label="Kind"><code>{{.Kind}}</code></td>
+        <td data-label="Target">
+          {{- if eq .Kind "user"}}{{template "author" .Member}}{{else}}<bdi>{{.Target}}</bdi>{{end -}}
+        </td>
+        <td data-label="Staff reason">{{if .Reason}}<bdi>{{.Reason}}</bdi>{{else}}<span class="muted">None</span>{{end}}</td>
+        <td data-label="Shown to member">{{if .ReasonShown}}<bdi>{{.ReasonShown}}</bdi>{{else}}<span class="muted">None</span>{{end}}</td>
+        <td data-label="Since">{{time .CreatedAt $.Clock}}</td>
+        <td data-label="Ends">{{if .EndsAt}}{{time .EndsAt $.Clock}}{{else}}<span class="muted">No end</span>{{end}}</td>
+        <td data-label="Added by">{{if .CreatedBy.ID}}{{template "author" .CreatedBy}}{{else}}<span class="muted">Command line or import</span>{{end}}</td>
+        <td class="ban-act">
+          <form method="post" action="{{path "admin" "bans" (printf "%d" .ID) "lift"}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="back" value="{{$.Data.Back}}">
+            <button class="button-quiet" type="submit">Lift<span class="visually-hidden"> the ban on {{.Target}}</span></button>
+          </form>
+        </td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+{{template "pager" pagerAt .Pager "Pages, bottom"}}
+{{- else}}
+<p class="empty standalone">No ban is in force.</p>
+{{- end}}
+{{- end}}
+{{end}}

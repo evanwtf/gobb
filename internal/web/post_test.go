@@ -739,6 +739,8 @@ var tokenRows = []tokenRow{
 	{"/admin/members/3/rank", "alice", url.Values{"rank": {"1"}}, ""},
 	{"/admin/members/3/verify-email", "alice", url.Values{}, ""},
 	{"/admin/members/3/reset-password", "alice", url.Values{"back": {"/admin/members/3"}}, ""},
+	{"/admin/bans", "alice", url.Values{"kind": {"email"}, "target": {"spam@example.net"}}, ""},
+	{"/admin/bans/1/lift", "alice", url.Values{}, ""},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post

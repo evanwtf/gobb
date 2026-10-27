@@ -140,6 +140,7 @@ var noindexPages = map[string]bool{
 	"messages.html": true, "message.html": true, "message-new.html": true, "reset.html": true, "reset-link.html": true,
 	"admin.html": true, "admin-log.html": true, "admin-confirm.html": true,
 	"admin-members.html": true, "admin-member.html": true,
+	"admin-bans.html": true,
 }
 
 // cacheControl returns the Cache-Control value of an HTML page. Every page

@@ -49,6 +49,38 @@ request. The date is the day of the tag.
 - `mod_log` rows: `user.activate`, `user.deactivate`, `user.reset_password`,
   `user.rank` and `user.verify_email`, with `{"via":"web"}`. The command line writes
   the same rows as before.
+### Bans (evanwtf/gobb#23)
+- **`/admin/bans`:** the bans in force, newest first, 50 a page. Each row shows the
+  kind, the target (a member is linked), the reason for staff, the reason the member
+  sees, the start, the end and who added it (the command line and the import show as
+  such). A ban that has ended leaves the list.
+- **Add a ban** for a member, an email address or an IP address or range, with both
+  reasons and an optional end (in the time zone of the admin, in the future). Adding
+  is a dangerous write: it asks for the password first. The page links from the
+  members page as `/admin/bans?kind=user&target=<username>`, which fills the form.
+  - A member is found by the clean username, as at sign-in. The ban ends the member's
+    sessions and removes the member's `user_ips` rows. `board.BanUser` (the command
+    line) and the web add now share one function, `banUserTx`; the command line keeps
+    its behavior.
+  - An email address is stored in its clean form (`account.CleanEmail`), the form that
+    sign-in and the reset request compare.
+  - An IP address is stored as a range of one; a range is stored with its host bits
+    cleared. The IPv4-mapped IPv6 form is refused: sign-in compares the plain IPv4
+    form.
+  - A range wider than /16 (IPv4) or /48 (IPv6) is refused unless the admin ticks
+    "I confirm a wide range".
+  - Refused: a ban on the admin, a user ban on an owner, an email ban on the address
+    of the admin or of an owner, an IP range that holds the address the admin writes
+    from or an address that an owner has used, a range of every IPv4 or IPv6
+    address, and a target that a ban in force holds already. Each is a message
+    beside the field, status 400, and nothing changes.
+  - A user ban takes the same lock as a deactivation and the same check after it:
+    no ban may leave the board without an active admin who can sign in. That check
+    no longer counts a member with a user ban in force.
+- **Lift a ban** removes the row, as `gobb user unban` does (also a dangerous write).
+  A ban that is gone already shows a notice and writes nothing.
+- **`mod_log`:** `ban.add` and `ban.lift`, target type `ban`, the ID of the ban, and
+  the kind, the target and the end in the details.
 
 ## 0.7.0 (2026-10-27)
 

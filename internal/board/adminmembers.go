@@ -197,8 +197,9 @@ func LockAdminSet(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// EnsureAdminRemains returns [ErrLastAdmin] when no active member holds the
-// board-wide admin right, as the transaction tx sees the board. A write calls
+// EnsureAdminRemains returns [ErrLastAdmin] when no active member without a user
+// ban in force holds the board-wide admin right, as the transaction tx sees the
+// board. A write calls
 // it after its change and before the commit, under [LockAdminSet], so the
 // error rolls the change back.
 func EnsureAdminRemains(ctx context.Context, tx pgx.Tx) error {
@@ -208,6 +209,8 @@ func EnsureAdminRemains(ctx context.Context, tx pgx.Tx) error {
 	rows, err := tx.Query(ctx, `
 select u.id from users u
  where u.state = 'active'
+   and not exists (select 1 from bans b where b.kind = 'user' and b.user_id = u.id
+                                          and (b.ends_at is null or b.ends_at > now()))
    and (u.is_owner or exists (
         select 1
           from (select forum_id, role_id, option from acl_user_grants where user_id = u.id
