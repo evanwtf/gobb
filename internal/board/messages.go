@@ -98,6 +98,9 @@ type MessageDraft struct {
 	// IP is the address of the writer. SendMessage stores it, and refuses a draft
 	// without it.
 	IP netip.Addr
+	// ReplyTo is the message that this one answers, or 0. The reply joins its
+	// conversation when the writer is a party to it; otherwise it starts its own.
+	ReplyTo int64
 }
 
 // mayRead reports whether v is a member with the right to read messages.
@@ -217,6 +220,7 @@ type storedMessage struct {
 	// asAuthor and asRecipient say in which way the viewer is a party.
 	asAuthor, asRecipient bool
 	kind                  string // the kind of the viewer's recipient row
+	conversationID        int64
 }
 
 // loadParty reads message id as v may see it. It gives [ErrNotFound] when v is
@@ -235,14 +239,14 @@ func loadParty(ctx context.Context, q db.Querier, v Viewer, id int64, lock bool)
 	err := q.QueryRow(ctx, `
 select p.id, coalesce(p.author_id, 0), coalesce(au.username, p.author_name), p.subject, p.body_source,
        p.created_at, p.body_tree, p.enable_markdown, p.enable_smilies, p.enable_autolink, p.enable_sig,
-       p.author_deleted, r.kind, r.is_deleted
+       p.author_deleted, r.kind, r.is_deleted, p.conversation_id
   from pms p
   left join users au on au.id = p.author_id
   left join pm_recipients r on r.pm_id = p.id and r.user_id = $2
  where p.id = $1
    and ((p.author_id = $2 and not p.author_deleted) or (r.user_id is not null and not r.is_deleted))`+suffix, id, v.UserID).Scan(
 		&m.id, &m.authorID, &m.authorName, &m.subject, &m.source, &m.at, &m.tree,
-		&m.markdown, &m.smilies, &m.autolink, &m.sig, &authorDeleted, &rKind, &rDeleted)
+		&m.markdown, &m.smilies, &m.autolink, &m.sig, &authorDeleted, &rKind, &rDeleted, &m.conversationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return storedMessage{}, ErrNotFound
 	}
@@ -565,13 +569,27 @@ func SendMessage(ctx context.Context, pool *pgxpool.Pool, v Viewer, d MessageDra
 		if msgID, err = findDuplicateMessage(ctx, tx, v.UserID, ids, subject, d.Source, now); err != nil || msgID != 0 {
 			return err
 		}
+		// A reply joins the conversation of the message it answers, when the writer
+		// is a party to that message. An ID of someone else's message, or of one
+		// the writer deleted, starts a new conversation: it tells nothing and joins
+		// nothing.
+		var conversation *int64
+		if d.ReplyTo != 0 {
+			switch m, err := loadParty(ctx, tx, v, d.ReplyTo, false); {
+			case err == nil:
+				conversation = &m.conversationID
+			case !errors.Is(err, ErrNotFound):
+				return err
+			}
+		}
 		err = tx.QueryRow(ctx, `
-insert into pms (author_id, author_name, author_ip, created_at, subject, body_source, body_tree, body_text,
-                 enable_markdown, enable_smilies, enable_autolink, enable_sig, author_deleted)
-values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, true, false)
+insert into pms (id, author_id, author_name, author_ip, created_at, subject, body_source, body_tree, body_text,
+                 enable_markdown, enable_smilies, enable_autolink, enable_sig, author_deleted, conversation_id)
+select n.id, $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, true, false, coalesce($12, n.id)
+  from (select nextval(pg_get_serial_sequence('pms', 'id')) as id) n
 returning id`,
 			v.UserID, author, inetArg(d.IP), now, subject, d.Source, string(body.JSON), body.Text,
-			body.Flags.Markdown, body.Flags.Smilies, body.Flags.Autolink).Scan(&msgID)
+			body.Flags.Markdown, body.Flags.Smilies, body.Flags.Autolink, conversation).Scan(&msgID)
 		if err != nil {
 			return fmt.Errorf("board: insert message: %w", err)
 		}

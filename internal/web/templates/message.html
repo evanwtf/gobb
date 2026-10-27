@@ -2,17 +2,12 @@
 {{- with .Data}}
 {{template "crumbs" .Crumbs}}
 <header class="page-head">
-  <h1><bdi>{{or .Msg.Subject "(no subject)"}}</bdi></h1>
+  <h1><bdi>{{or .Subject "(no subject)"}}</bdi></h1>
 </header>
-<dl class="message-meta">
-  <dt>From</dt><dd>{{template "author" .Msg.From}}</dd>
-  <dt>To</dt><dd>{{range $i, $a := .Msg.To}}{{if $i}}, {{end}}{{template "author" $a}}{{else}}<span class="muted">No one</span>{{end}}</dd>
-  {{- if .Msg.Bcc}}
-  <dt>Bcc</dt><dd>{{range $i, $a := .Msg.Bcc}}{{if $i}}, {{end}}{{template "author" $a}}{{end}}</dd>
-  {{- end}}
-</dl>
+{{template "pager" pagerAt .Pager "Pages, top"}}
 <div class="posts">
-<article class="post message">
+{{- range .Messages}}
+<article class="post message" id="m{{.Msg.ID}}">
   <div class="post-author">
     {{- if .Card}}
     <div class="author-avatar">
@@ -33,19 +28,24 @@
   <div class="post-main">
     <header class="post-head">
       <div class="post-title"><h2 class="visually-hidden">Message from <bdi>{{.Msg.From.Name}}</bdi></h2></div>
-      <span class="permalink">{{time .Msg.At $.Clock}}</span>
+      <a class="permalink" href="#m{{.Msg.ID}}">{{time .Msg.At $.Clock}}</a>
     </header>
+    <dl class="message-meta">
+      <dt>To</dt><dd>{{range $i, $a := .Msg.To}}{{if $i}}, {{end}}{{template "author" $a}}{{else}}<span class="muted">No one</span>{{end}}</dd>
+      {{- if .Msg.Bcc}}
+      <dt>Bcc</dt><dd>{{range $i, $a := .Msg.Bcc}}{{if $i}}, {{end}}{{template "author" $a}}{{end}}</dd>
+      {{- end}}
+    </dl>
     <div class="post-body">{{.HTML}}</div>
     {{- if .SigHTML}}
     <div class="signature">{{.SigHTML}}</div>
     {{- end}}
-    {{- if or .CanReply .CanDelete}}
+    {{- if or $.Data.CanReply $.Data.CanDelete}}
     <div class="post-actions">
-      {{- if .CanReply}}
-      <a class="button-quiet button-link" href="{{.ReplyHref}}">Reply</a>
+      {{- if $.Data.CanReply}}
       <a class="button-quiet button-link" href="{{.QuoteHref}}">Quote</a>
       {{- end}}
-      {{- if .CanDelete}}
+      {{- if $.Data.CanDelete}}
       <form class="mark-form" method="post" action="{{.DeleteHref}}">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">
         <button type="submit" class="button-quiet">Delete</button>
@@ -55,9 +55,32 @@
     {{- end}}
   </div>
 </article>
+{{- end}}
 </div>
+{{template "pager" pagerAt .Pager "Pages, bottom"}}
+{{- if .CanReply}}
+<section class="reply-box" aria-labelledby="reply-title">
+  <h2 id="reply-title">Reply</h2>
+  <form class="post-form" method="post" action="{{.ReplyAction}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="reply_to" value="{{.ReplyTo}}">
+    <input type="hidden" name="to" value="{{.ReplyToNames}}">
+    <input type="hidden" name="subject" value="{{.ReplySubject}}">
+    <p class="hint">To: {{if .ReplyToNames}}<bdi>{{.ReplyToNames}}</bdi>{{else}}no one{{end}}. <a href="{{.ReplyHref}}">Change the people or the subject</a>.</p>
+    <div class="field">
+      <label for="msg-body">Message</label>
+      <textarea id="msg-body" name="body" rows="6" aria-describedby="msg-body-hint"></textarea>
+      <p class="hint" id="msg-body-hint">{{template "mdhelp"}}</p>
+    </div>
+    <div class="form-actions">
+      <button class="button button-inline" type="submit">Send</button>
+      <button class="button-quiet" type="submit" name="preview" value="1">Preview</button>
+    </div>
+  </form>
+</section>
+{{- end}}
 {{- if .CanDelete}}
-<p class="muted">Delete removes the message from your view only. The other people keep their copy.</p>
+<p class="muted">Delete removes a message from your view only. The other people keep their copy.</p>
 {{- end}}
 {{- end}}
 {{end}}

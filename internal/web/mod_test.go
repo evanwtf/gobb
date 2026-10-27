@@ -573,6 +573,10 @@ func TestModeratorEditReason(t *testing.T) {
 		t.Fatalf("the edited post has no edit note:\n%s", art)
 	}
 	note, _, _ := strings.Cut(noteRest, "</p>")
+	// The time follows a comma, not "on": a relative time reads "4 minutes ago".
+	if got := plainText(note); strings.Contains(got, " on ") || !strings.Contains(got, ", ") {
+		t.Errorf("the note reads %q, want \"Edited by NAME, TIME.\"", got)
+	}
 	if !strings.Contains(note, "Reason: &lt;script&gt;alert(1)&lt;/script&gt;") {
 		t.Errorf("the edit note does not escape the reason: %s", note)
 	}

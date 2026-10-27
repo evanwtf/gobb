@@ -252,7 +252,7 @@ func TestBasePathEverywhere(t *testing.T) {
 		checkBasePath(t, "message confirm", body, "/forum/")
 	}
 	rec, _ = postAsAt(t, h, "/forum/", "/forum/messages/1/delete", alice, url.Values{"confirm": {"1"}})
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/forum/messages/sent" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/forum/messages" {
 		t.Errorf("message delete = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 	for _, p := range []string{"/messages", "/messages/1"} {

@@ -692,8 +692,8 @@ func TestDeleteOwnView(t *testing.T) {
 		t.Errorf("second delete = %v, want ErrNotFound", err)
 	}
 	// A message that the viewer wrote and received is hidden in both views.
-	if _, err := pool.Exec(ctx, `insert into pms (id, author_id, author_name, created_at, subject, body_tree)
-		values (50, $1, 'carol', $2, 'Note to self', '{}'::jsonb)`, carol, t0); err != nil {
+	if _, err := pool.Exec(ctx, `insert into pms (id, author_id, author_name, created_at, subject, body_tree, conversation_id)
+		values (50, $1, 'carol', $2, 'Note to self', '{}'::jsonb, 50)`, carol, t0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `insert into pm_recipients (pm_id, user_id, kind) values (50, $1, 'to')`, carol); err != nil {
@@ -1006,8 +1006,8 @@ func TestMessageListPages(t *testing.T) {
 	// 29 more messages to bob: 30 in his inbox, ids 1 and 100 to 128.
 	for i := range 29 {
 		id := 100 + i
-		if _, err := pool.Exec(ctx, `insert into pms (id, author_id, author_name, created_at, subject, body_tree)
-			values ($1, $2, 'alice', $3, 'Bulk', '{}'::jsonb)`, id, alice, t0); err != nil {
+		if _, err := pool.Exec(ctx, `insert into pms (id, author_id, author_name, created_at, subject, body_tree, conversation_id)
+			values ($1, $2, 'alice', $3, 'Bulk', '{}'::jsonb, $1)`, id, alice, t0); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx, `insert into pm_recipients (pm_id, user_id, kind) values ($1, $2, 'to')`, id, bob); err != nil {

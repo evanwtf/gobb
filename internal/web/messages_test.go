@@ -56,7 +56,7 @@ func sendMessage(t *testing.T, h http.Handler, cookies []*http.Cookie, to, subje
 // httpRecorder is the type of the recorded answers, so the helpers read short.
 type httpRecorder = httptest.ResponseRecorder
 
-var messageLocation = regexp.MustCompile(`^/messages/(\d+)$`)
+var messageLocation = regexp.MustCompile(`^/messages/(\d+)#m\d+$`)
 
 // sentID reads the ID of a sent message from the 303 that answered the send.
 func sentID(t *testing.T, rec *httpRecorder) int64 {
@@ -151,16 +151,15 @@ func TestMessageLists(t *testing.T) {
 	bob := signIn(t, h, "bob", testPassword)
 
 	inbox := bodyOf(t, getAs(t, h, "/messages", alice))
-	for _, want := range []string{"Re: Welcome aboard", `href="/messages/2"`, `href="/u/2"`, `href="/messages/sent"`, `aria-current="page">Inbox`} {
+	// The fixture's two messages are not threaded, so each is its own conversation.
+	// The list holds both: the one alice wrote and the one she received.
+	for _, want := range []string{"Re: Welcome aboard", `href="/messages/2#m2"`, `href="/messages/1#m1"`, `href="/u/2"`, `href="/messages/sent"`, `aria-current="page">Conversations`, "1 message"} {
 		if !strings.Contains(inbox, want) {
-			t.Errorf("alice's inbox lacks %q", want)
+			t.Errorf("alice's conversations lack %q", want)
 		}
 	}
-	if strings.Contains(inbox, "Welcome aboard</a>") && strings.Contains(inbox, `href="/messages/1"`) {
-		t.Error("alice's inbox lists message 1, which she wrote")
-	}
 	sent := bodyOf(t, getAs(t, h, "/messages/sent", alice))
-	if !strings.Contains(sent, `href="/messages/1"`) || !strings.Contains(sent, `href="/u/2"`) || !strings.Contains(sent, `aria-current="page">Sent`) {
+	if !strings.Contains(sent, `href="/messages/1#m1"`) || !strings.Contains(sent, `href="/u/2"`) || !strings.Contains(sent, `aria-current="page">Sent`) {
 		t.Errorf("alice's sent list is wrong:\n%s", sent)
 	}
 	// The blind copy is not in the list of the author.

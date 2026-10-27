@@ -23,6 +23,9 @@
 
 <form class="post-form" method="post" action="{{.Action}}">
   <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  {{- if .ReplyTo}}
+  <input type="hidden" name="reply_to" value="{{.ReplyTo}}">
+  {{- end}}
   <div class="field">
     <label for="msg-to">To</label>
     <input id="msg-to" name="to" type="text" value="{{.To}}" autocomplete="off" aria-describedby="msg-to-hint{{if .Err.To}} msg-to-error{{end}}"

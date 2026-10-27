@@ -241,7 +241,7 @@ func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 	pms := newBulk(tx, "pms", "pms",
 		"id", "author_id", "author_name", "author_ip", "created_at", "subject", "body_source",
 		"body_tree", "body_text", "enable_markdown", "enable_smilies",
-		"enable_autolink", "enable_sig", "author_deleted")
+		"enable_autolink", "enable_sig", "author_deleted", "conversation_id")
 	rcpts := newBulk(tx, "pms", "pm_recipients", "pm_id", "user_id", "kind", "is_read", "is_deleted")
 	n := 0
 	err := bundle.Each(r.Reader, func(line int, m bundle.PM) error {
@@ -255,7 +255,7 @@ func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 		}
 		if err := pms.add(ctx, line, m.ID, m.AuthorID, m.AuthorName, ip, m.CreatedAt, m.Subject,
 			m.Body.Source, tree, text, m.Body.Markdown, m.Body.Smilies, m.Body.Autolink,
-			m.ShowSignature, m.AuthorDeleted); err != nil {
+			m.ShowSignature, m.AuthorDeleted, m.ID); err != nil {
 			return err
 		}
 		for _, c := range m.Recipients {
