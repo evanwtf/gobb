@@ -1,0 +1,54 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>{{if .New}}New page{{else}}<bdi>{{or .Form.Title .Form.Slug}}</bdi>{{end}}</h1>
+  {{- if not .New}}
+  <p class="page-sub"><a href="{{.ViewHref}}">View the page</a> &middot; saved {{stdtime .UpdatedAt $.Clock}}</p>
+  {{- end}}
+</header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
+{{- if .Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>
+{{- end}}
+<form class="post-form" method="post" action="{{.Action}}">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  {{- if .New}}
+  <div class="field">
+    <label for="page-slug">Slug</label>
+    <input id="page-slug" name="slug" type="text" value="{{.Form.Slug}}" maxlength="64" required autocomplete="off" autocapitalize="none" spellcheck="false"
+      aria-describedby="page-slug-hint{{if .Err.slug}} page-slug-error{{end}}"{{if .Err.slug}} aria-invalid="true"{{end}}>
+    {{- if .Err.slug}}<p class="field-error" id="page-slug-error" role="alert">{{.Err.slug}}</p>{{end}}
+    <p class="hint" id="page-slug-hint">The end of the address: /pages/<i>slug</i>. Use lower-case letters, digits and hyphens. It cannot change after you save.</p>
+  </div>
+  {{- else}}
+  <p>Address: <code>{{path "pages" .Form.Slug}}</code></p>
+  {{- end}}
+  <div class="field">
+    <label for="page-title">Title</label>
+    <input id="page-title" name="title" type="text" value="{{.Form.Title}}" maxlength="255" required
+      {{- if .Err.title}} aria-invalid="true" aria-describedby="page-title-error"{{end}}>
+    {{- if .Err.title}}<p class="field-error" id="page-title-error" role="alert">{{.Err.title}}</p>{{end}}
+  </div>
+  <div class="field">
+    <label for="page-body">Text</label>
+    <textarea id="page-body" name="body" rows="20" aria-describedby="page-body-hint{{if .Err.body}} page-body-error{{end}}"
+      {{- if .Err.body}} aria-invalid="true"{{end}}>{{textareaValue .Form.Source}}</textarea>
+    {{- if .Err.body}}<p class="field-error" id="page-body-error" role="alert">{{.Err.body}}</p>{{end}}
+    <p class="hint" id="page-body-hint">Up to 100,000 bytes. The page is parsed as a post is, with the three switches below.</p>
+  </div>
+  <p class="field-check"><input type="checkbox" id="page-markdown" name="markdown" value="1"{{if .Form.Markdown}} checked{{end}}> <label for="page-markdown">Markdown</label></p>
+  <p class="field-check"><input type="checkbox" id="page-smilies" name="smilies" value="1"{{if .Form.Smilies}} checked{{end}}> <label for="page-smilies">Smilies</label></p>
+  <p class="field-check"><input type="checkbox" id="page-autolink" name="autolink" value="1"{{if .Form.Autolink}} checked{{end}}> <label for="page-autolink">Turn web addresses into links</label></p>
+  <div class="form-actions">
+    <button class="button button-inline" type="submit">{{if .New}}Add the page{{else}}Save the page{{end}}</button>
+    {{- if not .New}}<a class="button-quiet button-link" href="{{.DeleteHref}}">Delete</a>{{end}}
+  </div>
+  {{- if not .New}}
+  <p class="hint">Saving parses the text again with the smilies that the board has now.</p>
+  {{- end}}
+</form>
+{{- end}}
+{{end}}

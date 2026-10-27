@@ -1,0 +1,52 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Permissions</h1>
+  <p class="page-sub">Who may do what: the grants of the groups for each forum and board-wide, the grants of single members, and the roles. A Never wins over any Yes. Every change needs your password.</p>
+</header>
+<section class="category admin-box" aria-labelledby="perm-where">
+  <h2 id="perm-where">Grants of the groups</h2>
+  <ul class="admin-list">
+    <li><a href="{{path "admin" "permissions" "0"}}">Board-wide</a> <span class="muted">Account, private-message and moderator options, and admin.</span></li>
+    {{- range .Forums}}
+    <li class="depth-{{if gt .Depth 3}}3{{else}}{{.Depth}}{{end}}"><a href="{{path "admin" "permissions" (printf "%d" .ID)}}"><bdi>{{.Name}}</bdi></a> <span class="muted">{{.Kind}}</span></li>
+    {{- end}}
+  </ul>
+</section>
+<section class="category admin-box" aria-label="More">
+  <ul class="admin-list">
+    <li><a href="{{path "admin" "permissions" "members"}}">Grants of single members</a> <span class="muted">Rights for one member, on top of the groups.</span></li>
+    <li><a href="{{path "admin" "roles"}}">Roles</a> <span class="muted">The options inside each role.</span></li>
+  </ul>
+</section>
+<section class="category admin-box" aria-labelledby="perm-preview">
+  <h2 id="perm-preview">What can a member do?</h2>
+  {{- if .Notice}}<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>{{end}}
+  <form class="admin-inline-form" method="get" action="{{path "admin" "permissions"}}">
+    <div class="field">
+      <label for="pv-user">Member</label>
+      <input type="text" id="pv-user" name="user" value="{{.PreviewName}}" maxlength="256" autocomplete="off" required>
+    </div>
+    <div class="field">
+      <label for="pv-forum">Where</label>
+      <select id="pv-forum" name="forum">
+        <option value="0">Board-wide</option>
+        {{- range .Forums}}
+        <option value="{{.ID}}"{{if eq .ID $.Data.PreviewWhere}} selected{{end}}>{{.Name}}</option>
+        {{- end}}
+      </select>
+    </div>
+    <button class="button-quiet" type="submit">Show</button>
+  </form>
+  {{- if .Previewed}}
+  {{- if .Allowed}}
+  <p>The member holds these options there:</p>
+  <ul class="option-list">{{range .Allowed}}<li><code>{{.}}</code></li>{{end}}</ul>
+  {{- else}}
+  <p class="muted">The member holds no option there.</p>
+  {{- end}}
+  {{- end}}
+</section>
+{{- end}}
+{{end}}

@@ -1,0 +1,65 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Smilies</h1>
+  <p class="page-sub">A code in a post turns into its image. Move a smiley up or down to set its place in the list.</p>
+</header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
+{{- if .Add.Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Add.Notice}}</p></div>
+{{- end}}
+{{- if .Rows}}
+<section class="category" aria-label="Smilies">
+  <ul class="admin-list">
+    {{- range .Rows}}
+    <li class="edit-row">
+      <img class="edit-img" src="{{.Src}}" alt="{{.Description}}">
+      <span class="edit-main"><a href="{{.EditHref}}"><code>{{.Code}}</code></a> <span class="muted">{{.Description}}</span></span>
+      <span class="edit-actions">
+        {{- if not .First}}
+        <form method="post" action="{{.MoveHref}}"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="dir" value="up"><button class="button-quiet" type="submit" aria-label="Move {{.Code}} up">Up</button></form>
+        {{- end}}
+        {{- if not .Last}}
+        <form method="post" action="{{.MoveHref}}"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="dir" value="down"><button class="button-quiet" type="submit" aria-label="Move {{.Code}} down">Down</button></form>
+        {{- end}}
+        <a href="{{.EditHref}}">Edit</a> <a href="{{.DeleteHref}}">Delete</a>
+      </span>
+    </li>
+    {{- end}}
+  </ul>
+</section>
+{{- else}}
+<p>The board has no smilies.</p>
+{{- end}}
+<section class="account-section" aria-labelledby="add-title">
+  <h2 id="add-title">Add a smiley</h2>
+  <form class="post-form" method="post" action="{{.Action}}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="field">
+      <label for="add-code">Code</label>
+      <input id="add-code" name="code" type="text" value="{{.Add.Code}}" maxlength="32" required autocomplete="off" autocapitalize="none" spellcheck="false"
+        {{- if .Add.Err.code}} aria-invalid="true" aria-describedby="add-code-error"{{end}}>
+      {{- if .Add.Err.code}}<p class="field-error" id="add-code-error" role="alert">{{.Add.Err.code}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="add-description">Description</label>
+      <input id="add-description" name="description" type="text" value="{{.Add.Description}}" maxlength="255" autocomplete="off"
+        {{- if .Add.Err.description}} aria-invalid="true" aria-describedby="add-description-error"{{end}}>
+      {{- if .Add.Err.description}}<p class="field-error" id="add-description-error" role="alert">{{.Add.Err.description}}</p>{{end}}
+      <p class="hint">The text that a screen reader reads for the image.</p>
+    </div>
+    <div class="field">
+      <label for="add-image">Image</label>
+      <input id="add-image" name="image" type="file" accept="image/png,image/jpeg,image/gif" required
+        aria-describedby="add-image-hint{{if .Add.Err.image}} add-image-error{{end}}"{{if .Add.Err.image}} aria-invalid="true"{{end}}>
+      {{- if .Add.Err.image}}<p class="field-error" id="add-image-error" role="alert">{{.Add.Err.image}}</p>{{end}}
+      <p class="hint" id="add-image-hint">A PNG, JPEG or GIF of at most 1 MB and 512 pixels a side. gobb stores a fresh PNG copy. An animated GIF keeps its first frame.</p>
+    </div>
+    <div class="form-actions"><button class="button button-inline" type="submit">Add the smiley</button></div>
+  </form>
+</section>
+{{- end}}
+{{end}}

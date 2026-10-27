@@ -197,8 +197,13 @@ func nullZero(n int) any {
 // ".." and no hidden file). Imported avatars keep the names of the converter, so
 // this is the rule for a path read from the database; [SetAvatar] asks for more
 // of a new path. A caller deletes a file only when this returns true.
-func ValidAvatarPath(p string) bool {
-	rest, ok := strings.CutPrefix(p, "avatars/")
+func ValidAvatarPath(p string) bool { return validDataPath("avatars/", p) }
+
+// validDataPath reports whether p is a stored path under dir (such as "avatars/"):
+// every element after dir is non-empty and made of letters, digits, hyphens, dots
+// and underscores, and none starts with a dot.
+func validDataPath(dir, p string) bool {
+	rest, ok := strings.CutPrefix(p, dir)
 	if !ok || rest == "" {
 		return false
 	}

@@ -978,6 +978,12 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 .admin-actions form { margin: 0; }
 .admin-inline-form { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: end; }
 .admin-inline-form .field { margin: 0; }
+.admin-list .depth-1 { padding-left: 2rem; }
+.admin-list .depth-2 { padding-left: 3rem; }
+.admin-list .depth-3 { padding-left: 4rem; }
+.grid-table th[scope="row"] { text-align: left; font-weight: 700; padding: 0.65rem 1rem; }
+.grant-line { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0 0 0.3rem; }
+.option-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 0; padding: 0; list-style: none; }
 .new-password { font-size: 1.15rem; user-select: all; }
 .ban-table td form { margin: 0; }
 
@@ -1200,3 +1206,35 @@ fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
 .message-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0 0 1rem; }
 .message-meta dt { color: var(--muted); font-weight: 600; }
 .message-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- Admin: forums -------------------------------------------------------- */
+
+.forum-tree, .forum-tree ul { margin: 0; padding: 0; list-style: none; }
+.forum-tree ul { margin-left: 1.25rem; border-left: 2px solid var(--line-soft); }
+.forum-tree li { border-top: 1px solid var(--line-soft); }
+.forum-tree > li:first-child { border-top: 0; }
+.forum-tree-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; padding: 0.6rem 1rem; }
+.forum-tree-name { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
+.forum-tree-meta { flex: 0 0 auto; font-size: 0.9rem; }
+.forum-tree-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.forum-tree-actions form { margin: 0; }
+.forum-tree-actions .button-quiet { display: inline-block; text-decoration: none; }
+.forum-tree-actions .button-quiet[disabled] { opacity: 0.45; cursor: default; }
+.forum-tree li:target > .forum-tree-row { background: color-mix(in srgb, var(--accent) 12%, var(--row)); }
+/* ---- Admin: settings page ------------------------------------------------- */
+.settings-header-preview { margin: 0 0 1rem; padding: 0.75rem; background: var(--header); border-radius: var(--radius); }
+.settings-header-preview .header-image { max-width: 100%; height: auto; }
+.settings-readonly { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
+.settings-readonly dt { font-weight: 600; }
+.settings-readonly dd { margin: 0; }
+@media (max-width: 40rem) {
+  .settings-readonly { grid-template-columns: 1fr; gap: 0; }
+  .settings-readonly dd { margin-bottom: 0.6rem; }
+}
+/* ---- Admin content editors: pages, smilies, ranks ------------------------- */
+.edit-bar { margin: 0 0 1rem; }
+.edit-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.edit-main { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+.edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.edit-actions form { margin: 0; }
+.edit-img { width: auto; height: auto; max-width: 4rem; max-height: 3rem; vertical-align: middle; }

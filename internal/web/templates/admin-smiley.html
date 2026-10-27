@@ -1,0 +1,40 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Smiley <code>{{.Smiley.Code}}</code></h1>
+</header>
+{{- if .Form.Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Form.Notice}}</p></div>
+{{- end}}
+<form class="post-form" method="post" action="{{.Action}}" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <p><img class="edit-img" src="{{.Src}}" alt="{{.Smiley.Description}}"></p>
+  <div class="field">
+    <label for="smiley-code">Code</label>
+    <input id="smiley-code" name="code" type="text" value="{{.Form.Code}}" maxlength="32" required autocomplete="off" autocapitalize="none" spellcheck="false"
+      aria-describedby="smiley-code-hint{{if .Form.Err.code}} smiley-code-error{{end}}"{{if .Form.Err.code}} aria-invalid="true"{{end}}>
+    {{- if .Form.Err.code}}<p class="field-error" id="smiley-code-error" role="alert">{{.Form.Err.code}}</p>{{end}}
+    <p class="hint" id="smiley-code-hint">A post that already holds the old code shows it as text after you change the code.</p>
+  </div>
+  <div class="field">
+    <label for="smiley-description">Description</label>
+    <input id="smiley-description" name="description" type="text" value="{{.Form.Description}}" maxlength="255" autocomplete="off"
+      {{- if .Form.Err.description}} aria-invalid="true" aria-describedby="smiley-description-error"{{end}}>
+    {{- if .Form.Err.description}}<p class="field-error" id="smiley-description-error" role="alert">{{.Form.Err.description}}</p>{{end}}
+  </div>
+  <div class="field">
+    <label for="smiley-image">New image</label>
+    <input id="smiley-image" name="image" type="file" accept="image/png,image/jpeg,image/gif"
+      aria-describedby="smiley-image-hint{{if .Form.Err.image}} smiley-image-error{{end}}"{{if .Form.Err.image}} aria-invalid="true"{{end}}>
+    {{- if .Form.Err.image}}<p class="field-error" id="smiley-image-error" role="alert">{{.Form.Err.image}}</p>{{end}}
+    <p class="hint" id="smiley-image-hint">Leave it empty to keep the image. A PNG, JPEG or GIF of at most 1 MB and 512 pixels a side.</p>
+  </div>
+  <div class="form-actions">
+    <button class="button button-inline" type="submit">Save the smiley</button>
+    <a class="button-quiet button-link" href="{{path "admin" "smilies"}}">Back to the list</a>
+    <a class="button-quiet button-link" href="{{path "admin" "smilies" (printf "%d" .Smiley.ID) "delete"}}">Delete</a>
+  </div>
+</form>
+{{- end}}
+{{end}}

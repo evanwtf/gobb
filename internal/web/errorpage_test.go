@@ -132,7 +132,7 @@ func TestErrorPageWhenATemplateFails(t *testing.T) {
 	s.pages["topic.html"] = brokenTemplate
 	themed(t, "GET /t/1 with a broken topic template", get(t, h, "/t/1"), "/", http.StatusInternalServerError, "Something went wrong")
 
-	want500, want503 := string(s.staticErrors[http.StatusInternalServerError]), string(s.staticErrors[http.StatusServiceUnavailable])
+	want500, want503 := string((*s.staticErrors.Load())[http.StatusInternalServerError]), string((*s.staticErrors.Load())[http.StatusServiceUnavailable])
 	for status, b := range map[int]string{500: want500, 503: want503} {
 		if !strings.Contains(b, `<link rel="stylesheet" href="/static/gobb.css?v=`) || !strings.Contains(b, `alt="Example Board"`) ||
 			!strings.Contains(b, `<p class="notice-status">`) || !strings.Contains(b, `<meta name="robots" content="noindex">`) {

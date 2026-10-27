@@ -1,0 +1,101 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1><bdi>{{.Group.Name}}</bdi></h1>
+  <p class="page-sub">{{template "group-kind" .Group.Kind}} group. {{plural .Group.Members "member" "members"}}, {{plural .Group.Pending "request" "requests"}}, {{plural .Group.Grants "grant" "grants"}}.</p>
+</header>
+{{- if .Done}}<p class="notice-inline" role="status">{{.Done}}</p>{{end}}
+{{- if .Notice}}<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>{{end}}
+
+<section class="account-section" aria-labelledby="group-details-title">
+  <h2 id="group-details-title">Details</h2>
+  <form class="post-form" method="post" action="{{.Href}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    {{- $builtin := .Group.Builtin}}
+    {{- with .Form}}
+    {{- if $builtin}}
+    <input type="hidden" name="name" value="{{$.Data.Group.Name}}">
+    <p class="hint">A built-in group keeps its name and its kind. Only the description changes.</p>
+    {{- else}}
+    <div class="field">
+      <label for="group-name">Name</label>
+      <input id="group-name" name="name" type="text" value="{{.Name}}" maxlength="100" required autocomplete="off"{{if .NameErr}} aria-invalid="true" aria-describedby="group-name-error"{{end}}>
+      {{- if .NameErr}}<p class="field-error" id="group-name-error" role="alert">{{.NameErr}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="group-kind">Kind</label>
+      <select id="group-kind" name="kind" aria-describedby="group-kind-hint{{if .KindErr}} group-kind-error{{end}}"{{if .KindErr}} aria-invalid="true"{{end}}>
+        {{- $kind := .Kind}}
+        {{- range $.Data.Kinds}}
+        <option value="{{.}}"{{if eq . $kind}} selected{{end}}>{{template "group-kind" .}}</option>
+        {{- end}}
+      </select>
+      {{- if .KindErr}}<p class="field-error" id="group-kind-error" role="alert">{{.KindErr}}</p>{{end}}
+      <p class="hint" id="group-kind-hint">A hidden group does not show on profiles.</p>
+    </div>
+    {{- end}}
+    <div class="field">
+      <label for="group-description">Description</label>
+      <input id="group-description" name="description" type="text" value="{{.Description}}" maxlength="500" autocomplete="off"{{if .DescriptionErr}} aria-invalid="true" aria-describedby="group-description-error"{{end}}>
+      {{- if .DescriptionErr}}<p class="field-error" id="group-description-error" role="alert">{{.DescriptionErr}}</p>{{end}}
+    </div>
+    {{- end}}
+    <div class="form-actions"><button class="button button-inline" type="submit">Save</button></div>
+  </form>
+</section>
+
+<section class="account-section" aria-labelledby="group-members-title">
+  <h2 id="group-members-title">Members</h2>
+  {{- if .NeedsPass}}<p class="hint">A change of the members changes what they may do, so it needs your password. It asks for it first.</p>{{end}}
+  {{- if eq .Group.Builtin "guests"}}
+  <p class="hint">The guests group holds the grants of visitors who are not signed in. It takes no members.</p>
+  {{- else}}
+  <form class="admin-inline-form" method="post" action="{{.Href}}/members">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{.Href}}">
+    <label for="group-add">Add a member by name</label>
+    <input id="group-add" name="name" type="text" value="{{.AddName}}" maxlength="254" required autocomplete="off"{{if .AddErr}} aria-invalid="true" aria-describedby="group-add-error"{{end}}>
+    <button class="button button-inline" type="submit">Add</button>
+    {{- if .AddErr}}<p class="field-error" id="group-add-error" role="alert">{{.AddErr}}</p>{{end}}
+  </form>
+  {{- end}}
+  {{- if .Members}}
+  <table class="member-table log-table">
+    <thead><tr><th scope="col">Member</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Changes</span></th></tr></thead>
+    <tbody>
+    {{- range $m := .Members}}
+      <tr>
+        <td data-label="Member"><a href="{{path "admin" "members" (printf "%d" .UserID)}}"><bdi>{{.Name}}</bdi></a></td>
+        <td data-label="State">{{if .Pending}}Request{{else if .Leader}}Leader{{else}}Member{{end}}</td>
+        <td class="admin-actions">
+          {{- range $act := .Acts}}
+          <form method="post" action="{{$.Data.Href}}/members/{{$m.UserID}}/{{$act.Act}}"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="back" value="{{$.Data.Href}}"><button class="button-quiet" type="submit">{{$act.Label}}<span class="visually-hidden">: <bdi>{{$m.Name}}</bdi></span></button></form>
+          {{- end}}
+        </td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+  {{- else}}
+  <p class="empty standalone">The group has no members and no requests.</p>
+  {{- end}}
+</section>
+
+{{- if not .Group.Builtin}}
+<section class="account-section" aria-labelledby="group-delete-title">
+  <h2 id="group-delete-title">Delete</h2>
+  {{- if or .Group.Members .Group.Pending .Group.Grants}}
+  <p class="hint">Only a group with no members, no requests and no grants can be deleted.</p>
+  {{- else}}
+  <form method="post" action="{{.Href}}/delete">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <button class="button-quiet" type="submit">Delete the group</button>
+  </form>
+  {{- end}}
+</section>
+{{- end}}
+{{- end}}
+{{end}}
+
+{{define "group-kind"}}{{if eq . "open"}}Open{{else if eq . "request"}}On request{{else if eq . "closed"}}Closed{{else if eq . "hidden"}}Hidden{{else if eq . "builtin"}}Built in{{else}}{{.}}{{end}}{{end}}

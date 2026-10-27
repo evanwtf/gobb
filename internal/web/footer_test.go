@@ -109,7 +109,7 @@ func TestStaticErrorPagesCarryThePlainLine(t *testing.T) {
 	if s == nil {
 		t.Fatal("onNew did not run")
 	}
-	for status, body := range s.staticErrors {
+	for status, body := range *s.staticErrors.Load() {
 		if line := buildLine(t, string(body)); !plainLine.MatchString(line) {
 			t.Errorf("static %d: the line %q is not the plain line", status, line)
 		}

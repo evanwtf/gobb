@@ -663,9 +663,27 @@ type tokenRow struct {
 	setup  string
 }
 
-// multipart reports whether the route takes a multipart upload of a file in the
-// field "avatar" instead of a urlencoded form.
-func (r tokenRow) multipart() bool { return r.target == "/account/avatar" }
+// adminUpload matches the admin routes that take an image: the add and the save
+// of a smiley or a rank.
+var adminUpload = regexp.MustCompile(`^/admin/(smilies|ranks)(/[0-9]+)?$`)
+
+// fileField returns the name of the form field that holds the file of an upload
+// route, and "" for a route that takes a urlencoded form.
+func (r tokenRow) fileField() string {
+	switch {
+	case r.target == "/account/avatar":
+		return "avatar"
+	case r.target == "/admin/settings/header":
+		return "header"
+	case adminUpload.MatchString(r.target):
+		return "image"
+	}
+	return ""
+}
+
+// multipart reports whether the route takes a multipart upload of a file
+// instead of a urlencoded form.
+func (r tokenRow) multipart() bool { return r.fileField() != "" }
 
 // rowRequest builds the POST of a row with form and the cookies. A multipart row
 // carries a small PNG beside the fields of form.
@@ -680,7 +698,7 @@ func rowRequest(t *testing.T, row tokenRow, cookies []*http.Cookie, form url.Val
 				_ = mw.WriteField(k, v)
 			}
 		}
-		fw, _ := mw.CreateFormFile("avatar", "me.png")
+		fw, _ := mw.CreateFormFile(row.fileField(), "me.png")
 		_, _ = fw.Write(testPNG(t, 24, 24))
 		_ = mw.Close()
 		r = httptest.NewRequest(http.MethodPost, row.target, &buf)
@@ -741,6 +759,36 @@ var tokenRows = []tokenRow{
 	{"/admin/members/3/reset-password", "alice", url.Values{"back": {"/admin/members/3"}}, ""},
 	{"/admin/bans", "alice", url.Values{"kind": {"email"}, "target": {"spam@example.net"}}, ""},
 	{"/admin/bans/1/lift", "alice", url.Values{}, ""},
+	{"/admin/forums/new", "alice", url.Values{"kind": {"forum"}, "name": {"No token"}, "parent": {"1"}, "grants_from": {"1"}}, ""},
+	{"/admin/forums/2/edit", "alice", url.Values{"kind": {"forum"}, "name": {"No token"}}, ""},
+	{"/admin/forums/3/move", "alice", url.Values{"parent": {"1"}}, ""},
+	{"/admin/forums/2/reorder", "alice", url.Values{"dir": {"down"}}, `insert into forums (parent_id, kind, name, position) values (1, 'forum', 'Second', 9)`},
+	{"/admin/forums/2/lock", "alice", url.Values{}, ""},
+	{"/admin/forums/2/unlock", "alice", url.Values{}, `update forums set locked = true where id = 2`},
+	{"/admin/settings", "alice", url.Values{"board_name": {"No token"}, "board_description": {""}, "timezone": {"Asia/Tokyo"}, "scheme": {"slate-deep"}}, ""},
+	{"/admin/settings/header", "alice", url.Values{}, ""},
+	{"/admin/settings/header/remove", "alice", url.Values{}, ""},
+	{"/admin/settings/mail-test", "alice", url.Values{}, ""},
+	{"/admin/pages", "alice", url.Values{"slug": {"faq"}, "title": {"FAQ"}, "body": {"No token."}, "markdown": {"1"}}, ""},
+	{"/admin/pages/about", "alice", url.Values{"title": {"About us"}, "body": {"No token."}, "markdown": {"1"}}, ""},
+	{"/admin/pages/about/delete", "alice", url.Values{}, ""},
+	{"/admin/smilies", "alice", url.Values{"code": {":P"}, "description": {"tongue"}}, ""},
+	{"/admin/smilies/1", "alice", url.Values{"code": {":-)"}, "description": {"smile"}}, ""},
+	{"/admin/smilies/1/move", "alice", url.Values{"dir": {"down"}}, ""},
+	{"/admin/smilies/1/delete", "alice", url.Values{}, ""},
+	{"/admin/ranks", "alice", url.Values{"title": {"Regular"}, "min_posts": {"50"}}, ""},
+	{"/admin/ranks/1", "alice", url.Values{"title": {"Veteran"}, "min_posts": {"10"}}, ""},
+	{"/admin/ranks/1/delete", "alice", url.Values{}, ""},
+	{"/admin/permissions/3/role", "alice", url.Values{"group": {"5"}, "role": {"1"}, "on": {"1"}}, ""},
+	{"/admin/permissions/3/option", "alice", url.Values{"group": {"5"}, "option": {"topic.start"}, "setting": {"yes"}}, ""},
+	{"/admin/permissions/members/add", "alice", url.Values{"name": {"carol"}, "forum": {"3"}, "option": {"forum.read"}, "setting": {"yes"}}, ""},
+	{"/admin/permissions/revoke", "alice", url.Values{"kind": {"user"}, "grant": {"1"}}, ""},
+	{"/admin/roles/1", "alice", url.Values{"o:poll.change_vote": {"yes"}}, ""},
+	{"/admin/groups", "alice", url.Values{"name": {"No token"}, "kind": {"open"}}, ""},
+	{"/admin/groups/5", "alice", url.Values{"name": {"Beta testers"}, "kind": {"closed"}}, ""},
+	{"/admin/groups/5/delete", "alice", url.Values{}, `delete from acl_group_grants where group_id = 5; delete from group_members where group_id = 5`},
+	{"/admin/groups/5/members", "alice", url.Values{"name": {"dave"}}, ""},
+	{"/admin/groups/5/members/3/approve", "alice", url.Values{}, ""},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post

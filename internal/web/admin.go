@@ -73,6 +73,15 @@ func newAdminWrites(opt Options) *ratelimit.Limiter {
 	return ratelimit.New(n, adminWriteWindow, adminWriteMaxKeys).Named("admin_writes")
 }
 
+// newMailTests returns the limiter of the test emails: one for each admin in a
+// minute.
+func newMailTests() *ratelimit.Limiter {
+	return ratelimit.New(1, mailTestWindow, adminWriteMaxKeys).Named("admin_mail_test")
+}
+
+// mailTestWindow is the least time between two test emails of one admin.
+const mailTestWindow = time.Minute
+
 // adminRoutes is the mux of the admin area. Its methods are the only way to add
 // a route: page for a GET, write for a POST through [site.protect] and the limit
 // on admin writes, and dangerous for a POST that also needs a confirmed
@@ -90,6 +99,15 @@ func (a adminRoutes) page(pattern string, h http.HandlerFunc) {
 // write adds the POST route /admin<pattern>, with a body of at most limit bytes.
 func (a adminRoutes) write(pattern string, limit int64, h http.HandlerFunc) {
 	a.Handle("POST /admin"+pattern, a.s.protect(limit, a.s.adminLimited(h)))
+}
+
+// upload adds the POST route /admin<pattern> for a form that carries a file,
+// with a body of at most limit bytes. It is write with the guards of an upload:
+// the server and the admin each have a slot for one upload in flight, and the
+// body is read as multipart/form-data, in memory. The admin write limit counts
+// it. See [site.protectAdminUpload].
+func (a adminRoutes) upload(pattern string, limit int64, h http.HandlerFunc) {
+	a.Handle("POST /admin"+pattern, a.s.protectAdminUpload(limit, h))
 }
 
 // dangerous adds the POST route /admin<pattern> for a change that needs a
@@ -117,6 +135,11 @@ func (s *site) adminArea() http.Handler {
 	a.write("/confirm", maxLoginBody, s.adminConfirm)
 	s.adminMemberRoutes(a)
 	s.adminBansRoutes(a)
+	s.adminForumRoutes(a)
+	s.adminSettingsRoutes(a)
+	s.adminContentRoutes(a)
+	s.adminPermRoutes(a)
+	s.adminGroupRoutes(a)
 	// A path of the area that no route above matches, and a method that none
 	// takes, get the themed 404, not the plain text of the mux.
 	a.HandleFunc("/admin/", s.notFound)
@@ -228,8 +251,15 @@ func (s *site) adminIndex(w http.ResponseWriter, r *http.Request) {
 		Crumbs: s.adminCrumbs()[:1],
 		Sections: []adminSection{
 			{Label: "Members", Href: s.path("admin", "members"), About: "Find a member; activate, deactivate, reset a password, set a rank."},
+			{Label: "Settings", Href: s.path("admin", "settings"), About: "Board name, description, time zone, color scheme and header image."},
+			{Label: "Pages", Href: s.path("admin", "pages"), About: "The static pages, such as the rules and the about page."},
+			{Label: "Smilies", Href: s.path("admin", "smilies"), About: "The codes that turn into small images in posts."},
+			{Label: "Ranks", Href: s.path("admin", "ranks"), About: "The titles and images that members earn or receive."},
+			{Label: "Groups", Href: s.path("admin", "groups"), About: "Create and edit groups, and add, remove and approve their members."},
+			{Label: "Permissions", Href: s.path("admin", "permissions"), About: "The grants of the groups and members, the roles, and what a member may do."},
 			{Label: "Log", Href: s.path("admin", "log"), About: "Every moderator and admin action, newest first."},
 			{Label: "Bans", Href: s.path("admin", "bans"), About: "Ban a member, an email address or an IP range, and lift a ban."},
+			{Label: "Forums", Href: s.path("admin", "forums"), About: "Create, edit, nest, reorder and lock the categories, forums and links."},
 		},
 	}
 	s.render(w, http.StatusOK, "admin.html", p)

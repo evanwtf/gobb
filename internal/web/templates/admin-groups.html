@@ -1,0 +1,61 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Groups</h1>
+  <p class="page-sub">A group gives its members the grants of the group. The four built-in groups keep their names and kinds.</p>
+</header>
+{{- if .Done}}<p class="notice-inline" role="status">{{.Done}}</p>{{end}}
+{{- if .Notice}}<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>{{end}}
+<section class="category" aria-label="Groups">
+  <table class="member-table log-table">
+    <thead><tr><th scope="col">Group</th><th scope="col">Kind</th><th scope="col">Members</th><th scope="col">Requests</th><th scope="col">Grants</th></tr></thead>
+    <tbody>
+    {{- range .Groups}}
+      <tr>
+        <td data-label="Group"><a href="{{path "admin" "groups" (printf "%d" .ID)}}"><bdi>{{.Name}}</bdi></a>{{if .Description}} <span class="muted"><bdi>{{.Description}}</bdi></span>{{end}}</td>
+        <td data-label="Kind">{{template "group-kind" .Kind}}</td>
+        <td data-label="Members">{{.Members}}</td>
+        <td data-label="Requests">{{.Pending}}</td>
+        <td data-label="Grants">{{.Grants}}</td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+
+<section class="account-section" aria-labelledby="group-new-title">
+  <h2 id="group-new-title">New group</h2>
+  <p class="hint">A new group has no members and no grants. Give it grants on the permission pages.</p>
+  <form class="post-form" method="post" action="{{path "admin" "groups"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    {{- with .Form}}
+    <div class="field">
+      <label for="group-name">Name</label>
+      <input id="group-name" name="name" type="text" value="{{.Name}}" maxlength="100" required autocomplete="off"{{if .NameErr}} aria-invalid="true" aria-describedby="group-name-error"{{end}}>
+      {{- if .NameErr}}<p class="field-error" id="group-name-error" role="alert">{{.NameErr}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="group-kind">Kind</label>
+      <select id="group-kind" name="kind" aria-describedby="group-kind-hint{{if .KindErr}} group-kind-error{{end}}"{{if .KindErr}} aria-invalid="true"{{end}}>
+        {{- $kind := .Kind}}
+        {{- range $.Data.Kinds}}
+        <option value="{{.}}"{{if eq . $kind}} selected{{end}}>{{template "group-kind" .}}</option>
+        {{- end}}
+      </select>
+      {{- if .KindErr}}<p class="field-error" id="group-kind-error" role="alert">{{.KindErr}}</p>{{end}}
+      <p class="hint" id="group-kind-hint">A hidden group does not show on profiles. The board has no page to join a group yet, so an admin adds the members.</p>
+    </div>
+    <div class="field">
+      <label for="group-description">Description</label>
+      <input id="group-description" name="description" type="text" value="{{.Description}}" maxlength="500" autocomplete="off"{{if .DescriptionErr}} aria-invalid="true" aria-describedby="group-description-error"{{end}}>
+      {{- if .DescriptionErr}}<p class="field-error" id="group-description-error" role="alert">{{.DescriptionErr}}</p>{{end}}
+    </div>
+    {{- end}}
+    <div class="form-actions"><button class="button button-inline" type="submit">Create the group</button></div>
+  </form>
+</section>
+{{- end}}
+{{end}}
+
+{{define "group-kind"}}{{if eq . "open"}}Open{{else if eq . "request"}}On request{{else if eq . "closed"}}Closed{{else if eq . "hidden"}}Hidden{{else if eq . "builtin"}}Built in{{else}}{{.}}{{end}}{{end}}

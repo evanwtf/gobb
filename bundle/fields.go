@@ -140,6 +140,11 @@ func (v *vet) optLabel(field string, s *string) {
 	}
 }
 
+// ValidSlug reports whether s is a valid slug of a static page: the rule that
+// the check of a bundle applies to static_pages.jsonl. The page editor of the
+// admin area uses it, so a page made there could be exported in a bundle.
+func ValidSlug(s string) bool { return slugRE.MatchString(s) }
+
 func (v *vet) slug(field, s string) {
 	if v.text(field, s) && !slugRE.MatchString(s) {
 		v.add(field, "must match %s", slugRE)

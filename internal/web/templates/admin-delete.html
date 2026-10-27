@@ -1,0 +1,16 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<section class="notice" aria-labelledby="notice-title">
+  <h1 id="notice-title">{{.Heading}}</h1>
+  {{- range .Lines}}
+  <p>{{.}}</p>
+  {{- end}}
+  <form class="confirm-form" method="post" action="{{.Action}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <button class="button button-inline" type="submit">Delete</button>
+    <a class="button-quiet button-link" href="{{.Cancel}}">Cancel</a>
+  </form>
+</section>
+{{- end}}
+{{end}}

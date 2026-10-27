@@ -1,0 +1,27 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Pages</h1>
+  <p class="page-sub">The static pages of the board, such as the rules. The footer links to each one.</p>
+</header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
+<p class="edit-bar"><a class="button button-inline button-link" href="{{path "admin" "pages" "new"}}">New page</a></p>
+{{- if .Rows}}
+<section class="category" aria-label="Pages">
+  <ul class="admin-list">
+    {{- range .Rows}}
+    <li class="edit-row">
+      <span class="edit-main"><a href="{{.EditHref}}"><bdi>{{or .Title .Slug}}</bdi></a> <span class="muted">{{.Slug}} &middot; saved {{date .UpdatedAt $.Clock}}</span></span>
+      <span class="edit-actions"><a href="{{.ViewHref}}">View</a> <a href="{{.EditHref}}">Edit</a></span>
+    </li>
+    {{- end}}
+  </ul>
+</section>
+{{- else}}
+<p>The board has no static pages.</p>
+{{- end}}
+{{- end}}
+{{end}}

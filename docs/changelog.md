@@ -81,6 +81,139 @@ request. The date is the day of the tag.
   A ban that is gone already shows a notice and writes nothing.
 - **`mod_log`:** `ban.add` and `ban.lift`, target type `ban`, the ID of the ban, and
   the kind, the target and the end in the details.
+### Forums and categories (evanwtf/gobb#21)
+- **`/admin/forums`:** the whole tree of categories, forums and links, in page order,
+  with the kind, the topic count and the lock state of each. A forum with no grant is
+  in the list too, though nobody else can see it.
+- **Create** a category, a forum or a link: name (1 to 100 characters), description (one
+  line, 500), rules (plain text, 5000, line breaks kept; the form the import stores, so
+  the forum renders as an imported one), link address (a link only; `http` or `https`),
+  parent. The new forum goes at the end of its siblings.
+- **Grants for a new forum.** Without a grant, nobody can see a forum. The create form
+  copies every group grant and member grant of a source forum that the admin picks;
+  the default source is the parent, and "no forum" copies none.
+- **Edit** the kind, name, description, rules and link address. A forum with topics
+  cannot become a category or a link, and a forum with subforums cannot become a link.
+  An address that the import brought in another allowed form (a site path, a `mailto:`
+  address) stays while the admin edits other fields.
+- **Move** a forum under another parent, or to the top level, with its subforums. The
+  move refuses a cycle (under itself or under one of its subforums), a link as the
+  parent, and a place so deep that the index would not list the forum (32 levels).
+  Every tree write locks all forum rows in ID order, so two admins at once cannot make
+  a cycle. The same lock is the one that a new topic takes, so a forum cannot gain a
+  topic while a kind change checks that it has none.
+- **Reorder** with Up and Down on the list. One transaction rewrites the positions of
+  all the siblings to 1, 2, 3, so no two share a position, even when the import left
+  ties.
+- **Lock** and unlock a forum. A lock stops new topics and replies from members who lack
+  `mod.lock` in that forum. It does not stop reading, edits or deletes, and it does not
+  reach the subforums. Only a forum can be locked. The pages say this.
+- `mod_log` actions: `forum.create`, `forum.update` (with the changed fields),
+  `forum.move`, `forum.reorder`, `forum.lock`, `forum.unlock`. A write that changes
+  nothing writes no row.
+- Nothing caches the forum tree and the counters belong to each forum (the index adds up
+  the descendants when it reads), so a change shows on the next request.
+- Delete and merge are not part of this release (evanwtf/gobb#28).
+- **A new forum and a move need a confirmed password:** a new forum copies the grants
+  of another forum, and a move changes who sees the forum in the index, which lists
+  a forum only under parents the visitor may see. The create page shows a link to
+  the confirm page first.
+
+### Board settings (evanwtf/gobb#20)
+- **`/admin/settings`:** the board name (1 to 100 characters), the board description
+  (up to 500), the board's time zone (the list of the account page) and the default
+  color scheme. Both text fields are one line with no control character and no
+  hidden formatting character. A bad value gives the form back with 400, a message
+  beside the field and the values the admin sent, and changes nothing.
+- **A save writes one `mod_log` row,** `settings.update`, with the names of the changed
+  keys in `details.keys`. A save that changes nothing writes no row and says so.
+- **A new name reaches every place at once.** Pages read the settings on each request.
+  After a save, the frame of the error pages is refreshed and the static 500 and 503
+  pages are built again (they were built once, at start; the swap is safe for requests
+  that read them). The subject of the next reset email holds the new name. Tests cover
+  the next page, the static 503 page and the reset email.
+- **Header image:** upload, replace or remove. PNG, JPEG or WebP, at most 1 MB and
+  8,000 pixels a side. The file is decoded under the memory gate, as an avatar is, to
+  see that it is an image; gobb then encodes the pixels again (a JPEG as a JPEG, a PNG
+  or a WebP as a PNG), so no metadata of the upload is stored, and stores the result
+  under `header/` with a random name, and deletes the file it replaces. The upload takes the same slots as an
+  avatar (the server's and one for each admin) and counts against the admin write
+  limit. WebP decoding adds `golang.org/x/image`; avatars still refuse WebP.
+- **Email test:** a button that sends one test message to the admin's own address, at
+  once and not through the queue, as `gobb mail test` does. It shows only when email
+  is on, and sends only to a verified address. One a minute for each admin. A failure shows the summary of the SMTP error and
+  nothing from the server's reply. `web.MailOptions` has a new field, `Sender`.
+- **Sign-up mode and email notifications** show read only, with a note: no code reads
+  them yet (roadmap rows 7 and 5).
+### Static pages, smilies and ranks (evanwtf/gobb#27)
+- **`/admin/pages`:** list, add, edit and delete the static pages. The slug follows the
+  rule of a bundle (`^[a-z0-9][a-z0-9-]{0,63}$`) and cannot change after the page is
+  saved, because old addresses name it; the slug `new` is reserved. The text goes
+  through the parser of posts with the three flags of the page (Markdown, smilies,
+  web addresses), so a page saved here has the same tree as the same page in a bundle.
+  A test pins the equality. The limit is 100,000 bytes, the limit of a bundle body.
+  A save parses the text again with the smilies of the board now.
+- **`/admin/smilies`:** list, add (a code, a description and an image), edit, move up
+  or down, and delete. A code is 1 to 32 characters and unique. The parser and the
+  renderer read the smilies from the database on each use, so there is no cache to
+  refresh: a smiley added or removed shows at the next render. A post that holds the
+  code of a removed smiley shows the code as text.
+- **`/admin/ranks`:** list, add, edit and delete, with a title, a post-count threshold,
+  a "special" flag and an optional image. The delete page says how many members lose
+  the rank; they fall back to the rank that their post count earns.
+- **Image uploads** follow the rules of the avatar upload: the type comes from the
+  first bytes (PNG, JPEG or GIF), at most 1 MB, a decode under the memory gate, one
+  upload for each admin at a time, and the slots of the server. A smiley or rank image
+  keeps its size, up to 512 pixels a side (`avatar.Icon`), and is stored as a fresh PNG.
+  An animated GIF keeps its first frame. The server makes the file name
+  (`smilies/s-<16 hex>.png`, `ranks/r-<16 hex>.png`); the name of the upload is never
+  used. A file goes after the commit that drops its last row.
+- **`adminRoutes.upload`:** the route method for an admin form that carries a file.
+- `mod_log` rows: `page.create`, `page.update`, `page.delete`, `smiley.create`,
+  `smiley.update`, `smiley.reorder`, `smiley.delete`, `rank.create`, `rank.update` and
+  `rank.delete`, with `{"via":"web"}`. A save that changes nothing writes no row.
+
+### Permissions (evanwtf/gobb#24)
+
+- **`/admin/permissions`:** the forums in tree order, with links to the grants of the
+  groups there and board-wide, to the grants of single members and to the roles. A
+  preview shows what one member may do in a forum or board-wide, from the resolver
+  of the pages.
+- **The grid of a forum** (`/admin/permissions/{forum}`, 0 for board-wide): the groups
+  against the roles that fit there, each cell a button that gives or takes the role,
+  and the single options of each group with a remove button. A form sets one option
+  for a group: Yes, No, Never or Not set.
+- **Grants of single members** (`/admin/permissions/members`): list, add a role or one
+  option, remove.
+- **The role editor** (`/admin/roles/{id}`): each option that the kind of the role can
+  use, Not set, Yes, No or Never. A forum role holds the forum and moderator options,
+  a board role the board and moderator options, a moderator role the moderator
+  options. Options that the kind cannot use are listed, and a save removes them.
+- **Scope rules** as in the bundle check and the resolver: a forum role or option
+  needs a forum, a board role or option is board-wide, a moderator one fits both.
+- **Every permission write needs a confirmed password**, and none may leave the board
+  without an active admin. Only an owner can change the grants of an owner.
+- `mod_log` rows: `perm.grant`, `perm.revoke` and `role.update`.
+
+### Groups (evanwtf/gobb#25)
+
+- **`/admin/groups`:** each group with its kind and its counts of members, requests and
+  grants, and a form to create a group. A new group has no members and no grants.
+- **The page of a group** (`/admin/groups/{id}`): the name, the kind and the
+  description; the members and the requests, with buttons to approve or refuse a
+  request, make a member a leader or not, and remove a member; an add by name.
+- **Built-in groups** keep their name and kind, and cannot be deleted. Only the
+  description changes. The guests group takes no members: it holds the grants of
+  visitors who are not signed in.
+- **Delete** takes a group with no members, no requests and no grants.
+- **A change of the members needs a confirmed password**, because it changes what
+  the member may do. It follows the rules of the permission pages: no change may
+  leave the board without an active admin, and only an owner can change the groups
+  of an owner.
+- `mod_log` rows: `group.create`, `group.update` (with the changed fields),
+  `group.delete`, `group.member_add` (an approve has `approved`),
+  `group.member_remove` (a refuse has `refused`) and `group.member_update` (a leader
+  change).
 
 ## 0.7.0 (2026-10-27)
 

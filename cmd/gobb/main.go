@@ -438,7 +438,9 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()
 	}
 	// With no email settings, Mail stays nil and the reset pages are off.
 	if cfg.Mail != nil {
-		opt.Mail = &web.MailOptions{PublicURL: cfg.Mail.PublicURL, Wake: wake, PerHour: cfg.Mail.PerHour, PerDay: cfg.Mail.PerDay}
+		sender := mail.NewSMTP(*cfg.Mail)
+		sender.RootCAs = mailRoots
+		opt.Mail = &web.MailOptions{PublicURL: cfg.Mail.PublicURL, Wake: wake, PerHour: cfg.Mail.PerHour, PerDay: cfg.Mail.PerDay, Sender: sender}
 	}
 	h, err := web.New(ctx, pool, opt)
 	if err != nil {
