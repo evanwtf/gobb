@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+The admin panel (evanwtf/gobb#18), in parts. Each part below is one pull request.
+
+### The admin area (evanwtf/gobb#19)
+
+- **`/admin/`**, for members with the board-wide `admin` right. Anyone else, a guest
+  too, gets the 404 page of any missing path, on GET and POST, so the area does not
+  show that it exists. Every admin route sits on one mux behind that gate; a test
+  walks the routes of the running site, so a new route cannot skip it.
+- **The Admin link** in the nav, for admins only.
+- **The log page,** `/admin/log`: `mod_log`, newest first, 50 rows a page, with the
+  actor, the action, the target (linked, with its name) and the details. A row with no
+  actor shows "Command line" or "Reset link". Filters: action, member, target type
+  and ID, and "only actions with no member".
+- **Confirm your password,** `/admin/confirm`: the dangerous changes of the later
+  parts ask for it. The check is the one of the account page, with its own limit of 5
+  tries an hour. A pass lasts 10 minutes on the session, in memory.
+- **A limit on admin writes:** 120 POSTs per admin in 10 minutes, counted in
+  `gobb_rate_limited_total{limit="admin_writes"}`.
+- Every admin page carries `noindex` and `Cache-Control: no-store`.
+- **One write helper,** `board.AdminWrite`: the change and its `mod_log` row, with the
+  admin as the actor and `{"via":"web"}`, in one transaction.
+
 ## 0.7.0 (2026-10-27)
 
 Private messages read as conversations (evanwtf/gobb#32). A reply joins the

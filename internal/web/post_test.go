@@ -733,6 +733,7 @@ var tokenRows = []tokenRow{
 	{"/f/2/read", "alice", url.Values{}, ""},
 	{"/reset", "", url.Values{"name": {"alice"}}, ""},
 	{"/reset/" + testResetToken, "", url.Values{"password": {"a new pass phrase"}, "again": {"a new pass phrase"}}, testResetTokenRow()},
+	{"/admin/confirm", "alice", url.Values{"password": {testPassword}, "next": {"/admin/log"}}, ""},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post
@@ -820,7 +821,8 @@ func TestPostRoutesHaveTokenRows(t *testing.T) {
 	// and must refuse a POST by itself, so it needs no token row.
 	h, _ := smallSite(t)
 	for _, p := range methodless {
-		want, known := map[string]int{"/": http.StatusNotFound, "/healthz": http.StatusMethodNotAllowed}[p]
+		want, known := map[string]int{"/": http.StatusNotFound, "/healthz": http.StatusMethodNotAllowed,
+			"/admin": http.StatusNotFound, "/admin/": http.StatusNotFound}[p]
 		if !known {
 			t.Errorf("the mux has the method-less pattern %q: name it here with the answer to a POST, or give it a method", p)
 			continue

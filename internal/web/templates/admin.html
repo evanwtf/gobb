@@ -1,0 +1,16 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Admin</h1>
+  <p class="page-sub">The pages that run the board. Only admins see them.</p>
+</header>
+<section class="category" aria-label="Admin pages">
+  <ul class="admin-list">
+    {{- range .Sections}}
+    <li><a href="{{.Href}}">{{.Label}}</a> <span class="muted">{{.About}}</span></li>
+    {{- end}}
+  </ul>
+</section>
+{{- end}}
+{{end}}

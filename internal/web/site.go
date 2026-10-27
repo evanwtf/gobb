@@ -80,6 +80,9 @@ type Options struct {
 	// ResetFloor is the least time that a request for a reset takes. Zero means
 	// 400 ms. Tests set it lower.
 	ResetFloor time.Duration
+	// AdminWrites is the count of POSTs to the admin area that each admin may
+	// make in ten minutes. Zero means the default (120). A test sets it low.
+	AdminWrites int
 }
 
 // site holds what the handlers share: the pool, the options and the parsed
@@ -136,6 +139,10 @@ type site struct {
 	// staticErrors holds the themed 500 and 503 pages, built once in New. They
 	// answer when even the error template fails.
 	staticErrors map[int][]byte
+	// adminWrites counts the POSTs of each admin to the admin area.
+	adminWrites *ratelimit.Limiter
+	// passes holds the sessions whose admin confirmed the password lately.
+	passes adminPasses
 }
 
 // frame is what an error page needs of the board: the settings, for the board
@@ -151,7 +158,8 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html",
+	"admin.html", "admin-log.html", "admin-confirm.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -168,7 +176,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		lo.Gate = opt.LoginGate
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
-		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(opt.Mail), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight)}
+		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(opt.Mail), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight),
+		adminWrites: newAdminWrites(opt)}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
@@ -268,6 +277,12 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.Handle("POST /account/about", s.protect(maxAccountBody, s.setAbout))
 	inner.Handle("POST /account/avatar", s.protectUpload(maxAvatarBody, s.uploadAvatar))
 	inner.Handle("POST /account/avatar/remove", s.protect(maxPostBody, s.removeAvatar))
+	// The admin area has its own mux behind one gate. "/admin" is a route of
+	// the area too, so the mux does not redirect it to "/admin/" for a visitor
+	// whom the gate would refuse.
+	admin := s.adminArea()
+	inner.Handle("/admin", admin)
+	inner.Handle("/admin/", admin)
 	inner.HandleFunc("GET /static/{name}", s.static)
 	inner.HandleFunc("GET /files/{dir}/{name...}", s.files)
 	// Without this, the mux would redirect /files/avatars to /files/avatars/.
@@ -287,7 +302,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		// text of the mux.
 		root.HandleFunc("/", s.notFound)
 	}
-	s.patterns = append(inner.patterns, root.patterns...)
+	s.patterns = append(s.patterns, inner.patterns...)
+	s.patterns = append(s.patterns, root.patterns...)
 	if onNew != nil {
 		onNew(s)
 	}
@@ -595,7 +611,7 @@ func (s *site) touch(w http.ResponseWriter, r *http.Request, sess session.Sessio
 
 // addNav adds the links that depend on the viewer to the nav: for a member "New
 // since your last visit", then Members for a viewer who may see profiles, then
-// Team. A page with no request context (the frame of an empty database) keeps the
+// Team, Messages, and Admin for an admin. A page with no request context (the frame of an empty database) keeps the
 // nav it has.
 func (s *site) addNav(p *page) {
 	if p.ctx == nil {
@@ -607,6 +623,9 @@ func (s *site) addNav(p *page) {
 	}
 	p.Nav = append(p.Nav, navLink{Label: "Team", Href: s.path("team"), Current: p.navKey == "team"})
 	s.addMessagesLink(p)
+	if p.Viewer.UserID != 0 && p.Viewer.Perms.IsAdmin() {
+		p.Nav = append(p.Nav, navLink{Label: "Admin", Href: s.path("admin") + "/", Current: p.navKey == "admin"})
+	}
 	if p.Viewer.Perms.Has("account.search", 0) {
 		p.SearchHref, p.SearchCurrent = s.path("search"), p.navKey == "search"
 	}

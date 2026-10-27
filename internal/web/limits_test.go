@@ -301,6 +301,7 @@ var bodyCaps = []struct {
 	{"/messages/{id}/delete", "/messages/1/delete", maxPostBody},
 	{"/reset", "/reset", maxLoginBody},
 	{"/reset/{token}", "/reset/x", maxLoginBody},
+	{"/admin/confirm", "/admin/confirm", maxLoginBody},
 }
 
 // Every POST route has a cap on its body. A body over it answers 413 in the
@@ -310,9 +311,10 @@ func TestPostBodyCaps(t *testing.T) {
 	for _, tc := range bodyCaps {
 		t.Run(tc.route, func(t *testing.T) {
 			// The upload reads no body for a visitor who is not signed in (it
-			// answers 403), so its cap is tested as a member.
+			// answers 403), and the admin area answers 404 to anyone but an admin
+			// before it reads one, so their caps are tested as an admin.
 			var cookies []*http.Cookie
-			if tc.route == "/account/avatar" {
+			if tc.route == "/account/avatar" || strings.HasPrefix(tc.route, "/admin/") {
 				cookies = signIn(t, h, "alice", testPassword)
 			}
 			over := url.Values{"junk": {strings.Repeat("x", tc.limit)}}

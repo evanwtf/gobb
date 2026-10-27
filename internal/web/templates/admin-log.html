@@ -1,0 +1,83 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Log</h1>
+  <p class="page-sub">Every moderator and admin action, newest first.</p>
+</header>
+{{- if .Notice}}
+<p class="form-error" role="alert"><span class="form-error-text">{{.Notice}}</span></p>
+{{- end}}
+<form class="search-form" method="get" action="{{path "admin" "log"}}" aria-label="Filter the log">
+  <div class="search-fields">
+    <div class="field">
+      <label for="log-action">Action</label>
+      <select id="log-action" name="action">
+        <option value="">Any action</option>
+        {{- range .Actions}}
+        <option value="{{.}}"{{if eq . $.Data.Action}} selected{{end}}>{{.}}</option>
+        {{- end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="log-actor">By member</label>
+      <input type="text" id="log-actor" name="actor" value="{{.Actor}}" maxlength="256" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="log-type">Target type</label>
+      <select id="log-type" name="type">
+        <option value="">Any type</option>
+        {{- range .Types}}
+        <option value="{{.}}"{{if eq . $.Data.TargetType}} selected{{end}}>{{.}}</option>
+        {{- end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="log-target">Target ID</label>
+      <input type="text" id="log-target" name="target" value="{{.TargetID}}" inputmode="numeric" maxlength="20" autocomplete="off">
+    </div>
+  </div>
+  <div class="field-check">
+    <input id="log-noactor" name="noactor" type="checkbox" value="1"{{if .NoActor}} checked{{end}}>
+    <label for="log-noactor">Only actions with no member: the command line and reset links</label>
+  </div>
+  <button type="submit" class="button search-go">Filter</button>
+  {{- if .Filtered}} <a href="{{path "admin" "log"}}">Show all</a>{{end}}
+</form>
+{{- if .Entries}}
+{{template "pager" pagerAt .Pager "Pages, top"}}
+<section class="category" aria-label="Log entries">
+  <table class="member-table log-table">
+    <thead>
+      <tr>
+        <th scope="col">When</th>
+        <th scope="col">Who</th>
+        <th scope="col">Action</th>
+        <th scope="col">Target</th>
+        <th scope="col">Details</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .Entries}}
+      <tr>
+        <td data-label="When">{{time .At $.Clock}}</td>
+        <td data-label="Who">{{if .ActorText}}<span class="muted">{{.ActorText}}</span>{{else}}{{template "author" .Actor}}{{end}}</td>
+        <td data-label="Action"><code>{{.Action}}</code>{{if .UndoneAt}} <span class="muted">(undone)</span>{{end}}</td>
+        <td data-label="Target">
+          {{- if .TargetHref}}<a href="{{.TargetHref}}">{{.TargetType}} {{.TargetID}}</a>{{else}}{{.TargetType}} {{.TargetID}}{{end}}
+          {{- if .TargetName}} <bdi>{{.TargetName}}</bdi>{{end -}}
+        </td>
+        <td data-label="Details">
+          {{- range $i, $d := .Details}}{{if $i}}; {{end}}{{$d.Key}}: <bdi>{{$d.Value}}</bdi>{{end -}}
+        </td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+{{template "pager" pagerAt .Pager "Pages, bottom"}}
+{{- else}}
+<p class="empty standalone">{{if .Filtered}}No action matches.{{else}}The log is empty.{{end}}</p>
+{{- end}}
+{{- end}}
+{{end}}

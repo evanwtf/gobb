@@ -1,0 +1,23 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<section class="auth-card" aria-labelledby="confirm-title">
+  <h1 id="confirm-title">Confirm your password</h1>
+  <p class="hint">Some admin changes need your password. After you type it, you can make them for 10 minutes on this device.</p>
+  {{- if and .Error (not .Field)}}
+  <div class="form-error" role="alert"><p class="form-error-text">{{.Error}}</p></div>
+  {{- end}}
+  <form class="auth-form" method="post" action="{{path "admin" "confirm"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <div class="field">
+      <label for="confirm-password">Your password</label>
+      <input id="confirm-password" name="password" type="password" required autofocus autocomplete="current-password"
+        {{- if .Field}} aria-invalid="true" aria-describedby="confirm-error"{{end}}>
+      {{- if .Field}}<p class="field-error" id="confirm-error" role="alert">{{.Error}}</p>{{end}}
+    </div>
+    <button class="button" type="submit">Confirm</button>
+  </form>
+</section>
+{{- end}}
+{{end}}
