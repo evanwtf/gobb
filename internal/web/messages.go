@@ -197,10 +197,11 @@ func (s *site) messageShow(w http.ResponseWriter, r *http.Request) {
 	// A message and a signature never embed: an embed is a plain link, with no
 	// frame and no provider script on the most private page (ruling R43).
 	rc.NoEmbeds = true
-	idText := strconv.FormatInt(id, 10)
 	d := messageData{Subject: c.Subject, CanReply: p.Viewer.Perms.Has("pm.send", 0), CanDelete: p.Viewer.Perms.Has("pm.delete", 0),
 		Crumbs: []crumb{{Label: "Messages", Href: s.path("messages")}}}
-	d.Pager = newPager(s.path("messages", idText), c.Page, c.Pages)
+	// The pages hang off the first message: page 1 of /messages/{id} is the page
+	// that holds id, and for the first message that is page 1.
+	d.Pager = newPager(s.path("messages", strconv.FormatInt(c.FirstID, 10)), c.Page, c.Pages)
 	cards := map[int64]*board.UserCard{}
 	for _, m := range c.Messages {
 		mText := strconv.FormatInt(m.ID, 10)

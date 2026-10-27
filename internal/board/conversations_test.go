@@ -222,3 +222,30 @@ func TestReplyJoinsConversation(t *testing.T) {
 		t.Errorf("carol = %v, %v", messageIDsOf(c), err)
 	}
 }
+
+func TestThreadMessagesMovesEarlyReplies(t *testing.T) {
+	ctx := context.Background()
+	pool := loadMessages(t)
+	// Before the thread run, alice answers message 2 from its page. Her reply goes
+	// into conversation 2, which the run then joins to 1: the reply must follow.
+	a := viewerFor(t, pool, alice)
+	id, err := board.SendMessage(ctx, pool, a, board.MessageDraft{To: "bob", Subject: "Re: Welcome aboard", Source: "Early", IP: ip1, ReplyTo: 2}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := conversationOf(t, pool, id); c != 2 {
+		t.Fatalf("the early reply is in conversation %d, want 2", c)
+	}
+	if n, err := board.ThreadMessages(ctx, pool, false); err != nil || n != 2 {
+		t.Fatalf("thread = %d, %v; want 2", n, err)
+	}
+	for _, m := range []int64{1, 2, id} {
+		if c := conversationOf(t, pool, m); c != 1 {
+			t.Errorf("message %d is in conversation %d, want 1", m, c)
+		}
+	}
+	c, err := board.ReadConversation(ctx, pool, a, id, 0)
+	if err != nil || !slices.Equal(messageIDsOf(c), []int64{1, 2, id}) || c.FirstID != 1 {
+		t.Errorf("alice from the early reply = %v first %d, %v", messageIDsOf(c), c.FirstID, err)
+	}
+}

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -74,5 +75,28 @@ func TestConversationReplyToOthersMessage(t *testing.T) {
 	}
 	if rec := getAs(t, h, "/messages/1?page=x", bob); rec.Code != http.StatusBadRequest {
 		t.Errorf("page x = %d, want 400", rec.Code)
+	}
+}
+
+func TestConversationPagerReachesPageOne(t *testing.T) {
+	h, pool := messageSite(t, Options{MessageSends: 1000, MemberPosts: 1000})
+	alice := signIn(t, h, "alice", testPassword)
+	first := sentID(t, sendMessage(t, h, alice, "bob", "Long talk", "Message 0"))
+	exec(t, pool, fmt.Sprintf(`insert into pms (author_id, author_name, created_at, subject, body_tree, body_source, conversation_id)
+		select 1, 'alice', now(), 'Re: Long talk', '{}'::jsonb, 'x', %d from generate_series(1, 26)`, first))
+	var last int64
+	if err := pool.QueryRow(t.Context(), `select max(id) from pms`).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	// From the last message the page is 2, and its link to page 1 opens the page
+	// with the first message.
+	page := bodyOf(t, getAs(t, h, fmt.Sprintf("/messages/%d", last), alice))
+	firstHref := fmt.Sprintf(`href="/messages/%d"`, first)
+	if !strings.Contains(page, firstHref) || strings.Contains(page, `id="m`+strconv.FormatInt(first, 10)+`"`) {
+		t.Fatalf("page 2 lacks a link to page 1, or holds the first message")
+	}
+	page = bodyOf(t, getAs(t, h, fmt.Sprintf("/messages/%d", first), alice))
+	if !strings.Contains(page, `id="m`+strconv.FormatInt(first, 10)+`"`) || !strings.Contains(page, fmt.Sprintf(`href="/messages/%d?page=2"`, first)) {
+		t.Errorf("page 1 lacks the first message or the link to page 2")
 	}
 }

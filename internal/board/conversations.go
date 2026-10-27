@@ -149,9 +149,10 @@ type Conversation struct {
 	// viewer. [MarkMessagesRead] takes them.
 	Unread      []int64
 	Page, Pages int
-	// LastID is the last message of the whole conversation that the viewer sees.
-	// A reply answers it.
-	LastID int64
+	// FirstID and LastID are the first and the last message of the whole
+	// conversation that the viewer sees. A reply answers the last one; page 1 is
+	// the page of the first one.
+	FirstID, LastID int64
 }
 
 // seenMessage is a message that a member sees, and whether it is unread for them.
@@ -184,7 +185,12 @@ func ReadConversation(ctx context.Context, pool *pgxpool.Pool, v Viewer, id int6
 	if err != nil {
 		return Conversation{}, fmt.Errorf("board: read conversation %d: %w", m.conversationID, err)
 	}
-	out := Conversation{ID: m.conversationID, Pages: pageCount(len(ids), messagesPerPage), LastID: ids[len(ids)-1].id}
+	// The viewer may have deleted message id since loadParty read it.
+	if !slices.ContainsFunc(ids, func(r seenMessage) bool { return r.id == id }) {
+		return Conversation{}, ErrNotFound
+	}
+	out := Conversation{ID: m.conversationID, Pages: pageCount(len(ids), messagesPerPage),
+		FirstID: ids[0].id, LastID: ids[len(ids)-1].id}
 	if page == 0 {
 		at := slices.IndexFunc(ids, func(r seenMessage) bool { return r.id == id })
 		page = at/messagesPerPage + 1
@@ -255,7 +261,9 @@ func baseSubject(subject string) (base string, reply bool) {
 // starts a conversation of its own, joins the conversation of the newest earlier
 // message with the same subject (without the prefixes, in any case) and the same
 // people: the author and the recipients of kind "to". A message that has joined a
-// conversation stays in it. It returns the count of messages that it joined, or
+// conversation stays in it. A message in the conversation of a message that
+// joins one moves with it, so a reply sent before the run stays with the talk.
+// It returns the count of messages that it joined, or
 // would join when dryRun is true. A second run joins nothing new.
 func ThreadMessages(ctx context.Context, pool *pgxpool.Pool, dryRun bool) (int, error) {
 	joined := 0
@@ -287,14 +295,23 @@ select p.id, p.conversation_id, p.subject,
 			return fmt.Errorf("board: read messages: %w", err)
 		}
 		latest := map[threadKey]int64{}
+		// moved maps the ID of a message that joined a conversation to that
+		// conversation. A later message whose conversation_id is that ID follows it.
+		// The rows come in ID order and a conversation_id is never above its own
+		// ID, so the first message is always seen before the rest.
+		moved := map[int64]int64{}
 		var ids, cids []int64
 		for _, m := range all {
 			base, reply := baseSubject(m.subject)
 			// The people are the same set whoever wrote: the author and the "to"
 			// recipients, sorted.
 			k := threadKey{people: peopleKey(m.people), subject: base}
-			if cid, ok := latest[k]; ok && reply && m.cid == m.id {
+			if cid, ok := moved[m.cid]; ok {
 				ids, cids = append(ids, m.id), append(cids, cid)
+				m.cid = cid
+			} else if cid, ok := latest[k]; ok && reply && m.cid == m.id {
+				ids, cids = append(ids, m.id), append(cids, cid)
+				moved[m.id] = cid
 				m.cid = cid
 			}
 			latest[k] = m.cid
