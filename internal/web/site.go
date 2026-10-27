@@ -159,7 +159,7 @@ var onNew func(*site)
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
 var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html",
-	"admin.html", "admin-log.html", "admin-confirm.html"}
+	"admin.html", "admin-log.html", "admin-confirm.html", "admin-forums.html", "admin-forum.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the

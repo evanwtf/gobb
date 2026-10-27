@@ -28,6 +28,41 @@ request. The date is the day of the tag.
 - **One write helper,** `board.AdminWrite`: the change and its `mod_log` row, with the
   admin as the actor and `{"via":"web"}`, in one transaction.
 
+### Forums and categories (evanwtf/gobb#21)
+
+- **`/admin/forums`:** the whole tree of categories, forums and links, in page order,
+  with the kind, the topic count and the lock state of each. A forum with no grant is
+  in the list too, though nobody else can see it.
+- **Create** a category, a forum or a link: name (1 to 100 characters), description (one
+  line, 500), rules (plain text, 5000, line breaks kept; the form the import stores, so
+  the forum renders as an imported one), link address (a link only; `http` or `https`),
+  parent. The new forum goes at the end of its siblings.
+- **Grants for a new forum.** Without a grant, nobody can see a forum. The create form
+  copies every group grant and member grant of a source forum that the admin picks;
+  the default source is the parent, and "no forum" copies none.
+- **Edit** the kind, name, description, rules and link address. A forum with topics
+  cannot become a category or a link, and a forum with subforums cannot become a link.
+  An address that the import brought in another allowed form (a site path, a `mailto:`
+  address) stays while the admin edits other fields.
+- **Move** a forum under another parent, or to the top level, with its subforums. The
+  move refuses a cycle (under itself or under one of its subforums), a link as the
+  parent, and a place so deep that the index would not list the forum (32 levels).
+  Every tree write locks all forum rows in ID order, so two admins at once cannot make
+  a cycle. The same lock is the one that a new topic takes, so a forum cannot gain a
+  topic while a kind change checks that it has none.
+- **Reorder** with Up and Down on the list. One transaction rewrites the positions of
+  all the siblings to 1, 2, 3, so no two share a position, even when the import left
+  ties.
+- **Lock** and unlock a forum. A lock stops new topics and replies from members who lack
+  `mod.lock` in that forum. It does not stop reading, edits or deletes, and it does not
+  reach the subforums. Only a forum can be locked. The pages say this.
+- `mod_log` actions: `forum.create`, `forum.update` (with the changed fields),
+  `forum.move`, `forum.reorder`, `forum.lock`, `forum.unlock`. A write that changes
+  nothing writes no row.
+- Nothing caches the forum tree and the counters belong to each forum (the index adds up
+  the descendants when it reads), so a change shows on the next request.
+- Delete and merge are not part of this release (evanwtf/gobb#28).
+
 ## 0.7.0 (2026-10-27)
 
 Private messages read as conversations (evanwtf/gobb#32). A reply joins the

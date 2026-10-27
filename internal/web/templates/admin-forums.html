@@ -1,0 +1,64 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Forums</h1>
+  <p class="page-sub">The tree of categories, forums and links, in the order that the board shows it.</p>
+  <p class="toolbar toolbar-start"><a class="button button-inline" href="{{path "admin" "forums" "new"}}">New forum</a></p>
+</header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
+{{- if .Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>
+{{- end}}
+<section class="account-section" aria-labelledby="locked-title">
+  <h2 id="locked-title">What a lock does</h2>
+  <p class="hint">A locked forum takes no new topics and no replies. Members who hold the moderator right <code>mod.lock</code> in that forum can still post there. A lock does not hide the forum, stop reading, or stop edits and deletes. It does not reach the subforums: lock each one on its own. A category or a link holds no topics, so it cannot be locked.</p>
+</section>
+{{- if .Empty}}
+<p class="empty standalone">The board has no forum yet.</p>
+{{- else}}
+<section class="category" aria-label="Forum tree">
+  {{template "adminforumlist" (.Tree.With $.CSRF)}}
+</section>
+{{- end}}
+{{- end}}
+{{end}}
+
+{{define "adminforumlist"}}
+<ul class="forum-tree">
+  {{- range .Rows}}
+  <li id="f{{.ID}}">
+    <div class="forum-tree-row">
+      <span class="forum-tree-name">
+        <a href="{{path "admin" "forums" (printf "%d" .ID)}}"><bdi>{{.Name}}</bdi></a>
+        <span class="tag">{{if eq .Kind "category"}}Category{{else if eq .Kind "link"}}Link{{else}}Forum{{end}}</span>
+        {{- if .Locked}} <span class="tag tag-warn">Locked</span>{{end}}
+      </span>
+      <span class="forum-tree-meta muted">
+        {{- if eq .Kind "forum"}}{{plural .Topics "topic" "topics"}}{{else if eq .Kind "link"}}Link{{else}}No topics{{end -}}
+      </span>
+      <span class="forum-tree-actions">
+        <form method="post" action="{{path "admin" "forums" (printf "%d" .ID) "reorder"}}">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="dir" value="up">
+          <button class="button-quiet" type="submit" aria-label="Move {{.Name}} up"{{if .First}} disabled{{end}}>Up</button>
+        </form>
+        <form method="post" action="{{path "admin" "forums" (printf "%d" .ID) "reorder"}}">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="dir" value="down">
+          <button class="button-quiet" type="submit" aria-label="Move {{.Name}} down"{{if .Last}} disabled{{end}}>Down</button>
+        </form>
+        {{- if ne .Kind "link"}}
+        <a class="button-quiet" href="{{path "admin" "forums" "new"}}?parent={{.ID}}" aria-label="Add a forum under {{.Name}}">Add under</a>
+        {{- end}}
+      </span>
+    </div>
+    {{- if .Kids.Rows}}
+    {{template "adminforumlist" (.Kids.With $.CSRF)}}
+    {{- end}}
+  </li>
+  {{- end}}
+</ul>
+{{end}}

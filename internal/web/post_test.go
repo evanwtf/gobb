@@ -734,6 +734,12 @@ var tokenRows = []tokenRow{
 	{"/reset", "", url.Values{"name": {"alice"}}, ""},
 	{"/reset/" + testResetToken, "", url.Values{"password": {"a new pass phrase"}, "again": {"a new pass phrase"}}, testResetTokenRow()},
 	{"/admin/confirm", "alice", url.Values{"password": {testPassword}, "next": {"/admin/log"}}, ""},
+	{"/admin/forums/new", "alice", url.Values{"kind": {"forum"}, "name": {"No token"}, "parent": {"1"}, "grants_from": {"1"}}, ""},
+	{"/admin/forums/2/edit", "alice", url.Values{"kind": {"forum"}, "name": {"No token"}}, ""},
+	{"/admin/forums/3/move", "alice", url.Values{"parent": {"1"}}, ""},
+	{"/admin/forums/2/reorder", "alice", url.Values{"dir": {"down"}}, `insert into forums (parent_id, kind, name, position) values (1, 'forum', 'Second', 9)`},
+	{"/admin/forums/2/lock", "alice", url.Values{}, ""},
+	{"/admin/forums/2/unlock", "alice", url.Values{}, `update forums set locked = true where id = 2`},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post

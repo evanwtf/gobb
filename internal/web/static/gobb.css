@@ -1188,3 +1188,18 @@ fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
 .message-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0 0 1rem; }
 .message-meta dt { color: var(--muted); font-weight: 600; }
 .message-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- Admin: forums -------------------------------------------------------- */
+
+.forum-tree, .forum-tree ul { margin: 0; padding: 0; list-style: none; }
+.forum-tree ul { margin-left: 1.25rem; border-left: 2px solid var(--line-soft); }
+.forum-tree li { border-top: 1px solid var(--line-soft); }
+.forum-tree > li:first-child { border-top: 0; }
+.forum-tree-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; padding: 0.6rem 1rem; }
+.forum-tree-name { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
+.forum-tree-meta { flex: 0 0 auto; font-size: 0.9rem; }
+.forum-tree-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.forum-tree-actions form { margin: 0; }
+.forum-tree-actions .button-quiet { display: inline-block; text-decoration: none; }
+.forum-tree-actions .button-quiet[disabled] { opacity: 0.45; cursor: default; }
+.forum-tree li:target > .forum-tree-row { background: color-mix(in srgb, var(--accent) 12%, var(--row)); }
