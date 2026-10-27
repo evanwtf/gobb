@@ -171,7 +171,7 @@
     </section>
     {{- end}}
     {{- if .EditCount}}
-    <p class="edit-note">Edited{{with .EditedBy}} by {{template "author" .}}{{end}}{{with .EditedAt}} on {{time . $.Clock}}{{end}}. {{plural .EditCount "edit" "edits"}} in all.{{if .EditReason}} Reason: {{.EditReason}}{{end}}</p>
+    <p class="edit-note">Edited{{with .EditedBy}} by {{template "author" .}}{{end}}{{with .EditedAt}}, {{time . $.Clock}}{{end}}. {{plural .EditCount "edit" "edits"}} in all.{{if .EditReason}} Reason: {{.EditReason}}{{end}}</p>
     {{- end}}
     {{- if .SigHTML}}
     <div class="signature">{{.SigHTML}}</div>

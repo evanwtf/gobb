@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.7.0 (2026-10-27)
+
+Private messages read as conversations (evanwtf/gobb#32). A reply joins the
+conversation of the message it answers, and one page shows the whole talk, both sides,
+oldest first, with a reply form at the bottom. Before, a reply was a new message in
+the inbox, and the member's own replies were on the Sent page.
+
+Operators: migration 0015 adds `pms.conversation_id`. Every existing message starts
+its own conversation; run `gobb messages thread` once to join the old replies (below).
+The bundle format does not change.
+
+### Members
+
+- **One list of conversations.** `/messages` lists conversations, the one with the
+  newest message first. A row shows the subject, the other people, the count of
+  messages and unread ones, and the time and author of the last message. Sent stays,
+  as a second tab, for the messages the member wrote.
+- **The conversation page.** `/messages/{id}` shows the conversation of the message,
+  at the page that holds it (25 messages a page). Each message has its own To line,
+  Quote and Delete. The reply form answers the last message; "Change the people or the
+  subject" opens the full form. Opening the page marks the messages on it read.
+- **What a member sees.** Only the messages the member is a party to, as before: a
+  blind-copy recipient sees the messages that went to them, and a deleted message is
+  gone from the member's view. Delete still removes one message. A new reply in a
+  conversation the member deleted shows again, with the new message only.
+- **The edit note** reads "Edited by NAME, TIME." It said "on 4 minutes ago" in the
+  relative date format (evanwtf/gobb#33).
+
+### Operators
+
+- **`gobb messages thread [-dry-run]`** joins old replies. In ID order, a message whose
+  subject starts with "Re:" (in any case, any number of times) joins the conversation
+  of the newest earlier message with the same subject without the prefixes, in any
+  case, and the same people: the author and the "to" recipients, as a set. A message
+  without "Re:" starts a conversation. A message that has joined one stays in it, so a
+  second run joins nothing. `-dry-run` counts and changes nothing.
+- **A reply's link.** The reply forms send `reply_to`, the ID of the message answered.
+  When the writer is not a party to it (a message of someone else, one the writer
+  deleted, or no such ID), the message starts its own conversation. The answer is the
+  same in each case, so the field tells nothing about other messages.
+- **The send redirect** goes to `/messages/{id}#m{id}`, and a delete to `/messages`.
+
 ## 0.6.0 (2026-10-26)
 
 The metrics show how full each rate limit gets, not only how often it refuses

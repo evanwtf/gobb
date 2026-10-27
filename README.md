@@ -755,7 +755,7 @@ board's layout.
 Plan 4, the write side, is built for v0.1.0: members post, edit and moderate. v0.2.0
 adds private messages and the account settings (roadmap row 4b). v0.3.0 adds email and
 the password reset by email (row 4c). v0.4.0 adds `gobb user activate` and
-`gobb user deactivate`. v0.5.0 adds the metrics listener. v0.6.0 adds the rate limit metrics. Attachment uploads and email notifications come
+`gobb user deactivate`. v0.5.0 adds the metrics listener. v0.6.0 adds the rate limit metrics. v0.7.0 shows private messages as conversations. Attachment uploads and email notifications come
 later. The design is in
 [docs/superpowers/specs/2026-10-23-gobb-design.md](docs/superpowers/specs/2026-10-23-gobb-design.md),
 and the build order is in

@@ -1,13 +1,13 @@
 {{define "content"}}
 {{- with .Data}}
 <header class="page-head">
-  <h1>Messages: {{if .Inbox}}Inbox{{else}}Sent{{end}}</h1>
+  <h1>{{if .Inbox}}Messages{{else}}Messages: Sent{{end}}</h1>
   {{- if and .Inbox $.UnreadMessages}}
   <p class="page-sub">{{num $.UnreadMessages}} unread.</p>
   {{- end}}
   <div class="toolbar">
     <nav class="msg-tabs" aria-label="Message folders">
-      <a class="button-quiet button-link" href="{{.InboxHref}}"{{if .Inbox}} aria-current="page"{{end}}>Inbox</a>
+      <a class="button-quiet button-link" href="{{.InboxHref}}"{{if .Inbox}} aria-current="page"{{end}}>Conversations</a>
       <a class="button-quiet button-link" href="{{.SentHref}}"{{if not .Inbox}} aria-current="page"{{end}}>Sent</a>
     </nav>
     {{- if .CanSend}}
@@ -16,9 +16,40 @@
   </div>
 </header>
 {{template "pager" pagerAt .Pager "Pages, top"}}
-{{- if .List.Rows}}
+{{- if .Inbox}}
+{{- if .Talks.Rows}}
 <section class="category" aria-labelledby="list-title">
-  <div class="bar"><h2 id="list-title">{{if .Inbox}}Inbox{{else}}Sent{{end}}</h2></div>
+  <div class="bar"><h2 id="list-title">Conversations</h2></div>
+  <table class="forums topics tracks">
+    <thead>
+      <tr>
+        <th scope="col" class="col-forum">Conversation</th>
+        <th scope="col" class="col-last">Last message</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .Talks.Rows}}
+      {{- $href := printf "%s#m%d" (path "messages" (printf "%d" .LastID)) .LastID}}
+      <tr class="topic-row{{if .Unread}} row-new{{end}}">
+        <td class="forum-main topic-main">
+          {{- if .Unread}}{{template "newbadge"}} {{end}}
+          <a class="topic-link" href="{{$href}}">{{if .Unread}}{{template "newtext"}}{{end}}<bdi>{{or .Subject "(no subject)"}}</bdi></a>
+          <p class="topic-meta">with {{range $i, $a := .With}}{{if $i}}, {{end}}{{template "author" $a}}{{else}}<span class="muted">no one else</span>{{end}}
+            · {{plural .Messages "message" "messages"}}{{if .Unread}}, {{num .Unread}} unread{{end}}</p>
+        </td>
+        <td class="last" data-label="Last message"><a class="last-title" href="{{$href}}">{{time .LastAt $.Clock}}</a>
+          <span class="last-meta">by {{template "author" .LastFrom}}</span></td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+{{- else}}
+<p class="muted">You have no messages.</p>
+{{- end}}
+{{- else if .List.Rows}}
+<section class="category" aria-labelledby="list-title">
+  <div class="bar"><h2 id="list-title">Sent</h2></div>
   <table class="forums topics tracks">
     <thead>
       <tr>
@@ -28,24 +59,19 @@
     </thead>
     <tbody>
     {{- range .List.Rows}}
-      <tr class="topic-row{{if .Unread}} row-new{{end}}">
+      <tr class="topic-row">
         <td class="forum-main topic-main">
-          {{- if .Unread}}{{template "newbadge"}} {{end}}
-          <a class="topic-link" href="{{path "messages" (printf "%d" .ID)}}">{{if .Unread}}{{template "newtext"}}{{end}}<bdi>{{or .Subject "(no subject)"}}</bdi></a>
-          {{- if $.Data.Inbox}}
-          <p class="topic-meta">from {{template "author" .From}}</p>
-          {{- else}}
+          <a class="topic-link" href="{{path "messages" (printf "%d" .ID)}}#m{{.ID}}"><bdi>{{or .Subject "(no subject)"}}</bdi></a>
           <p class="topic-meta">to {{range $i, $a := .To}}{{if $i}}, {{end}}{{template "author" $a}}{{else}}<span class="muted">blind copy only</span>{{end}}</p>
-          {{- end}}
         </td>
-        <td class="last" data-label="Date"><a class="last-title" href="{{path "messages" (printf "%d" .ID)}}">{{time .At $.Clock}}</a></td>
+        <td class="last" data-label="Date"><a class="last-title" href="{{path "messages" (printf "%d" .ID)}}#m{{.ID}}">{{time .At $.Clock}}</a></td>
       </tr>
     {{- end}}
     </tbody>
   </table>
 </section>
 {{- else}}
-<p class="muted">{{if .Inbox}}Your inbox is empty.{{else}}You have sent no messages.{{end}}</p>
+<p class="muted">You have sent no messages.</p>
 {{- end}}
 {{template "pager" pagerAt .Pager "Pages, bottom"}}
 {{- end}}

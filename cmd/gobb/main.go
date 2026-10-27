@@ -81,6 +81,7 @@ var commands = map[string]command{
 	},
 	"import":      importBundle,
 	"mail":        mailCommand,
+	"messages":    messagesCommand,
 	"migrate":     migrate,
 	"perms":       perms,
 	"serve":       serve,

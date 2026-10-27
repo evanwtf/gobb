@@ -56,24 +56,35 @@ func newMessageSends(opt Options) *ratelimit.Limiter {
 
 // messagesData is the data of messages.html.
 type messagesData struct {
-	// Inbox is true for the inbox and false for the sent list.
-	Inbox                        bool
+	// Inbox is true for the list of conversations and false for the sent list.
+	Inbox bool
+	// Talks is the list of conversations; List is the sent list.
+	Talks                        board.ConversationList
 	List                         board.MessageList
 	Pager                        *pager
 	InboxHref, SentHref, NewHref string
 	CanSend                      bool
 }
 
-// messageData is the data of message.html.
-type messageData struct {
+// messageView is one message of a conversation page.
+type messageView struct {
 	Msg board.Message
 	// Card is the card of the author, or nil when the author is gone.
-	Card          *board.UserCard
-	HTML, SigHTML template.HTML
-	Crumbs        []crumb
-	// CanReply shows Reply and Quote. CanDelete shows Delete.
-	CanReply, CanDelete              bool
-	ReplyHref, QuoteHref, DeleteHref string
+	Card                  *board.UserCard
+	HTML, SigHTML         template.HTML
+	QuoteHref, DeleteHref string
+}
+
+// messageData is the data of message.html: one page of a conversation.
+type messageData struct {
+	Subject  string
+	Messages []messageView
+	Pager    *pager
+	Crumbs   []crumb
+	// CanReply shows Quote and the reply form. CanDelete shows Delete.
+	CanReply, CanDelete bool
+	// The reply form: it answers the last message the viewer sees.
+	ReplyAction, ReplyTo, ReplyToNames, ReplySubject, ReplyHref string
 }
 
 // composeErrors are the messages beside the fields of the compose form.
@@ -89,6 +100,8 @@ type composeData struct {
 	// Notice is a message for the whole form.
 	Notice  string
 	Preview *postView
+	// ReplyTo is the ID of the message that this one answers, or empty.
+	ReplyTo string
 }
 
 // messagesMember starts a message page. A guest is sent to sign in and comes back
@@ -113,12 +126,12 @@ func (s *site) messagesMember(w http.ResponseWriter, r *http.Request, title stri
 	return nil, false
 }
 
-// messageList serves GET /messages and GET /messages/sent.
+// messageList serves GET /messages, the conversations, and GET /messages/sent.
 func (s *site) messageList(inbox bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		title := "Messages: Sent"
 		if inbox {
-			title = "Messages: Inbox"
+			title = "Messages"
 		}
 		p, ok := s.messagesMember(w, r, title)
 		if !ok {
@@ -130,40 +143,49 @@ func (s *site) messageList(inbox bool) http.HandlerFunc {
 			return
 		}
 		ctx := r.Context()
-		var list board.MessageList
+		d := messagesData{Inbox: inbox, CanSend: p.Viewer.Perms.Has("pm.send", 0),
+			InboxHref: s.path("messages"), SentHref: s.path("messages", "sent"), NewHref: s.path("messages", "new")}
 		if inbox {
-			list, err = board.Inbox(ctx, s.pool, p.Viewer, n)
+			d.Talks, err = board.Conversations(ctx, s.pool, p.Viewer, n)
 		} else {
-			list, err = board.Sent(ctx, s.pool, p.Viewer, n)
+			d.List, err = board.Sent(ctx, s.pool, p.Viewer, n)
 		}
 		if s.actionFailed(w, r, p, err, "read messages") {
 			return
 		}
-		d := messagesData{Inbox: inbox, List: list, CanSend: p.Viewer.Perms.Has("pm.send", 0),
-			InboxHref: s.path("messages"), SentHref: s.path("messages", "sent"), NewHref: s.path("messages", "new")}
-		base := d.InboxHref
-		if !inbox {
-			base = d.SentHref
+		if inbox {
+			d.Pager = newPager(d.InboxHref, d.Talks.Page, d.Talks.Pages)
+		} else {
+			d.Pager = newPager(d.SentHref, d.List.Page, d.List.Pages)
 		}
-		d.Pager = newPager(base, list.Page, list.Pages)
 		p.Data = d
 		s.render(w, http.StatusOK, "messages.html", p)
 	}
 }
 
-// messageShow serves GET /messages/{id}.
+// messageShow serves GET /messages/{id}: the conversation of the message, at
+// the page that holds it, or at ?page=.
 func (s *site) messageShow(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
 		s.notFound(w, r)
 		return
 	}
+	page := 0
+	if q := r.URL.Query().Get("page"); q != "" {
+		n, err := board.ParsePage(q)
+		if err != nil {
+			s.badPage(w, r)
+			return
+		}
+		page = n
+	}
 	p, ok := s.messagesMember(w, r, "")
 	if !ok {
 		return
 	}
 	ctx := r.Context()
-	m, err := board.PeekMessage(ctx, s.pool, p.Viewer, id)
+	c, err := board.ReadConversation(ctx, s.pool, p.Viewer, id, page)
 	if s.actionFailed(w, r, p, err, "read messages") {
 		return
 	}
@@ -172,45 +194,62 @@ func (s *site) messageShow(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	idText := strconv.FormatInt(id, 10)
-	d := messageData{Msg: m, CanReply: p.Viewer.Perms.Has("pm.send", 0), CanDelete: p.Viewer.Perms.Has("pm.delete", 0),
-		ReplyHref: s.path("messages", idText, "reply"), QuoteHref: s.path("messages", idText, "reply") + "?quote=1",
-		DeleteHref: s.path("messages", idText, "delete")}
-	folder, href := "Inbox", s.path("messages")
-	if m.Mine {
-		folder, href = "Sent", s.path("messages", "sent")
-	}
-	d.Crumbs = []crumb{{Label: "Messages", Href: s.path("messages")}, {Label: folder, Href: href}}
 	// A message and a signature never embed: an embed is a plain link, with no
 	// frame and no provider script on the most private page (ruling R43).
 	rc.NoEmbeds = true
-	body := markup.Render(m.Tree, rc)
-	p.addRendered(body)
-	d.HTML = body.HTML
-	if m.Signature != nil {
-		sig := markup.Render(m.Signature, rc)
-		p.addRendered(sig)
-		d.SigHTML = sig.HTML
+	idText := strconv.FormatInt(id, 10)
+	d := messageData{Subject: c.Subject, CanReply: p.Viewer.Perms.Has("pm.send", 0), CanDelete: p.Viewer.Perms.Has("pm.delete", 0),
+		Crumbs: []crumb{{Label: "Messages", Href: s.path("messages")}}}
+	d.Pager = newPager(s.path("messages", idText), c.Page, c.Pages)
+	cards := map[int64]*board.UserCard{}
+	for _, m := range c.Messages {
+		mText := strconv.FormatInt(m.ID, 10)
+		mv := messageView{Msg: m, QuoteHref: s.path("messages", mText, "reply") + "?quote=1",
+			DeleteHref: s.path("messages", mText, "delete")}
+		body := markup.Render(m.Tree, rc)
+		p.addRendered(body)
+		mv.HTML = body.HTML
+		if m.Signature != nil {
+			sig := markup.Render(m.Signature, rc)
+			p.addRendered(sig)
+			mv.SigHTML = sig.HTML
+		}
+		if m.From.ID != 0 {
+			card, seen := cards[m.From.ID]
+			if !seen {
+				got, err := board.Card(ctx, s.pool, m.From.ID)
+				switch {
+				case err == nil:
+					card = &got
+				case !errors.Is(err, board.ErrNotFound):
+					s.serverError(w, r, err)
+					return
+				}
+				cards[m.From.ID] = card
+			}
+			mv.Card = card
+		}
+		d.Messages = append(d.Messages, mv)
 	}
-	if m.From.ID != 0 {
-		card, err := board.Card(ctx, s.pool, m.From.ID)
-		switch {
-		case err == nil:
-			d.Card = &card
-		case !errors.Is(err, board.ErrNotFound):
+	if d.CanReply {
+		draft, err := board.ReplyDraft(ctx, s.pool, p.Viewer, c.LastID, false)
+		if err != nil {
 			s.serverError(w, r, err)
 			return
 		}
+		last := strconv.FormatInt(c.LastID, 10)
+		d.ReplyAction, d.ReplyTo, d.ReplyToNames, d.ReplySubject = s.path("messages", "new"), last, draft.To, draft.Subject
+		d.ReplyHref = s.path("messages", last, "reply")
 	}
-	p.Title = m.Subject
+	p.Title = c.Subject
 	p.Data = d
-	// Only a person who opens the page marks the message read, and only once the
-	// page is built. The nav count comes after the mark.
+	// Only a person who opens the page marks the messages on it read, and only
+	// once the page is built. The nav count comes after the mark.
 	var after func()
-	if isOwnNavigation(r) {
+	if isOwnNavigation(r) && len(c.Unread) > 0 {
 		after = func() {
-			if err := board.MarkMessageRead(ctx, s.pool, p.Viewer, id); err != nil {
-				slog.Warn("cannot mark a message read", "message", id, "err", err)
+			if err := board.MarkMessagesRead(ctx, s.pool, p.Viewer, c.Unread); err != nil {
+				slog.Warn("cannot mark messages read", "conversation", c.ID, "err", err)
 			}
 		}
 	}
@@ -264,8 +303,9 @@ func (s *site) messageReply(w http.ResponseWriter, r *http.Request) {
 	if s.actionFailed(w, r, p, err, "send messages") {
 		return
 	}
-	d := s.composeFrame(s.path("messages", strconv.FormatInt(id, 10)))
-	d.To, d.Subject, d.Source = draft.To, draft.Subject, draft.Source
+	idText := strconv.FormatInt(id, 10)
+	d := s.composeFrame(s.path("messages", idText))
+	d.To, d.Subject, d.Source, d.ReplyTo = draft.To, draft.Subject, draft.Source, idText
 	s.renderCompose(w, http.StatusOK, p, d)
 }
 
@@ -274,6 +314,11 @@ func (s *site) messageReply(w http.ResponseWriter, r *http.Request) {
 func (s *site) messageSubmit(w http.ResponseWriter, r *http.Request) {
 	form := r.PostForm
 	draft := board.MessageDraft{To: form.Get("to"), Subject: form.Get("subject"), Source: form.Get("body"), IP: s.clientIP(r)}
+	// A reply_to that is not an ID is dropped: the message starts its own
+	// conversation, as a reply to a message of someone else does.
+	if n, err := strconv.ParseInt(form.Get("reply_to"), 10, 64); err == nil && n > 0 {
+		draft.ReplyTo = n
+	}
 	p, err := s.begin(w, r, "New message", "messages")
 	if err != nil {
 		slog.Error("messages: page", "path", r.URL.Path, "err", err)
@@ -286,6 +331,10 @@ func (s *site) messageSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	d := s.composeFrame(s.path("messages"))
 	d.To, d.Subject, d.Source = draft.To, draft.Subject, draft.Source
+	if draft.ReplyTo != 0 {
+		d.ReplyTo = strconv.FormatInt(draft.ReplyTo, 10)
+		d.Cancel = s.path("messages", d.ReplyTo)
+	}
 	// The POST counts against the posting limit before anything is parsed. A
 	// refusal still counts: it costs the server the same.
 	now := s.opt.Now()
@@ -317,7 +366,8 @@ func (s *site) messageSubmit(w http.ResponseWriter, r *http.Request) {
 		s.messageSendFailed(w, r, p, d, err)
 		return
 	}
-	http.Redirect(w, r, s.path("messages", strconv.FormatInt(id, 10)), http.StatusSeeOther)
+	idText := strconv.FormatInt(id, 10)
+	http.Redirect(w, r, s.path("messages", idText)+"#m"+idText, http.StatusSeeOther)
 }
 
 // messageTooFast answers 429 with the form and the text of the member.
@@ -409,7 +459,7 @@ func (s *site) messageDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	m, err := board.PeekMessage(ctx, s.pool, p.Viewer, id)
+	_, err := board.PeekMessage(ctx, s.pool, p.Viewer, id)
 	if s.actionFailed(w, r, p, err, "delete this message") {
 		return
 	}
@@ -427,11 +477,7 @@ func (s *site) messageDelete(w http.ResponseWriter, r *http.Request) {
 	if s.actionFailed(w, r, p, board.DeleteMessage(ctx, s.pool, p.Viewer, id), "delete this message") {
 		return
 	}
-	target := s.path("messages")
-	if m.Mine {
-		target = s.path("messages", "sent")
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	http.Redirect(w, r, s.path("messages"), http.StatusSeeOther)
 }
 
 // messageHref is the link to the compose form with the To field filled.
