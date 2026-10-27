@@ -969,6 +969,16 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 .log-table th:nth-child(2), .log-table th:nth-child(3) { width: auto; text-align: left; }
 .log-table td { vertical-align: top; overflow-wrap: anywhere; }
 .log-table td:first-child { white-space: nowrap; }
+.admin-box { padding: 1rem; margin-bottom: 1rem; }
+.admin-box h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+.admin-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.4rem 1rem; margin: 0; }
+.admin-facts dt { color: var(--muted); }
+.admin-facts dd { margin: 0; overflow-wrap: anywhere; }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin-bottom: 1rem; }
+.admin-actions form { margin: 0; }
+.admin-inline-form { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: end; }
+.admin-inline-form .field { margin: 0; }
+.new-password { font-size: 1.15rem; user-select: all; }
 
 .team-group { margin: 0 0 1.5rem; }
 .team-group h2 { margin-bottom: 0.6rem; font-size: 1.15rem; }

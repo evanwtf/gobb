@@ -28,6 +28,28 @@ request. The date is the day of the tag.
 - **One write helper,** `board.AdminWrite`: the change and its `mod_log` row, with the
   admin as the actor and `{"via":"web"}`, in one transaction.
 
+### Members (evanwtf/gobb#22)
+
+- **`/admin/members`:** find a member by the start of the username or, with an "@",
+  of the email address. Inactive members are listed too, with the state, a ban, the
+  post count, the join date and the last visit.
+- **The page of one member,** with Activate, Deactivate, Reset the password, Mark the
+  email address verified, a rank list ("By post count" or any rank), and links to the
+  profile, to the member's rows in the log, and to the bans page.
+- **Reset the password** shows the new password once, on the answer to the POST, and
+  ends the member's sessions. It always needs a confirmed password.
+- **Guards:** a change to an owner or an admin needs a confirmed password. An admin
+  cannot deactivate or reset their own account here. Only an owner can deactivate an
+  owner or reset an owner's password: the admin sees the new password. A deactivate
+  that would leave no active admin is refused.
+- **`board.LockAdminSet` and `board.EnsureAdminRemains`:** the guard for any write that
+  can take the admin right away. The write takes a transaction lock, makes its change,
+  then checks that an active member still holds admin; if none does, the change rolls
+  back. The permission and group pages use it too.
+- `mod_log` rows: `user.activate`, `user.deactivate`, `user.reset_password`,
+  `user.rank` and `user.verify_email`, with `{"via":"web"}`. The command line writes
+  the same rows as before.
+
 ## 0.7.0 (2026-10-27)
 
 Private messages read as conversations (evanwtf/gobb#32). A reply joins the
