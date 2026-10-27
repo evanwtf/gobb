@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-10-27)
 
-The admin panel (evanwtf/gobb#18), in parts. Each part below is one pull request.
+The admin panel (evanwtf/gobb#18): web pages for the work that needed the command line
+or a hand-written SQL statement. It comes in parts; each part below is one pull
+request. The date is the day of the tag.
 
 ### The admin area (evanwtf/gobb#19)
 
