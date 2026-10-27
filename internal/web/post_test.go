@@ -663,9 +663,25 @@ type tokenRow struct {
 	setup  string
 }
 
-// multipart reports whether the route takes a multipart upload of a file in the
-// field "avatar" instead of a urlencoded form.
-func (r tokenRow) multipart() bool { return r.target == "/account/avatar" }
+// adminUpload matches the admin routes that take an image: the add and the save
+// of a smiley or a rank.
+var adminUpload = regexp.MustCompile(`^/admin/(smilies|ranks)(/[0-9]+)?$`)
+
+// fileField returns the name of the form field that holds the file of an upload
+// route, and "" for a route that takes a urlencoded form.
+func (r tokenRow) fileField() string {
+	switch {
+	case r.target == "/account/avatar":
+		return "avatar"
+	case adminUpload.MatchString(r.target):
+		return "image"
+	}
+	return ""
+}
+
+// multipart reports whether the route takes a multipart upload of a file
+// instead of a urlencoded form.
+func (r tokenRow) multipart() bool { return r.fileField() != "" }
 
 // rowRequest builds the POST of a row with form and the cookies. A multipart row
 // carries a small PNG beside the fields of form.
@@ -680,7 +696,7 @@ func rowRequest(t *testing.T, row tokenRow, cookies []*http.Cookie, form url.Val
 				_ = mw.WriteField(k, v)
 			}
 		}
-		fw, _ := mw.CreateFormFile("avatar", "me.png")
+		fw, _ := mw.CreateFormFile(row.fileField(), "me.png")
 		_, _ = fw.Write(testPNG(t, 24, 24))
 		_ = mw.Close()
 		r = httptest.NewRequest(http.MethodPost, row.target, &buf)
@@ -734,6 +750,16 @@ var tokenRows = []tokenRow{
 	{"/reset", "", url.Values{"name": {"alice"}}, ""},
 	{"/reset/" + testResetToken, "", url.Values{"password": {"a new pass phrase"}, "again": {"a new pass phrase"}}, testResetTokenRow()},
 	{"/admin/confirm", "alice", url.Values{"password": {testPassword}, "next": {"/admin/log"}}, ""},
+	{"/admin/pages", "alice", url.Values{"slug": {"faq"}, "title": {"FAQ"}, "body": {"No token."}, "markdown": {"1"}}, ""},
+	{"/admin/pages/about", "alice", url.Values{"title": {"About us"}, "body": {"No token."}, "markdown": {"1"}}, ""},
+	{"/admin/pages/about/delete", "alice", url.Values{}, ""},
+	{"/admin/smilies", "alice", url.Values{"code": {":P"}, "description": {"tongue"}}, ""},
+	{"/admin/smilies/1", "alice", url.Values{"code": {":-)"}, "description": {"smile"}}, ""},
+	{"/admin/smilies/1/move", "alice", url.Values{"dir": {"down"}}, ""},
+	{"/admin/smilies/1/delete", "alice", url.Values{}, ""},
+	{"/admin/ranks", "alice", url.Values{"title": {"Regular"}, "min_posts": {"50"}}, ""},
+	{"/admin/ranks/1", "alice", url.Values{"title": {"Veteran"}, "min_posts": {"10"}}, ""},
+	{"/admin/ranks/1/delete", "alice", url.Values{}, ""},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post

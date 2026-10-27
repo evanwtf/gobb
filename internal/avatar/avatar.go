@@ -140,18 +140,31 @@ func Make(ctx context.Context, r io.Reader, gate *login.Gate, wait time.Duration
 // release collects garbage first, so the decoded image does not sit on the heap
 // under the next holder (a sign-in uses the same gate).
 func decodeSquare(ctx context.Context, data []byte, gate *login.Gate, wait time.Duration) (*image.RGBA, error) {
-	f, kib, err := inspect(data)
+	var out *image.RGBA
+	err := underGate(ctx, data, gate, wait, MaxSide, func(img image.Image) error {
+		out = squareTo128(img)
+		return nil
+	})
+	return out, err
+}
+
+// underGate checks the header of data, takes the memory of the decode from gate,
+// decodes the image and calls use with it. The share goes back, after a garbage
+// collection, when underGate returns. maxSide is the largest side that it
+// accepts, at most [MaxSide]. The errors are those of [Make].
+func underGate(ctx context.Context, data []byte, gate *login.Gate, wait time.Duration, maxSide int, use func(image.Image) error) error {
+	f, kib, err := inspectSide(data, maxSide)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if kib > gate.Budget() {
 		// The gate would run this decode alone, and it needs more than the budget:
 		// the process could run out of memory. Refuse it before any allocation.
-		return nil, ErrTooMuchMemory
+		return ErrTooMuchMemory
 	}
 	release, err := gate.AcquireCollected(ctx, kib, wait)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer release()
 
@@ -165,14 +178,14 @@ func decodeSquare(ctx context.Context, data []byte, gate *login.Gate, wait time.
 		img, err = gif.Decode(bytes.NewReader(data))
 	}
 	if err != nil {
-		return nil, ErrFormat
+		return ErrFormat
 	}
 	// The decoder may not return the size that the header gave: check again, so
 	// the loops below stay inside the limits.
-	if b := img.Bounds(); b.Dx() <= 0 || b.Dy() <= 0 || b.Dx() > MaxSide || b.Dy() > MaxSide || b.Dx()*b.Dy() > MaxPixels {
-		return nil, ErrDimensions
+	if b := img.Bounds(); b.Dx() <= 0 || b.Dy() <= 0 || b.Dx() > maxSide || b.Dy() > maxSide || b.Dx()*b.Dy() > MaxPixels {
+		return ErrDimensions
 	}
-	return squareTo128(img), nil
+	return use(img)
 }
 
 // inspect reads the header of data and returns its format and the memory that a
@@ -180,7 +193,11 @@ func decodeSquare(ctx context.Context, data []byte, gate *login.Gate, wait time.
 // [ErrFormat] when the first bytes are none of the three formats or the header
 // does not parse, and [ErrDimensions] when a side is over [MaxSide] or the pixels
 // are over [MaxPixels].
-func inspect(data []byte) (format, uint64, error) {
+func inspect(data []byte) (format, uint64, error) { return inspectSide(data, MaxSide) }
+
+// inspectSide is [inspect] with a limit for the sides of maxSide pixels, at most
+// [MaxSide].
+func inspectSide(data []byte, maxSide int) (format, uint64, error) {
 	f := sniff(data)
 	var (
 		cfg image.Config
@@ -199,7 +216,7 @@ func inspect(data []byte) (format, uint64, error) {
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
 		return fmtNone, 0, ErrFormat
 	}
-	if cfg.Width > MaxSide || cfg.Height > MaxSide || cfg.Width*cfg.Height > MaxPixels {
+	if cfg.Width > maxSide || cfg.Height > maxSide || cfg.Width*cfg.Height > MaxPixels {
 		return fmtNone, 0, ErrDimensions
 	}
 	// The PNG header is sound, so the interlace byte is the last byte of the

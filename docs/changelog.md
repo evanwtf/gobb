@@ -28,6 +28,35 @@ request. The date is the day of the tag.
 - **One write helper,** `board.AdminWrite`: the change and its `mod_log` row, with the
   admin as the actor and `{"via":"web"}`, in one transaction.
 
+### Static pages, smilies and ranks (evanwtf/gobb#27)
+
+- **`/admin/pages`:** list, add, edit and delete the static pages. The slug follows the
+  rule of a bundle (`^[a-z0-9][a-z0-9-]{0,63}$`) and cannot change after the page is
+  saved, because old addresses name it; the slug `new` is reserved. The text goes
+  through the parser of posts with the three flags of the page (Markdown, smilies,
+  web addresses), so a page saved here has the same tree as the same page in a bundle.
+  A test pins the equality. The limit is 100,000 bytes, the limit of a bundle body.
+  A save parses the text again with the smilies of the board now.
+- **`/admin/smilies`:** list, add (a code, a description and an image), edit, move up
+  or down, and delete. A code is 1 to 32 characters and unique. The parser and the
+  renderer read the smilies from the database on each use, so there is no cache to
+  refresh: a smiley added or removed shows at the next render. A post that holds the
+  code of a removed smiley shows the code as text.
+- **`/admin/ranks`:** list, add, edit and delete, with a title, a post-count threshold,
+  a "special" flag and an optional image. The delete page says how many members lose
+  the rank; they fall back to the rank that their post count earns.
+- **Image uploads** follow the rules of the avatar upload: the type comes from the
+  first bytes (PNG, JPEG or GIF), at most 1 MB, a decode under the memory gate, one
+  upload for each admin at a time, and the slots of the server. A smiley or rank image
+  keeps its size, up to 512 pixels a side (`avatar.Icon`), and is stored as a fresh PNG.
+  An animated GIF keeps its first frame. The server makes the file name
+  (`smilies/s-<16 hex>.png`, `ranks/r-<16 hex>.png`); the name of the upload is never
+  used. A file goes after the commit that drops its last row.
+- **`adminRoutes.upload`:** the route method for an admin form that carries a file.
+- `mod_log` rows: `page.create`, `page.update`, `page.delete`, `smiley.create`,
+  `smiley.update`, `smiley.reorder`, `smiley.delete`, `rank.create`, `rank.update` and
+  `rank.delete`, with `{"via":"web"}`. A save that changes nothing writes no row.
+
 ## 0.7.0 (2026-10-27)
 
 Private messages read as conversations (evanwtf/gobb#32). A reply joins the

@@ -92,6 +92,15 @@ func (a adminRoutes) write(pattern string, limit int64, h http.HandlerFunc) {
 	a.Handle("POST /admin"+pattern, a.s.protect(limit, a.s.adminLimited(h)))
 }
 
+// upload adds the POST route /admin<pattern> for a form that carries one image
+// file. It is write with the guard of an upload instead of the plain one
+// ([site.uploadGuard]): the body is multipart, at most limit bytes, held in
+// memory; the server takes at most maxUploadsInFlight uploads at a time and one
+// for each admin. The handler decodes the file under the memory gate.
+func (a adminRoutes) upload(pattern string, limit int64, h http.HandlerFunc) {
+	a.Handle("POST /admin"+pattern, a.s.uploadGuard(limit, "", "", a.s.adminLimited(h)))
+}
+
 // dangerous adds the POST route /admin<pattern> for a change that needs a
 // confirmed password: a permission change, a change to an owner or an admin, a
 // password reset, a ban. It is write with one more step after the token check:
@@ -115,6 +124,7 @@ func (s *site) adminArea() http.Handler {
 	a.page("/log", s.adminLog)
 	a.page("/confirm", s.adminConfirmPage)
 	a.write("/confirm", maxLoginBody, s.adminConfirm)
+	s.adminContentRoutes(a)
 	// A path of the area that no route above matches, and a method that none
 	// takes, get the themed 404, not the plain text of the mux.
 	a.HandleFunc("/admin/", s.notFound)
@@ -225,6 +235,9 @@ func (s *site) adminIndex(w http.ResponseWriter, r *http.Request) {
 	p.Data = adminIndexData{
 		Crumbs: s.adminCrumbs()[:1],
 		Sections: []adminSection{
+			{Label: "Pages", Href: s.path("admin", "pages"), About: "The static pages, such as the rules and the about page."},
+			{Label: "Smilies", Href: s.path("admin", "smilies"), About: "The codes that turn into small images in posts."},
+			{Label: "Ranks", Href: s.path("admin", "ranks"), About: "The titles and images that members earn or receive."},
 			{Label: "Log", Href: s.path("admin", "log"), About: "Every moderator and admin action, newest first."},
 		},
 	}

@@ -92,8 +92,15 @@ const (
 // time. After the read, the token is checked, as in [site.protect]: the cap of
 // the body holds the cost.
 func (s *site) protectUpload(limit int64, h http.HandlerFunc) http.Handler {
+	return s.uploadGuard(limit, "account.avatar", "You do not have the right to change your avatar.", h)
+}
+
+// uploadGuard is the guard of [site.protectUpload] for a right option and the
+// text denied of its refusal. An empty option asks for no right: the caller has
+// checked the visitor already, as the gate of the admin area does.
+func (s *site) uploadGuard(limit int64, option, denied string, h http.HandlerFunc) http.Handler {
 	g := guard{limit: limit, tooBig: msgFileTooLarge, member: true,
-		option: "account.avatar", denied: "You do not have the right to change your avatar.", slots: func() chan struct{} { return s.uploadSlots }, oneEach: &s.uploading, parse: func(r *http.Request) error {
+		option: option, denied: denied, slots: func() chan struct{} { return s.uploadSlots }, oneEach: &s.uploading, parse: func(r *http.Request) error {
 			// ParseMultipartForm drops the error of a body that is not multipart (it
 			// returns ErrNotMultipart instead), and a body over the cap is one such
 			// error. So the content type picks the parser.

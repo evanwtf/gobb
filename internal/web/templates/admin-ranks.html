@@ -1,0 +1,58 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Ranks</h1>
+  <p class="page-sub">A member shows the rank that an admin gave, or else the highest ordinary rank that their post count reaches. A special rank is never earned by posting.</p>
+</header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
+{{- if .Add.Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Add.Notice}}</p></div>
+{{- end}}
+{{- if .Rows}}
+<section class="category" aria-label="Ranks">
+  <ul class="admin-list">
+    {{- range .Rows}}
+    <li class="edit-row">
+      {{- if .Src}}<img class="edit-img" src="{{.Src}}" alt="">{{end}}
+      <span class="edit-main"><a href="{{.EditHref}}"><bdi>{{.Title}}</bdi></a>
+        <span class="muted">{{if .Special}}special{{else}}from {{num .MinPosts}} posts{{end}} &middot; {{plural .Members "member holds it" "members hold it"}}</span></span>
+      <span class="edit-actions"><a href="{{.EditHref}}">Edit</a> <a href="{{.DeleteHref}}">Delete</a></span>
+    </li>
+    {{- end}}
+  </ul>
+</section>
+{{- else}}
+<p>The board has no ranks.</p>
+{{- end}}
+<section class="account-section" aria-labelledby="add-title">
+  <h2 id="add-title">Add a rank</h2>
+  <form class="post-form" method="post" action="{{.Action}}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="field">
+      <label for="add-title-field">Title</label>
+      <input id="add-title-field" name="title" type="text" value="{{.Add.Title}}" maxlength="255" required autocomplete="off"
+        {{- if .Add.Err.title}} aria-invalid="true" aria-describedby="add-title-error"{{end}}>
+      {{- if .Add.Err.title}}<p class="field-error" id="add-title-error" role="alert">{{.Add.Err.title}}</p>{{end}}
+    </div>
+    <div class="field">
+      <label for="add-min">Posts needed</label>
+      <input id="add-min" name="min_posts" type="text" inputmode="numeric" value="{{.Add.MinPosts}}" maxlength="10" required autocomplete="off"
+        {{- if .Add.Err.min_posts}} aria-invalid="true" aria-describedby="add-min-error"{{end}}>
+      {{- if .Add.Err.min_posts}}<p class="field-error" id="add-min-error" role="alert">{{.Add.Err.min_posts}}</p>{{end}}
+    </div>
+    <p class="field-check"><input type="checkbox" id="add-special" name="special" value="1"{{if .Add.Special}} checked{{end}}> <label for="add-special">Special rank: an admin gives it, and posts never earn it</label></p>
+    <div class="field">
+      <label for="add-image">Image (optional)</label>
+      <input id="add-image" name="image" type="file" accept="image/png,image/jpeg,image/gif"
+        aria-describedby="add-image-hint{{if .Add.Err.image}} add-image-error{{end}}"{{if .Add.Err.image}} aria-invalid="true"{{end}}>
+      {{- if .Add.Err.image}}<p class="field-error" id="add-image-error" role="alert">{{.Add.Err.image}}</p>{{end}}
+      <p class="hint" id="add-image-hint">A PNG, JPEG or GIF of at most 1 MB and 512 pixels a side. gobb stores a fresh PNG copy. An animated GIF keeps its first frame.</p>
+    </div>
+    <div class="form-actions"><button class="button button-inline" type="submit">Add the rank</button></div>
+  </form>
+</section>
+{{- end}}
+{{end}}
