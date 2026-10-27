@@ -56,7 +56,8 @@ func (r *Registry) register(name string, f family) {
 	r.fams[name] = f
 }
 
-// WriteTo writes every family in the text format, sorted by name.
+// WriteTo writes every family in the text format, sorted by name. A gauge group
+// writes all its families at the position of its lowest name.
 func (r *Registry) WriteTo(w io.Writer) (int64, error) {
 	r.mu.Lock()
 	names := make([]string, 0, len(r.fams))
@@ -239,6 +240,9 @@ func (c *CounterVec) Init(values ...string) { c.get(values) }
 // Inc adds 1 to the series of values.
 func (c *CounterVec) Inc(values ...string) { c.get(values).n.Add(1) }
 
+// Add adds n to the series of values.
+func (c *CounterVec) Add(n uint64, values ...string) { c.get(values).n.Add(n) }
+
 // Value returns the count of the series of values.
 func (c *CounterVec) Value(values ...string) uint64 { return c.get(values).n.Load() }
 
@@ -306,6 +310,99 @@ func (r *Registry) CounterFunc(name, help string, f func() (float64, bool)) {
 	r.register(name, &funcFamily{meta: meta{name, help, "counter"}, f: f})
 }
 
+// Sample is one series of a family that [Registry.GaugeSamples] reads: the label
+// values, in the order of the label names, and the value.
+type Sample struct {
+	Values []string
+	Value  float64
+}
+
+// GaugeSpec is the name and the help text of one gauge in a group.
+type GaugeSpec struct{ Name, Help string }
+
+// samplesGroup is one or more gauge families with the same label names. One call
+// of f reads the series of all of them, so the families of a scrape agree.
+type samplesGroup struct {
+	meta   // the first family: the group is registered under its name
+	labels []string
+	specs  []GaugeSpec // sorted by name
+	f      func() [][]Sample
+}
+
+// kind is not "gauge", so that a plain family under the name of a member of the
+// group is a type clash. The TYPE line of each member still says gauge.
+func (g *samplesGroup) kind() string { return "gauge (group " + g.name + ")" }
+
+// groupAlias holds the name of a member of a group that is not the lowest. It
+// writes nothing: the group does. It has the kind of the group, so that a plain
+// family under the name panics, and the same group registered again replaces it.
+type groupAlias struct{ k string }
+
+func (a groupAlias) write(*bufio.Writer) {}
+func (a groupAlias) kind() string        { return a.k }
+
+func (g *samplesGroup) write(w *bufio.Writer) {
+	rows := g.f()
+	for i, sp := range g.specs {
+		meta{sp.Name, sp.Help, "gauge"}.header(w)
+		if i >= len(rows) {
+			continue
+		}
+		// f owns the slice that it returned, so sort a copy.
+		all := slices.DeleteFunc(slices.Clone(rows[i]), func(x Sample) bool { return len(x.Values) != len(g.labels) })
+		slices.SortStableFunc(all, func(a, b Sample) int { return strings.Compare(key(a.Values), key(b.Values)) })
+		for _, x := range all {
+			sample(w, sp.Name, g.labels, x.Values, "", x.Value)
+		}
+	}
+}
+
+// GaugeSamples registers a gauge with labels, whose series f gives at each
+// scrape. The series appear sorted by label values. f returns no series when
+// there is none, and the family then writes its HELP and TYPE lines only. A
+// series whose number of values differs from the number of label names is left
+// out.
+func (r *Registry) GaugeSamples(name, help string, labels []string, f func() []Sample) {
+	r.GaugeGroup(labels, []GaugeSpec{{name, help}}, func() [][]Sample { return [][]Sample{f()} })
+}
+
+// GaugeGroup registers several gauges with the same labels that one call of f
+// fills at each scrape: f returns the series of each spec, in the order of
+// specs. The gauges of a group come from one read, so a scrape cannot show two
+// of them at two moments. The group writes its families sorted by name, one
+// after the other, and r holds it under the lowest name. Each name must be new
+// or belong to an earlier group of the same lowest name.
+func (r *Registry) GaugeGroup(labels []string, specs []GaugeSpec, f func() [][]Sample) {
+	if len(specs) == 0 {
+		panic("metrics: a gauge group has no gauge")
+	}
+	order := make([]int, len(specs))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(a, b int) int { return strings.Compare(specs[a].Name, specs[b].Name) })
+	sorted := make([]GaugeSpec, len(specs))
+	for i, j := range order {
+		sorted[i] = specs[j]
+	}
+	g := &samplesGroup{meta: meta{sorted[0].Name, sorted[0].Help, "gauge"}, labels: slices.Clone(labels), specs: sorted,
+		f: func() [][]Sample {
+			// Hand the rows back in the order of the sorted specs.
+			rows := f()
+			out := make([][]Sample, len(rows))
+			for i, j := range order {
+				if j < len(rows) {
+					out[i] = rows[j]
+				}
+			}
+			return out
+		}}
+	for _, sp := range sorted[1:] {
+		r.register(sp.Name, groupAlias{g.kind()})
+	}
+	r.register(sorted[0].Name, g)
+}
+
 // Info registers a gauge with the value 1 and fixed labels, such as the version
 // of the build.
 func (r *Registry) Info(name, help string, labels, values []string) {
@@ -360,6 +457,10 @@ func (h *HistogramVec) get(values []string) *histSeries {
 	}
 	return s
 }
+
+// Init creates the series of values with no observation, so that it shows before
+// its first one.
+func (h *HistogramVec) Init(values ...string) { h.get(values) }
 
 // Observe records v in the series of values.
 func (h *HistogramVec) Observe(v float64, values ...string) {

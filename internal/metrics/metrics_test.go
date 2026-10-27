@@ -74,6 +74,120 @@ t_requests_total{route="/q\"x\n",code="2xx"} 0
 	}
 }
 
+// A labeled gauge that a function fills at each scrape: the series sorted by
+// label values, escaped, read anew each time, with no series when the function
+// gives none, and with a malformed series left out. An Init on a histogram or a
+// counter shows a series before its first event.
+func TestGaugeSamples(t *testing.T) {
+	r := NewRegistry()
+	rows := []Sample{
+		{[]string{"b", "x"}, 2},
+		{[]string{"a", `q"\`}, 0.5},
+		{[]string{"a", "x"}, 1},
+		{[]string{"only one value"}, 9},
+	}
+	r.GaugeSamples("t_keys", "Keys.", []string{"limit", "kind"}, func() []Sample { return rows })
+	want := "# HELP t_keys Keys.\n# TYPE t_keys gauge\n" +
+		`t_keys{limit="a",kind="q\"\\"} 0.5` + "\n" +
+		`t_keys{limit="a",kind="x"} 1` + "\n" +
+		`t_keys{limit="b",kind="x"} 2` + "\n"
+	if got := written(t, r); got != want {
+		t.Errorf("output:\n%s\nwant:\n%s", got, want)
+	}
+	rows = nil
+	if got := written(t, r); got != "# HELP t_keys Keys.\n# TYPE t_keys gauge\n" {
+		t.Errorf("output with no series = %q", got)
+	}
+
+	// The function owns the slice that it returns: a write sorts a copy.
+	unsorted := []Sample{{[]string{"b"}, 1}, {[]string{"a"}, 2}}
+	r.GaugeSamples("t_own", "Own.", []string{"x"}, func() []Sample { return unsorted })
+	written(t, r)
+	if unsorted[0].Values[0] != "b" {
+		t.Error("a write sorted the slice that the function returned")
+	}
+
+	h := r.HistogramVec("t_fill", "Fill.", []float64{1}, "limit")
+	h.Init("idle")
+	c := r.CounterVec("t_adds_total", "Adds.", "limit")
+	c.Add(3, "x")
+	c.Add(2, "x")
+	out := written(t, r)
+	for _, w := range []string{
+		`t_fill_bucket{limit="idle",le="1"} 0`, `t_fill_count{limit="idle"} 0`, `t_adds_total{limit="x"} 5`,
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+}
+
+// A group of gauges comes from one call per write, in the order of the names,
+// whatever order the specs come in. A second group with the same lowest name
+// replaces the first.
+func TestGaugeGroup(t *testing.T) {
+	r := NewRegistry()
+	calls := 0
+	group := func(b float64) {
+		r.GaugeGroup([]string{"limit"}, []GaugeSpec{{"t_b", "B."}, {"t_a", "A."}}, func() [][]Sample {
+			calls++
+			// Rows follow the order of the specs: b, then a.
+			return [][]Sample{{{[]string{"y"}, b}, {[]string{"x"}, b}}, {{[]string{"x"}, 1}}}
+		})
+	}
+	group(2)
+	want := "# HELP t_a A.\n# TYPE t_a gauge\nt_a{limit=\"x\"} 1\n" +
+		"# HELP t_b B.\n# TYPE t_b gauge\nt_b{limit=\"x\"} 2\nt_b{limit=\"y\"} 2\n"
+	if got := written(t, r); got != want || calls != 1 {
+		t.Errorf("output:\n%s\ncalls = %d, want 1; want:\n%s", got, calls, want)
+	}
+	group(3)
+	if got := written(t, r); !strings.Contains(got, `t_b{limit="x"} 3`) || strings.Count(got, "# TYPE t_a gauge") != 1 {
+		t.Errorf("a second group did not replace the first:\n%s", got)
+	}
+}
+
+// A plain family under the name of any member of a group is a type clash, so
+// neither a duplicate family nor a silent replacement of the group. The same
+// group registered again replaces the first, and TYPE still says gauge.
+func TestGaugeGroupNamesAreHeld(t *testing.T) {
+	group := func(r *Registry) {
+		r.GaugeGroup([]string{"l"}, []GaugeSpec{{"t_b", "B."}, {"t_a", "A."}, {"t_c", "C."}},
+			func() [][]Sample { return [][]Sample{{{[]string{"x"}, 1}}, {{[]string{"x"}, 2}}, {{[]string{"x"}, 3}}} })
+	}
+	panics := func(name string, f func(r *Registry)) {
+		t.Helper()
+		r := NewRegistry()
+		group(r)
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s did not panic", name)
+			}
+		}()
+		f(r)
+	}
+	for _, n := range []string{"t_a", "t_b", "t_c"} {
+		panics("Gauge "+n, func(r *Registry) { r.Gauge(n, "Plain.") })
+		panics("GaugeFunc "+n, func(r *Registry) { r.GaugeFunc(n, "Plain.", func() (float64, bool) { return 1, true }) })
+	}
+	panics("a group on a name of another group", func(r *Registry) {
+		r.GaugeGroup([]string{"l"}, []GaugeSpec{{"t_z", "Z."}, {"t_c", "C."}}, func() [][]Sample { return nil })
+	})
+
+	r := NewRegistry()
+	group(r)
+	group(r)
+	out := written(t, r)
+	for _, n := range []string{"t_a", "t_b", "t_c"} {
+		if c := strings.Count(out, "# TYPE "+n+" gauge\n"); c != 1 {
+			t.Errorf("%s has %d TYPE lines, want 1:\n%s", n, c, out)
+		}
+	}
+	if !strings.Contains(out, `t_c{l="x"} 3`) {
+		t.Errorf("the group lost a series:\n%s", out)
+	}
+}
+
 // A second family with the same name replaces the first, so building the server
 // twice in one process registers again with no error and no duplicate.
 func TestRegisterReplaces(t *testing.T) {
@@ -236,6 +350,8 @@ func TestDefaultFamilies(t *testing.T) {
 		"\nprocess_start_time_seconds ", "\nprocess_cpu_seconds_total ",
 		`gobb_signin_attempts_total{result="wrong"} `, `gobb_emails_total{result="failed"} `,
 		`gobb_reset_emails_skipped_total{reason="admin"} `, "# TYPE gobb_http_request_duration_seconds histogram",
+		"# TYPE gobb_rate_limit_fill_ratio histogram", "# TYPE gobb_rate_limit_allowed_total counter",
+		"# TYPE gobb_rate_limit_refunds_total counter", "# TYPE gobb_rate_limit_evictions_total counter",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Default output lacks %q", want)
