@@ -1188,3 +1188,15 @@ fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
 .message-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0 0 1rem; }
 .message-meta dt { color: var(--muted); font-weight: 600; }
 .message-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- Admin: settings page ------------------------------------------------- */
+
+.settings-header-preview { margin: 0 0 1rem; padding: 0.75rem; background: var(--header); border-radius: var(--radius); }
+.settings-header-preview .header-image { max-width: 100%; height: auto; }
+.settings-readonly { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
+.settings-readonly dt { font-weight: 600; }
+.settings-readonly dd { margin: 0; }
+@media (max-width: 40rem) {
+  .settings-readonly { grid-template-columns: 1fr; gap: 0; }
+  .settings-readonly dd { margin-bottom: 0.6rem; }
+}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/login"
+	"github.com/evanwtf/gobb/internal/mail"
 	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/ratelimit"
 )
@@ -29,6 +30,10 @@ type MailOptions struct {
 	// PerHour and PerDay are the most reset emails the board queues in any hour
 	// and in any 24 hours. Each must be at least 1.
 	PerHour, PerDay int
+	// Sender sends the test email of the settings page in the admin area, at
+	// once and not through the queue. It may be nil: the page then has no test
+	// button and the route is off.
+	Sender mail.Sender
 }
 
 // The limits of the reset pages. Each count lives in memory in a sliding window

@@ -514,42 +514,49 @@ func (s *site) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 
 // writeAvatarFile writes png to a new file avatars/u{id}-{16 hex}.png under the
 // data directory and returns its path, relative to the data directory and with
+// slashes. See [site.writeDataFile].
+func (s *site) writeAvatarFile(userID int64, png []byte) (string, error) {
+	return s.writeDataFile("avatars", fmt.Sprintf("u%d-", userID), "png", png)
+}
+
+// writeDataFile writes data to a new file dir/{prefix}{16 hex}.{ext} under the
+// data directory and returns its path, relative to the data directory and with
 // slashes. The open goes through an os.Root, so no name can leave the directory,
 // and uses O_EXCL, so no file is overwritten. The folder is made when it is
-// missing.
-func (s *site) writeAvatarFile(userID int64, png []byte) (string, error) {
+// missing. The mode of the file is 0644, whatever the umask of the process.
+func (s *site) writeDataFile(dir, prefix, ext string, data []byte) (string, error) {
 	root, err := os.OpenRoot(s.opt.DataDir)
 	if err != nil {
 		return "", fmt.Errorf("open the data directory: %w", err)
 	}
 	defer func() { _ = root.Close() }()
-	if err := root.Mkdir("avatars", 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-		return "", fmt.Errorf("make the avatars folder: %w", err)
+	if err := root.Mkdir(dir, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return "", fmt.Errorf("make the %s folder: %w", dir, err)
 	}
 	for range 5 {
 		var rnd [8]byte
 		if _, err := rand.Read(rnd[:]); err != nil {
 			return "", fmt.Errorf("random name: %w", err)
 		}
-		name := fmt.Sprintf("avatars/u%d-%s.png", userID, hex.EncodeToString(rnd[:]))
+		name := fmt.Sprintf("%s/%s%s.%s", dir, prefix, hex.EncodeToString(rnd[:]), ext)
 		f, err := root.OpenFile(filepath.FromSlash(name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("create the avatar file: %w", err)
+			return "", fmt.Errorf("create the %s file: %w", dir, err)
 		}
 		// The mode of the new file does not depend on the umask of the process.
 		merr := f.Chmod(0o644)
-		_, werr := f.Write(png)
+		_, werr := f.Write(data)
 		cerr := f.Close()
 		if err := errors.Join(merr, werr, cerr); err != nil {
 			_ = root.Remove(filepath.FromSlash(name))
-			return "", fmt.Errorf("write the avatar file: %w", err)
+			return "", fmt.Errorf("write the %s file: %w", dir, err)
 		}
 		return name, nil
 	}
-	return "", errors.New("no free avatar file name")
+	return "", fmt.Errorf("no free %s file name", dir)
 }
 
 // deleteAvatarFile deletes the file at path, a site path under the data

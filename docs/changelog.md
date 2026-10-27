@@ -28,6 +28,33 @@ request. The date is the day of the tag.
 - **One write helper,** `board.AdminWrite`: the change and its `mod_log` row, with the
   admin as the actor and `{"via":"web"}`, in one transaction.
 
+### Board settings (evanwtf/gobb#20)
+
+- **`/admin/settings`:** the board name (1 to 100 characters), the board description
+  (up to 500), the board's time zone (the list of the account page) and the default
+  color scheme. Both text fields are one line with no control character and no
+  hidden formatting character. A bad value gives the form back with 400, a message
+  beside the field and the values the admin sent, and changes nothing.
+- **A save writes one `mod_log` row,** `settings.update`, with the names of the changed
+  keys in `details.keys`. A save that changes nothing writes no row and says so.
+- **A new name reaches every place at once.** Pages read the settings on each request.
+  After a save, the frame of the error pages is refreshed and the static 500 and 503
+  pages are built again (they were built once, at start; the swap is safe for requests
+  that read them). The subject of the next reset email holds the new name. Tests cover
+  the next page, the static 503 page and the reset email.
+- **Header image:** upload, replace or remove. PNG, JPEG or WebP, at most 1 MB and
+  8,000 pixels a side. The file is decoded under the memory gate, as an avatar is, to
+  see that it is an image; gobb then stores it as it was sent, under `header/` with a
+  random name, and deletes the file it replaces. The upload takes the same slots as an
+  avatar (the server's and one for each admin) and counts against the admin write
+  limit. WebP decoding adds `golang.org/x/image`; avatars still refuse WebP.
+- **Email test:** a button that sends one test message to the admin's own address, at
+  once and not through the queue, as `gobb mail test` does. It shows only when email
+  is on. One a minute for each admin. A failure shows the summary of the SMTP error and
+  nothing from the server's reply. `web.MailOptions` has a new field, `Sender`.
+- **Sign-up mode and email notifications** show read only, with a note: no code reads
+  them yet (roadmap rows 7 and 5).
+
 ## 0.7.0 (2026-10-27)
 
 Private messages read as conversations (evanwtf/gobb#32). A reply joins the

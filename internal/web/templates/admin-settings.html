@@ -1,0 +1,120 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Settings</h1>
+  <p class="page-sub">How the board looks and what it is called. A change shows on the next page.</p>
+</header>
+
+{{- if .Notice}}
+{{- if .NoticeFailed}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>
+{{- else}}
+<p class="notice-inline" role="status">{{.Notice}}</p>
+{{- end}}
+{{- end}}
+
+<section class="account-section" aria-labelledby="board-title">
+  <h2 id="board-title">Board</h2>
+  <form class="post-form" method="post" action="{{path "admin" "settings"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="field">
+      <label for="board-name">Board name</label>
+      <input id="board-name" name="board_name" value="{{.Name}}" maxlength="{{.MaxName}}" required aria-describedby="board-name-hint{{if .Err.Name}} board-name-error{{end}}"
+        {{- if .Err.Name}} aria-invalid="true"{{end}}>
+      {{- if .Err.Name}}<p class="field-error" id="board-name-error" role="alert">{{.Err.Name}}</p>{{end}}
+      <p class="hint" id="board-name-hint">1 to {{.MaxName}} characters on one line. It shows in the title of every page, in the header, on the error pages and in the subject of the emails.</p>
+    </div>
+    <div class="field">
+      <label for="board-description">Board description</label>
+      <input id="board-description" name="board_description" value="{{.Description}}" maxlength="{{.MaxDescription}}" aria-describedby="board-description-hint{{if .Err.Description}} board-description-error{{end}}"
+        {{- if .Err.Description}} aria-invalid="true"{{end}}>
+      {{- if .Err.Description}}<p class="field-error" id="board-description-error" role="alert">{{.Err.Description}}</p>{{end}}
+      <p class="hint" id="board-description-hint">Up to {{.MaxDescription}} characters on one line. It shows under the name in the header. Leave it empty for none.</p>
+    </div>
+    <div class="field">
+      <label for="board-timezone">Time zone</label>
+      <select id="board-timezone" name="timezone" aria-describedby="board-timezone-hint{{if .Err.Zone}} board-timezone-error{{end}}"
+        {{- if .Err.Zone}} aria-invalid="true"{{end}}>
+        {{- if not .ZoneListed}}
+        <option value="{{.Timezone}}" selected>{{.Timezone}} (current setting)</option>
+        {{- end}}
+        <optgroup label="Common">
+          {{- range .Common}}
+          <option value="{{.Name}}"{{if eq .Name $.Data.Timezone}} selected{{end}}>{{.Label}}</option>
+          {{- end}}
+        </optgroup>
+        <optgroup label="All zones">
+          {{- range .Zones}}
+          <option value="{{.}}"{{if $.Data.SelectedInAll .}} selected{{end}}>{{.}}</option>
+          {{- end}}
+        </optgroup>
+      </select>
+      {{- if .Err.Zone}}<p class="field-error" id="board-timezone-error" role="alert">{{.Err.Zone}}</p>{{end}}
+      <p class="hint" id="board-timezone-hint">The board's own zone, for times that no member's zone applies to.</p>
+    </div>
+    <fieldset class="field"><legend>Default color scheme</legend>
+      {{- range .Schemes}}
+      <p class="field-check"><input type="radio" name="scheme" id="scheme-{{.Value}}" value="{{.Value}}"{{if .Current}} checked{{end}}{{if $.Data.Err.Scheme}} aria-invalid="true" aria-describedby="board-scheme-error"{{end}}> <label for="scheme-{{.Value}}">{{.Label}}</label></p>
+      {{- end}}
+      {{- if .Err.Scheme}}<p class="field-error" id="board-scheme-error" role="alert">{{.Err.Scheme}}</p>{{end}}
+      <p class="hint">Guests, and members who picked none, see this scheme.</p>
+    </fieldset>
+    <div class="form-actions"><button class="button button-inline" type="submit">Save settings</button></div>
+  </form>
+</section>
+
+<section class="account-section" aria-labelledby="header-title">
+  <h2 id="header-title">Header image</h2>
+  {{- if .HasHeader}}
+  <p class="settings-header-preview"><img class="header-image" src="{{$.HeaderSrc}}" alt="The header image now in use"></p>
+  {{- else}}
+  <p class="hint">The board has no header image. The header shows the board name.</p>
+  {{- end}}
+  <form class="post-form" method="post" action="{{path "admin" "settings" "header"}}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="field">
+      <label for="header-file">{{if .HasHeader}}Replace the image{{else}}Upload an image{{end}}</label>
+      <input id="header-file" name="header" type="file" required accept="image/png,image/jpeg,image/webp" aria-describedby="header-hint{{if .Err.Header}} header-error{{end}}"
+        {{- if .Err.Header}} aria-invalid="true"{{end}}>
+      {{- if .Err.Header}}<p class="field-error" id="header-error" role="alert">{{.Err.Header}}</p>{{end}}
+      <p class="hint" id="header-hint">A PNG, JPEG or WebP of at most 1 MB and at most 8,000 pixels a side. gobb checks that the file is an image, then stores it exactly as you sent it. It shows at its own size, and any metadata in the file stays.</p>
+    </div>
+    <div class="form-actions"><button class="button button-inline" type="submit">Upload image</button></div>
+  </form>
+  {{- if .HasHeader}}
+  <form class="post-form" method="post" action="{{path "admin" "settings" "header" "remove"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="form-actions"><button class="button-quiet" type="submit">Remove the image</button></div>
+  </form>
+  {{- end}}
+</section>
+
+<section class="account-section" aria-labelledby="email-title">
+  <h2 id="email-title">Email</h2>
+  {{- if .MailOn}}
+  <form class="post-form" method="post" action="{{path "admin" "settings" "mail-test"}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="field">
+      <p class="hint" id="mail-test-hint">Send one test message to the email address of your own account. It goes out at once, so you see whether email works. You can send one a minute.</p>
+      {{- if .Err.Mail}}<p class="field-error" id="mail-test-error" role="alert">{{.Err.Mail}}</p>{{end}}
+    </div>
+    <div class="form-actions"><button class="button button-inline" type="submit" aria-describedby="mail-test-hint">Send a test email</button></div>
+  </form>
+  {{- else}}
+  <p class="hint">Email is off on this server, so there is no test to send.</p>
+  {{- end}}
+</section>
+
+<section class="account-section" aria-labelledby="readonly-title">
+  <h2 id="readonly-title">Not changed here yet</h2>
+  <p class="hint">These two settings are shown as they are stored. gobb does not read them yet. The sign-up mode arrives with the registration work (roadmap row 7), and the email notifications with the notification work (roadmap row 5). This page will change them then.</p>
+  <dl class="settings-readonly">
+    <dt>Sign-up mode</dt>
+    <dd>{{.Registration}}</dd>
+    <dt>Email notifications</dt>
+    <dd>{{.EmailNotifications}}</dd>
+  </dl>
+</section>
+{{- end}}
+{{end}}

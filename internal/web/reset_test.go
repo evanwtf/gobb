@@ -40,7 +40,7 @@ const (
 // RFC 2606, a floor of 1 ms and a Wake that does nothing.
 func testMailOptions() Options {
 	return Options{
-		Mail:       &MailOptions{PublicURL: resetPublic, Wake: func() {}, PerHour: 100, PerDay: 100},
+		Mail:       &MailOptions{PublicURL: resetPublic, Wake: func() {}, PerHour: 100, PerDay: 100, Sender: &fakeSender{}},
 		ResetFloor: time.Millisecond,
 	}
 }

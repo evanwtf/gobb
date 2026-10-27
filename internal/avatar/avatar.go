@@ -6,6 +6,9 @@
 // decode, and then draws a new 128 x 128 image and encodes it with the standard
 // PNG encoder. No byte of the upload reaches the output except as a pixel, so
 // metadata, comments and trailing data do not survive.
+//
+// [CheckHeader] checks the header image of the board with the same limits and the
+// same gate. It keeps the file as it was sent, and it takes WebP too.
 package avatar
 
 import (
@@ -21,6 +24,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"golang.org/x/image/webp"
 
 	"github.com/evanwtf/gobb/internal/login"
 )
@@ -74,6 +79,8 @@ const (
 	fmtPNG
 	fmtJPEG
 	fmtGIF
+	// fmtWebP is a format of the header image only: [Make] refuses it.
+	fmtWebP
 )
 
 // sniff names the format by the first bytes: the PNG signature, the JPEG start of
@@ -181,7 +188,12 @@ func decodeSquare(ctx context.Context, data []byte, gate *login.Gate, wait time.
 // does not parse, and [ErrDimensions] when a side is over [MaxSide] or the pixels
 // are over [MaxPixels].
 func inspect(data []byte) (format, uint64, error) {
-	f := sniff(data)
+	return inspectAs(data, sniff(data))
+}
+
+// inspectAs is [inspect] for the format f, which the caller found from the first
+// bytes. It reads the header of data as an f.
+func inspectAs(data []byte, f format) (format, uint64, error) {
 	var (
 		cfg image.Config
 		err error
@@ -193,6 +205,8 @@ func inspect(data []byte) (format, uint64, error) {
 		cfg, err = jpeg.DecodeConfig(bytes.NewReader(data))
 	case fmtGIF:
 		cfg, err = gif.DecodeConfig(bytes.NewReader(data))
+	case fmtWebP:
+		cfg, err = webp.DecodeConfig(bytes.NewReader(data))
 	default:
 		return fmtNone, 0, ErrFormat
 	}
@@ -229,6 +243,7 @@ func inspect(data []byte) (format, uint64, error) {
 //     pass besides the final image. The passes are garbage once merged, but the
 //     collector may not have run, so the charge counts them all.
 //   - GIF: 4.
+//   - WebP (header image only): 2 for a lossy file with no alpha, 8 for any other.
 func chargeKiB(f format, cfg image.Config, interlaced bool) uint64 {
 	w, h := uint64(cfg.Width), uint64(cfg.Height)
 	perPixel := uint64(4)
@@ -247,6 +262,16 @@ func chargeKiB(f format, cfg image.Config, interlaced bool) uint64 {
 		switch cfg.ColorModel {
 		case color.Gray16Model, color.RGBA64Model, color.NRGBA64Model:
 			perPixel = 8
+		}
+	case fmtWebP:
+		// A lossy file with no alpha holds one YCbCr image (1.5 bytes a pixel). With
+		// alpha it also holds the alpha plane, and a compressed alpha plane is
+		// decoded as a whole NRGBA image first (1 + 4 more). A lossless file is one
+		// NRGBA image (4) and its transforms. The charge is 8 for the last two, with
+		// room to spare, and 2 for the first.
+		perPixel = 8
+		if cfg.ColorModel == color.YCbCrModel {
+			perPixel = 2
 		}
 	}
 	total := w * h * perPixel

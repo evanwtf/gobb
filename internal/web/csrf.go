@@ -92,8 +92,26 @@ const (
 // time. After the read, the token is checked, as in [site.protect]: the cap of
 // the body holds the cost.
 func (s *site) protectUpload(limit int64, h http.HandlerFunc) http.Handler {
-	g := guard{limit: limit, tooBig: msgFileTooLarge, member: true,
-		option: "account.avatar", denied: "You do not have the right to change your avatar.", slots: func() chan struct{} { return s.uploadSlots }, oneEach: &s.uploading, parse: func(r *http.Request) error {
+	g := s.uploadGuard(limit)
+	g.option, g.denied = "account.avatar", "You do not have the right to change your avatar."
+	return s.guardWith(s.crossOrigin, g, h, nil)
+}
+
+// protectAdminUpload is [site.protectUpload] for a form of the admin area. The
+// admin gate has already checked the right, so the guard checks none: a visitor
+// who is not an admin never reaches it. It takes the same slots as an avatar
+// upload (the server's, and one for each member), and the handler runs behind
+// [site.adminLimited], so an upload counts against the admin write limit.
+func (s *site) protectAdminUpload(limit int64, h http.HandlerFunc) http.Handler {
+	return s.guardWith(s.crossOrigin, s.uploadGuard(limit), s.adminLimited(h), nil)
+}
+
+// uploadGuard returns the guard of a form that carries a file, with no right
+// asked for: the cap of the body, the slots, and the multipart parse. The caller
+// adds the right it needs.
+func (s *site) uploadGuard(limit int64) guard {
+	return guard{limit: limit, tooBig: msgFileTooLarge, member: true,
+		slots: func() chan struct{} { return s.uploadSlots }, oneEach: &s.uploading, parse: func(r *http.Request) error {
 			// ParseMultipartForm drops the error of a body that is not multipart (it
 			// returns ErrNotMultipart instead), and a body over the cap is one such
 			// error. So the content type picks the parser.
@@ -102,7 +120,6 @@ func (s *site) protectUpload(limit int64, h http.HandlerFunc) http.Handler {
 			}
 			return r.ParseMultipartForm(limit)
 		}}
-	return s.guardWith(s.crossOrigin, g, h, nil)
 }
 
 // msgFileTooLarge is the text of the 413 of an upload.

@@ -302,6 +302,10 @@ var bodyCaps = []struct {
 	{"/reset", "/reset", maxLoginBody},
 	{"/reset/{token}", "/reset/x", maxLoginBody},
 	{"/admin/confirm", "/admin/confirm", maxLoginBody},
+	{"/admin/settings", "/admin/settings", maxSettingsBody},
+	{"/admin/settings/header", "/admin/settings/header", maxAvatarBody},
+	{"/admin/settings/header/remove", "/admin/settings/header/remove", maxPostBody},
+	{"/admin/settings/mail-test", "/admin/settings/mail-test", maxPostBody},
 }
 
 // Every POST route has a cap on its body. A body over it answers 413 in the

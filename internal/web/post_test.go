@@ -663,9 +663,20 @@ type tokenRow struct {
 	setup  string
 }
 
-// multipart reports whether the route takes a multipart upload of a file in the
-// field "avatar" instead of a urlencoded form.
-func (r tokenRow) multipart() bool { return r.target == "/account/avatar" }
+// multipart reports whether the route takes a multipart upload of a file instead
+// of a urlencoded form: in the field "avatar" for the account page, and in the
+// field "header" for the admin settings.
+func (r tokenRow) multipart() bool {
+	return r.target == "/account/avatar" || r.target == "/admin/settings/header"
+}
+
+// fileField is the name of the field that holds the file of a multipart row.
+func (r tokenRow) fileField() string {
+	if strings.HasPrefix(r.target, "/admin/") {
+		return "header"
+	}
+	return "avatar"
+}
 
 // rowRequest builds the POST of a row with form and the cookies. A multipart row
 // carries a small PNG beside the fields of form.
@@ -680,7 +691,7 @@ func rowRequest(t *testing.T, row tokenRow, cookies []*http.Cookie, form url.Val
 				_ = mw.WriteField(k, v)
 			}
 		}
-		fw, _ := mw.CreateFormFile("avatar", "me.png")
+		fw, _ := mw.CreateFormFile(row.fileField(), "me.png")
 		_, _ = fw.Write(testPNG(t, 24, 24))
 		_ = mw.Close()
 		r = httptest.NewRequest(http.MethodPost, row.target, &buf)
@@ -734,6 +745,10 @@ var tokenRows = []tokenRow{
 	{"/reset", "", url.Values{"name": {"alice"}}, ""},
 	{"/reset/" + testResetToken, "", url.Values{"password": {"a new pass phrase"}, "again": {"a new pass phrase"}}, testResetTokenRow()},
 	{"/admin/confirm", "alice", url.Values{"password": {testPassword}, "next": {"/admin/log"}}, ""},
+	{"/admin/settings", "alice", url.Values{"board_name": {"No token"}, "board_description": {""}, "timezone": {"Asia/Tokyo"}, "scheme": {"slate-deep"}}, ""},
+	{"/admin/settings/header", "alice", url.Values{}, ""},
+	{"/admin/settings/header/remove", "alice", url.Values{}, ""},
+	{"/admin/settings/mail-test", "alice", url.Values{}, ""},
 }
 
 // tokenSite is the posting board where bob moderates forum 2 and guests may post
