@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -72,9 +73,10 @@ func newAdminWrites(opt Options) *ratelimit.Limiter {
 	return ratelimit.New(n, adminWriteWindow, adminWriteMaxKeys).Named("admin_writes")
 }
 
-// adminRoutes is the mux of the admin area. Its two methods are the only way to
-// add a route: page for a GET, write for a POST through [site.protect] and the
-// limit on admin writes.
+// adminRoutes is the mux of the admin area. Its methods are the only way to add
+// a route: page for a GET, write for a POST through [site.protect] and the limit
+// on admin writes, and dangerous for a POST that also needs a confirmed
+// password.
 type adminRoutes struct {
 	*routes
 	s *site
@@ -88,6 +90,21 @@ func (a adminRoutes) page(pattern string, h http.HandlerFunc) {
 // write adds the POST route /admin<pattern>, with a body of at most limit bytes.
 func (a adminRoutes) write(pattern string, limit int64, h http.HandlerFunc) {
 	a.Handle("POST /admin"+pattern, a.s.protect(limit, a.s.adminLimited(h)))
+}
+
+// dangerous adds the POST route /admin<pattern> for a change that needs a
+// confirmed password: a permission change, a change to an owner or an admin, a
+// password reset, a ban. It is write with one more step after the token check:
+// a session without a pass is sent to the confirm page, which sends the admin
+// back to the form field "back", an admin page. The write does not run.
+func (a adminRoutes) dangerous(pattern string, limit int64, h http.HandlerFunc) {
+	a.write(pattern, limit, func(w http.ResponseWriter, r *http.Request) {
+		if !a.s.passFresh(r) {
+			http.Redirect(w, r, a.s.confirmHref(a.s.adminNext(r.PostForm.Get("back"))), http.StatusSeeOther)
+			return
+		}
+		h(w, r)
+	})
 }
 
 // adminArea returns the handler of every path under /admin, and records its
@@ -120,7 +137,11 @@ func (s *site) adminGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := s.identify(w, r)
 		if err != nil {
-			s.serverError(w, r, err)
+			// A failure answers as a missing page does when the database fails: the
+			// 404 from the settings in memory. A 500 here would show that the area
+			// exists.
+			slog.Warn("admin gate: cannot read the session", "err", err)
+			s.notFound(w, r)
 			return
 		}
 		// The identity goes into the request, so begin and protect do not look the
@@ -140,7 +161,8 @@ func (s *site) adminGate(next http.Handler) http.Handler {
 			s.notFound(w, r)
 			return
 		case err != nil:
-			s.serverError(w, r, err)
+			slog.Warn("admin gate: cannot read the rights", "err", err)
+			s.notFound(w, r)
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
@@ -400,7 +422,9 @@ func (s *site) adminConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := adminConfirmData{Next: s.adminNext(r.PostForm.Get("next"))}
-	_, f, err := s.checkOwnPassword(r, p, "admin", r.PostForm.Get("password"))
+	// The tries share the key of the password form of the account page, so a
+	// stolen session gets no more guesses here than there.
+	_, f, err := s.checkOwnPassword(r, p, "password", r.PostForm.Get("password"))
 	switch {
 	case err != nil:
 		s.serverError(w, r, err)

@@ -148,6 +148,10 @@ func TestModLogReader(t *testing.T) {
 	if got := actions(board.LogFilter{TargetType: "user", TargetID: 4}); !slices.Equal(got, []string{"user.activate"}) {
 		t.Errorf("by target = %v", got)
 	}
+	// IDs past the range of int4 reach the bigint columns.
+	if got := actions(board.LogFilter{TargetType: "post", TargetID: 3_000_000_000, Actor: 3_000_000_000}); len(got) != 0 {
+		t.Errorf("a large ID = %v", got)
+	}
 	if got := actions(board.LogFilter{Action: "nothing.like.this"}); len(got) != 0 {
 		t.Errorf("no match = %v", got)
 	}

@@ -114,10 +114,12 @@ type LogPage struct {
 // empty log is not. It does not check the viewer: the caller is the admin
 // area, behind its gate.
 func ModLog(ctx context.Context, q db.Querier, f LogFilter, page int) (LogPage, error) {
-	where := `($1 = '' or l.action = $1)
-   and ($2 = 0 or ($2 = -1 and l.actor_id is null) or l.actor_id = $2)
-   and ($3 = '' or l.target_type = $3)
-   and ($4 = 0 or l.target_id = $4)`
+	// The casts fix the types of the parameters: without them, "$2 = 0" makes $2
+	// an int4, and an ID above 2^31-1 fails to encode.
+	where := `($1::text = '' or l.action = $1::text)
+   and ($2::bigint = 0 or ($2::bigint = -1 and l.actor_id is null) or l.actor_id = $2::bigint)
+   and ($3::text = '' or l.target_type = $3::text)
+   and ($4::bigint = 0 or l.target_id = $4::bigint)`
 	args := []any{f.Action, f.Actor, f.TargetType, f.TargetID}
 	var n int
 	if err := q.QueryRow(ctx, `select count(*) from mod_log l where `+where, args...).Scan(&n); err != nil {
