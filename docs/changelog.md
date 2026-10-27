@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.0 (2026-10-26)
+
+The metrics show how full each rate limit gets, not only how often it refuses
+(evanwtf/gobb#29). An owner can now tell whether a limit is needed (how close real keys
+come to it) and whether it works (what share of checks it refuses, how many keys sit at
+the limit, whether the key table fills and pushes keys out).
+
+Operators: no migration and no new setting. The new series appear on the metrics
+listener only. The bundle format does not change.
+
+### Operators
+
+- **New series, per limit.** Every one has the label `limit`, one of the 14 names, and
+  never a key. `gobb_rate_limit_allowed_total` counts the events that a limit recorded
+  (an allowed `Take` or `TryTake`, and each `Add`). `gobb_rate_limit_fill_ratio` is a
+  histogram with the buckets 0.25, 0.5, 0.75, 0.9 and 1; each recorded event adds one
+  observation: the events of its key in the window after it, over the limit.
+  `gobb_rate_limit_refunds_total` counts the events that `Refund` removed.
+  `gobb_rate_limit_evictions_total` counts the keys with events in the window that a
+  full table dropped to make room. Keys with no event in the window are dropped as
+  before and are not counted, because they lose nothing.
+  `gobb_rate_limited_total` is unchanged.
+- **Gauges read at each scrape.** `gobb_rate_limit_keys` (keys held, live or not),
+  `gobb_rate_limit_keys_full` (keys with as many events in the window as the limit) and
+  `gobb_rate_limit_fullest_ratio` (the highest fill of any key). The settings
+  `gobb_rate_limit_max_events`, `gobb_rate_limit_window_seconds` and
+  `gobb_rate_limit_max_keys` say what each limit is. The scan reads the keys under the
+  lock of the limit and changes nothing. It is bounded by `maxKeys`: 0.14 ms at 10,000
+  keys and 1.5 ms at 100,000 (`BenchmarkScan`, Apple M5 Max). Two gauges scan, so a
+  scrape scans each limit twice.
+- **Dashboards.** The share of refusals is refused over allowed plus refused. How full
+  keys get is the p50, p90 and p99 of the fill ratio. A key table under pressure shows
+  as evictions above 0.
+- **Named limits.** A limit built twice under one name (a test builds the server more
+  than once) replaces the first in the gauges. A limit with no name records nothing.
+  The README "Metrics" section lists the new names.
+- **Tests.** `TestRateLimitMetricsSequence` pins every new metric to an exact value
+  after a known run of takes, refusals, refunds and evictions;
+  `TestRateLimitEvictionsCountLiveKeysOnly`,
+  `TestRateLimitMetricsRecordOnlyRecordedEvents`, `TestRateLimitNamedTwiceReplaces`,
+  `TestRateLimitRenamed`, `TestRateLimitMetricsParallel`, `TestScan`, `TestScanEmpty`,
+  `TestGaugeSamples` and the new lines in `TestMetricsEndpoint`.
+
 ## 0.5.0 (2026-10-26)
 
 gobb serves Prometheus metrics on a second listener, so an operator can see requests,

@@ -74,6 +74,46 @@ t_requests_total{route="/q\"x\n",code="2xx"} 0
 	}
 }
 
+// A labeled gauge that a function fills at each scrape: the series sorted by
+// label values, escaped, read anew each time, with no series when the function
+// gives none, and with a malformed series left out. An Init on a histogram or a
+// counter shows a series before its first event.
+func TestGaugeSamples(t *testing.T) {
+	r := NewRegistry()
+	rows := []Sample{
+		{[]string{"b", "x"}, 2},
+		{[]string{"a", `q"\`}, 0.5},
+		{[]string{"a", "x"}, 1},
+		{[]string{"only one value"}, 9},
+	}
+	r.GaugeSamples("t_keys", "Keys.", []string{"limit", "kind"}, func() []Sample { return rows })
+	want := "# HELP t_keys Keys.\n# TYPE t_keys gauge\n" +
+		`t_keys{limit="a",kind="q\"\\"} 0.5` + "\n" +
+		`t_keys{limit="a",kind="x"} 1` + "\n" +
+		`t_keys{limit="b",kind="x"} 2` + "\n"
+	if got := written(t, r); got != want {
+		t.Errorf("output:\n%s\nwant:\n%s", got, want)
+	}
+	rows = nil
+	if got := written(t, r); got != "# HELP t_keys Keys.\n# TYPE t_keys gauge\n" {
+		t.Errorf("output with no series = %q", got)
+	}
+
+	h := r.HistogramVec("t_fill", "Fill.", []float64{1}, "limit")
+	h.Init("idle")
+	c := r.CounterVec("t_adds_total", "Adds.", "limit")
+	c.Add(3, "x")
+	c.Add(2, "x")
+	out := written(t, r)
+	for _, w := range []string{
+		`t_fill_bucket{limit="idle",le="1"} 0`, `t_fill_count{limit="idle"} 0`, `t_adds_total{limit="x"} 5`,
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+}
+
 // A second family with the same name replaces the first, so building the server
 // twice in one process registers again with no error and no duplicate.
 func TestRegisterReplaces(t *testing.T) {
@@ -236,6 +276,8 @@ func TestDefaultFamilies(t *testing.T) {
 		"\nprocess_start_time_seconds ", "\nprocess_cpu_seconds_total ",
 		`gobb_signin_attempts_total{result="wrong"} `, `gobb_emails_total{result="failed"} `,
 		`gobb_reset_emails_skipped_total{reason="admin"} `, "# TYPE gobb_http_request_duration_seconds histogram",
+		"# TYPE gobb_rate_limit_fill_ratio histogram", "# TYPE gobb_rate_limit_allowed_total counter",
+		"# TYPE gobb_rate_limit_refunds_total counter", "# TYPE gobb_rate_limit_evictions_total counter",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Default output lacks %q", want)

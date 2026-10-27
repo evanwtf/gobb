@@ -91,6 +91,18 @@ func TestMetricsEndpoint(t *testing.T) {
 		"\ngobb_db_pool_acquires_total ",
 		"\ngobb_signin_floor_seconds ",
 		"\ngo_goroutines ",
+		// The rate limits of the server, from the smallest table to the largest.
+		`gobb_rate_limit_keys{limit="signin_address"} `,
+		`gobb_rate_limit_keys_full{limit="signin_name"} `,
+		`gobb_rate_limit_fullest_ratio{limit="reset_account"} `,
+		`gobb_rate_limit_max_events{limit="reset_board_hour"} `,
+		`gobb_rate_limit_window_seconds{limit="posts_member"} `,
+		"\ngobb_rate_limit_max_keys{limit=\"reset_board_day\"} 1\n",
+		"\ngobb_rate_limit_max_keys{limit=\"account_password_tries\"} 100000\n",
+		`gobb_rate_limit_allowed_total{limit="message_sends"} `,
+		`gobb_rate_limit_refunds_total{limit="avatar_uploads"} `,
+		`gobb_rate_limit_evictions_total{limit="guest_name_checks"} `,
+		`gobb_rate_limit_fill_ratio_bucket{limit="settings_saves",le="0.9"} `,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the scrape lacks %q", want)

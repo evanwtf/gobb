@@ -4,6 +4,10 @@ package metrics
 // The gauges that read the database, the pool or the memory gate are registered
 // by `gobb serve`, which holds those values.
 
+// fillBuckets are the upper bounds of the fill ratio of a rate limit: the events
+// of a key in the window over its limit.
+var fillBuckets = []float64{0.25, 0.5, 0.75, 0.9, 1}
+
 // httpBuckets are the upper bounds of the request durations, 5 ms to 10 s.
 var httpBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
@@ -27,6 +31,21 @@ var (
 	// limit (ratelimit.Limiter.Named).
 	RateLimited = Default.CounterVec("gobb_rate_limited_total",
 		"Checks that found a rate limit full, by limit.", "limit")
+	// RateLimitAllowed counts the events that a named limit recorded: an allowed
+	// Take or TryTake, and an Add.
+	RateLimitAllowed = Default.CounterVec("gobb_rate_limit_allowed_total",
+		"Events that a rate limit recorded, by limit.", "limit")
+	// RateLimitFill holds, for each recorded event, the events of its key in the
+	// window after it, over the limit.
+	RateLimitFill = Default.HistogramVec("gobb_rate_limit_fill_ratio",
+		"Events of a key in the window after each recorded event, over the limit, by rate limit.", fillBuckets, "limit")
+	// RateLimitRefunds counts the events that Refund gave back.
+	RateLimitRefunds = Default.CounterVec("gobb_rate_limit_refunds_total",
+		"Events that Refund gave back, by rate limit.", "limit")
+	// RateLimitEvictions counts the keys with live events that a full table
+	// dropped to make room.
+	RateLimitEvictions = Default.CounterVec("gobb_rate_limit_evictions_total",
+		"Keys with events in the window that a full rate limit dropped to make room, by limit.", "limit")
 	// Emails counts the sends of the email queue by result: sent, failed (to be
 	// tried again) and dropped.
 	Emails = Default.CounterVec("gobb_emails_total",

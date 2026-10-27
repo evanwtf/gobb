@@ -239,6 +239,9 @@ func (c *CounterVec) Init(values ...string) { c.get(values) }
 // Inc adds 1 to the series of values.
 func (c *CounterVec) Inc(values ...string) { c.get(values).n.Add(1) }
 
+// Add adds n to the series of values.
+func (c *CounterVec) Add(n uint64, values ...string) { c.get(values).n.Add(n) }
+
 // Value returns the count of the series of values.
 func (c *CounterVec) Value(values ...string) uint64 { return c.get(values).n.Load() }
 
@@ -306,6 +309,38 @@ func (r *Registry) CounterFunc(name, help string, f func() (float64, bool)) {
 	r.register(name, &funcFamily{meta: meta{name, help, "counter"}, f: f})
 }
 
+// Sample is one series of a family that [Registry.GaugeSamples] reads: the label
+// values, in the order of the label names, and the value.
+type Sample struct {
+	Values []string
+	Value  float64
+}
+
+// samplesFamily reads all its series when the registry is written.
+type samplesFamily struct {
+	meta
+	labels []string
+	f      func() []Sample
+}
+
+func (s *samplesFamily) write(w *bufio.Writer) {
+	s.meta.header(w)
+	all := slices.DeleteFunc(s.f(), func(x Sample) bool { return len(x.Values) != len(s.labels) })
+	slices.SortStableFunc(all, func(a, b Sample) int { return strings.Compare(key(a.Values), key(b.Values)) })
+	for _, x := range all {
+		sample(w, s.name, s.labels, x.Values, "", x.Value)
+	}
+}
+
+// GaugeSamples registers a gauge with labels, whose series f gives at each
+// scrape. The series appear sorted by label values. f returns no series when
+// there is none, and the family then writes its HELP and TYPE lines only. A
+// series whose number of values differs from the number of label names is left
+// out.
+func (r *Registry) GaugeSamples(name, help string, labels []string, f func() []Sample) {
+	r.register(name, &samplesFamily{meta: meta{name, help, "gauge"}, labels: slices.Clone(labels), f: f})
+}
+
 // Info registers a gauge with the value 1 and fixed labels, such as the version
 // of the build.
 func (r *Registry) Info(name, help string, labels, values []string) {
@@ -360,6 +395,10 @@ func (h *HistogramVec) get(values []string) *histSeries {
 	}
 	return s
 }
+
+// Init creates the series of values with no observation, so that it shows before
+// its first one.
+func (h *HistogramVec) Init(values ...string) { h.get(values) }
 
 // Observe records v in the series of values.
 func (h *HistogramVec) Observe(v float64, values ...string) {
