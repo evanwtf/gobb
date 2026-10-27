@@ -1,0 +1,73 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1><bdi>{{.Name}}</bdi></h1>
+  <p class="page-sub"><a href="{{path "u" (printf "%d" .ID)}}">Profile</a> &middot; <a href="{{.LogHref}}">Log</a></p>
+</header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
+{{- if .Notice}}
+<div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>
+{{- end}}
+{{- if .NewPassword}}
+<section class="category admin-box" aria-labelledby="newpw-title">
+  <h2 id="newpw-title">New password</h2>
+  <p>The new password of <bdi>{{.Name}}</bdi> is <code class="new-password">{{.NewPassword}}</code></p>
+  <p class="hint">This page shows it once. Give it to the member by a private channel. Their sessions ended, so they sign in again with it.</p>
+</section>
+{{- end}}
+<section class="category admin-box" aria-label="Account">
+  <dl class="admin-facts">
+    <dt>State</dt><dd>{{if .Active}}Active{{else}}Inactive{{end}}{{if .Banned}}, banned{{end}}</dd>
+    <dt>Role</dt><dd>{{if .Owner}}Owner{{else if .IsAdmin}}Admin{{else}}Member{{end}}</dd>
+    <dt>Email address</dt><dd><bdi>{{.Email}}</bdi>{{if .EmailVerified}} (verified){{else}} (not verified){{end}}</dd>
+    <dt>Posts</dt><dd>{{num .PostCount}}</dd>
+    <dt>Joined</dt><dd>{{date .Joined $.Clock}}</dd>
+    <dt>Last visit</dt><dd>{{with .LastVisit}}{{time . $.Clock}}{{else}}Never{{end}}</dd>
+  </dl>
+</section>
+{{- if .Self}}
+<p class="hint">This is your own account. Change your password and email address on <a href="{{path "account"}}">your account page</a>.</p>
+{{- end}}
+{{- if .NeedsPass}}
+<p class="hint">Changes to an owner or an admin need your password. A button below asks for it first.</p>
+{{- end}}
+<section class="category admin-box" aria-labelledby="actions-title">
+  <h2 id="actions-title">Actions</h2>
+  <div class="admin-actions">
+    {{- if not .Active}}
+    <form method="post" action="{{.Href}}/activate"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="button button-inline" type="submit">Activate</button></form>
+    {{- else if not .Self}}
+    <form method="post" action="{{.Href}}/deactivate"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="button button-inline" type="submit">Deactivate</button></form>
+    {{- end}}
+    {{- if not .Self}}
+    <form method="post" action="{{.Href}}/reset-password">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <input type="hidden" name="back" value="{{.Href}}">
+      <button class="button button-inline" type="submit">Reset the password</button>
+    </form>
+    <a class="button-quiet button-link" href="{{.BanHref}}">{{if .Banned}}Bans{{else}}Ban{{end}}</a>
+    {{- end}}
+    {{- if not .EmailVerified}}
+    <form method="post" action="{{.Href}}/verify-email"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="button-quiet" type="submit">Mark the email address verified</button></form>
+    {{- end}}
+  </div>
+  <form class="admin-inline-form" method="post" action="{{.Href}}/rank">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="field">
+      <label for="m-rank">Rank</label>
+      <select id="m-rank" name="rank"{{if .RankError}} aria-invalid="true" aria-describedby="m-rank-error"{{end}}>
+        <option value="0"{{if eq .RankID 0}} selected{{end}}>By post count</option>
+        {{- range .Ranks}}
+        <option value="{{.ID}}"{{if eq .ID $.Data.RankID}} selected{{end}}>{{.Title}}{{if .Special}} (special){{else}} ({{.MinPosts}}+ posts){{end}}</option>
+        {{- end}}
+      </select>
+      {{- if .RankError}}<p class="field-error" id="m-rank-error" role="alert">{{.RankError}}</p>{{end}}
+    </div>
+    <button class="button-quiet" type="submit">Save the rank</button>
+  </form>
+</section>
+{{- end}}
+{{end}}
