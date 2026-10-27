@@ -138,7 +138,9 @@ func (w *robotsWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 var noindexPages = map[string]bool{
 	"login.html": true, "new.html": true, "postform.html": true, "confirm.html": true, "search.html": true, "error.html": true, "account.html": true,
 	"messages.html": true, "message.html": true, "message-new.html": true, "reset.html": true, "reset-link.html": true,
-	"admin.html": true, "admin-log.html": true, "admin-confirm.html": true, "admin-bans.html": true,
+	"admin.html": true, "admin-log.html": true, "admin-confirm.html": true,
+	"admin-members.html": true, "admin-member.html": true,
+	"admin-bans.html": true,
 }
 
 // cacheControl returns the Cache-Control value of an HTML page. Every page

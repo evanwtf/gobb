@@ -132,25 +132,12 @@ func lockUser(ctx context.Context, tx pgx.Tx, userID int64) error {
 // and no mod_log row. The hash runs before the transaction opens, so the row
 // lock is held for milliseconds.
 func ResetPassword(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) (string, error) {
-	pw, err := newPassword()
+	pw, hash, err := newHashedPassword()
 	if err != nil {
 		return "", err
 	}
-	hash, err := password.Hash(pw)
-	if err != nil {
-		// The error of Hash holds no password, and this wrapping adds none.
-		return "", fmt.Errorf("board: hash a new password: %w", err)
-	}
 	err = inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-update users set password_hash = $2, password_scheme = 'gobb', password_epoch = password_epoch + 1
- where id = $1`, userID, hash); err != nil {
-			return fmt.Errorf("board: store a password for %d: %w", userID, err)
-		}
-		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
+		if err := storePassword(ctx, tx, userID, hash); err != nil {
 			return err
 		}
 		return logMod(ctx, tx, Viewer{}, "user.reset_password", "user", userID, viaCLI, now)
@@ -159,6 +146,35 @@ update users set password_hash = $2, password_scheme = 'gobb', password_epoch = 
 		return "", err
 	}
 	return pw, nil
+}
+
+// storePassword takes the user row FOR UPDATE, adds one to the password epoch,
+// stores hash as a gobb hash and deletes every session of member userID. A
+// member who does not exist is [ErrNotFound].
+func storePassword(ctx context.Context, tx pgx.Tx, userID int64, hash string) error {
+	if err := lockUser(ctx, tx, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+update users set password_hash = $2, password_scheme = 'gobb', password_epoch = password_epoch + 1
+ where id = $1`, userID, hash); err != nil {
+		return fmt.Errorf("board: store a password for %d: %w", userID, err)
+	}
+	_, err := session.DeleteUser(ctx, tx, userID)
+	return err
+}
+
+// newHashedPassword returns a new password and its gobb hash. The hash runs
+// before any transaction opens, so no row lock waits on it.
+func newHashedPassword() (pw, hash string, err error) {
+	if pw, err = newPassword(); err != nil {
+		return "", "", err
+	}
+	if hash, err = password.Hash(pw); err != nil {
+		// The error of Hash holds no password, and this wrapping adds none.
+		return "", "", fmt.Errorf("board: hash a new password: %w", err)
+	}
+	return pw, hash, nil
 }
 
 // BanUser adds a user ban with no end date for member userID, ends every session
@@ -283,18 +299,38 @@ func UnbanUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.T
 // that is active already gets [ErrAlreadyActive], and nothing is written.
 func ActivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) error {
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
+		if err := setActive(ctx, tx, userID, true); err != nil {
 			return err
-		}
-		tag, err := tx.Exec(ctx, `update users set state = 'active' where id = $1 and state <> 'active'`, userID)
-		if err != nil {
-			return fmt.Errorf("board: activate %d: %w", userID, err)
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrAlreadyActive
 		}
 		return logMod(ctx, tx, Viewer{}, "user.activate", "user", userID, viaCLI, now)
 	})
+}
+
+// setActive takes the user row FOR UPDATE and makes the account of member userID
+// active or inactive. Making it inactive also deletes every session of the
+// member. A member who does not exist is [ErrNotFound]; an account in that state
+// already is [ErrAlreadyActive] or [ErrAlreadyInactive].
+func setActive(ctx context.Context, tx pgx.Tx, userID int64, active bool) error {
+	if err := lockUser(ctx, tx, userID); err != nil {
+		return err
+	}
+	state, same := "active", ErrAlreadyActive
+	if !active {
+		state, same = "inactive", ErrAlreadyInactive
+	}
+	tag, err := tx.Exec(ctx, `update users set state = $2 where id = $1 and state <> $2`, userID, state)
+	if err != nil {
+		return fmt.Errorf("board: make %d %s: %w", userID, state, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return same
+	}
+	if !active {
+		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeactivateUser makes the account of member userID inactive, ends every session
@@ -307,17 +343,7 @@ func ActivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now tim
 // and nothing is written.
 func DeactivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) error {
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx, `update users set state = 'inactive' where id = $1 and state <> 'inactive'`, userID)
-		if err != nil {
-			return fmt.Errorf("board: deactivate %d: %w", userID, err)
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrAlreadyInactive
-		}
-		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
+		if err := setActive(ctx, tx, userID, false); err != nil {
 			return err
 		}
 		return logMod(ctx, tx, Viewer{}, "user.deactivate", "user", userID, viaCLI, now)

@@ -1,0 +1,48 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<header class="page-head">
+  <h1>Members</h1>
+  <p class="page-sub">Find a member by the start of the username or the email address. Inactive members are listed too.</p>
+</header>
+<form class="search-form" method="get" action="{{path "admin" "members"}}" role="search" aria-label="Find a member">
+  <div class="field">
+    <label for="m-q">Username or email address</label>
+    <input type="search" id="m-q" name="q" value="{{.Query}}" maxlength="256" autocomplete="off">
+  </div>
+  <button type="submit" class="button search-go">Find</button>
+</form>
+{{- if .Rows}}
+{{template "pager" pagerAt .Pager "Pages, top"}}
+<section class="category" aria-label="Members found">
+  <table class="member-table log-table">
+    <thead>
+      <tr>
+        <th scope="col">Member</th>
+        <th scope="col">Email address</th>
+        <th scope="col">State</th>
+        <th scope="col">Posts</th>
+        <th scope="col">Joined</th>
+        <th scope="col">Last visit</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .Rows}}
+      <tr>
+        <td data-label="Member"><a href="{{path "admin" "members" (printf "%d" .ID)}}"><bdi>{{.Name}}</bdi></a>{{if .Owner}} <span class="muted">(owner)</span>{{end}}</td>
+        <td data-label="Email"><bdi>{{.Email}}</bdi></td>
+        <td data-label="State">{{if .Active}}Active{{else}}Inactive{{end}}{{if .Banned}}, banned{{end}}</td>
+        <td data-label="Posts">{{num .PostCount}}</td>
+        <td data-label="Joined">{{date .Joined $.Clock}}</td>
+        <td data-label="Last visit">{{with .LastVisit}}{{date . $.Clock}}{{else}}<span class="muted">Never</span>{{end}}</td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</section>
+{{template "pager" pagerAt .Pager "Pages, bottom"}}
+{{- else}}
+<p class="empty standalone">No member matches.</p>
+{{- end}}
+{{- end}}
+{{end}}

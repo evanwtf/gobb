@@ -734,6 +734,11 @@ var tokenRows = []tokenRow{
 	{"/reset", "", url.Values{"name": {"alice"}}, ""},
 	{"/reset/" + testResetToken, "", url.Values{"password": {"a new pass phrase"}, "again": {"a new pass phrase"}}, testResetTokenRow()},
 	{"/admin/confirm", "alice", url.Values{"password": {testPassword}, "next": {"/admin/log"}}, ""},
+	{"/admin/members/4/activate", "alice", url.Values{}, ""},
+	{"/admin/members/3/deactivate", "alice", url.Values{}, ""},
+	{"/admin/members/3/rank", "alice", url.Values{"rank": {"1"}}, ""},
+	{"/admin/members/3/verify-email", "alice", url.Values{}, ""},
+	{"/admin/members/3/reset-password", "alice", url.Values{"back": {"/admin/members/3"}}, ""},
 	{"/admin/bans", "alice", url.Values{"kind": {"email"}, "target": {"spam@example.net"}}, ""},
 	{"/admin/bans/1/lift", "alice", url.Values{}, ""},
 }
