@@ -71,8 +71,12 @@ request. The date is the day of the tag.
     "I confirm a wide range".
   - Refused: a ban on the admin, a user ban on an owner, an email ban on the address
     of the admin or of an owner, an IP range that holds the address the admin writes
-    from, and a target that a ban in force holds already. Each is a message beside
-    the field, status 400, and nothing changes.
+    from or an address that an owner has used, a range of every IPv4 or IPv6
+    address, and a target that a ban in force holds already. Each is a message
+    beside the field, status 400, and nothing changes.
+  - A user ban takes the same lock as a deactivation and the same check after it:
+    no ban may leave the board without an active admin who can sign in. That check
+    no longer counts a member with a user ban in force.
 - **Lift a ban** removes the row, as `gobb user unban` does (also a dangerous write).
   A ban that is gone already shows a notice and writes nothing.
 - **`mod_log`:** `ban.add` and `ban.lift`, target type `ban`, the ID of the ban, and
