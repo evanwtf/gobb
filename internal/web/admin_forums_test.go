@@ -44,6 +44,7 @@ func queryInt(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 func TestAdminForumsPage(t *testing.T) {
 	h, _ := siteWithPool(t, bundletest.Small(), Options{})
 	alice := signIn(t, h, "alice", testPassword)
+	confirmPass(t, h, alice)
 
 	index := bodyOf(t, getAs(t, h, "/admin/", alice))
 	if !strings.Contains(index, `href="/admin/forums"`) {
@@ -101,6 +102,7 @@ func TestAdminForumsPage(t *testing.T) {
 func TestAdminCreatesAForum(t *testing.T) {
 	h, pool := siteWithPool(t, bundletest.Small(), Options{})
 	alice := signIn(t, h, "alice", testPassword)
+	confirmPass(t, h, alice)
 	carol := signIn(t, h, "carol", testPassword)
 
 	form := getAs(t, h, "/admin/forums/new?parent=1", alice)
@@ -176,6 +178,7 @@ func TestAdminCreatesAForum(t *testing.T) {
 func TestAdminForumFormRefusals(t *testing.T) {
 	h, pool := siteWithPool(t, bundletest.Small(), Options{})
 	alice := signIn(t, h, "alice", testPassword)
+	confirmPass(t, h, alice)
 	before := dumpData(t, pool)
 
 	long := strings.Repeat("n", 101)
@@ -245,6 +248,7 @@ func TestAdminForumFormRefusals(t *testing.T) {
 func TestAdminEditsAForum(t *testing.T) {
 	h, pool := siteWithPool(t, bundletest.Small(), Options{})
 	alice := signIn(t, h, "alice", testPassword)
+	confirmPass(t, h, alice)
 
 	page := bodyOf(t, getAs(t, h, "/admin/forums/2", alice))
 	for _, want := range []string{`value="Main Discussion"`, `action="/admin/forums/2/edit"`, `action="/admin/forums/2/move"`,
@@ -289,6 +293,7 @@ func TestAdminEditsAForum(t *testing.T) {
 func TestAdminMovesAreSafe(t *testing.T) {
 	h, pool := siteWithPool(t, bundletest.Small(), Options{})
 	alice := signIn(t, h, "alice", testPassword)
+	confirmPass(t, h, alice)
 	before := dumpData(t, pool)
 	for _, c := range []struct{ id, parent string }{{"1", "2"}, {"1", "3"}, {"2", "3"}, {"2", "2"}} {
 		rec, _ := postAs(t, h, "/admin/forums/"+c.id+"/move", alice, url.Values{"parent": {c.parent}})
@@ -328,6 +333,7 @@ func TestAdminMovesAreSafe(t *testing.T) {
 func TestAdminReordersForums(t *testing.T) {
 	h, pool := siteWithPool(t, bundletest.Small(), Options{})
 	alice := signIn(t, h, "alice", testPassword)
+	confirmPass(t, h, alice)
 	exec(t, pool, `insert into forums (id, parent_id, kind, name, position) values (20, 1, 'forum', 'Second', 5), (21, 1, 'forum', 'Third', 5)`)
 	exec(t, pool, `update forums set position = 5 where id = 2`)
 
@@ -378,6 +384,7 @@ func TestAdminReordersForums(t *testing.T) {
 func TestAdminLocksForums(t *testing.T) {
 	h, pool := siteWithPool(t, bundletest.Small(), Options{})
 	alice := signIn(t, h, "alice", testPassword)
+	confirmPass(t, h, alice)
 	carol := signIn(t, h, "carol", testPassword)
 
 	rec := forumPost(t, h, alice, "/admin/forums/2/lock", url.Values{})
@@ -467,8 +474,48 @@ func TestAdminForumsUnderBasePath(t *testing.T) {
 	if n := queryInt(t, pool, `select count(*) from forums where id = 3 and locked`); n != 1 {
 		t.Error("forum 3 is not locked")
 	}
+	if rec, _ := postAsAt(t, h, "/forum/", "/forum/admin/confirm", alice, url.Values{"password": {testPassword}}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("confirm under the base path = %d", rec.Code)
+	}
 	rec, _ = postAsAt(t, h, "/forum/", "/forum/admin/forums/new", alice, url.Values{"kind": {"forum"}, "name": {"X"}, "parent": {"1"}})
 	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/forum/admin/forums?done=created#f") {
 		t.Errorf("create under the base path = %d to %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// TestAdminForumCreateNeedsPass: a new forum copies grants, so the create form
+// asks for the password first, and a POST without a pass creates nothing.
+func TestAdminForumCreateNeedsPass(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	alice := signIn(t, h, "alice", testPassword)
+	page := bodyOf(t, getAs(t, h, "/admin/forums/new", alice))
+	if !strings.Contains(page, `href="/admin/confirm?next=%2Fadmin%2Fforums%2Fnew"`) || strings.Contains(page, `name="name"`) {
+		t.Error("the create page without a pass shows the form, or no link to the confirm page")
+	}
+	rec, _ := postAs(t, h, "/admin/forums/new", alice, url.Values{"kind": {"forum"}, "name": {"Sneaky"}, "back": {"/admin/forums/new"}})
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/admin/confirm?") {
+		t.Errorf("create without a pass = %d to %q", rec.Code, rec.Header().Get("Location"))
+	}
+	var n int
+	if err := pool.QueryRow(t.Context(), `select count(*) from forums where name = 'Sneaky'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("the forum was created: %d, %v", n, err)
+	}
+	confirmPass(t, h, alice)
+	if page := bodyOf(t, getAs(t, h, "/admin/forums/new", alice)); !strings.Contains(page, `name="name"`) {
+		t.Error("the create page with a pass shows no form")
+	}
+}
+
+// TestAdminForumMoveNeedsPass: a move changes who sees a forum in the index, so
+// it needs a confirmed password.
+func TestAdminForumMoveNeedsPass(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	alice := signIn(t, h, "alice", testPassword)
+	rec, _ := postAs(t, h, "/admin/forums/3/move", alice, url.Values{"parent": {"1"}, "back": {"/admin/forums/3"}})
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/admin/confirm?") {
+		t.Errorf("a move without a pass = %d to %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if n := queryInt(t, pool, `select count(*) from forums where id = 3 and parent_id = 2`); n != 1 {
+		t.Error("forum 3 moved without a pass")
 	}
 }

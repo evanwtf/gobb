@@ -28,8 +28,60 @@ request. The date is the day of the tag.
 - **One write helper,** `board.AdminWrite`: the change and its `mod_log` row, with the
   admin as the actor and `{"via":"web"}`, in one transaction.
 
-### Forums and categories (evanwtf/gobb#21)
+### Members (evanwtf/gobb#22)
 
+- **`/admin/members`:** find a member by the start of the username or, with an "@",
+  of the email address. Inactive members are listed too, with the state, a ban, the
+  post count, the join date and the last visit.
+- **The page of one member,** with Activate, Deactivate, Reset the password, Mark the
+  email address verified, a rank list ("By post count" or any rank), and links to the
+  profile, to the member's rows in the log, and to the bans page.
+- **Reset the password** shows the new password once, on the answer to the POST, and
+  ends the member's sessions. It always needs a confirmed password.
+- **Guards:** a change to an owner or an admin needs a confirmed password. An admin
+  cannot deactivate or reset their own account here. Only an owner can deactivate an
+  owner or reset an owner's password: the admin sees the new password. A deactivate
+  that would leave no active admin is refused.
+- **`board.LockAdminSet` and `board.EnsureAdminRemains`:** the guard for any write that
+  can take the admin right away. The write takes a transaction lock, makes its change,
+  then checks that an active member still holds admin; if none does, the change rolls
+  back. The permission and group pages use it too.
+- `mod_log` rows: `user.activate`, `user.deactivate`, `user.reset_password`,
+  `user.rank` and `user.verify_email`, with `{"via":"web"}`. The command line writes
+  the same rows as before.
+### Bans (evanwtf/gobb#23)
+- **`/admin/bans`:** the bans in force, newest first, 50 a page. Each row shows the
+  kind, the target (a member is linked), the reason for staff, the reason the member
+  sees, the start, the end and who added it (the command line and the import show as
+  such). A ban that has ended leaves the list.
+- **Add a ban** for a member, an email address or an IP address or range, with both
+  reasons and an optional end (in the time zone of the admin, in the future). Adding
+  is a dangerous write: it asks for the password first. The page links from the
+  members page as `/admin/bans?kind=user&target=<username>`, which fills the form.
+  - A member is found by the clean username, as at sign-in. The ban ends the member's
+    sessions and removes the member's `user_ips` rows. `board.BanUser` (the command
+    line) and the web add now share one function, `banUserTx`; the command line keeps
+    its behavior.
+  - An email address is stored in its clean form (`account.CleanEmail`), the form that
+    sign-in and the reset request compare.
+  - An IP address is stored as a range of one; a range is stored with its host bits
+    cleared. The IPv4-mapped IPv6 form is refused: sign-in compares the plain IPv4
+    form.
+  - A range wider than /16 (IPv4) or /48 (IPv6) is refused unless the admin ticks
+    "I confirm a wide range".
+  - Refused: a ban on the admin, a user ban on an owner, an email ban on the address
+    of the admin or of an owner, an IP range that holds the address the admin writes
+    from or an address that an owner has used, a range of every IPv4 or IPv6
+    address, and a target that a ban in force holds already. Each is a message
+    beside the field, status 400, and nothing changes.
+  - A user ban takes the same lock as a deactivation and the same check after it:
+    no ban may leave the board without an active admin who can sign in. That check
+    no longer counts a member with a user ban in force.
+- **Lift a ban** removes the row, as `gobb user unban` does (also a dangerous write).
+  A ban that is gone already shows a notice and writes nothing.
+- **`mod_log`:** `ban.add` and `ban.lift`, target type `ban`, the ID of the ban, and
+  the kind, the target and the end in the details.
+### Forums and categories (evanwtf/gobb#21)
 - **`/admin/forums`:** the whole tree of categories, forums and links, in page order,
   with the kind, the topic count and the lock state of each. A forum with no grant is
   in the list too, though nobody else can see it.
@@ -62,6 +114,10 @@ request. The date is the day of the tag.
 - Nothing caches the forum tree and the counters belong to each forum (the index adds up
   the descendants when it reads), so a change shows on the next request.
 - Delete and merge are not part of this release (evanwtf/gobb#28).
+- **A new forum and a move need a confirmed password:** a new forum copies the grants
+  of another forum, and a move changes who sees the forum in the index, which lists
+  a forum only under parents the visitor may see. The create page shows a link to
+  the confirm page first.
 
 ## 0.7.0 (2026-10-27)
 

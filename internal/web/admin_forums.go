@@ -37,10 +37,14 @@ var forumNotices = map[string]string{
 func (s *site) adminForumRoutes(a adminRoutes) {
 	a.page("/forums", s.adminForums)
 	a.page("/forums/new", s.adminForumNew)
-	a.write("/forums/new", maxAdminForumBody, s.adminForumCreate)
+	// A new forum copies the grants of another forum: a permission change, so it
+	// needs a confirmed password.
+	a.dangerous("/forums/new", maxAdminForumBody, s.adminForumCreate)
 	a.page("/forums/{id}", s.adminForumEdit)
 	a.write("/forums/{id}/edit", maxAdminForumBody, s.adminForumSave)
-	a.write("/forums/{id}/move", maxPostBody, s.adminForumMove)
+	// A move changes who sees a forum in the index, since the index lists a forum
+	// only under parents that the visitor may see: a permission change.
+	a.dangerous("/forums/{id}/move", maxPostBody, s.adminForumMove)
 	a.write("/forums/{id}/reorder", maxPostBody, s.adminForumReorder)
 	a.write("/forums/{id}/lock", maxPostBody, s.adminForumLock(true))
 	a.write("/forums/{id}/unlock", maxPostBody, s.adminForumLock(false))
@@ -142,7 +146,12 @@ func (s *site) adminForumError(w http.ResponseWriter, r *http.Request, err error
 
 // forumFormData is the data of admin-forum.html.
 type forumFormData struct {
-	Crumbs []crumb
+	// NeedsPass is true on the create form when the session holds no confirmed
+	// password: the page then shows a link to the confirm page, not the form.
+	// ConfirmHref is that link.
+	NeedsPass   bool
+	ConfirmHref string
+	Crumbs      []crumb
 	// New is true for the create form.
 	New bool
 	// Forum is the stored forum of the edit page; it is nil on the create form.
@@ -236,6 +245,8 @@ func (s *site) renderForumForm(w http.ResponseWriter, r *http.Request, p *page, 
 	d.Kinds = board.ForumKinds
 	if id == 0 {
 		d.New = true
+		d.NeedsPass = !s.passFresh(r)
+		d.ConfirmHref = s.confirmHref(s.path("admin", "forums", "new"))
 		d.Parents = forumChoices(tree, 0, false)
 		d.Sources = forumChoices(tree, 0, true)
 	} else {

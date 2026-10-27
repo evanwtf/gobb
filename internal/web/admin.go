@@ -115,6 +115,8 @@ func (s *site) adminArea() http.Handler {
 	a.page("/log", s.adminLog)
 	a.page("/confirm", s.adminConfirmPage)
 	a.write("/confirm", maxLoginBody, s.adminConfirm)
+	s.adminMemberRoutes(a)
+	s.adminBansRoutes(a)
 	s.adminForumRoutes(a)
 	// A path of the area that no route above matches, and a method that none
 	// takes, get the themed 404, not the plain text of the mux.
@@ -226,7 +228,9 @@ func (s *site) adminIndex(w http.ResponseWriter, r *http.Request) {
 	p.Data = adminIndexData{
 		Crumbs: s.adminCrumbs()[:1],
 		Sections: []adminSection{
+			{Label: "Members", Href: s.path("admin", "members"), About: "Find a member; activate, deactivate, reset a password, set a rank."},
 			{Label: "Log", Href: s.path("admin", "log"), About: "Every moderator and admin action, newest first."},
+			{Label: "Bans", Href: s.path("admin", "bans"), About: "Ban a member, an email address or an IP range, and lift a ban."},
 			{Label: "Forums", Href: s.path("admin", "forums"), About: "Create, edit, nest, reorder and lock the categories, forums and links."},
 		},
 	}

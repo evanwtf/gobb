@@ -132,25 +132,12 @@ func lockUser(ctx context.Context, tx pgx.Tx, userID int64) error {
 // and no mod_log row. The hash runs before the transaction opens, so the row
 // lock is held for milliseconds.
 func ResetPassword(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) (string, error) {
-	pw, err := newPassword()
+	pw, hash, err := newHashedPassword()
 	if err != nil {
 		return "", err
 	}
-	hash, err := password.Hash(pw)
-	if err != nil {
-		// The error of Hash holds no password, and this wrapping adds none.
-		return "", fmt.Errorf("board: hash a new password: %w", err)
-	}
 	err = inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-update users set password_hash = $2, password_scheme = 'gobb', password_epoch = password_epoch + 1
- where id = $1`, userID, hash); err != nil {
-			return fmt.Errorf("board: store a password for %d: %w", userID, err)
-		}
-		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
+		if err := storePassword(ctx, tx, userID, hash); err != nil {
 			return err
 		}
 		return logMod(ctx, tx, Viewer{}, "user.reset_password", "user", userID, viaCLI, now)
@@ -159,6 +146,35 @@ update users set password_hash = $2, password_scheme = 'gobb', password_epoch = 
 		return "", err
 	}
 	return pw, nil
+}
+
+// storePassword takes the user row FOR UPDATE, adds one to the password epoch,
+// stores hash as a gobb hash and deletes every session of member userID. A
+// member who does not exist is [ErrNotFound].
+func storePassword(ctx context.Context, tx pgx.Tx, userID int64, hash string) error {
+	if err := lockUser(ctx, tx, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+update users set password_hash = $2, password_scheme = 'gobb', password_epoch = password_epoch + 1
+ where id = $1`, userID, hash); err != nil {
+		return fmt.Errorf("board: store a password for %d: %w", userID, err)
+	}
+	_, err := session.DeleteUser(ctx, tx, userID)
+	return err
+}
+
+// newHashedPassword returns a new password and its gobb hash. The hash runs
+// before any transaction opens, so no row lock waits on it.
+func newHashedPassword() (pw, hash string, err error) {
+	if pw, err = newPassword(); err != nil {
+		return "", "", err
+	}
+	if hash, err = password.Hash(pw); err != nil {
+		// The error of Hash holds no password, and this wrapping adds none.
+		return "", "", fmt.Errorf("board: hash a new password: %w", err)
+	}
+	return pw, hash, nil
 }
 
 // BanUser adds a user ban with no end date for member userID, ends every session
@@ -172,35 +188,85 @@ update users set password_hash = $2, password_scheme = 'gobb', password_epoch = 
 // reason that is not valid UTF-8, that holds a NUL, or that is over 255
 // characters is an [*InputError] on the field "reason".
 func BanUser(ctx context.Context, pool *pgxpool.Pool, userID int64, reason string, now time.Time) error {
-	if !utf8.ValidString(reason) || strings.ContainsRune(reason, 0) {
-		return inputError("reason", "The reason must be valid text.")
-	}
-	if utf8.RuneCountInString(reason) > maxBanReason {
-		return inputError("reason", "The reason is too long.")
+	if err := checkBanText("reason", reason); err != nil {
+		return err
 	}
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
+		if _, err := banUserTx(ctx, tx, userBan{userID: userID, reason: reason}, now); err != nil {
 			return err
-		}
-		var banned bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from bans where kind = 'user' and user_id = $1 and (ends_at is null or ends_at > $2))`,
-			userID, now).Scan(&banned); err != nil {
-			return fmt.Errorf("board: check the bans of %d: %w", userID, err)
-		}
-		if banned {
-			return ErrAlreadyBanned
-		}
-		if _, err := tx.Exec(ctx, `insert into bans (kind, user_id, reason, created_at) values ('user', $1, $2, $3)`, userID, reason, now); err != nil {
-			return fmt.Errorf("board: ban %d: %w", userID, err)
-		}
-		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `delete from user_ips where user_id = $1`, userID); err != nil {
-			return fmt.Errorf("board: remove the addresses of %d: %w", userID, err)
 		}
 		return logMod(ctx, tx, Viewer{}, "user.ban", "user", userID, viaCLI, now)
 	})
+}
+
+// checkBanText returns an [*InputError] on field when text is not valid UTF-8,
+// holds a NUL, or is over 255 characters. Both ban reasons use it.
+func checkBanText(field, text string) error {
+	if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
+		return inputError(field, "The reason must be valid text.")
+	}
+	if utf8.RuneCountInString(text) > maxBanReason {
+		return inputError(field, "The reason is too long.")
+	}
+	return nil
+}
+
+// userBan is what [banUserTx] writes.
+type userBan struct {
+	userID int64
+	// reason is for staff. shown is the reason that the member reads at sign-in.
+	reason, shown string
+	// endsAt is the end of the ban, or nil for a ban with no end.
+	endsAt *time.Time
+	// createdBy is the admin who adds the ban, or 0 for the command line.
+	createdBy int64
+	// refuseOwner makes a ban of an owner an [*InputError] on the field "target".
+	refuseOwner bool
+}
+
+// banUserTx is the one write of a user ban, for the command line and for the
+// admin pages. In the transaction tx it takes the user row FOR UPDATE, inserts
+// the ban, ends every session of the member and removes the addresses that the
+// member used. It returns the ID of the ban. It writes no mod_log row: the caller
+// writes its own. The text of both reasons is the caller's to check.
+//
+// A member who does not exist is [ErrNotFound]. A member whom a user ban that has
+// not ended holds already gets [ErrAlreadyBanned].
+func banUserTx(ctx context.Context, tx pgx.Tx, b userBan, now time.Time) (int64, error) {
+	if err := lockUser(ctx, tx, b.userID); err != nil {
+		return 0, err
+	}
+	if b.refuseOwner {
+		var owner bool
+		if err := tx.QueryRow(ctx, `select is_owner from users where id = $1`, b.userID).Scan(&owner); err != nil {
+			return 0, fmt.Errorf("board: read the owner flag of %d: %w", b.userID, err)
+		}
+		if owner {
+			return 0, inputError("target", "An owner cannot be banned.")
+		}
+	}
+	var banned bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from bans where kind = 'user' and user_id = $1 and (ends_at is null or ends_at > $2))`,
+		b.userID, now).Scan(&banned); err != nil {
+		return 0, fmt.Errorf("board: check the bans of %d: %w", b.userID, err)
+	}
+	if banned {
+		return 0, ErrAlreadyBanned
+	}
+	var id int64
+	if err := tx.QueryRow(ctx, `
+insert into bans (kind, user_id, reason, reason_shown, created_at, ends_at, created_by)
+values ('user', $1, $2, $3, $4, $5, $6) returning id`,
+		b.userID, b.reason, b.shown, now, b.endsAt, nullID(b.createdBy)).Scan(&id); err != nil {
+		return 0, fmt.Errorf("board: ban %d: %w", b.userID, err)
+	}
+	if _, err := session.DeleteUser(ctx, tx, b.userID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `delete from user_ips where user_id = $1`, b.userID); err != nil {
+		return 0, fmt.Errorf("board: remove the addresses of %d: %w", b.userID, err)
+	}
+	return id, nil
 }
 
 // UnbanUser removes the user bans of member userID that have not ended, and
@@ -233,18 +299,38 @@ func UnbanUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.T
 // that is active already gets [ErrAlreadyActive], and nothing is written.
 func ActivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) error {
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
+		if err := setActive(ctx, tx, userID, true); err != nil {
 			return err
-		}
-		tag, err := tx.Exec(ctx, `update users set state = 'active' where id = $1 and state <> 'active'`, userID)
-		if err != nil {
-			return fmt.Errorf("board: activate %d: %w", userID, err)
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrAlreadyActive
 		}
 		return logMod(ctx, tx, Viewer{}, "user.activate", "user", userID, viaCLI, now)
 	})
+}
+
+// setActive takes the user row FOR UPDATE and makes the account of member userID
+// active or inactive. Making it inactive also deletes every session of the
+// member. A member who does not exist is [ErrNotFound]; an account in that state
+// already is [ErrAlreadyActive] or [ErrAlreadyInactive].
+func setActive(ctx context.Context, tx pgx.Tx, userID int64, active bool) error {
+	if err := lockUser(ctx, tx, userID); err != nil {
+		return err
+	}
+	state, same := "active", ErrAlreadyActive
+	if !active {
+		state, same = "inactive", ErrAlreadyInactive
+	}
+	tag, err := tx.Exec(ctx, `update users set state = $2 where id = $1 and state <> $2`, userID, state)
+	if err != nil {
+		return fmt.Errorf("board: make %d %s: %w", userID, state, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return same
+	}
+	if !active {
+		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeactivateUser makes the account of member userID inactive, ends every session
@@ -257,17 +343,7 @@ func ActivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now tim
 // and nothing is written.
 func DeactivateUser(ctx context.Context, pool *pgxpool.Pool, userID int64, now time.Time) error {
 	return inTx(ctx, pool, func(tx pgx.Tx) error {
-		if err := lockUser(ctx, tx, userID); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx, `update users set state = 'inactive' where id = $1 and state <> 'inactive'`, userID)
-		if err != nil {
-			return fmt.Errorf("board: deactivate %d: %w", userID, err)
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrAlreadyInactive
-		}
-		if _, err := session.DeleteUser(ctx, tx, userID); err != nil {
+		if err := setActive(ctx, tx, userID, false); err != nil {
 			return err
 		}
 		return logMod(ctx, tx, Viewer{}, "user.deactivate", "user", userID, viaCLI, now)

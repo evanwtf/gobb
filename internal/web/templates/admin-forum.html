@@ -16,10 +16,14 @@
 <div class="form-error" role="alert"><p class="form-error-text">{{.Notice}}</p></div>
 {{- end}}
 
+{{- if .NeedsPass}}
+<p class="hint">A new forum copies the grants of another forum, so it needs your password. <a href="{{.ConfirmHref}}">Confirm your password</a>, then come back to this form.</p>
+{{- else}}
 <section class="account-section" aria-labelledby="details-title">
   <h2 id="details-title">Details</h2>
   <form class="post-form" method="post" action="{{if .New}}{{path "admin" "forums" "new"}}{{else}}{{path "admin" "forums" (printf "%d" .Forum.ID) "edit"}}{{end}}">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{path "admin" "forums" "new"}}">
     <div class="field">
       <label for="forum-kind">Kind</label>
       <select id="forum-kind" name="kind" aria-describedby="forum-kind-hint{{if .Err.kind}} forum-kind-error{{end}}"{{if .Err.kind}} aria-invalid="true"{{end}}>
@@ -81,12 +85,15 @@
       <a href="{{path "admin" "forums"}}">Back to the forums</a></div>
   </form>
 </section>
+{{- end}}
 
 {{- if not .New}}
 <section class="account-section" aria-labelledby="move-title">
   <h2 id="move-title">Place in the tree</h2>
+  <p class="hint">A move changes who sees the forum in the index, so it needs your password. It asks for it first.</p>
   <form class="post-form" method="post" action="{{path "admin" "forums" (printf "%d" .Forum.ID) "move"}}">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{path "admin" "forums" (printf "%d" .Forum.ID)}}">
     <div class="field">
       <label for="move-parent">Parent</label>
       <select id="move-parent" name="parent"{{if .Err.parent}} aria-invalid="true" aria-describedby="move-parent-error"{{end}}>
