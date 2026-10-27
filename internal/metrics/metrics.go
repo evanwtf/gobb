@@ -316,19 +316,31 @@ type Sample struct {
 	Value  float64
 }
 
-// samplesFamily reads all its series when the registry is written.
-type samplesFamily struct {
-	meta
+// GaugeSpec is the name and the help text of one gauge in a group.
+type GaugeSpec struct{ Name, Help string }
+
+// samplesGroup is one or more gauge families with the same label names. One call
+// of f reads the series of all of them, so the families of a scrape agree.
+type samplesGroup struct {
+	meta   // the first family: the group is registered under its name
 	labels []string
-	f      func() []Sample
+	specs  []GaugeSpec // sorted by name
+	f      func() [][]Sample
 }
 
-func (s *samplesFamily) write(w *bufio.Writer) {
-	s.meta.header(w)
-	all := slices.DeleteFunc(s.f(), func(x Sample) bool { return len(x.Values) != len(s.labels) })
-	slices.SortStableFunc(all, func(a, b Sample) int { return strings.Compare(key(a.Values), key(b.Values)) })
-	for _, x := range all {
-		sample(w, s.name, s.labels, x.Values, "", x.Value)
+func (g *samplesGroup) write(w *bufio.Writer) {
+	rows := g.f()
+	for i, sp := range g.specs {
+		meta{sp.Name, sp.Help, "gauge"}.header(w)
+		if i >= len(rows) {
+			continue
+		}
+		// f owns the slice that it returned, so sort a copy.
+		all := slices.DeleteFunc(slices.Clone(rows[i]), func(x Sample) bool { return len(x.Values) != len(g.labels) })
+		slices.SortStableFunc(all, func(a, b Sample) int { return strings.Compare(key(a.Values), key(b.Values)) })
+		for _, x := range all {
+			sample(w, sp.Name, g.labels, x.Values, "", x.Value)
+		}
 	}
 }
 
@@ -338,7 +350,41 @@ func (s *samplesFamily) write(w *bufio.Writer) {
 // series whose number of values differs from the number of label names is left
 // out.
 func (r *Registry) GaugeSamples(name, help string, labels []string, f func() []Sample) {
-	r.register(name, &samplesFamily{meta: meta{name, help, "gauge"}, labels: slices.Clone(labels), f: f})
+	r.GaugeGroup(labels, []GaugeSpec{{name, help}}, func() [][]Sample { return [][]Sample{f()} })
+}
+
+// GaugeGroup registers several gauges with the same labels that one call of f
+// fills at each scrape: f returns the series of each spec, in the order of
+// specs. The gauges of a group come from one read, so a scrape cannot show two
+// of them at two moments. The group writes its families sorted by name, one
+// after the other, and r holds it under the lowest name. Each name must be new
+// or belong to an earlier group of the same lowest name.
+func (r *Registry) GaugeGroup(labels []string, specs []GaugeSpec, f func() [][]Sample) {
+	if len(specs) == 0 {
+		panic("metrics: a gauge group has no gauge")
+	}
+	order := make([]int, len(specs))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(a, b int) int { return strings.Compare(specs[a].Name, specs[b].Name) })
+	sorted := make([]GaugeSpec, len(specs))
+	for i, j := range order {
+		sorted[i] = specs[j]
+	}
+	g := &samplesGroup{meta: meta{sorted[0].Name, sorted[0].Help, "gauge"}, labels: slices.Clone(labels), specs: sorted,
+		f: func() [][]Sample {
+			// Hand the rows back in the order of the sorted specs.
+			rows := f()
+			out := make([][]Sample, len(rows))
+			for i, j := range order {
+				if j < len(rows) {
+					out[i] = rows[j]
+				}
+			}
+			return out
+		}}
+	r.register(sorted[0].Name, g)
 }
 
 // Info registers a gauge with the value 1 and fixed labels, such as the version

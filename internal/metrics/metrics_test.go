@@ -99,6 +99,14 @@ func TestGaugeSamples(t *testing.T) {
 		t.Errorf("output with no series = %q", got)
 	}
 
+	// The function owns the slice that it returns: a write sorts a copy.
+	unsorted := []Sample{{[]string{"b"}, 1}, {[]string{"a"}, 2}}
+	r.GaugeSamples("t_own", "Own.", []string{"x"}, func() []Sample { return unsorted })
+	written(t, r)
+	if unsorted[0].Values[0] != "b" {
+		t.Error("a write sorted the slice that the function returned")
+	}
+
 	h := r.HistogramVec("t_fill", "Fill.", []float64{1}, "limit")
 	h.Init("idle")
 	c := r.CounterVec("t_adds_total", "Adds.", "limit")
@@ -111,6 +119,31 @@ func TestGaugeSamples(t *testing.T) {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
+	}
+}
+
+// A group of gauges comes from one call per write, in the order of the names,
+// whatever order the specs come in. A second group with the same lowest name
+// replaces the first.
+func TestGaugeGroup(t *testing.T) {
+	r := NewRegistry()
+	calls := 0
+	group := func(b float64) {
+		r.GaugeGroup([]string{"limit"}, []GaugeSpec{{"t_b", "B."}, {"t_a", "A."}}, func() [][]Sample {
+			calls++
+			// Rows follow the order of the specs: b, then a.
+			return [][]Sample{{{[]string{"y"}, b}, {[]string{"x"}, b}}, {{[]string{"x"}, 1}}}
+		})
+	}
+	group(2)
+	want := "# HELP t_a A.\n# TYPE t_a gauge\nt_a{limit=\"x\"} 1\n" +
+		"# HELP t_b B.\n# TYPE t_b gauge\nt_b{limit=\"x\"} 2\nt_b{limit=\"y\"} 2\n"
+	if got := written(t, r); got != want || calls != 1 {
+		t.Errorf("output:\n%s\ncalls = %d, want 1; want:\n%s", got, calls, want)
+	}
+	group(3)
+	if got := written(t, r); !strings.Contains(got, `t_b{limit="x"} 3`) || strings.Count(got, "# TYPE t_a gauge") != 1 {
+		t.Errorf("a second group did not replace the first:\n%s", got)
 	}
 }
 

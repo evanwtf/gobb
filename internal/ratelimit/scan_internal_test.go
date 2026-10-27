@@ -2,8 +2,11 @@ package ratelimit
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/evanwtf/gobb/internal/metrics"
 )
 
 var base = time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
@@ -39,6 +42,39 @@ func TestScan(t *testing.T) {
 	}
 	if l.Len() != 4 || !l.Has("one") {
 		t.Errorf("the scan changed the keys: Len = %d", l.Len())
+	}
+}
+
+// One scrape reads a limiter once, at one time. The clock here jumps two windows
+// ahead after its first reading, so a gauge that read the time again would see
+// the key gone while another gauge saw it at the limit.
+func TestScrapeGaugesAgree(t *testing.T) {
+	l := New(2, time.Minute, 10).Named("test_agree")
+	l.Add("k", base)
+	l.Add("k", base)
+	reads := 0
+	clock = func() time.Time {
+		reads++
+		return base.Add(time.Duration(reads-1) * 2 * time.Minute)
+	}
+	t.Cleanup(func() { clock = time.Now })
+
+	var b strings.Builder
+	if _, err := metrics.Default.WriteTo(&b); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{
+		"\ngobb_rate_limit_keys{limit=\"test_agree\"} 1\n",
+		"\ngobb_rate_limit_keys_full{limit=\"test_agree\"} 1\n",
+		"\ngobb_rate_limit_fullest_ratio{limit=\"test_agree\"} 1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the scrape lacks %q", want)
+		}
+	}
+	if reads != 1 {
+		t.Errorf("one scrape read the clock %d times, want 1", reads)
 	}
 }
 

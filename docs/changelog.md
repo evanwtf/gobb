@@ -22,14 +22,25 @@ listener only. The bundle format does not change.
   full table dropped to make room. Keys with no event in the window are dropped as
   before and are not counted, because they lose nothing.
   `gobb_rate_limited_total` is unchanged.
+- **What a refund does.** A refund lowers neither `gobb_rate_limit_allowed_total` nor
+  the histogram, and `gobb_rate_limit_refunds_total` counts it. The net events recorded
+  are allowed minus refunds. The histogram is the fill at the time of the check,
+  refunded or not. Sign-in takes its event before the password check and gives it back
+  after a good password, so `allowed_total` for `signin_address` counts every attempt
+  that the limit let in.
+- **What the refusal share leaves out.** For `signin_name`, a check that finds the name
+  full and then finds that the account has used the address lets the request pass. That
+  check counts as neither allowed nor refused (it is no refusal, as in 0.5.0), so
+  refused over allowed plus refused leaves it out.
 - **Gauges read at each scrape.** `gobb_rate_limit_keys` (keys held, live or not),
   `gobb_rate_limit_keys_full` (keys with as many events in the window as the limit) and
   `gobb_rate_limit_fullest_ratio` (the highest fill of any key). The settings
   `gobb_rate_limit_max_events`, `gobb_rate_limit_window_seconds` and
   `gobb_rate_limit_max_keys` say what each limit is. The scan reads the keys under the
   lock of the limit and changes nothing. It is bounded by `maxKeys`: 0.14 ms at 10,000
-  keys and 1.5 ms at 100,000 (`BenchmarkScan`, Apple M5 Max). Two gauges scan, so a
-  scrape scans each limit twice.
+  keys and 1.5 ms at 100,000 (`BenchmarkScan`, Apple M5 Max). A scrape scans each
+  limit once, at one time, and writes all six gauges from that scan, so they agree
+  (`metrics.Registry.GaugeGroup`).
 - **Dashboards.** The share of refusals is refused over allowed plus refused. How full
   keys get is the p50, p90 and p99 of the fill ratio. A key table under pressure shows
   as evictions above 0.
@@ -41,7 +52,8 @@ listener only. The bundle format does not change.
   `TestRateLimitEvictionsCountLiveKeysOnly`,
   `TestRateLimitMetricsRecordOnlyRecordedEvents`, `TestRateLimitNamedTwiceReplaces`,
   `TestRateLimitRenamed`, `TestRateLimitMetricsParallel`, `TestScan`, `TestScanEmpty`,
-  `TestGaugeSamples` and the new lines in `TestMetricsEndpoint`.
+  `TestScrapeGaugesAgree`, `TestGaugeSamples`, `TestGaugeGroup` and the new lines in
+  `TestMetricsEndpoint`.
 
 ## 0.5.0 (2026-10-26)
 

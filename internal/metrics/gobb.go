@@ -32,13 +32,13 @@ var (
 	RateLimited = Default.CounterVec("gobb_rate_limited_total",
 		"Checks that found a rate limit full, by limit.", "limit")
 	// RateLimitAllowed counts the events that a named limit recorded: an allowed
-	// Take or TryTake, and an Add.
+	// Take or TryTake, and an Add. A refund does not lower it.
 	RateLimitAllowed = Default.CounterVec("gobb_rate_limit_allowed_total",
-		"Events that a rate limit recorded, by limit.", "limit")
+		"Events that a rate limit recorded, by limit. A refunded event stays in the count.", "limit")
 	// RateLimitFill holds, for each recorded event, the events of its key in the
-	// window after it, over the limit.
+	// window after it, over the limit. A refund removes no observation.
 	RateLimitFill = Default.HistogramVec("gobb_rate_limit_fill_ratio",
-		"Events of a key in the window after each recorded event, over the limit, by rate limit.", fillBuckets, "limit")
+		"Fill of a key at each recorded event (its events in the window over the limit), refunded or not, by rate limit.", fillBuckets, "limit")
 	// RateLimitRefunds counts the events that Refund gave back.
 	RateLimitRefunds = Default.CounterVec("gobb_rate_limit_refunds_total",
 		"Events that Refund gave back, by rate limit.", "limit")

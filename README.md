@@ -671,15 +671,24 @@ The other `gobb_rate_limit_` metrics show how full each limit gets, in the same 
 label (14 names, never a key). `gobb_rate_limit_allowed_total` counts the events that a
 limit recorded. `gobb_rate_limit_fill_ratio` has one observation for each of them: the
 events of that key in the window after it, over the limit, so `1` is a key at the limit.
-`gobb_rate_limit_refunds_total` counts the events that a refund gave back.
-`gobb_rate_limit_evictions_total` counts the keys, with events in the window, that a full
-table dropped to make room; those keys start again at zero. A value above 0 means the
-table is too small for the traffic. The gauges `gobb_rate_limit_keys` (keys held, live
-or not), `gobb_rate_limit_keys_full` (keys at the limit now) and
-`gobb_rate_limit_fullest_ratio` (the highest fill of any key now) scan the keys at each
-scrape. The scan holds the lock of the limit while it reads at most the keys of the table. The share of
+`gobb_rate_limit_refunds_total` counts the events that a refund gave back. A refund
+lowers neither of the two above, so the net events recorded are allowed minus refunds,
+and the histogram is the fill at the time of the check, refunded or not. Sign-in takes
+its event before the password check and gives it back after a good password, so
+`gobb_rate_limit_allowed_total{limit="signin_address"}` counts every attempt that the
+limit let in, and its refunds count the good ones. `gobb_rate_limit_evictions_total`
+counts the keys, with events in the window, that a full table dropped to make room;
+those keys start again at zero. A value above 0 means the table is too small for the
+traffic. A key with no event in the window is dropped with no count. The gauges
+`gobb_rate_limit_keys` (keys held, live or not), `gobb_rate_limit_keys_full` (keys at
+the limit now) and `gobb_rate_limit_fullest_ratio` (the highest fill of any key now)
+come from one scan of the keys of each limit at each scrape, so they agree. The scan
+holds the lock of the limit while it reads at most the keys of the table. The share of
 refusals is `gobb_rate_limited_total` over the sum of that and
-`gobb_rate_limit_allowed_total`. The queue and session gauges each run one query
+`gobb_rate_limit_allowed_total`. That share leaves out one case: when the name limit of
+`signin_name` is full and the request comes from an address that the account has used,
+the check fails and the request passes. It counts as neither allowed nor refused.
+The queue and session gauges each run one query
 at most every 15 s; a failed query leaves the gauge out of the scrape and logs one
 WARN line. CI runs `promtool check metrics` on a scrape.
 

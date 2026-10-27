@@ -36,13 +36,14 @@ func New(limit int, window time.Duration, maxKeys int) *Limiter {
 	}
 }
 
-// Named sets the name that labels the metrics of l, and returns l. The name is
-// fixed text, such as "signin_address", never a key. The counters are
+// Named sets the name that labels the metrics of l, and returns l. Call it when
+// the Limiter is built, before any other call: l.name is read with no lock. The
+// name is fixed text, such as "signin_address", never a key. The counters are
 // gobb_rate_limited_total (refusals), gobb_rate_limit_allowed_total,
 // gobb_rate_limit_fill_ratio, gobb_rate_limit_refunds_total and
-// gobb_rate_limit_evictions_total. At each scrape, the gauges of the gobb_rate_limit_
-// family read the keys and the settings of l. A second Limiter under one name
-// replaces the first in those gauges.
+// gobb_rate_limit_evictions_total. At each scrape, the gauges of the
+// gobb_rate_limit_ family read the keys and the settings of l, all from one scan.
+// A second Limiter under one name replaces the first in those gauges.
 func (l *Limiter) Named(name string) *Limiter {
 	regMu.Lock()
 	defer regMu.Unlock()
@@ -350,30 +351,38 @@ func snapshot() []*Limiter {
 	return all
 }
 
+// clock gives the time of a scrape. A test replaces it.
+var clock = time.Now
+
 func init() {
-	// Each gauge reads its own scan. The two that need one are the only ones
-	// that take a limiter's lock for longer than a map length.
-	gauge := func(name, help string, f func(l *Limiter, now time.Time) float64) {
-		metrics.Default.GaugeSamples(name, help, []string{"limit"}, func() []metrics.Sample {
-			now := time.Now()
-			all := snapshot()
-			out := make([]metrics.Sample, len(all))
-			for i, l := range all {
-				out[i] = metrics.Sample{Values: []string{l.name}, Value: f(l, now)}
-			}
-			return out
-		})
+	// One call per scrape reads every limiter once, under its lock, at one time.
+	// So the gauges of a scrape agree: a key that leaves the window between two
+	// reads cannot show in one gauge and not in another.
+	specs := []metrics.GaugeSpec{
+		{Name: "gobb_rate_limit_keys", Help: "Keys that a rate limit holds, live or not."},
+		{Name: "gobb_rate_limit_keys_full", Help: "Keys at the limit now (as many events in the window as the limit), by rate limit."},
+		{Name: "gobb_rate_limit_fullest_ratio", Help: "The highest fill of any key now (events in the window over the limit), by rate limit."},
+		{Name: "gobb_rate_limit_max_events", Help: "Events that a key may have in the window, by rate limit."},
+		{Name: "gobb_rate_limit_window_seconds", Help: "Length of the window of a rate limit, in seconds."},
+		{Name: "gobb_rate_limit_max_keys", Help: "Keys that a rate limit may hold before it drops some."},
 	}
-	gauge("gobb_rate_limit_keys", "Keys that a rate limit holds, live or not.",
-		func(l *Limiter, _ time.Time) float64 { return float64(l.Len()) })
-	gauge("gobb_rate_limit_keys_full", "Keys at the limit now, by rate limit.",
-		func(l *Limiter, now time.Time) float64 { return float64(l.scan(now).full) })
-	gauge("gobb_rate_limit_fullest_ratio", "The highest fill of any key now (events in the window over the limit), by rate limit.",
-		func(l *Limiter, now time.Time) float64 { return l.scan(now).fullest })
-	gauge("gobb_rate_limit_max_events", "Events that a key may have in the window, by rate limit.",
-		func(l *Limiter, _ time.Time) float64 { return float64(l.limit) })
-	gauge("gobb_rate_limit_window_seconds", "Length of the window of a rate limit, in seconds.",
-		func(l *Limiter, _ time.Time) float64 { return l.window.Seconds() })
-	gauge("gobb_rate_limit_max_keys", "Keys that a rate limit may hold before it drops some.",
-		func(l *Limiter, _ time.Time) float64 { return float64(l.maxKeys) })
+	metrics.Default.GaugeGroup([]string{"limit"}, specs, func() [][]metrics.Sample {
+		now := clock()
+		all := snapshot()
+		rows := make([][]metrics.Sample, len(specs))
+		for i := range rows {
+			rows[i] = make([]metrics.Sample, 0, len(all))
+		}
+		for _, l := range all {
+			f := l.scan(now)
+			vals := []string{l.name}
+			for i, v := range []float64{
+				float64(f.keys), float64(f.full), f.fullest,
+				float64(l.limit), l.window.Seconds(), float64(l.maxKeys),
+			} {
+				rows[i] = append(rows[i], metrics.Sample{Values: vals, Value: v})
+			}
+		}
+		return rows
+	})
 }
