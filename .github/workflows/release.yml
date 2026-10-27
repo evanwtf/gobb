@@ -183,7 +183,10 @@ jobs:
           name: binaries
           path: dist/
           if-no-files-found: error
-          retention-days: 7
+          # Only hands the binaries to the release job; the release keeps
+          # them. 3 days, the most any artifact keeps (Evan, 2026-10-27), so
+          # a failed job can still run again.
+          retention-days: 3
 
       # The same builder and commands as the push job, with no login and no push.
       # The build stage runs on the runner and cross-compiles, so no emulation is

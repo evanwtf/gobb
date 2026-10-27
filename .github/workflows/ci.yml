@@ -191,6 +191,8 @@ jobs:
             internal/password/testdata/fuzz
             internal/avatar/testdata/fuzz
           if-no-files-found: ignore
+          # 3 days, the most any artifact keeps (Evan, 2026-10-27).
+          retention-days: 3
 
       # The module cache is read-only; make it writable so rm can remove it.
       - name: Clean up
