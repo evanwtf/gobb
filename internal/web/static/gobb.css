@@ -962,6 +962,14 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 .member-rank { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--muted); font-size: 0.82rem; font-weight: 400; }
 .member-rank .rank-img { display: inline; margin: 0; max-height: 1.1rem; }
 
+.admin-list { margin: 0; padding: 0; list-style: none; }
+.admin-list li { padding: 0.75rem 1rem; border-top: 1px solid var(--line-soft); }
+.admin-list li:first-child { border-top: 0; }
+.admin-list a { font-weight: 700; margin-right: 0.5rem; }
+.log-table th:nth-child(2), .log-table th:nth-child(3) { width: auto; text-align: left; }
+.log-table td { vertical-align: top; overflow-wrap: anywhere; }
+.log-table td:first-child { white-space: nowrap; }
+
 .team-group { margin: 0 0 1.5rem; }
 .team-group h2 { margin-bottom: 0.6rem; font-size: 1.15rem; }
 .team-list {
@@ -1025,6 +1033,8 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
   .member-table td.num, .member-table td.member-joined { padding: 0; margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); text-align: left; }
   .member-table td.num::before, .member-table td.member-joined::before { content: attr(data-label) ": "; }
   .member-table .forum-count { font-size: 0.9rem; color: var(--text); }
+  .log-table td { margin-top: 0.3rem; }
+  .log-table td::before { content: attr(data-label) ": "; color: var(--muted); }
 
   .static-page { padding: 0.9rem 1rem 1rem; }
   .team-list { grid-template-columns: minmax(0, 1fr); }

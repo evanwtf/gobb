@@ -294,58 +294,85 @@ func limitMessage(l *login.LimitedError) string {
 	return "Too many sign-in attempts. Try again in " + waitText(l.RetryAfter) + "."
 }
 
-// verifyCurrent checks the current password of the member through the sign-in
-// check, with the member's own username and the address of the request, so the
-// limits, the gate and the floor of /login apply. A wrong password counts as a
-// failed sign-in. It reports whether the password is right; when it is not, it
-// has answered. The notice and field functions put the message on the form that
-// was sent.
+// verifyCurrent checks the current password of the member with
+// [site.checkOwnPassword]. It reports whether the password is right; when it is
+// not, it has answered. The notice and field functions put the message on the
+// form that was sent.
 //
 // On success it returns the password epoch that the check read with the hash it
 // verified. The write that follows hands it back, and the write refuses when the
 // password changed in between (board.ErrPasswordChanged).
 func (s *site) verifyCurrent(w http.ResponseWriter, r *http.Request, p *page, d accountData, route, pw string,
 	wrong func(*accountData, string), notice func(*accountData, string)) (epoch int64, ok bool) {
-	// The try is counted before the check, so parallel tries cannot pass the limit,
-	// and it is never given back: a refusal counts as much as a success.
-	now := s.opt.Now()
-	if ok, wait := s.tries.Take(route+":"+strconv.FormatInt(p.Viewer.UserID, 10), now); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(wait)))
-		notice(&d, msgTooManyTries)
-		s.renderAccount(w, http.StatusTooManyRequests, p, d)
+	epoch, f, err := s.checkOwnPassword(r, p, route, pw)
+	switch {
+	case err != nil:
+		s.serverError(w, r, err)
+		return 0, false
+	case f != nil:
+		if f.retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(f.retry))
+		}
+		if f.field {
+			wrong(&d, f.msg)
+		} else {
+			notice(&d, f.msg)
+		}
+		s.renderAccount(w, f.status, p, d)
 		return 0, false
 	}
+	return epoch, true
+}
+
+// passRefusal is a refusal of [site.checkOwnPassword]: the status of the
+// answer, its message, whether the message goes beside the password field (a
+// wrong password) or on the whole form, and the Retry-After in seconds (0 for
+// none).
+type passRefusal struct {
+	status int
+	msg    string
+	field  bool
+	retry  int
+}
+
+// checkOwnPassword checks pw as the password of the viewer of p through the
+// sign-in check, with the member's own username and the address of the
+// request, so the limits, the gate and the floor of /login apply. A wrong
+// password counts as a failed sign-in. Before the check it takes one try of the
+// limit on route for the member, and never gives it back: a refusal counts as
+// much as a success.
+//
+// It returns the password epoch that the check read with the hash it verified,
+// or a refusal, or a failure of the database.
+func (s *site) checkOwnPassword(r *http.Request, p *page, route, pw string) (int64, *passRefusal, error) {
+	// The try is counted before the check, so parallel tries cannot pass the limit.
+	now := s.opt.Now()
+	if ok, wait := s.tries.Take(route+":"+strconv.FormatInt(p.Viewer.UserID, 10), now); !ok {
+		return 0, &passRefusal{status: http.StatusTooManyRequests, msg: msgTooManyTries, retry: retrySeconds(wait)}, nil
+	}
 	// The step after the check only keeps the epoch. It asks the database nothing.
+	var epoch int64
 	id, err := s.login.CheckWith(r.Context(), p.Viewer.Name, pw, s.clientIP(r), now,
 		func(_ context.Context, _, e int64) error { epoch = e; return nil })
 	var banned *login.BannedError
 	var limited *login.LimitedError
 	switch {
 	case err == nil && id == p.Viewer.UserID:
-		return epoch, true
+		return epoch, nil, nil
 	case errors.As(err, &limited):
-		w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(limited.RetryAfter)))
-		notice(&d, limitMessage(limited))
-		s.renderAccount(w, http.StatusTooManyRequests, p, d)
+		return 0, &passRefusal{status: http.StatusTooManyRequests, msg: limitMessage(limited), retry: retrySeconds(limited.RetryAfter)}, nil
 	case errors.Is(err, login.ErrBusy):
-		w.Header().Set("Retry-After", strconv.Itoa(busyRetrySeconds))
-		notice(&d, msgBusy)
-		s.renderAccount(w, http.StatusServiceUnavailable, p, d)
+		return 0, &passRefusal{status: http.StatusServiceUnavailable, msg: msgBusy, retry: busyRetrySeconds}, nil
 	case err == nil, errors.Is(err, login.ErrWrong), errors.Is(err, login.ErrAmbiguous):
 		// err == nil with another ID cannot happen (the username is unique); it is
 		// refused like a wrong password.
-		wrong(&d, msgWrongCurrent)
-		s.renderAccount(w, http.StatusBadRequest, p, d)
+		return 0, &passRefusal{status: http.StatusBadRequest, msg: msgWrongCurrent, field: true}, nil
 	case errors.Is(err, login.ErrInactive):
-		notice(&d, msgInactive)
-		s.renderAccount(w, http.StatusForbidden, p, d)
+		return 0, &passRefusal{status: http.StatusForbidden, msg: msgInactive}, nil
 	case errors.As(err, &banned):
-		notice(&d, msgBanned)
-		s.renderAccount(w, http.StatusForbidden, p, d)
-	default:
-		s.serverError(w, r, err)
+		return 0, &passRefusal{status: http.StatusForbidden, msg: msgBanned}, nil
 	}
-	return 0, false
+	return 0, nil, err
 }
 
 // writeRefused answers the error of a board account write and reports whether it
