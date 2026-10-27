@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -172,7 +173,10 @@ func TestAdminConfirm(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return s.passes.fresh(id.sess.ID, s.opt.Now())
+		return s.passFresh(r.WithContext(context.WithValue(r.Context(), identityKey{}, id)))
+	}
+	if got := s.confirmHref("/admin/log?action=x"); got != "/admin/confirm?next=%2Fadmin%2Flog%3Faction%3Dx" {
+		t.Errorf("confirmHref = %q", got)
 	}
 
 	page := bodyOf(t, getAs(t, h, "/admin/confirm?next=%2Fadmin%2Flog", alice))
