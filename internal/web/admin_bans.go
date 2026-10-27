@@ -180,6 +180,10 @@ func (s *site) adminBanAdd(w http.ResponseWriter, r *http.Request) {
 		d.Err = banFieldError(in)
 		s.renderBans(w, r, http.StatusBadRequest, p, d, 1)
 		return
+	case errors.Is(err, board.ErrLastAdmin):
+		d.Err.Target = "The board needs at least one active admin who can sign in, so this ban was not added."
+		s.renderBans(w, r, http.StatusConflict, p, d, 1)
+		return
 	case errors.Is(err, board.ErrForbidden):
 		s.notFound(w, r)
 		return

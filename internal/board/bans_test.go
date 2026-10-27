@@ -390,3 +390,44 @@ func TestParseBanRange(t *testing.T) {
 		}
 	}
 }
+
+// TestRangeBanSparesOwners: a range cannot hold an address that an owner has
+// used, nor every address of a family, whatever the address of the admin.
+func TestRangeBanSparesOwners(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	mustExec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, '198.51.100.7', now())`)
+	b := adminBob(t, pool)
+	v6 := netip.MustParseAddr("2001:db8::50")
+	for _, target := range []string{"198.51.100.0/24", "198.51.100.7", "0.0.0.0/0", "::/0"} {
+		_, err := board.AddBan(ctx, pool, b, board.BanDraft{Kind: "ip", Target: target, ConfirmWide: true, AdminIP: v6}, t0)
+		var in *board.InputError
+		if !errors.As(err, &in) || in.Field != "target" {
+			t.Errorf("%s: err = %v", target, err)
+		}
+	}
+	if _, err := board.AddBan(ctx, pool, b, board.BanDraft{Kind: "ip", Target: "198.51.101.0/24", AdminIP: v6}, t0); err != nil {
+		t.Errorf("a range with no owner address: %v", err)
+	}
+}
+
+// TestUserBanKeepsAnAdmin: a ban counts as the end of the admin right. Two
+// admins who are not owners cannot ban each other, as they could do at once.
+func TestUserBanKeepsAnAdmin(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	b := adminBob(t, pool)
+	mustExec(t, pool, `update users set is_owner = false where id = 1`)
+	a := viewerFor(t, pool, alice)
+	if _, err := board.AddBan(ctx, pool, a, board.BanDraft{Kind: "user", Target: "bob"}, t0); err != nil {
+		t.Fatalf("a ban of one of two admins: %v", err)
+	}
+	// bob's viewer is from before his ban: the check is in the database.
+	if _, err := board.AddBan(ctx, pool, b, board.BanDraft{Kind: "user", Target: "alice"}, t0); !errors.Is(err, board.ErrLastAdmin) {
+		t.Errorf("a ban of the last admin = %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `select count(*) from bans where kind = 'user' and user_id = 1`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("alice is banned: %d, %v", n, err)
+	}
+}

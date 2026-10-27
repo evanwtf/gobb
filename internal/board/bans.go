@@ -207,8 +207,10 @@ func isWide(p netip.Prefix) bool {
 //   - "kind" is not one of the three.
 //   - "target" is empty or malformed; names no member; names the admin, an owner
 //     (a user ban) or the address of an owner or of the admin (an email ban); is a
-//     range that holds the address of the admin; or is held by a ban that has not
-//     ended.
+//     range that holds the address of the admin or an address that an owner has
+//     used, or every address; or is held by a ban that has not ended.
+//
+// A user ban that would leave no active admin who can sign in is [ErrLastAdmin].
 //   - "confirm_wide" is missing for a range wider than /16 or /48.
 //   - "reason", "reason_shown" is not valid text or is over 255 characters.
 //   - "ends" is not after now.
@@ -243,6 +245,9 @@ func AddBan(ctx context.Context, pool *pgxpool.Pool, v Viewer, d BanDraft, now t
 		p, err := ParseBanRange(d.Target)
 		if err != nil {
 			return 0, err
+		}
+		if p.Bits() == 0 {
+			return 0, inputError("target", "A range cannot hold every address. Enter a smaller one.")
 		}
 		if isWide(p) && !d.ConfirmWide {
 			return 0, inputError("confirm_wide", "Confirm the wide range, or enter a smaller one.")
@@ -282,6 +287,11 @@ func addUserBan(ctx context.Context, tx pgx.Tx, v Viewer, d BanDraft, now time.T
 	case userID == v.UserID:
 		return Change{}, inputError("target", "You cannot ban yourself.")
 	}
+	// A ban of an admin takes the admin right away, as a deactivation does: the
+	// same lock, and the same check after the change.
+	if err := LockAdminSet(ctx, tx); err != nil {
+		return Change{}, err
+	}
 	*id, err = banUserTx(ctx, tx, userBan{userID: userID, reason: d.Reason, shown: d.ReasonShown,
 		endsAt: d.EndsAt, createdBy: v.UserID, refuseOwner: true}, now)
 	switch {
@@ -290,6 +300,9 @@ func addUserBan(ctx context.Context, tx pgx.Tx, v Viewer, d BanDraft, now time.T
 	case errors.Is(err, ErrNotFound):
 		return Change{}, inputError("target", "No member has that name.")
 	case err != nil:
+		return Change{}, err
+	}
+	if err := EnsureAdminRemains(ctx, tx); err != nil {
 		return Change{}, err
 	}
 	return banChange("ban.add", *id, BanUserKind, username, d.EndsAt), nil
@@ -337,6 +350,16 @@ values ('email', $1, $2, $3, $4, $5, $6) returning id`,
 // addRangeBan is the write of an "ip" ban on the range p. It refuses a range that
 // a ban in force holds with the same bounds.
 func addRangeBan(ctx context.Context, tx pgx.Tx, v Viewer, d BanDraft, p netip.Prefix, now time.Time, id *int64) (Change, error) {
+	// A range that holds an address an owner has used would shut the owner out
+	// of sign-in, as a ban of the owner would.
+	var owner bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from user_ips ui join users u on u.id = ui.user_id
+	                                     where u.is_owner and ui.ip <<= $1::cidr)`, p.String()).Scan(&owner); err != nil {
+		return Change{}, fmt.Errorf("board: read the addresses of the owners: %w", err)
+	}
+	if owner {
+		return Change{}, inputError("target", "This range holds an address that an owner has used. An owner cannot be banned.")
+	}
 	var held bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from bans where kind = 'ip' and ip = $1::cidr and (ends_at is null or ends_at > $2))`,
 		p.String(), now).Scan(&held); err != nil {
