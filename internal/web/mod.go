@@ -23,7 +23,8 @@ import (
 type postWrite func(ctx context.Context, pool *pgxpool.Pool, v board.Viewer, postID int64, now time.Time) error
 
 // postAction serves POST /p/{id}/restore and POST /p/{id}/approve. verb names the
-// action in a refusal ("restore this post").
+// action in a refusal ("restore this post"). A step from the approval queue
+// (from=queue) goes back to the queue.
 func (s *site) postAction(verb string, write postWrite) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := pathID(r, "id")
@@ -51,6 +52,10 @@ func (s *site) postAction(verb string, write postWrite) http.HandlerFunc {
 		// when the viewer still sees it. A restore can put a post back as held, for a
 		// restorer who cannot see held posts: the answer then falls back as the
 		// answer to a delete does, to the topic, the forum, the index.
+		if fromQueue(r) {
+			http.Redirect(w, r, s.path("queue"), http.StatusSeeOther)
+			return
+		}
 		target := s.fallbackTarget(ctx, p.Viewer, topicID, forumID)
 		switch _, _, err := board.PostLocation(ctx, s.pool, p.Viewer, id); {
 		case err == nil:

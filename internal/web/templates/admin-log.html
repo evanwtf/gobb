@@ -5,6 +5,9 @@
   <h1>Log</h1>
   <p class="page-sub">Every moderator and admin action, newest first.</p>
 </header>
+{{- if .Done}}
+<p class="notice-inline" role="status">{{.Done}}</p>
+{{- end}}
 {{- if .Notice}}
 <p class="form-error" role="alert"><span class="form-error-text">{{.Notice}}</span></p>
 {{- end}}
@@ -69,6 +72,13 @@
         </td>
         <td data-label="Details">
           {{- range $i, $d := .Details}}{{if $i}}; {{end}}{{$d.Key}}: <bdi>{{$d.Value}}</bdi>{{end -}}
+          {{- if .UndoHref}}
+          <form class="admin-inline-form" method="post" action="{{.UndoHref}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="back" value="{{path "admin" "log"}}">
+            <button class="button-quiet" type="submit">Undo</button>
+          </form>
+          {{- end}}
         </td>
       </tr>
     {{- end}}

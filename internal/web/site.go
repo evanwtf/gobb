@@ -165,8 +165,8 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html",
-	"admin.html", "admin-bans.html", "admin-confirm.html", "admin-delete.html", "admin-forum.html", "admin-forums.html", "admin-group.html", "admin-groups.html", "admin-grid.html", "admin-log.html", "admin-member.html", "admin-members.html", "admin-page.html", "admin-pages.html", "admin-perms.html", "admin-rank.html", "admin-ranks.html", "admin-role.html", "admin-roles.html", "admin-settings.html", "admin-smiley.html", "admin-smilies.html", "admin-user-grants.html"}
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html", "queue.html",
+	"admin.html", "admin-bans.html", "admin-confirm.html", "admin-delete.html", "admin-forum.html", "admin-forums.html", "admin-group.html", "admin-groups.html", "admin-grid.html", "admin-log.html", "admin-member.html", "admin-members.html", "admin-page.html", "admin-pages.html", "admin-perms.html", "admin-rank.html", "admin-ranks.html", "admin-role.html", "admin-roles.html", "admin-settings.html", "admin-smiley.html", "admin-smilies.html", "admin-spammer.html", "admin-user-grants.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
 // root, and the site under opt.BasePath. Other paths get 404. New parses the
@@ -266,6 +266,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /messages/{id}/reply", s.messageReply)
 	inner.Handle("POST /messages/{id}/delete", s.protect(maxPostBody, s.messageDelete))
 	inner.HandleFunc("GET /search", s.search)
+	inner.HandleFunc("GET /queue", s.queuePage)
 	if opt.Mail != nil {
 		// The reset pages exist only when email is on. The token is in the path
 		// of the last two, so their answers carry Referrer-Policy: no-referrer.
@@ -620,7 +621,7 @@ func (s *site) touch(w http.ResponseWriter, r *http.Request, sess session.Sessio
 
 // addNav adds the links that depend on the viewer to the nav: for a member "New
 // since your last visit", then Members for a viewer who may see profiles, then
-// Team, Messages, and Admin for an admin. A page with no request context (the frame of an empty database) keeps the
+// Team, Messages, Queue for a viewer who may approve somewhere, and Admin for an admin. A page with no request context (the frame of an empty database) keeps the
 // nav it has.
 func (s *site) addNav(p *page) {
 	if p.ctx == nil {
@@ -632,6 +633,9 @@ func (s *site) addNav(p *page) {
 	}
 	p.Nav = append(p.Nav, navLink{Label: "Team", Href: s.path("team"), Current: p.navKey == "team"})
 	s.addMessagesLink(p)
+	if p.Viewer.UserID != 0 && p.Viewer.Perms.HasAnywhere("mod.approve") {
+		p.Nav = append(p.Nav, navLink{Label: "Queue", Href: s.path("queue"), Current: p.navKey == "queue"})
+	}
 	if p.Viewer.UserID != 0 && p.Viewer.Perms.IsAdmin() {
 		p.Nav = append(p.Nav, navLink{Label: "Admin", Href: s.path("admin") + "/", Current: p.navKey == "admin"})
 	}

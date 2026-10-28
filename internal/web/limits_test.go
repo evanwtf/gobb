@@ -307,6 +307,8 @@ var bodyCaps = []struct {
 	{"/admin/members/{id}/rank", "/admin/members/3/rank", maxPostBody},
 	{"/admin/members/{id}/verify-email", "/admin/members/3/verify-email", maxPostBody},
 	{"/admin/members/{id}/reset-password", "/admin/members/3/reset-password", maxPostBody},
+	{"/admin/members/{id}/spammer", "/admin/members/3/spammer", maxPostBody},
+	{"/admin/log/{id}/undo", "/admin/log/1/undo", maxPostBody},
 	{"/admin/bans", "/admin/bans", maxBanBody},
 	{"/admin/bans/{id}/lift", "/admin/bans/1/lift", maxPostBody},
 	{"/admin/forums/new", "/admin/forums/new", maxAdminForumBody},

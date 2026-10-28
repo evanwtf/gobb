@@ -160,3 +160,18 @@ func TestRegistry(t *testing.T) {
 		t.Error("Lookup must fail for an unknown name")
 	}
 }
+
+func TestHasAnywhere(t *testing.T) {
+	if !Resolve(subj(Grant{3, "mod.approve", Yes})).HasAnywhere("mod.approve") {
+		t.Error("a grant in one forum is not found")
+	}
+	if !Resolve(subj(Grant{0, "mod.approve", Yes})).HasAnywhere("mod.approve") {
+		t.Error("a board-wide grant is not found")
+	}
+	if Resolve(subj(Grant{3, "mod.approve", Yes}, Grant{3, "mod.approve", Never})).HasAnywhere("mod.approve") {
+		t.Error("a Never is ignored")
+	}
+	if Resolve(subj(Grant{3, "mod.delete", Yes})).HasAnywhere("mod.approve") {
+		t.Error("another option counts")
+	}
+}

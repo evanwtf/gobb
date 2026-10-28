@@ -25,6 +25,7 @@ var schemaTables = []string{
 	"legacy_routes", "legacy_files",
 	"sessions", "user_ips", "settings", "mod_log",
 	"email_queue", "email_tokens", "static_pages", "password_resets",
+	"mod_undo",
 }
 
 // TestSchemaTables compares the base tables in the schema with schemaTables.

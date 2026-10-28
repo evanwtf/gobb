@@ -118,3 +118,18 @@ func (s Set) Has(option string, forumID int64) bool {
 func (s Set) IsAdmin() bool {
 	return s.Has("admin", 0)
 }
+
+// HasAnywhere reports whether the subject has option board-wide or in any
+// forum. A page uses it to decide whether a link is worth showing; the page
+// itself checks the right in each forum.
+func (s Set) HasAnywhere(option string) bool {
+	if _, ok := Lookup(option); !ok {
+		panic(fmt.Sprintf("acl: unknown option %q", option))
+	}
+	for _, opts := range s.allowed {
+		if opts[option] {
+			return true
+		}
+	}
+	return false
+}

@@ -69,6 +69,9 @@ type confirmData struct {
 	First bool
 	// Message is true for the delete of a private message.
 	Message bool
+	// FromQueue is true when the delete started on the approval queue: the
+	// second form carries from=queue, and the answer goes back there.
+	FromQueue bool
 }
 
 // textareaValue writes s as the content of a textarea, so that a browser reads
@@ -593,7 +596,11 @@ func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 	}
 	if !confirmed {
 		p.Title = "Delete this post?"
-		p.Data = confirmData{Action: s.path("p", idText, "delete"), Cancel: s.path("p", idText), First: dt.First}
+		d := confirmData{Action: s.path("p", idText, "delete"), Cancel: s.path("p", idText), First: dt.First, FromQueue: fromQueue(r)}
+		if d.FromQueue {
+			d.Cancel = s.path("queue")
+		}
+		p.Data = d
 		s.render(w, http.StatusOK, "confirm.html", p)
 		return
 	}
@@ -601,6 +608,10 @@ func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The delete is done. Whatever happens next, the answer is a 303.
+	if fromQueue(r) {
+		http.Redirect(w, r, s.path("queue"), http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, s.fallbackTarget(ctx, p.Viewer, dt.TopicID, dt.ForumID), http.StatusSeeOther)
 }
 

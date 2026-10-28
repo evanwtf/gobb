@@ -138,6 +138,7 @@ func (s *site) adminArea() http.Handler {
 	s.adminForumRoutes(a)
 	s.adminSettingsRoutes(a)
 	s.adminContentRoutes(a)
+	s.adminSpammerRoutes(a)
 	s.adminPermRoutes(a)
 	s.adminGroupRoutes(a)
 	// A path of the area that no route above matches, and a method that none
@@ -278,6 +279,15 @@ type adminLogData struct {
 	// matched no member.
 	Filtered bool
 	Notice   string
+	// Done is the notice of an Undo.
+	Done string
+}
+
+// logDone are the notices that /admin/log?done=... can show. Any other value
+// shows nothing.
+var logDone = map[string]string{
+	"undone": "The Spammer action is undone. Its bans are lifted, and its posts, topics and messages are back.",
+	"closed": "This Undo is closed: it ran already, or its 30 days ended.",
 }
 
 // adminLogRow is one row of the log page.
@@ -288,6 +298,8 @@ type adminLogRow struct {
 	ActorText string
 	// TargetHref is the link to the target, or empty.
 	TargetHref string
+	// UndoHref is the address of the Undo form while the Undo is open, or empty.
+	UndoHref string
 }
 
 // adminLog serves GET /admin/log.
@@ -305,7 +317,8 @@ func (s *site) adminLog(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	d := adminLogData{Crumbs: s.adminCrumbs(), Action: q.Get("action"), Actor: strings.TrimSpace(q.Get("actor")),
-		TargetType: q.Get("type"), TargetID: strings.TrimSpace(q.Get("target")), NoActor: q.Get("noactor") == "1"}
+		TargetType: q.Get("type"), TargetID: strings.TrimSpace(q.Get("target")), NoActor: q.Get("noactor") == "1",
+		Done: logDone[q.Get("done")]}
 	f := board.LogFilter{Action: d.Action, TargetType: d.TargetType}
 	d.Filtered = d.Action != "" || d.Actor != "" || d.TargetType != "" || d.TargetID != "" || d.NoActor
 	none := false
@@ -357,6 +370,9 @@ func (s *site) adminLog(w http.ResponseWriter, r *http.Request) {
 // is not a member, and the link to the target.
 func (s *site) logEntryRow(e board.LogEntry) adminLogRow {
 	row := adminLogRow{LogEntry: e}
+	if e.Action == "user.spammer" && e.UndoneAt == nil && e.UndoUntil != nil && s.opt.Now().Before(*e.UndoUntil) {
+		row.UndoHref = s.path("admin", "log", strconv.FormatInt(e.ID, 10), "undo")
+	}
 	if e.Actor.ID == 0 {
 		switch e.Via {
 		case "cli":

@@ -120,6 +120,7 @@ request. The date is the day of the tag.
   the confirm page first.
 
 ### Board settings (evanwtf/gobb#20)
+
 - **`/admin/settings`:** the board name (1 to 100 characters), the board description
   (up to 500), the board's time zone (the list of the account page) and the default
   color scheme. Both text fields are one line with no control character and no
@@ -214,6 +215,33 @@ request. The date is the day of the tag.
   `group.delete`, `group.member_add` (an approve has `approved`),
   `group.member_remove` (a refuse has `refused`) and `group.member_update` (a leader
   change).
+
+### The approval queue and the Spammer action (evanwtf/gobb#26)
+
+- **`/queue`:** the held posts in the forums where the viewer holds `mod.approve`,
+  oldest first, 50 a page, each with its forum, its author, its time and the start
+  of its text. Moderators use it as well as admins; the nav shows **Queue** to a
+  member who may approve somewhere. Anyone else, a guest too, gets the 404 page.
+  Approve and Delete (Delete only with `mod.delete` in the forum) go back to the
+  queue. A held post in a deleted topic is not in the queue.
+- **Spammer**, on the page of a member: a confirm page says what it changes, and the
+  POST needs a confirmed password. In one transaction it bans the account, its email
+  address, and each address that it used in the last 30 days (a /32 for IPv4, a /64
+  for IPv6); ends its sessions; deletes its posts; hides the topics that it started,
+  with their replies; and takes its private messages out of every inbox. An IP address
+  that an owner used, or that the admin uses now, is not banned. Nor is the email
+  address of an owner or of the admin. An owner and the admin's own account cannot
+  be marked, and the action may not leave the board without an active admin.
+- **Undo**, on the row of the log, for 30 days: it lifts the bans of the action that
+  are still in force, puts back the member's addresses, and restores each post,
+  topic and message that is still deleted, in the state it had before. The sessions
+  stay ended. A row that a moderator restored, or a ban that an admin lifted, in the
+  meantime stays as it is.
+- **Migration 0016** adds `mod_undo`, the list of what one action changed. Its rows go
+  when the Undo runs or its 30 days end (the hourly cleanup), because they hold
+  addresses.
+- `mod_log` rows: `user.spammer` (details: the counts of bans, posts, topics and
+  messages; no addresses) and `user.spammer_undo` (details: the log ID).
 
 ## 0.7.0 (2026-10-27)
 
