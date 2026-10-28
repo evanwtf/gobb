@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.1 (2026-10-28)
+
+### A denser layout on phones (evanwtf/gobb#49)
+
+- **Forum and topic rows.** The counts and the last post now sit on one line that
+  wraps, after a short label such as "Replies:". The uppercase "Last post" heading on
+  a line of its own is gone. A topic row on a phone was 197px tall in the example
+  bundle and is now 120px.
+- **The header and nav.** The padding is smaller, so the header with the nav and the
+  search box is 140px tall, not 231px. The links keep a target of 24px or more.
+- **The page head, pager and bars** have smaller gaps on phones.
+- **Wide screens:** the row padding is 0.65rem, not 0.9rem.
+
 ## 0.8.0 (2026-10-27)
 
 The admin panel (evanwtf/gobb#18): web pages for the work that needed the command line
