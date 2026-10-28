@@ -757,6 +757,8 @@ var tokenRows = []tokenRow{
 	{"/admin/members/3/rank", "alice", url.Values{"rank": {"1"}}, ""},
 	{"/admin/members/3/verify-email", "alice", url.Values{}, ""},
 	{"/admin/members/3/reset-password", "alice", url.Values{"back": {"/admin/members/3"}}, ""},
+	{"/admin/members/3/spammer", "alice", url.Values{"back": {"/admin/members/3/spammer"}}, ""},
+	{"/admin/log/1/undo", "alice", url.Values{"back": {"/admin/log"}}, ""},
 	{"/admin/bans", "alice", url.Values{"kind": {"email"}, "target": {"spam@example.net"}}, ""},
 	{"/admin/bans/1/lift", "alice", url.Values{}, ""},
 	{"/admin/forums/new", "alice", url.Values{"kind": {"forum"}, "name": {"No token"}, "parent": {"1"}, "grants_from": {"1"}}, ""},

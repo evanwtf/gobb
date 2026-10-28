@@ -1,0 +1,17 @@
+{{define "content"}}
+{{- with .Data}}
+{{template "crumbs" .Crumbs}}
+<section class="notice" aria-labelledby="notice-title">
+  <h1 id="notice-title">Mark <bdi>{{.Member.Name}}</bdi> as a spammer?</h1>
+  <p>This bans the account{{if .Plan.Banned}} (a ban holds it already){{end}}, its email address, and each address that it used in the last 30 days ({{num .Plan.Addresses}}). An address that an owner used, or that you use now, stays open.</p>
+  <p>It deletes {{num .Plan.Posts}} posts, hides {{num .Plan.Topics}} topics that the member started with their replies, and takes {{num .Plan.Messages}} private message copies out of the inboxes. The member's sessions end.</p>
+  <p>The log has an Undo for 30 days. It puts everything back and lifts these bans.</p>
+  <form class="confirm-form" method="post" action="{{.Action}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="back" value="{{.Action}}">
+    <button class="button button-inline" type="submit">Mark as a spammer</button>
+    <a class="button-quiet button-link" href="{{.Cancel}}">Cancel</a>
+  </form>
+</section>
+{{- end}}
+{{end}}

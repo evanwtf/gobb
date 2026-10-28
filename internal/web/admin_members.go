@@ -22,6 +22,7 @@ var memberDone = map[string]string{
 	"rank":       "The rank is saved.",
 	"verify":     "The email address is marked verified.",
 	"nochange":   "Nothing changed: the member was in that state already.",
+	"spammer":    "Marked as a spammer. The log has an Undo for 30 days.",
 }
 
 // adminMemberRoutes adds the routes of the members pages.

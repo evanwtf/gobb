@@ -49,6 +49,9 @@
       <button class="button button-inline" type="submit">Reset the password</button>
     </form>
     <a class="button-quiet button-link" href="{{.BanHref}}">{{if .Banned}}Bans{{else}}Ban{{end}}</a>
+    {{- if not .Owner}}
+    <a class="button-quiet button-link" href="{{.Href}}/spammer">Spammer</a>
+    {{- end}}
     {{- end}}
     {{- if not .EmailVerified}}
     <form method="post" action="{{.Href}}/verify-email"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="button-quiet" type="submit">Mark the email address verified</button></form>

@@ -403,9 +403,17 @@ func cleanup(ctx context.Context, q db.Querier, now func() time.Time) {
 		if ctx.Err() == nil {
 			slog.Error("reset link cleanup failed", "err", err)
 		}
+	} else {
+		slog.Info("reset link cleanup", "links", links)
+	}
+	undo, err := board.CleanupUndo(ctx, q, now())
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Error("undo cleanup failed", "err", err)
+		}
 		return
 	}
-	slog.Info("reset link cleanup", "links", links)
+	slog.Info("undo cleanup", "rows", undo)
 }
 
 // gateFor logs the Go memory limit of the process (see [memlimit.Apply]), its
