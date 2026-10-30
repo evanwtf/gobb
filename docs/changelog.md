@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2 (2026-10-30)
+
+- **Plain TCP only.** gobb's listeners no longer use multipath TCP. Go 1.24 and
+  later turn it on for listeners by default, and the published exploit for the Linux
+  kernel flaw CVE-2026-98432 went through a multipath TCP listener. The fix is
+  `godebug multipathtcp=0` in `go.mod`, and a test holds it. The kernel flaw is not
+  specific to multipath TCP: the real fix is a patched kernel on the host.
+
 ## 0.8.1 (2026-10-28)
 
 ### A denser layout on phones (evanwtf/gobb#49)
