@@ -417,3 +417,13 @@ func TestStartMailSendsOnWake(t *testing.T) {
 		t.Errorf("a row was sent after stop (sent = %v, err = %v)", sent, err)
 	}
 }
+
+// TestListenersAvoidMultipathTCP holds the godebug line in go.mod. Go turns
+// multipath TCP on for listeners by default, and CVE-2026-98432 was exploited
+// through a multipath TCP listener. gobb has no use for it.
+func TestListenersAvoidMultipathTCP(t *testing.T) {
+	var lc net.ListenConfig
+	if lc.MultipathTCP() {
+		t.Error("listeners use multipath TCP; want godebug multipathtcp=0 in go.mod")
+	}
+}

@@ -2,6 +2,10 @@ module github.com/evanwtf/gobb
 
 go 1.27.3
 
+// Listeners use plain TCP, not multipath TCP (CVE-2026-98432). The test
+// TestListenersAvoidMultipathTCP in cmd/gobb holds this line.
+godebug multipathtcp=0
+
 tool (
 	golang.org/x/vuln/cmd/govulncheck
 	honnef.co/go/tools/cmd/staticcheck
