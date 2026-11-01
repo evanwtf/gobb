@@ -1325,7 +1325,9 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
 .forum-main::before { top: 0.45rem; bottom: 0.45rem; }
 .icon-replies { display: none; }
 .last-meta, .last-time { display: inline; font-size: 0.85rem; }
-.last-time::before { content: "\00b7\00a0"; color: var(--muted); }
+/* The separator between the author and the age is markup outside the link, so
+   it is not part of the link's name. */
+.sep { color: var(--muted); }
 .last-time { color: var(--muted); white-space: nowrap; }
 
 /* A topic on a wide screen is one line: the title, then its author. */
@@ -1380,7 +1382,7 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
   .forums:not(.topics) td.last { flex: 1 0 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .forums:not(.topics) td.last::before, .topic-line td.last::before { content: none; }
   .forums:not(.topics) .last-title { display: inline; font-weight: 500; color: var(--text); }
-  .forums:not(.topics) .last-title::after { content: " \00b7"; color: var(--muted); }
+  .forums:not(.topics) .last-meta::before { content: "\00b7\00a0"; color: var(--muted); }
 
   /* A topic: the title on line 1; the author, the replies and the last post on
      line 2. Views do not show. */

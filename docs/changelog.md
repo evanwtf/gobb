@@ -7,7 +7,8 @@
 - **The header.** Two rows: the brand, the search box and a menu under the member's
   name, then the tabs. The tabs wrap rather than run off the screen. On a phone the
   search box becomes an icon that opens the search page, and "New since your last
-  visit" reads "New". The header on a phone is 104px tall, not 140px. On a wide
+  visit" reads "New". The header on a phone is 104px tall, not 140px, when the
+  tabs fit on one row; an admin with unread topics may need two (149px). On a wide
   screen it is 105px.
 - **The account menu.** The member's name opens it. It holds the account link and
   Sign out. On a phone it also holds Members and Team, which leave the tab row there.

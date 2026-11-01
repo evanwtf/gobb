@@ -87,7 +87,7 @@
         {{- with .Last}}
         <span class="visually-hidden">Last post: </span>
         <a class="last-title" href="{{path "p" (printf "%d" .ID)}}"><bdi>{{.TopicTitle}}</bdi></a>
-        <span class="last-meta">{{template "author" .Author}}</span>
+        <span class="last-meta">{{template "author" .Author}}</span> <span class="sep" aria-hidden="true">&middot;</span>
         <span class="last-time">{{ago .At $.Clock}}</span>
         {{- else}}
         <span class="muted">No posts yet</span>
@@ -128,7 +128,7 @@
   <td class="num num-views" data-label="Views"><span class="forum-count">{{num .Views}}</span></td>
   <td class="last" data-label="Last post">
     {{- if .Last.ID}}
-    <span class="last-meta">{{template "author" .Last.Author}}</span>
+    <span class="last-meta">{{template "author" .Last.Author}}</span> <span class="sep" aria-hidden="true">&middot;</span>
     <a class="last-time" href="{{path "p" (printf "%d" .Last.ID)}}"><span class="visually-hidden">Last post, </span>{{ago .Last.At $.Clock}}</a>
     {{- else}}
     <span class="muted">No posts yet</span>
