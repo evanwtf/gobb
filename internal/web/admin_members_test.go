@@ -137,7 +137,7 @@ func TestAdminResetPasswordPage(t *testing.T) {
 		t.Errorf("headers = %v", rec.Header())
 	}
 	// bob's session ended, and the new password signs him in.
-	if b := bodyOf(t, getAs(t, h, "/", bob)); strings.Contains(b, "Signed in as") {
+	if b := bodyOf(t, getAs(t, h, "/", bob)); strings.Contains(b, "Account menu for ") {
 		t.Error("bob's session survived the reset")
 	}
 	signIn(t, h, "bob", m[1])

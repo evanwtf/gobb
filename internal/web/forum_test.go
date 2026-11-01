@@ -60,7 +60,7 @@ func TestForumPage(t *testing.T) {
 		`href="/t/1"`, `Welcome to the example board`,
 		`Sticky`,
 		`<bdi>alice</bdi>`,
-		`<time datetime="2020-02-01T11:00:00Z">Feb 1, 2020, 6:00 am</time>`,
+		`<time datetime="2020-02-01T11:00:00Z" title="Feb 1, 2020, 6:00 am">Feb 1, 2020</time>`,
 		`href="/p/4"`, `<bdi>Visitor</bdi>`,
 		`Rich post`, `href="/t/5"`,
 		`Subforums`, // forum 3 is readable in this board

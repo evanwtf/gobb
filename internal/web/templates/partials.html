@@ -27,6 +27,8 @@
 {{- end}}
 {{end}}
 
+{{define "replyicon"}}<svg class="icon-replies" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>{{end}}
+
 {{define "newbadge"}}<span class="badge-new" aria-hidden="true">New</span>{{end}}
 
 {{define "newtext"}}<span class="visually-hidden">New: </span>{{end}}
@@ -35,7 +37,11 @@
 <form class="mark-form" method="post" action="{{.Action}}">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <input type="hidden" name="next" value="{{.Return}}">
+  {{- if .Short}}
+  <button type="submit" class="button-quiet"><span class="label-wide">{{.Label}}</span><span class="label-narrow">{{.Short}}<span class="visually-hidden">: {{.Context}}</span></span></button>
+  {{- else}}
   <button type="submit" class="button-quiet">{{.Label}}</button>
+  {{- end}}
 </form>
 {{end}}
 
@@ -75,13 +81,14 @@
       {{- else if not .Readable}}
       <td class="members-only" colspan="3">{{template "lock"}} {{if $.Member}}No access{{else}}Members only{{end}}</td>
       {{- else}}
-      <td class="num" data-label="Topics"><span class="forum-count">{{num .Topics}}</span></td>
-      <td class="num" data-label="Posts"><span class="forum-count">{{num .Posts}}</span></td>
+      <td class="num" data-label="Topics"><span class="forum-count">{{num .Topics}}</span><span class="visually-hidden"> topics</span></td>
+      <td class="num" data-label="Posts"><span class="forum-count">{{num .Posts}}</span><span class="visually-hidden"> posts</span></td>
       <td class="last" data-label="Last post">
         {{- with .Last}}
+        <span class="visually-hidden">Last post: </span>
         <a class="last-title" href="{{path "p" (printf "%d" .ID)}}"><bdi>{{.TopicTitle}}</bdi></a>
-        <span class="last-meta">by {{template "author" .Author}}</span>
-        <span class="last-time">{{time .At $.Clock}}</span>
+        <span class="last-meta">{{template "author" .Author}}</span> <span class="sep" aria-hidden="true">&middot;</span>
+        <span class="last-time">{{ago .At $.Clock}}</span>
         {{- else}}
         <span class="muted">No posts yet</span>
         {{- end}}
@@ -94,11 +101,12 @@
 {{end}}
 
 {{define "toprow"}}
-<tr class="topic-row{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}{{if .New}} row-new{{end}}">
+<tr class="topic-row topic-line{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}{{if .New}} row-new{{end}}">
   <td class="forum-main topic-main">
     {{- if .MovedTo}}
-    <span class="tag tag-moved">Moved:</span> <a class="topic-link" href="{{path "t" (printf "%d" .MovedTo)}}"><bdi>{{.Title}}</bdi></a>
+    <span class="topic-title"><span class="tag tag-moved">Moved:</span> <a class="topic-link" href="{{path "t" (printf "%d" .MovedTo)}}"><bdi>{{.Title}}</bdi></a></span>
     {{- else}}
+    <span class="topic-title">
     {{- if eq .Kind "announce"}}<span class="tag tag-announce">Announcement</span> {{end}}
     {{- if eq .Kind "global"}}<span class="tag tag-announce">Global</span> {{end}}
     {{- if eq .Kind "sticky"}}<span class="tag tag-sticky">Sticky</span> {{end}}
@@ -106,21 +114,22 @@
     {{- if eq .Visibility "deleted"}}<span class="tag tag-warn">Deleted</span> {{end}}
     {{- if .New}}{{template "newbadge"}} {{end}}
     <a class="topic-link" href="{{path "t" (printf "%d" .ID)}}">{{if .New}}{{template "newtext"}}{{end}}<bdi>{{.Title}}</bdi></a>
-    {{- if .Locked}} <span class="tag">Locked</span>{{end}}
+    {{- if .Locked}} <span class="tag">Locked</span>{{end -}}
+    </span>
     <p class="topic-meta">by {{template "author" .Author}}
       {{- with .Forum}} in <a href="{{path "f" (printf "%d" .ID)}}">{{.Name}}</a>{{end}}
-      {{- if .New}} &middot; <a class="jump-new" href="{{path "t" (printf "%d" .ID) "new"}}">Go to the first unread post</a>{{end}}</p>
+      {{- if .New}} &middot; <a class="jump-new" href="{{path "t" (printf "%d" .ID) "new"}}"><span class="label-wide">Go to the first unread post</span><span class="label-narrow">First unread</span></a>{{end}}</p>
     {{- end}}
   </td>
   {{- if .MovedTo}}
   <td class="num moved-gap" colspan="3"><span class="muted">This topic moved.</span></td>
   {{- else}}
-  <td class="num" data-label="Replies"><span class="forum-count">{{num .Replies}}</span></td>
-  <td class="num" data-label="Views"><span class="forum-count">{{num .Views}}</span></td>
+  <td class="num num-replies" data-label="Replies">{{template "replyicon"}}<span class="forum-count">{{num .Replies}}</span><span class="visually-hidden"> replies</span></td>
+  <td class="num num-views" data-label="Views"><span class="forum-count">{{num .Views}}</span></td>
   <td class="last" data-label="Last post">
     {{- if .Last.ID}}
-    <a class="last-title" href="{{path "p" (printf "%d" .Last.ID)}}">{{time .Last.At $.Clock}}</a>
-    <span class="last-meta">by {{template "author" .Last.Author}}</span>
+    <span class="last-meta">{{template "author" .Last.Author}}</span> <span class="sep" aria-hidden="true">&middot;</span>
+    <a class="last-time" href="{{path "p" (printf "%d" .Last.ID)}}"><span class="visually-hidden">Last post, </span>{{ago .Last.At $.Clock}}</a>
     {{- else}}
     <span class="muted">No posts yet</span>
     {{- end}}
@@ -141,7 +150,7 @@
     {{- if or .Card.RankTitle .Card.RankImage}}
     <p class="author-rank">{{if .Card.RankImage}}<img class="rank-img" src="{{path "files" .Card.RankImage}}" alt="">{{end}}{{if .Card.RankTitle}}<span>{{.Card.RankTitle}}</span>{{end}}</p>
     {{- end}}
-    <p class="author-stat">Joined: {{date .Card.Joined .Clock}}</p>
+    <p class="author-stat">Joined: {{absdate .Card.Joined .Clock}}</p>
     <p class="author-stat">Posts: <b>{{num .Card.PostCount}}</b></p>
     {{- else}}
     <div class="author-avatar"><span class="avatar avatar-none" aria-hidden="true">{{initial .Author.Name}}</span></div>
@@ -157,7 +166,7 @@
         {{- if eq .Visibility "unapproved"}} <span class="tag tag-warn">Waiting for approval</span>{{end}}
         {{- if eq .Visibility "deleted"}} <span class="tag tag-warn">Deleted</span>{{end}}
       </div>
-      {{if .ID}}<a class="permalink" href="#p{{.ID}}" aria-label="Link to this post">{{time .At .Clock}}</a>{{else}}<span class="permalink">{{time .At .Clock}}</span>{{end}}
+      {{if .ID}}<a class="permalink" href="#p{{.ID}}" aria-label="Link to this post"><span class="label-wide">{{time .At .Clock}}</span><span class="label-narrow">{{ago .At .Clock}}</span></a>{{else}}<span class="permalink"><span class="label-wide">{{time .At .Clock}}</span><span class="label-narrow">{{ago .At .Clock}}</span></span>{{end}}
     </header>
     <div class="post-body">{{.HTML}}</div>
     {{- if .Attachments}}

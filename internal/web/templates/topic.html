@@ -10,11 +10,10 @@
     <bdi>{{.Data.Topic.Title}}</bdi>
     {{- if .Data.Topic.Locked}} <span class="tag">Locked</span>{{end -}}
   </h1>
-  <p class="page-sub">Started by {{template "author" .Data.Topic.Author}} &middot; {{plural .Data.Topic.Replies "reply" "replies"}} &middot; {{plural .Data.Topic.Views "view" "views"}}</p>
+  <p class="page-sub">Started by {{template "author" .Data.Topic.Author}} &middot; {{plural .Data.Topic.Replies "reply" "replies"}} <span class="hide-narrow">&middot; {{plural .Data.Topic.Views "view" "views"}}</span></p>
 </header>
 {{template "heldnote" .Data.Held}}
-{{- if or .Data.CanReply .Data.CanLock .Data.CanUnlock}}
-<div class="toolbar toolbar-start">
+<div class="head-row">
   {{- if .Data.CanReply}}<a class="button-quiet button-link" href="{{.Data.ReplyHref}}">Reply</a>{{end}}
   {{- if .Data.CanLock}}
   <form class="mark-form" method="post" action="{{.Data.LockHref}}">
@@ -28,8 +27,8 @@
     <button type="submit" class="button-quiet">Unlock</button>
   </form>
   {{- end}}
+  {{template "pager" pagerAt .Data.Pager "Pages, top"}}
 </div>
-{{- end}}
 
 {{- with .Data.Poll}}
 <section class="poll" aria-labelledby="poll-title">
@@ -47,7 +46,7 @@
 </section>
 {{- end}}
 
-{{template "pager" pagerAt .Data.Pager "Pages, top"}}
+
 
 <div class="posts">
 {{- range .Data.Posts}}

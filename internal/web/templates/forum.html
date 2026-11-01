@@ -1,19 +1,9 @@
 {{define "content"}}
 {{template "crumbs" .Data.Crumbs}}
-<header class="page-head">
+<header class="page-head page-head-inline">
   <h1>{{.Data.Forum.Name}}{{if .Data.Forum.Locked}} <span class="tag">Locked</span>{{end}}</h1>
   {{- if .Data.Forum.Description}}
-  <p class="page-sub">{{.Data.Forum.Description}}</p>
-  {{- end}}
-  {{- if or .Viewer.UserID .Data.CanStart}}
-  <div class="toolbar">
-    {{- if .Data.CanStart}}
-    <a class="button-quiet button-link" href="{{.Data.PostHref}}">New topic</a>
-    {{- end}}
-    {{- if .Viewer.UserID}}
-    {{template "markform" markForm (path "f" (printf "%d" .Data.Forum.ID) "read") "Mark this forum read" .}}
-    {{- end}}
-  </div>
+  <p class="page-desc">{{.Data.Forum.Description}}</p>
   {{- end}}
 </header>
 {{template "heldnote" .Data.Held}}
@@ -35,7 +25,12 @@
 {{- end}}
 
 {{- if not .Data.IsCategory}}
-{{template "pager" pagerAt .Data.Pager "Pages, top"}}
+<div class="head-row">
+  {{- if .Data.CanStart}}
+  <a class="button-quiet button-link" href="{{.Data.PostHref}}">New topic</a>
+  {{- end}}
+  {{template "pager" pagerAt .Data.Pager "Pages, top"}}
+</div>
 <section class="category" aria-labelledby="topics-title">
   <div class="bar"><h2 id="topics-title">Topics</h2></div>
   {{- if or .Data.Pinned .Data.Topics}}
@@ -64,3 +59,6 @@
 {{template "pager" pagerAt .Data.Pager "Pages, bottom"}}
 {{- end}}
 {{end}}
+{{define "navaction"}}{{if .Viewer.UserID}}
+<li class="nav-action">{{template "markform" markShort (path "f" (printf "%d" .Data.Forum.ID) "read") "Mark this forum read" "Mark read" "this forum" .}}</li>
+{{- end}}{{end}}

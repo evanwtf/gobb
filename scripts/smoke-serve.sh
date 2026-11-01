@@ -77,7 +77,7 @@ got=$(curl --max-time 20 -sS -o "$tmp/body" -w '%{http_code}' -b "$tmp/jar" -c "
 echo "$got POST /login"
 [ "$got" = 303 ] || fail "POST /login: want status 303, got $got"
 get / 200 csp
-grep -q 'Signed in as' "$tmp/body" || fail "/: no 'Signed in as' after sign-in"
+grep -q 'Account menu for ' "$tmp/body" || fail "/: no account menu after sign-in"
 # Search runs under the cap too, for the member.
 get '/search?q=example' 200 csp
 # The page echoes the query, so look for a hit: a link to a post.

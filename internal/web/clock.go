@@ -51,6 +51,60 @@ func timeTag(t time.Time, c clock, dateOnly bool) template.HTML {
 	return template.HTML(open + `>` + local.Format(std) + `</time>`)
 }
 
+// shortTag writes t as a <time> element for a list row, where space is short.
+// In the relative format it shows a short age, such as "4d" or "9y". In the
+// other formats it shows the date and no hour. The title attribute holds the
+// full time in the format of c, so the hour is never lost.
+func shortTag(t time.Time, c clock) template.HTML {
+	loc := c.Loc
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := t.In(loc)
+	text, title := local.Format(dateLayout), local.Format(timeLayout)
+	switch c.Format {
+	case "iso":
+		text, title = local.Format(isoDateLayout), local.Format(isoTimeLayout)
+	case "relative":
+		text = shortText(t, c.Now, loc)
+	}
+	return template.HTML(`<time datetime="` + t.UTC().Format(time.RFC3339) + `" title="` + title + `">` + text + `</time>`)
+}
+
+// shortText is relText in short units: "now", "45s", "5m", "3h", "4d", "11mo",
+// "9y". It uses the bands of relText, so a list row and a post agree on an age.
+func shortText(t, now time.Time, loc *time.Location) string {
+	d := now.Sub(t)
+	switch {
+	case d < -time.Minute:
+		return t.In(loc).Format(dateLayout)
+	case d < 10*time.Second:
+		return "now"
+	case d < 2*time.Minute:
+		return strconv.Itoa(int(d/time.Second)) + "s"
+	case d < 2*time.Hour:
+		return strconv.Itoa(int(d/time.Minute)) + "m"
+	case d < 48*time.Hour:
+		return strconv.Itoa(int(d/time.Hour)) + "h"
+	case d < 180*24*time.Hour:
+		return strconv.Itoa(int(d/(24*time.Hour))) + "d"
+	}
+	months := wholeMonths(t.In(loc), now.In(loc))
+	if months < 24 {
+		return strconv.Itoa(months) + "mo"
+	}
+	return strconv.Itoa(months/12) + "y"
+}
+
+// absDateTag writes the date of t, never as an age: the relative format shows
+// the standard date. A joined date reads better as a date than as "24 years ago".
+func absDateTag(t time.Time, c clock) template.HTML {
+	if c.Format == "relative" {
+		c.Format = "standard"
+	}
+	return timeTag(t, c, true)
+}
+
 // relText says how long before now t was: "just now", "N seconds ago" and so on
 // up to "N years ago". Ages under 180 days count elapsed time, so a change of
 // daylight saving time does not shift them. Older ages count whole calendar

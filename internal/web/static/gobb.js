@@ -429,3 +429,33 @@
     }
   });
 })();
+
+// The account menu is a <details> element and works without script. With it,
+// Escape closes the menu, and returns focus to its button when focus was in the
+// menu. A click outside closes it.
+(function () {
+  "use strict";
+
+  function openMenu() {
+    return document.querySelector("details.account-menu[open]");
+  }
+
+  document.addEventListener("keydown", function (event) {
+    var menu = openMenu();
+    if (event.key !== "Escape" || !menu) {
+      return;
+    }
+    var inside = menu.contains(document.activeElement);
+    menu.removeAttribute("open");
+    if (inside) {
+      menu.querySelector("summary").focus();
+    }
+  });
+
+  document.addEventListener("click", function (event) {
+    var menu = openMenu();
+    if (menu && event.target instanceof Node && !menu.contains(event.target)) {
+      menu.removeAttribute("open");
+    }
+  });
+})();

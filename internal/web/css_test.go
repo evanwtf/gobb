@@ -169,10 +169,10 @@ func TestCSSHeaderLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	css := cssComment.ReplaceAllString(string(b), "")
-	if !regexp.MustCompile(`@media print\s*\{[^@]*\.header-user[^{]*\{\s*display:\s*none`).MatchString(css) {
-		t.Error("the print rule does not hide .header-user")
+	if !regexp.MustCompile(`@media print\s*\{[^@]*\.account-menu[^{]*\{\s*display:\s*none`).MatchString(css) {
+		t.Error("the print rule does not hide .account-menu")
 	}
-	if !regexp.MustCompile(`\.header-user a:focus-visible,\s*\.brand:focus-visible\s*\{\s*outline-color:\s*var\(--header-text\)`).MatchString(css) {
-		t.Error("the focus ring of .header-user a and .brand does not use --header-text")
+	if !regexp.MustCompile(`\.account-menu summary:focus-visible,\s*\.brand:focus-visible\s*\{\s*outline:\s*3px solid var\(--header-text\)`).MatchString(css) {
+		t.Error("the focus ring of the account menu and .brand does not use --header-text")
 	}
 }

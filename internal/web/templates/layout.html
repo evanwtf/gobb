@@ -15,7 +15,7 @@
 <body>
 <a class="skip-link" href="#main">Skip to the content</a>
 <header class="site-header">
-  <div class="wrap header-inner">
+  <div class="wrap header-bar">
     <a class="brand" href="{{.Home}}">
       {{- if .HeaderSrc}}
       <img class="header-image" src="{{.HeaderSrc}}" alt="{{.Settings.BoardName}}">
@@ -24,35 +24,43 @@
       {{- if .Settings.BoardDescription}}<span class="brand-desc">{{.Settings.BoardDescription}}</span>{{end}}
       {{- end}}
     </a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        {{- range .Nav}}
+        <li{{if .Wide}} class="nav-wide"{{end}}><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{if .Short}}<span class="label-wide">{{.Label}}</span><span class="label-narrow">{{.Short}}</span>{{else}}{{.Label}}{{end}}{{if .Badge}} <span class="badge-new">{{.Badge}}</span>{{end}}</a></li>
+        {{- end}}
+        {{- block "navaction" .}}{{end}}
+      </ul>
+    </nav>
+    {{- if .SearchHref}}
+    <form class="nav-search" method="get" action="{{.SearchHref}}" role="search" aria-label="Quick search">
+      <label class="visually-hidden" for="nav-q">Search the board</label>
+      <input type="search" id="nav-q" name="q" maxlength="256" placeholder="Search" autocomplete="off">
+      <button type="submit" class="nav-button">Search</button>
+      <a href="{{.SearchHref}}"{{if .SearchCurrent}} aria-current="page"{{end}}>Advanced</a>
+    </form>
+    <a class="search-icon" href="{{.SearchHref}}"{{if .SearchCurrent}} aria-current="page"{{end}}><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span class="visually-hidden">Search</span></a>
+    {{- end}}
     {{- if .Viewer.UserID}}
-    <div class="header-user">
-      <span class="nav-who">Signed in as <a href="{{.AccountHref}}" title="{{.Viewer.Name}}"{{if .AccountCurrent}} aria-current="page"{{end}}><bdi>{{.Viewer.Name}}</bdi></a></span>
-      <form method="post" action="{{path "logout"}}">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <button type="submit" class="nav-button">Sign out</button>
-      </form>
-    </div>
+    <details class="account-menu">
+      <summary><span class="visually-hidden">Account menu for </span><bdi title="{{.Viewer.Name}}">{{.Viewer.Name}}</bdi><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></summary>
+      <ul>
+        <li><a href="{{.AccountHref}}"{{if .AccountCurrent}} aria-current="page"{{end}}>Your account</a></li>
+        {{- range .Nav}}{{if .Wide}}
+        <li class="menu-narrow"><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a></li>
+        {{- end}}{{end}}
+        <li>
+          <form method="post" action="{{path "logout"}}">
+            <input type="hidden" name="csrf" value="{{.CSRF}}">
+            <button type="submit">Sign out</button>
+          </form>
+        </li>
+      </ul>
+    </details>
     {{- else if and .Controls .LoginHref}}
-    <div class="header-user"><a href="{{.LoginHref}}">Sign in</a></div>
+    <a class="sign-in" href="{{.LoginHref}}">Sign in</a>
     {{- end}}
   </div>
-  <nav class="site-nav" aria-label="Main">
-    <ul class="wrap">
-      {{- range .Nav}}
-      <li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}{{if .Badge}} <span class="badge-new">{{.Badge}}</span>{{end}}</a></li>
-      {{- end}}
-      {{- if .SearchHref}}
-      <li class="nav-search">
-        <form method="get" action="{{.SearchHref}}" role="search" aria-label="Quick search">
-          <label class="visually-hidden" for="nav-q">Search the board</label>
-          <input type="search" id="nav-q" name="q" maxlength="256" placeholder="Search" autocomplete="off">
-          <button type="submit" class="nav-button">Search</button>
-        </form>
-        <a href="{{.SearchHref}}"{{if .SearchCurrent}} aria-current="page"{{end}}>Advanced</a>
-      </li>
-      {{- end}}
-    </ul>
-  </nav>
 </header>
 <main id="main" class="wrap">
 {{template "content" .}}
