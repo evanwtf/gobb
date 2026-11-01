@@ -33,7 +33,7 @@
         <td data-label="Email"><bdi>{{.Email}}</bdi></td>
         <td data-label="State">{{if .Active}}Active{{else}}Inactive{{end}}{{if .Banned}}, banned{{end}}</td>
         <td data-label="Posts">{{num .PostCount}}</td>
-        <td data-label="Joined">{{date .Joined $.Clock}}</td>
+        <td data-label="Joined">{{absdate .Joined $.Clock}}</td>
         <td data-label="Last visit">{{with .LastVisit}}{{date . $.Clock}}{{else}}<span class="muted">Never</span>{{end}}</td>
       </tr>
     {{- end}}

@@ -142,83 +142,174 @@ p { margin: 0; }
   border-bottom: 3px solid var(--accent);
 }
 
-.header-inner {
-  display: flex;
-  flex-wrap: wrap;
+/* The header is one bar. On a wide screen it is one row: the brand, the tabs,
+   the search box and the account menu. Narrower, the tabs take a second row. On a
+   phone the search box becomes an icon that opens the search page. */
+.header-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "brand nav search user";
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem 1rem;
-  padding-top: 1rem;
-  padding-bottom: 1rem;
+  column-gap: 0.75rem;
+  min-height: 3.5rem;
 }
-
-/* The member's links: "Signed in as" and Sign out, or a guest's Sign in. They sit
-   at the right of the brand and wrap under it on a narrow screen. */
-.header-user { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; }
-.header-user a { color: var(--header-text); font-weight: 600; }
-.header-user .nav-who { padding: 0; white-space: nowrap; }
-.header-user .nav-who a {
-  display: inline-block;
-  max-width: 14rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.header-user .nav-who a[aria-current="page"] {
-  text-decoration-color: var(--accent);
-  text-decoration-thickness: 3px;
-}
-.header-user form { display: flex; margin: 0; }
-.header-user .nav-button { margin: 0; border-radius: 6px; }
-/* A guest's Sign in link is the same size and has the same hover as Sign out. */
-.header-user > a {
-  padding: 0.6rem 0.8rem;
-  font-size: 0.95rem;
-  line-height: 1.5;
-  border-radius: 6px;
-}
-.header-user > a:hover { text-decoration: none; background: rgb(255 255 255 / 0.1); }
-/* The default ring uses --link, which has little contrast on the header. */
-.header-user a:focus-visible, .brand:focus-visible { outline-color: var(--header-text); }
+.brand { grid-area: brand; }
+.site-nav { grid-area: nav; min-width: 0; }
+.nav-search, .search-icon { grid-area: search; }
+.account-menu, .sign-in { grid-area: user; }
 
 .brand {
   display: inline-flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.1rem;
   color: var(--header-text);
   max-width: 100%;
 }
 .brand:hover { text-decoration: none; }
+.header-image { display: block; height: 2.75rem; width: auto; max-width: 100%; border-radius: 4px; }
+.brand-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+.brand-desc { font-size: 0.8rem; opacity: 0.88; }
 
-.header-image { display: block; max-width: 100%; height: auto; border-radius: 4px; }
-
-.brand-name { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
-.brand-desc { font-size: 0.95rem; opacity: 0.88; }
-
-.site-nav { border-top: 1px solid rgb(255 255 255 / 0.14); }
 .site-nav ul {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 0.25rem;
-  margin: 0 auto;
-  padding-top: 0;
-  padding-bottom: 0;
+  align-items: stretch;
+  gap: 0;
+  margin: 0;
+  padding: 0;
   list-style: none;
 }
+.site-nav li { display: flex; align-items: stretch; }
+.site-nav form { display: flex; margin: 0; }
 .site-nav a {
-  display: block;
-  padding: 0.6rem 0.8rem;
+  display: flex;
+  align-items: center;
+  padding: 0 0.7rem;
+  min-height: 3.5rem;
   color: var(--header-text);
   font-weight: 600;
   font-size: 0.95rem;
-  border-bottom: 3px solid transparent;
-  margin-bottom: -1px;
+  white-space: nowrap;
+  box-shadow: inset 0 -3px 0 transparent;
 }
 .site-nav a:hover { text-decoration: none; background: rgb(255 255 255 / 0.1); }
-.site-nav a[aria-current="page"] { border-bottom-color: var(--accent); }
-.site-nav a:focus-visible { outline-color: var(--header-text); }
+.site-nav a[aria-current="page"] { box-shadow: inset 0 -3px 0 var(--accent); }
+.site-nav a:focus-visible, .search-icon:focus-visible, .sign-in:focus-visible,
+.account-menu summary:focus-visible, .brand:focus-visible { outline: 3px solid var(--header-text); outline-offset: -3px; }
+
+/* The mark-read button sits at the end of the tabs, small, so the row does not
+   wrap. Its touch target is the full height of the row. */
+.site-nav .nav-action { margin-left: auto; align-items: center; padding-left: 0.5rem; }
+.nav-action .button-quiet {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--header-text);
+  border-color: rgb(255 255 255 / 0.45);
+  white-space: nowrap;
+}
+.nav-action .button-quiet:hover { background: rgb(255 255 255 / 0.1); }
+.nav-action .button-quiet:focus-visible { outline-color: var(--header-text); }
+.label-narrow { display: none; }
+
+.nav-search { display: flex; align-items: center; gap: 0.4rem; margin: 0; }
+.nav-search input {
+  width: 13rem;
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--page);
+  border: 1px solid rgb(255 255 255 / 0.3);
+  border-radius: 6px;
+}
+.nav-search input:focus-visible { outline: 3px solid var(--header-text); outline-offset: 1px; }
+.nav-search .nav-button { padding: 0.35rem 0.6rem; border-radius: 6px; }
+.nav-search a { color: var(--header-text); font-size: 0.85rem; opacity: 0.88; }
+.search-icon {
+  display: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  color: var(--header-text);
+  border-radius: 8px;
+}
+.search-icon:hover { background: rgb(255 255 255 / 0.1); }
+
+/* The account menu: the member's name opens it. It holds the account link, Sign
+   out, and on a phone the wide links of the nav. */
+.account-menu { position: relative; }
+.account-menu summary {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2.75rem;
+  padding: 0 0.5rem;
+  color: var(--header-text);
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.account-menu summary::-webkit-details-marker { display: none; }
+.account-menu summary bdi { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; }
+.account-menu summary:hover { background: rgb(255 255 255 / 0.1); }
+.account-menu[open] summary svg { transform: rotate(180deg); }
+.account-menu ul {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.25rem);
+  z-index: 20;
+  min-width: 11rem;
+  margin: 0;
+  padding: 0.3rem 0;
+  list-style: none;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+}
+.account-menu li { display: block; }
+.account-menu a, .account-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.65rem 1rem;
+  color: var(--text);
+  font: 600 0.95rem/1.4 var(--font);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.account-menu a:hover, .account-menu button:hover { text-decoration: none; background: var(--hover); }
+.account-menu a[aria-current="page"] { box-shadow: inset 3px 0 0 var(--accent); }
+.account-menu form { margin: 0; border-top: 1px solid var(--line-soft); }
+.account-menu .menu-narrow { display: none; }
+.sign-in { color: var(--header-text); font-weight: 600; padding: 0.5rem 0.7rem; border-radius: 6px; }
+.sign-in:hover { text-decoration: none; background: rgb(255 255 255 / 0.1); }
+
+/* Between a phone and a wide screen the tabs take their own row. */
+@media (max-width: 1099px) {
+  .header-bar {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "brand search user" "nav nav nav";
+  }
+  .brand { padding: 0.4rem 0; }
+  .site-nav { border-top: 1px solid rgb(255 255 255 / 0.14); margin: 0 -0.5rem; }
+  .site-nav a { min-height: 2.75rem; }
+}
+
+@media (max-width: 699px) {
+  .header-bar { column-gap: 0.25rem; min-height: 0; padding-right: 0.5rem; }
+  .header-image { height: 2.9rem; }
+  .brand { padding: 0.3rem 0; }
+  .site-nav a { padding: 0 0.6rem; font-size: 0.95rem; }
+  .site-nav .nav-wide { display: none; }
+  .account-menu .menu-narrow { display: block; }
+  .nav-search { display: none; }
+  .search-icon { display: grid; }
+  .label-wide { display: none; }
+  .label-narrow { display: inline; }
+}
 
 /* ---- Category bars and forum rows --------------------------------------- */
 
@@ -331,23 +422,14 @@ td.link-target { overflow-wrap: anywhere; color: var(--muted); }
 
 /* ---- Account controls: nav, sign-in card, scheme picker ----------------- */
 
-.site-nav li { display: flex; align-items: stretch; }
-.nav-who {
-  align-self: center;
-  padding: 0 0.8rem;
-  font-size: 0.95rem;
-  color: var(--header-text);
-}
-.site-nav form { display: flex; margin: 0; }
 .nav-button {
   appearance: none;
   padding: 0.6rem 0.8rem;
-  margin: 0 0 -1px;
+  margin: 0;
   font: 600 0.95rem/1.5 var(--font);
   color: var(--header-text);
   background: transparent;
   border: 0;
-  border-bottom: 3px solid transparent;
   cursor: pointer;
 }
 .nav-button:hover { background: rgb(255 255 255 / 0.1); }
@@ -867,9 +949,6 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
   .rules { margin-bottom: 0.75rem; padding: 0.5rem 0.85rem; }
 
   /* The header and nav. Each link keeps a target of 24px or more (WCAG 2.5.8). */
-  .header-inner { padding-top: 0.5rem; padding-bottom: 0.5rem; gap: 0.25rem 1rem; }
-  .site-nav ul { gap: 0 0.1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
-  .site-nav a, .nav-button { padding: 0.4rem 0.55rem; }
   .poll { padding: 0.85rem 1rem; }
   .poll-label { flex-direction: column; gap: 0; }
 
@@ -1144,7 +1223,7 @@ mark {
 }
 
 @media print {
-  .site-nav, .header-user, .skip-link { display: none; }
+  .site-nav, .nav-search, .search-icon, .account-menu, .sign-in, .skip-link { display: none; }
   body { background: #fff; color: #000; }
 }
 
@@ -1249,3 +1328,124 @@ fieldset.field legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
 .edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
 .edit-actions form { margin: 0; }
 .edit-img { width: auto; height: auto; max-width: 4rem; max-height: 3rem; vertical-align: middle; }
+
+/* ---- Compact pages ----------------------------------------------------------
+   More of the board fits on a screen: a thin label in place of the section
+   bar, one-line rows on a wide screen, two-line rows on a phone, and the page
+   actions and page links on one row. */
+
+.category .bar {
+  min-height: 0;
+  padding: 0.35rem 1rem;
+  background: none;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.category .bar h2 { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.category .bar a { color: var(--muted); }
+.category .bar a:focus-visible { outline-color: var(--link); }
+.category.untitled .bar { display: none; }
+
+.forums td { padding: 0.45rem 1rem; }
+td.num { padding-top: 0.45rem; white-space: nowrap; }
+.forum-count { font-size: 1rem; }
+.forum-main::before { top: 0.45rem; bottom: 0.45rem; }
+.icon-replies { display: none; }
+.last-meta, .last-time { display: inline; font-size: 0.85rem; }
+.last-time::before { content: "\00b7\00a0"; color: var(--muted); }
+.last-time { color: var(--muted); white-space: nowrap; }
+
+/* A topic on a wide screen is one line: the title, then its author. */
+.topics .topic-meta { display: inline; margin: 0 0 0 0.4rem; }
+.topics td.last { vertical-align: middle; }
+
+.page-head { margin: 0 0 0.6rem; }
+.page-head h1 { font-size: 1.45rem; }
+.page-desc { margin-left: 0.4rem; color: var(--muted); font-size: 0.9rem; font-weight: 400; letter-spacing: 0; }
+.head-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; }
+.head-row .pager { flex: 1 1 auto; margin: 0; justify-content: flex-end; }
+.head-row form { margin: 0; }
+
+.post { grid-template-columns: 10.5rem minmax(0, 1fr); }
+.post-author { padding: 0.85rem 0.75rem; }
+.post-author .avatar { width: 64px; height: 64px; }
+.author-name { margin-top: 0.5rem; }
+.post-actions { gap: 0.25rem; margin-top: 0.6rem; padding-top: 0.3rem; justify-content: flex-end; }
+.post-actions .button-quiet { padding: 0.3rem 0.6rem; border-color: transparent; color: var(--muted); font-size: 0.85rem; }
+.post-actions .button-quiet:hover { color: var(--text); }
+
+@media (max-width: 699px) {
+  main { padding-top: 0.5rem; }
+  .crumbs { margin-bottom: 0.15rem; font-size: 0.82rem; }
+  .page-head { margin-bottom: 0.25rem; }
+  .page-head h1 { font-size: 1.25rem; }
+  .page-sub { font-size: 0.85rem; margin-top: 0.1rem; }
+  .hide-narrow { display: none; }
+  .head-row { gap: 0.35rem; margin-bottom: 0.5rem; }
+  .head-row .button-quiet { min-height: 2.75rem; display: inline-flex; align-items: center; }
+  .site-nav .nav-action { padding-right: 0.5rem; }
+  .nav-action .button-quiet { min-height: 0; padding: 0.25rem 0.55rem; }
+  .forums:not(.topics) .forum-count { font-size: inherit; }
+  .forums:not(.topics) td.num + td.num { margin-left: -0.35rem; }
+  .pager-where {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .pager ul { gap: 0.25rem; }
+  .pager a { min-width: 2rem; padding: 0.15rem 0.45rem; }
+  .category { margin-bottom: 0.75rem; }
+  .category .bar { min-height: 0; padding: 0.3rem 0.85rem; }
+
+  /* A forum on the index: the name and its counts, then the last post. */
+  .forums tr { padding: 0.45rem 0.85rem; gap: 0.1rem 0.6rem; }
+  .forums:not(.topics) .forum-main { flex: 1 1 0; min-width: 0; }
+  .forum-desc { display: none; }
+  .forums:not(.topics) td.num { font-size: 0.8rem; }
+  .forums:not(.topics) td.num::before { content: none; }
+  .forums:not(.topics) td.num + td.num::before { content: "/ "; }
+  .forums:not(.topics) .forum-count { font-weight: 600; color: var(--muted); }
+  .forums:not(.topics) td.last { flex: 1 0 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  td.last::before { content: none; }
+  .forums:not(.topics) .last-title { display: inline; font-weight: 500; color: var(--text); }
+  .forums:not(.topics) .last-title::after { content: " \00b7"; color: var(--muted); }
+
+  /* A topic: the title on line 1; the author, the replies and the last post on
+     line 2. Views do not show. */
+  .forums.topics tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "title title title" "meta replies last";
+    column-gap: 0.6rem;
+    position: relative;
+    padding: 0.45rem 0.85rem 0.45rem 1.1rem;
+  }
+  .forums.topics td.topic-main { display: contents; }
+  .forums.topics .forum-main::before { left: 0; top: 0.45rem; bottom: 0.45rem; }
+  .topic-title { grid-area: title; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topics .topic-meta { grid-area: meta; display: block; margin: 0.1rem 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topics .topic-link { font-size: 0.98rem; }
+  .topics .tag { font-size: 0.62rem; padding: 0 0.3rem; }
+  .forums.topics td.num-replies { grid-area: replies; align-self: end; display: inline-flex; align-items: center; gap: 0.2rem; }
+  .forums.topics td.num-replies::before { content: none; }
+  .forums.topics .icon-replies { display: inline; }
+  .forums.topics .forum-count { font-weight: 400; color: var(--muted); }
+  .forums.topics td.num-views { display: none; }
+  .forums.topics td.last { grid-area: last; align-self: end; white-space: nowrap; }
+  .forums.topics td.moved-gap { grid-area: meta; }
+
+  /* A post: the author block is one row, and the post time sits at its right. */
+  .post { position: relative; }
+  .post-author { padding: 0.5rem 0.85rem; column-gap: 0.6rem; grid-template-columns: 2.25rem minmax(0, 1fr); }
+  .post-author .avatar { width: 2.25rem; height: 2.25rem; border-radius: 6px; }
+  .post-author .author-stat { display: none; }
+  .post-author .author-name { padding-right: 4rem; }
+  .post-head { padding: 0; margin: 0; border: 0; min-height: 0; }
+  .post-head .permalink { position: absolute; top: 0.6rem; right: 0.85rem; font-size: 0.8rem; }
+  .post-main { padding: 0.5rem 0.85rem 0.25rem; }
+  .signature {
+    margin-top: 0.6rem; font-size: 0.78rem;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .post-actions { margin-top: 0.3rem; border-top: 0; }
+  .post-actions .button-quiet { min-height: 2.5rem; }
+  .posts { gap: 0.5rem; }
+}

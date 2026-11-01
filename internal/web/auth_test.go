@@ -113,7 +113,7 @@ func TestSignInFlow(t *testing.T) {
 	}
 
 	home := bodyOf(t, getAs(t, h, "/", cookies))
-	if !strings.Contains(home, "Signed in as") || !strings.Contains(home, "<bdi>alice</bdi>") {
+	if !strings.Contains(home, "Account menu for ") || !strings.Contains(home, "<bdi>alice</bdi>") {
 		t.Errorf("the index for alice lacks the signed-in marker:\n%s", home)
 	}
 	if strings.Contains(home, `href="/login`) {
@@ -146,72 +146,84 @@ func TestSignInFlow(t *testing.T) {
 	if n := countRows(t, pool, `select count(*) from sessions where user_id = 1`); n != 0 {
 		t.Errorf("%d sessions for alice after sign-out, want 0", n)
 	}
-	if strings.Contains(bodyOf(t, getAs(t, h, "/", after)), "Signed in as") {
+	if strings.Contains(bodyOf(t, getAs(t, h, "/", after)), "Account menu for ") {
 		t.Error("the index still shows alice after sign-out")
 	}
 	// The old cookie is worth nothing.
-	if strings.Contains(bodyOf(t, getAs(t, h, "/", cookies)), "Signed in as") {
+	if strings.Contains(bodyOf(t, getAs(t, h, "/", cookies)), "Account menu for ") {
 		t.Error("the old session cookie still works")
 	}
 }
 
 // headerParts splits the header of a page into the part above the nav (the
 // brand and the member's links) and the nav. It fails the test when the markup
-// has no nav.
+// headerParts splits the header of page into the nav and the rest: the brand,
+// the search and the member's links.
 func headerParts(t *testing.T, page string) (top, nav string) {
 	t.Helper()
 	start := strings.Index(page, `<header class="site-header">`)
 	i := strings.Index(page, `<nav class="site-nav"`)
+	j := strings.Index(page, `</nav>`)
 	end := strings.Index(page, `</header>`)
-	if start < 0 || i < start || end < i {
+	if start < 0 || i < start || j < i || end < j {
 		t.Fatalf("the page has no header with a nav:\n%s", page)
 	}
-	return page[start:i], page[i:end]
+	return page[start:i] + page[j:end], page[i:j]
 }
 
-// The member's links sit in the header row, at the right of the board name,
-// and not in the nav.
+// The member's links sit in the account menu in the header, and not in the nav.
+// On a phone the menu also holds the wide links of the nav.
 func TestHeaderUser(t *testing.T) {
 	h, _ := siteAndPool(t, bundletest.Small(), Options{})
 	cookies := signIn(t, h, "alice", testPassword)
+	menuOf := func(top string) string {
+		return regexp.MustCompile(`(?s)<details class="account-menu">.*?</details>`).FindString(top)
+	}
 
-	// A member: the name links to the account page, and Sign out is there.
+	// A member: the menu names the member, links to the account page, and holds
+	// Sign out.
 	top, nav := headerParts(t, bodyOf(t, getAs(t, h, "/", cookies)))
-	user := regexp.MustCompile(`(?s)<div class="header-user">.*?</div>`).FindString(top)
-	if user == "" {
-		t.Fatalf("the header row of a member has no .header-user:\n%s", top)
+	menu := menuOf(top)
+	if menu == "" {
+		t.Fatalf("the header of a member has no account menu:\n%s", top)
 	}
-	if !strings.Contains(user, `Signed in as <a href="/account" title="alice"><bdi>alice</bdi></a>`) {
-		t.Errorf("the name of a member is no link to the account page:\n%s", user)
+	if !strings.Contains(menu, `<summary><span class="visually-hidden">Account menu for </span><bdi>alice</bdi>`) {
+		t.Errorf("the menu does not name the member:\n%s", menu)
 	}
-	if strings.Contains(user, "aria-current") {
-		t.Errorf("the link to the account page is current on the index:\n%s", user)
+	if !strings.Contains(menu, `<a href="/account">Your account</a>`) {
+		t.Errorf("the menu has no link to the account page:\n%s", menu)
 	}
-	if !strings.Contains(user, `action="/logout"`) || !strings.Contains(user, `name="csrf"`) || !strings.Contains(user, ">Sign out</button>") {
-		t.Errorf("the Sign out form is not in .header-user:\n%s", user)
+	if !strings.Contains(menu, `action="/logout"`) || !strings.Contains(menu, `name="csrf"`) || !strings.Contains(menu, ">Sign out</button>") {
+		t.Errorf("the Sign out form is not in the menu:\n%s", menu)
 	}
-	for _, gone := range []string{"Signed in as", "Sign out", `action="/logout"`, "nav-who", "nav-end", "nav-out"} {
+	if !strings.Contains(menu, `<li class="menu-narrow"><a href="/team">Team</a></li>`) {
+		t.Errorf("the menu lacks the narrow Team link:\n%s", menu)
+	}
+	if !strings.Contains(nav, `<li class="nav-wide"><a href="/team">Team</a></li>`) {
+		t.Errorf("Team in the nav of a member is not a wide link:\n%s", nav)
+	}
+	for _, gone := range []string{"Account menu for ", "Sign out", `action="/logout"`} {
 		if strings.Contains(nav, gone) {
 			t.Errorf("the nav of a member still holds %q", gone)
 		}
 	}
 
-	// On the account page the name link is the current page.
+	// On the account page the account link is the current page.
 	top, _ = headerParts(t, bodyOf(t, getAs(t, h, "/account", cookies)))
-	if !strings.Contains(top, `<a href="/account" title="alice" aria-current="page"><bdi>alice</bdi></a>`) {
-		t.Errorf("the name link lacks aria-current on /account:\n%s", top)
+	if !strings.Contains(menuOf(top), `<a href="/account" aria-current="page">Your account</a>`) {
+		t.Errorf("the account link lacks aria-current on /account:\n%s", top)
 	}
 
-	// A guest: the Sign in link is in .header-user, and the nav holds none.
+	// A guest: a Sign in link and no menu. Team stays in the nav on every screen,
+	// as a guest has no menu to hold it.
 	top, nav = headerParts(t, bodyOf(t, get(t, h, "/")))
-	user = regexp.MustCompile(`(?s)<div class="header-user">.*?</div>`).FindString(top)
-	if !strings.Contains(user, `>Sign in</a>`) {
-		t.Errorf("the header row of a guest has no Sign in link:\n%s", top)
+	if !strings.Contains(top, `<a class="sign-in" href="/login`) || menuOf(top) != "" {
+		t.Errorf("the header of a guest has no Sign in link, or has a menu:\n%s", top)
 	}
-	if strings.Contains(user, "Signed in as") || strings.Contains(user, "Sign out") {
-		t.Errorf("the header row of a guest shows a member's links:\n%s", user)
+	if !strings.Contains(nav, `<li><a href="/team">Team</a></li>`) {
+		t.Errorf("Team in the nav of a guest is a wide link:\n%s", nav)
 	}
-	for _, gone := range []string{"Sign in", "Signed in as", "nav-end"} {
+	for _, gone := range []string{"Sign in", "Account menu for "} {
 		if strings.Contains(nav, gone) {
 			t.Errorf("the nav of a guest still holds %q", gone)
 		}
@@ -278,7 +290,7 @@ func TestSignInOverPlainHTTP(t *testing.T) {
 			if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/t/1" {
 				t.Fatalf("after sign-in: %d at %s", resp.StatusCode, resp.Request.URL)
 			}
-			if !strings.Contains(string(got), "<bdi>alice</bdi>") || !strings.Contains(string(got), "Signed in as") {
+			if !strings.Contains(string(got), "<bdi>alice</bdi>") || !strings.Contains(string(got), "Account menu for ") {
 				t.Error("the page after sign-in does not show alice")
 			}
 			var haveSession bool
@@ -491,7 +503,7 @@ func TestGuestNav(t *testing.T) {
 	if !strings.Contains(body, `href="/login?next=%2Ft%2F1%3Fpage%3D1"`) {
 		t.Errorf("the sign-in link lacks the return path:\n%s", body)
 	}
-	if strings.Contains(body, "Signed in as") || strings.Contains(body, `action="/logout"`) {
+	if strings.Contains(body, "Account menu for ") || strings.Contains(body, `action="/logout"`) {
 		t.Error("a guest sees the member's controls")
 	}
 	// The sign-in page does not link to itself with itself as next.
@@ -552,7 +564,7 @@ func TestSessionEnds(t *testing.T) {
 	h, pool := siteAndPool(t, bundletest.Small(), Options{Now: func() time.Time { return start.Add(time.Duration(offset.Load())) }})
 	cookies := signIn(t, h, "alice", testPassword)
 	signedIn := func(c []*http.Cookie) bool {
-		return strings.Contains(bodyOf(t, getAs(t, h, "/", c)), "Signed in as")
+		return strings.Contains(bodyOf(t, getAs(t, h, "/", c)), "Account menu for ")
 	}
 	if !signedIn(cookies) {
 		t.Fatal("not signed in")
@@ -578,7 +590,7 @@ func TestSessionEnds(t *testing.T) {
 	// A day passes without a request: the session ends. The page also clears the cookie.
 	offset.Store(int64(25 * time.Hour))
 	rec := getAs(t, h, "/", cookies)
-	if strings.Contains(bodyOf(t, rec), "Signed in as") {
+	if strings.Contains(bodyOf(t, rec), "Account menu for ") {
 		t.Error("a session of 25 hours is still signed in")
 	}
 	if c := cookieNamed(rec, "gobb_session"); c == nil || c.MaxAge >= 0 {
@@ -612,7 +624,7 @@ func TestSessionSlides(t *testing.T) {
 	before := lastSeen(1)
 
 	offset.Store(int64(time.Hour))
-	if strings.Contains(bodyOf(t, getAs(t, h, "/", plain)), "Signed in as") == false {
+	if strings.Contains(bodyOf(t, getAs(t, h, "/", plain)), "Account menu for ") == false {
 		t.Error("alice is signed out after an hour")
 	}
 	if !lastSeen(1).After(before) {
@@ -701,7 +713,7 @@ func TestInactiveMemberIsAGuestEverywhere(t *testing.T) {
 	t.Run("page", func(t *testing.T) {
 		cookies, _ := deadBob(t)
 		rec := getAs(t, h, "/", cookies)
-		if strings.Contains(bodyOf(t, rec), "Signed in as") {
+		if strings.Contains(bodyOf(t, rec), "Account menu for ") {
 			t.Error("an inactive member still sees the member page")
 		}
 		if cs := sessionCookies(rec); len(cs) != 1 || cs[0].MaxAge >= 0 {
@@ -848,7 +860,7 @@ func TestFormsAfterTheSessionEnded(t *testing.T) {
 			t.Errorf("POST %s by a live member with a wrong token: %d, want the plain 403:\n%s", target, rec.Code, body)
 		}
 	}
-	if !strings.Contains(bodyOf(t, getAs(t, h, "/", live)), "Signed in as") {
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/", live)), "Account menu for ") {
 		t.Error("a refused sign-out signed bob out")
 	}
 	// A guest with a wrong token: the plain refusal.

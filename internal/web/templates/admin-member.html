@@ -24,7 +24,7 @@
     <dt>Role</dt><dd>{{if .Owner}}Owner{{else if .IsAdmin}}Admin{{else}}Member{{end}}</dd>
     <dt>Email address</dt><dd><bdi>{{.Email}}</bdi>{{if .EmailVerified}} (verified){{else}} (not verified){{end}}</dd>
     <dt>Posts</dt><dd>{{num .PostCount}}</dd>
-    <dt>Joined</dt><dd>{{date .Joined $.Clock}}</dd>
+    <dt>Joined</dt><dd>{{absdate .Joined $.Clock}}</dd>
     <dt>Last visit</dt><dd>{{with .LastVisit}}{{time . $.Clock}}{{else}}Never{{end}}</dd>
   </dl>
 </section>

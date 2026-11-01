@@ -17,6 +17,9 @@ func (s *site) parseTemplates() error {
 		"path": s.path,
 		"time": func(t time.Time, c clock) template.HTML { return timeTag(t, c, false) },
 		"date": func(t time.Time, c clock) template.HTML { return timeTag(t, c, true) },
+		"ago":  shortTag,
+		// absdate shows a date as a date in every format; see absDateTag.
+		"absdate": absDateTag,
 		// stdtime shows a time in the standard format in the zone of the clock,
 		// whatever the date format of the viewer. A sentence that says "since" with
 		// an age would read "since 3 hours ago".
@@ -37,6 +40,10 @@ func (s *site) parseTemplates() error {
 		"markForm": func(action, label string, p *page) markFormData {
 			return markFormData{Action: action, Label: label, CSRF: p.CSRF, Return: p.Return}
 		},
+		// markShort is markForm with a shorter label for a phone.
+		"markShort": func(action, label, short string, p *page) markFormData {
+			return markFormData{Action: action, Label: label, Short: short, CSRF: p.CSRF, Return: p.Return}
+		},
 	}
 	s.pages = map[string]*template.Template{}
 	for _, name := range pageFiles {
@@ -52,6 +59,8 @@ func (s *site) parseTemplates() error {
 // markFormData is the data of the mark-read form partial.
 type markFormData struct {
 	Action, Label, CSRF, Return string
+	// Short is the label on a phone, or empty for Label on every screen.
+	Short string
 }
 
 // index serves the board index.

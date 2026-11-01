@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.0 (2026-11-01)
+
+### Compact pages, mobile first (evanwtf/gobb#52)
+
+- **The header.** On a wide screen it is one row: the brand, the tabs, the search box
+  and a menu under the member's name. Narrower, the tabs take a second row. On a
+  phone the search box becomes an icon that opens the search page. The header on a
+  phone is 104px tall, not 140px.
+- **The account menu.** The member's name opens it. It holds the account link and
+  Sign out. On a phone it also holds Members and Team, which leave the tab row there.
+  A guest keeps Team in the tab row.
+- **Mark read.** "Mark all read" on the index and "Mark this forum read" on a forum
+  are a small button at the end of the tab row. On a phone the forum button reads
+  "Mark read".
+- **Page heads.** The forum description sits on the title line. "New topic", or
+  Reply and Lock, share a row with the page links. On a phone "Page 1 of 27" is
+  hidden, and screen readers still hear it.
+- **Lists.** The section bars are a thin label. A topic on a wide screen is one
+  line. On a phone it is two: the title, then the author, the reply count with an
+  icon, and the last poster with a short age such as "4d" or "9y". Views do not
+  show on a phone. A topic row on a phone is 59px tall in the example bundle, not
+  120px. A forum on a phone is its name and counts, then its last post.
+- **Short ages.** List rows show the short age in the relative date format, and the
+  date with no hour in the other formats. The full time is in the title.
+- **Joined dates.** The joined date is a date in every date format, never an age.
+- **Posts.** The author column is narrower on a wide screen. On a phone the author
+  is one row with the post time at its right, and a signature shows at most two
+  lines. Quote, Edit and Delete are plain text buttons.
+- **Fixed.** On a wide screen the Views column no longer wraps a six-digit count.
+
 ## 0.8.2 (2026-10-30)
 
 - **Plain TCP only.** gobb's listeners no longer use multipath TCP. Go 1.24 and

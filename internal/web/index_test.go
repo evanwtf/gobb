@@ -29,7 +29,7 @@ func TestIndexPage(t *testing.T) {
 		`<bdi>Visitor</bdi>`,
 		`href="/p/4"`,
 		`Welcome to the example board`,
-		`<time datetime="2020-02-01T11:00:00Z">Feb 1, 2020, 6:00 am</time>`,
+		`<time datetime="2020-02-01T11:00:00Z">Feb 1, 2020</time>`,
 		`/static/gobb.css`,
 	} {
 		if !strings.Contains(body, want) {

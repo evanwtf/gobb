@@ -510,6 +510,9 @@ type navLink struct {
 	Current     bool
 	// Badge is a short note after the label, such as "2 new", or empty.
 	Badge string
+	// Wide marks a link that the nav shows only on a wide screen. On a phone the
+	// account menu holds it, so it is set only for a member, who has the menu.
+	Wide bool
 }
 
 // begin loads what every page needs: the settings and the viewer. The viewer is
@@ -621,17 +624,20 @@ func (s *site) touch(w http.ResponseWriter, r *http.Request, sess session.Sessio
 
 // addNav adds the links that depend on the viewer to the nav: for a member "New
 // since your last visit", then Members for a viewer who may see profiles, then
-// Team, Messages, Queue for a viewer who may approve somewhere, and Admin for an admin. A page with no request context (the frame of an empty database) keeps the
-// nav it has.
+// Team, Messages, Queue for a viewer who may approve somewhere, and Admin for an
+// admin. For a member, Members and Team are wide links: on a phone they move to
+// the account menu. A page with no request context (the frame of an empty
+// database) keeps the nav it has.
 func (s *site) addNav(p *page) {
 	if p.ctx == nil {
 		return
 	}
 	s.addNewLink(p)
+	wide := p.Viewer.UserID != 0
 	if p.Viewer.Perms.Has("account.view_profiles", 0) {
-		p.Nav = append(p.Nav, navLink{Label: "Members", Href: s.path("members"), Current: p.navKey == "members"})
+		p.Nav = append(p.Nav, navLink{Label: "Members", Href: s.path("members"), Current: p.navKey == "members", Wide: wide})
 	}
-	p.Nav = append(p.Nav, navLink{Label: "Team", Href: s.path("team"), Current: p.navKey == "team"})
+	p.Nav = append(p.Nav, navLink{Label: "Team", Href: s.path("team"), Current: p.navKey == "team", Wide: wide})
 	s.addMessagesLink(p)
 	if p.Viewer.UserID != 0 && p.Viewer.Perms.HasAnywhere("mod.approve") {
 		p.Nav = append(p.Nav, navLink{Label: "Queue", Href: s.path("queue"), Current: p.navKey == "queue"})

@@ -74,7 +74,7 @@ func TestErrorPagesWithTheDatabaseDown(t *testing.T) {
 			}
 			rec := getAs(t, h, c.target, cookies)
 			body := themed(t, "base "+base+" GET "+c.target, rec, base, c.status, c.heading)
-			if strings.Contains(body, "Signed in as") || strings.Contains(body, `name="csrf"`) {
+			if strings.Contains(body, "Account menu for ") || strings.Contains(body, `name="csrf"`) {
 				t.Errorf("base %s GET %s: the error page shows a session or a form", base, c.target)
 			}
 		}

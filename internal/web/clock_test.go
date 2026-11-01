@@ -61,6 +61,66 @@ func TestRelativeBands(t *testing.T) {
 	}
 }
 
+// TestShortBands pins the short ages of the list rows. They share the bands of
+// relText, so a row and a post agree on an age.
+func TestShortBands(t *testing.T) {
+	ny := loadZone(t, "America/New_York")
+	now := time.Date(2026, 10, 25, 17, 7, 0, 0, ny)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	tests := []struct {
+		name string
+		t    time.Time
+		want string
+	}{
+		{"9 s", ago(9 * time.Second), "now"},
+		{"10 s", ago(10 * time.Second), "10s"},
+		{"119 s", ago(119 * time.Second), "119s"},
+		{"120 s", ago(120 * time.Second), "2m"},
+		{"119 min", ago(119 * time.Minute), "119m"},
+		{"2 h", ago(2 * time.Hour), "2h"},
+		{"47 h", ago(47 * time.Hour), "47h"},
+		{"48 h", ago(48 * time.Hour), "2d"},
+		{"179 days", ago(179 * 24 * time.Hour), "179d"},
+		{"exactly 180 days", ago(180 * 24 * time.Hour), "5mo"},
+		{"23 months", time.Date(2024, 11, 25, 12, 0, 0, 0, ny), "23mo"},
+		{"24 months", time.Date(2024, 10, 25, 12, 0, 0, 0, ny), "2y"},
+		{"9 years", time.Date(2017, 3, 1, 12, 0, 0, 0, ny), "9y"},
+		{"61 s ahead", now.Add(61 * time.Second), "Oct 25, 2026"},
+	}
+	for _, tt := range tests {
+		if got := shortText(tt.t, now, ny); got != tt.want {
+			t.Errorf("%s: shortText = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestShortAndAbsoluteTags pins the list-row tag in each format, and the joined
+// date, which is never an age.
+func TestShortAndAbsoluteTags(t *testing.T) {
+	ny := loadZone(t, "America/New_York")
+	now := time.Date(2026, 10, 25, 17, 7, 0, 0, ny)
+	at := time.Date(2017, 3, 1, 12, 0, 0, 0, ny)
+	rel := clock{Loc: ny, Format: "relative", Now: now}
+	std := clock{Loc: ny, Format: "standard", Now: now}
+	iso := clock{Loc: ny, Format: "iso", Now: now}
+	tests := []struct {
+		name, got, want string
+	}{
+		{"short relative", string(shortTag(at, rel)),
+			`<time datetime="2017-03-01T17:00:00Z" title="Mar 1, 2017, 12:00 pm">9y</time>`},
+		{"short standard", string(shortTag(at, std)), `<time datetime="2017-03-01T17:00:00Z">Mar 1, 2017</time>`},
+		{"short iso", string(shortTag(at, iso)), `<time datetime="2017-03-01T17:00:00Z">2017-03-01</time>`},
+		{"absolute relative", string(absDateTag(at, rel)), `<time datetime="2017-03-01T17:00:00Z">Mar 1, 2017</time>`},
+		{"absolute standard", string(absDateTag(at, std)), `<time datetime="2017-03-01T17:00:00Z">Mar 1, 2017</time>`},
+		{"absolute iso", string(absDateTag(at, iso)), `<time datetime="2017-03-01T17:00:00Z">2017-03-01</time>`},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("%s:\n got %s\nwant %s", tt.name, tt.got, tt.want)
+		}
+	}
+}
+
 // TestMonthEnd pins the month-end rule: a month is whole only when its day of the
 // month and time of day have come, so a time on the 31st does not complete a month
 // on the 28th, even when the 28th is the last day of the month.
@@ -183,14 +243,15 @@ func TestPagesUseViewerFormat(t *testing.T) {
 	if !re.MatchString(art) {
 		t.Errorf("carol does not see the relative text:\n%s", art)
 	}
-	if !regexp.MustCompile(`Joined: <time datetime="2019-05-01T10:00:00Z" title="May 1, 2019">\d+ years ago</time>`).MatchString(art) {
-		t.Errorf("carol does not see the join date as an age:\n%s", art)
+	// The join date is a date in every format.
+	if !strings.Contains(art, `Joined: <time datetime="2019-05-01T10:00:00Z">May 1, 2019</time>`) {
+		t.Errorf("carol does not see the join date as a date:\n%s", art)
 	}
-	// The forum index and a forum page use the same form.
+	// The forum index and a forum page show the short age.
 	for _, target := range []string{"/", "/f/2"} {
 		page := bodyOf(t, getAs(t, h, target, c))
-		if !strings.Contains(page, " ago</time>") {
-			t.Errorf("carol on %s sees no relative text", target)
+		if !regexp.MustCompile(`<time datetime="2020-02-01T11:00:00Z" title="[^"]+">\d+y</time>`).MatchString(page) {
+			t.Errorf("carol on %s sees no short age", target)
 		}
 	}
 
