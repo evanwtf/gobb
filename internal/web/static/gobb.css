@@ -142,16 +142,16 @@ p { margin: 0; }
   border-bottom: 3px solid var(--accent);
 }
 
-/* The header is one bar. On a wide screen it is one row: the brand, the tabs,
-   the search box and the account menu. Narrower, the tabs take a second row. On a
-   phone the search box becomes an icon that opens the search page. */
+/* The header has two rows: the brand, the search box and the account menu, then
+   the tabs. The tabs wrap rather than run off the screen: a member with unread
+   topics has a long "New since your last visit" tab. On a phone the search box
+   becomes an icon that opens the search page. */
 .header-bar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  grid-template-areas: "brand nav search user";
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "brand search user" "nav nav nav";
   align-items: center;
   column-gap: 0.75rem;
-  min-height: 3.5rem;
 }
 .brand { grid-area: brand; }
 .site-nav { grid-area: nav; min-width: 0; }
@@ -166,12 +166,15 @@ p { margin: 0; }
   max-width: 100%;
 }
 .brand:hover { text-decoration: none; }
+.brand { padding: 0.4rem 0; }
 .header-image { display: block; height: 2.75rem; width: auto; max-width: 100%; border-radius: 4px; }
 .brand-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
 .brand-desc { font-size: 0.8rem; opacity: 0.88; }
 
+.site-nav { border-top: 1px solid rgb(255 255 255 / 0.14); margin: 0 -0.5rem; }
 .site-nav ul {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 0;
   margin: 0;
@@ -184,7 +187,7 @@ p { margin: 0; }
   display: flex;
   align-items: center;
   padding: 0 0.7rem;
-  min-height: 3.5rem;
+  min-height: 2.75rem;
   color: var(--header-text);
   font-weight: 600;
   font-size: 0.95rem;
@@ -196,8 +199,8 @@ p { margin: 0; }
 .site-nav a:focus-visible, .search-icon:focus-visible, .sign-in:focus-visible,
 .account-menu summary:focus-visible, .brand:focus-visible { outline: 3px solid var(--header-text); outline-offset: -3px; }
 
-/* The mark-read button sits at the end of the tabs, small, so the row does not
-   wrap. Its touch target is the full height of the row. */
+/* The mark-read button sits at the end of the tabs, small, so the row is less
+   likely to wrap. */
 .site-nav .nav-action { margin-left: auto; align-items: center; padding-left: 0.5rem; }
 .nav-action .button-quiet {
   padding: 0.25rem 0.6rem;
@@ -210,20 +213,8 @@ p { margin: 0; }
 .nav-action .button-quiet:focus-visible { outline-color: var(--header-text); }
 .label-narrow { display: none; }
 
-.nav-search { display: flex; align-items: center; gap: 0.4rem; margin: 0; }
-.nav-search input {
-  width: 13rem;
-  padding: 0.35rem 0.6rem;
-  font: inherit;
-  font-size: 0.9rem;
-  color: var(--text);
-  background: var(--page);
-  border: 1px solid rgb(255 255 255 / 0.3);
-  border-radius: 6px;
-}
-.nav-search input:focus-visible { outline: 3px solid var(--header-text); outline-offset: 1px; }
-.nav-search .nav-button { padding: 0.35rem 0.6rem; border-radius: 6px; }
-.nav-search a { color: var(--header-text); font-size: 0.85rem; opacity: 0.88; }
+.nav-search { display: flex; align-items: center; margin: 0; }
+.nav-search a { margin-left: 0.6rem; color: var(--header-text); font-size: 0.88rem; font-weight: 500; }
 .search-icon {
   display: none;
   width: 2.75rem;
@@ -286,17 +277,6 @@ p { margin: 0; }
 .account-menu .menu-narrow { display: none; }
 .sign-in { color: var(--header-text); font-weight: 600; padding: 0.5rem 0.7rem; border-radius: 6px; }
 .sign-in:hover { text-decoration: none; background: rgb(255 255 255 / 0.1); }
-
-/* Between a phone and a wide screen the tabs take their own row. */
-@media (max-width: 1099px) {
-  .header-bar {
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    grid-template-areas: "brand search user" "nav nav nav";
-  }
-  .brand { padding: 0.4rem 0; }
-  .site-nav { border-top: 1px solid rgb(255 255 255 / 0.14); margin: 0 -0.5rem; }
-  .site-nav a { min-height: 2.75rem; }
-}
 
 @media (max-width: 699px) {
   .header-bar { column-gap: 0.25rem; min-height: 0; padding-right: 0.5rem; }
@@ -1150,10 +1130,8 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 
 /* ---- Search -------------------------------------------------------------- */
 
-/* The box in the nav. The input sits on the header color; the button is a nav
-   button. On a narrow screen the item takes a row of its own. */
-.site-nav .nav-search { align-items: center; gap: 0.25rem; }
-.site-nav .nav-search form { align-items: stretch; }
+/* The box in the header. The input sits on the header color; the button is a
+   header button. A phone shows the search icon instead. */
 .nav-search input[type="search"] {
   width: 11rem;
   margin: 0.35rem 0;
@@ -1167,7 +1145,6 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
 }
 .nav-search input[type="search"]:focus-visible { outline: 3px solid var(--header-text); outline-offset: 1px; }
 .nav-search .nav-button { border: 1px solid rgb(255 255 255 / 0.4); border-left: 0; border-radius: 0 6px 6px 0; margin: 0.35rem 0; padding: 0.3rem 0.8rem; }
-.site-nav .nav-search > a { padding-left: 0.6rem; padding-right: 0.6rem; font-weight: 500; font-size: 0.88rem; }
 
 .search-form {
   margin: 0 0 1.25rem;
@@ -1210,10 +1187,6 @@ mark {
 }
 
 @media (max-width: 699px) {
-  .site-nav .nav-search { flex: 1 0 100%; }
-  .site-nav .nav-search form { flex: 1 1 auto; }
-  .nav-search input[type="search"] { flex: 1 1 auto; width: 100%; min-width: 0; padding: 0.35rem 0.6rem; margin: 0.25rem 0; }
-  .nav-search .nav-button { padding: 0.35rem 0.8rem; margin: 0.25rem 0; }
   .search-form { padding: 0.85rem; }
   .search-form .search-go { width: 100%; }
 }
@@ -1361,7 +1334,8 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
 
 .page-head { margin: 0 0 0.6rem; }
 .page-head h1 { font-size: 1.45rem; }
-.page-desc { margin-left: 0.4rem; color: var(--muted); font-size: 0.9rem; font-weight: 400; letter-spacing: 0; }
+.page-head-inline { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 0.6rem; }
+.page-desc { color: var(--muted); font-size: 0.9rem; }
 .head-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; }
 .head-row .pager { flex: 1 1 auto; margin: 0; justify-content: flex-end; }
 .head-row form { margin: 0; }
@@ -1404,13 +1378,13 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
   .forums:not(.topics) td.num + td.num::before { content: "/ "; }
   .forums:not(.topics) .forum-count { font-weight: 600; color: var(--muted); }
   .forums:not(.topics) td.last { flex: 1 0 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  td.last::before { content: none; }
+  .forums:not(.topics) td.last::before, .topic-line td.last::before { content: none; }
   .forums:not(.topics) .last-title { display: inline; font-weight: 500; color: var(--text); }
   .forums:not(.topics) .last-title::after { content: " \00b7"; color: var(--muted); }
 
   /* A topic: the title on line 1; the author, the replies and the last post on
      line 2. Views do not show. */
-  .forums.topics tr {
+  .forums.topics tr.topic-line {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     grid-template-areas: "title title title" "meta replies last";
@@ -1418,26 +1392,28 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
     position: relative;
     padding: 0.45rem 0.85rem 0.45rem 1.1rem;
   }
-  .forums.topics td.topic-main { display: contents; }
-  .forums.topics .forum-main::before { left: 0; top: 0.45rem; bottom: 0.45rem; }
+  .topic-line td.topic-main { display: contents; }
+  .topic-line .forum-main::before { left: 0; top: 0.45rem; bottom: 0.45rem; }
   .topic-title { grid-area: title; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .topics .topic-meta { grid-area: meta; display: block; margin: 0.1rem 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .topics .topic-link { font-size: 0.98rem; }
-  .topics .tag { font-size: 0.62rem; padding: 0 0.3rem; }
-  .forums.topics td.num-replies { grid-area: replies; align-self: end; display: inline-flex; align-items: center; gap: 0.2rem; }
-  .forums.topics td.num-replies::before { content: none; }
-  .forums.topics .icon-replies { display: inline; }
-  .forums.topics .forum-count { font-weight: 400; color: var(--muted); }
-  .forums.topics td.num-views { display: none; }
-  .forums.topics td.last { grid-area: last; align-self: end; white-space: nowrap; }
-  .forums.topics td.moved-gap { grid-area: meta; }
+  .topic-line .topic-meta { grid-area: meta; display: block; margin: 0.1rem 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topic-line .topic-link { font-size: 0.98rem; }
+  .topic-line .tag { font-size: 0.62rem; padding: 0 0.3rem; }
+  .topic-line td.num-replies { grid-area: replies; align-self: end; display: inline-flex; align-items: center; gap: 0.2rem; }
+  .topic-line td.num-replies::before { content: none; }
+  .topic-line .icon-replies { display: inline; }
+  .topic-line .forum-count { font-weight: 400; color: var(--muted); }
+  .topic-line td.num-views { display: none; }
+  .topic-line td.last { grid-area: last; align-self: end; white-space: nowrap; }
+  /* The age is a link: pad it to a 24px target without moving the line. */
+  .topic-line .last-time { display: inline-block; padding: 0.25rem 0.15rem; margin: -0.25rem -0.15rem; }
+  .topic-line td.moved-gap { grid-area: meta; }
 
   /* A post: the author block is one row, and the post time sits at its right. */
   .post { position: relative; }
   .post-author { padding: 0.5rem 0.85rem; column-gap: 0.6rem; grid-template-columns: 2.25rem minmax(0, 1fr); }
   .post-author .avatar { width: 2.25rem; height: 2.25rem; border-radius: 6px; }
   .post-author .author-stat { display: none; }
-  .post-author .author-name { padding-right: 4rem; }
+  .post-author .author-name { padding-right: 6.5rem; }
   .post-head { padding: 0; margin: 0; border: 0; min-height: 0; }
   .post-head .permalink { position: absolute; top: 0.6rem; right: 0.85rem; font-size: 0.8rem; }
   .post-main { padding: 0.5rem 0.85rem 0.25rem; }

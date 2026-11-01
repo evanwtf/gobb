@@ -27,7 +27,7 @@
     <nav class="site-nav" aria-label="Main">
       <ul>
         {{- range .Nav}}
-        <li{{if .Wide}} class="nav-wide"{{end}}><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}{{if .Badge}} <span class="badge-new">{{.Badge}}</span>{{end}}</a></li>
+        <li{{if .Wide}} class="nav-wide"{{end}}><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{if .Short}}<span class="label-wide">{{.Label}}</span><span class="label-narrow">{{.Short}}</span>{{else}}{{.Label}}{{end}}{{if .Badge}} <span class="badge-new">{{.Badge}}</span>{{end}}</a></li>
         {{- end}}
         {{- block "navaction" .}}{{end}}
       </ul>
@@ -43,7 +43,7 @@
     {{- end}}
     {{- if .Viewer.UserID}}
     <details class="account-menu">
-      <summary><span class="visually-hidden">Account menu for </span><bdi>{{.Viewer.Name}}</bdi><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></summary>
+      <summary><span class="visually-hidden">Account menu for </span><bdi title="{{.Viewer.Name}}">{{.Viewer.Name}}</bdi><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></summary>
       <ul>
         <li><a href="{{.AccountHref}}"{{if .AccountCurrent}} aria-current="page"{{end}}>Your account</a></li>
         {{- range .Nav}}{{if .Wide}}

@@ -108,8 +108,10 @@ func TestShortAndAbsoluteTags(t *testing.T) {
 	}{
 		{"short relative", string(shortTag(at, rel)),
 			`<time datetime="2017-03-01T17:00:00Z" title="Mar 1, 2017, 12:00 pm">9y</time>`},
-		{"short standard", string(shortTag(at, std)), `<time datetime="2017-03-01T17:00:00Z">Mar 1, 2017</time>`},
-		{"short iso", string(shortTag(at, iso)), `<time datetime="2017-03-01T17:00:00Z">2017-03-01</time>`},
+		{"short standard", string(shortTag(at, std)),
+			`<time datetime="2017-03-01T17:00:00Z" title="Mar 1, 2017, 12:00 pm">Mar 1, 2017</time>`},
+		{"short iso", string(shortTag(at, iso)),
+			`<time datetime="2017-03-01T17:00:00Z" title="2017-03-01T12:00:00-05:00">2017-03-01</time>`},
 		{"absolute relative", string(absDateTag(at, rel)), `<time datetime="2017-03-01T17:00:00Z">Mar 1, 2017</time>`},
 		{"absolute standard", string(absDateTag(at, std)), `<time datetime="2017-03-01T17:00:00Z">Mar 1, 2017</time>`},
 		{"absolute iso", string(absDateTag(at, iso)), `<time datetime="2017-03-01T17:00:00Z">2017-03-01</time>`},

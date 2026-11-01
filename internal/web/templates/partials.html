@@ -38,7 +38,7 @@
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <input type="hidden" name="next" value="{{.Return}}">
   {{- if .Short}}
-  <button type="submit" class="button-quiet" aria-label="{{.Label}}"><span class="label-wide" aria-hidden="true">{{.Label}}</span><span class="label-narrow" aria-hidden="true">{{.Short}}</span></button>
+  <button type="submit" class="button-quiet"><span class="label-wide">{{.Label}}</span><span class="label-narrow">{{.Short}}<span class="visually-hidden">: {{.Context}}</span></span></button>
   {{- else}}
   <button type="submit" class="button-quiet">{{.Label}}</button>
   {{- end}}
@@ -81,10 +81,11 @@
       {{- else if not .Readable}}
       <td class="members-only" colspan="3">{{template "lock"}} {{if $.Member}}No access{{else}}Members only{{end}}</td>
       {{- else}}
-      <td class="num" data-label="Topics"><span class="forum-count">{{num .Topics}}</span></td>
-      <td class="num" data-label="Posts"><span class="forum-count">{{num .Posts}}</span></td>
+      <td class="num" data-label="Topics"><span class="forum-count">{{num .Topics}}</span><span class="visually-hidden"> topics</span></td>
+      <td class="num" data-label="Posts"><span class="forum-count">{{num .Posts}}</span><span class="visually-hidden"> posts</span></td>
       <td class="last" data-label="Last post">
         {{- with .Last}}
+        <span class="visually-hidden">Last post: </span>
         <a class="last-title" href="{{path "p" (printf "%d" .ID)}}"><bdi>{{.TopicTitle}}</bdi></a>
         <span class="last-meta">{{template "author" .Author}}</span>
         <span class="last-time">{{ago .At $.Clock}}</span>
@@ -100,7 +101,7 @@
 {{end}}
 
 {{define "toprow"}}
-<tr class="topic-row{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}{{if .New}} row-new{{end}}">
+<tr class="topic-row topic-line{{if ne .Kind "normal"}} topic-{{.Kind}}{{end}}{{if .MovedTo}} topic-moved{{end}}{{if .New}} row-new{{end}}">
   <td class="forum-main topic-main">
     {{- if .MovedTo}}
     <span class="topic-title"><span class="tag tag-moved">Moved:</span> <a class="topic-link" href="{{path "t" (printf "%d" .MovedTo)}}"><bdi>{{.Title}}</bdi></a></span>
@@ -123,12 +124,12 @@
   {{- if .MovedTo}}
   <td class="num moved-gap" colspan="3"><span class="muted">This topic moved.</span></td>
   {{- else}}
-  <td class="num num-replies" data-label="Replies">{{template "replyicon"}}<span class="forum-count">{{num .Replies}}</span></td>
+  <td class="num num-replies" data-label="Replies">{{template "replyicon"}}<span class="forum-count">{{num .Replies}}</span><span class="visually-hidden"> replies</span></td>
   <td class="num num-views" data-label="Views"><span class="forum-count">{{num .Views}}</span></td>
   <td class="last" data-label="Last post">
     {{- if .Last.ID}}
     <span class="last-meta">{{template "author" .Last.Author}}</span>
-    <a class="last-time" href="{{path "p" (printf "%d" .Last.ID)}}" aria-label="Last post">{{ago .Last.At $.Clock}}</a>
+    <a class="last-time" href="{{path "p" (printf "%d" .Last.ID)}}"><span class="visually-hidden">Last post, </span>{{ago .Last.At $.Clock}}</a>
     {{- else}}
     <span class="muted">No posts yet</span>
     {{- end}}
@@ -165,7 +166,7 @@
         {{- if eq .Visibility "unapproved"}} <span class="tag tag-warn">Waiting for approval</span>{{end}}
         {{- if eq .Visibility "deleted"}} <span class="tag tag-warn">Deleted</span>{{end}}
       </div>
-      {{if .ID}}<a class="permalink" href="#p{{.ID}}" aria-label="Link to this post">{{time .At .Clock}}</a>{{else}}<span class="permalink">{{time .At .Clock}}</span>{{end}}
+      {{if .ID}}<a class="permalink" href="#p{{.ID}}" aria-label="Link to this post"><span class="label-wide">{{time .At .Clock}}</span><span class="label-narrow">{{ago .At .Clock}}</span></a>{{else}}<span class="permalink"><span class="label-wide">{{time .At .Clock}}</span><span class="label-narrow">{{ago .At .Clock}}</span></span>{{end}}
     </header>
     <div class="post-body">{{.HTML}}</div>
     {{- if .Attachments}}

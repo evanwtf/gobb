@@ -13,6 +13,22 @@
   <p class="page-sub">Started by {{template "author" .Data.Topic.Author}} &middot; {{plural .Data.Topic.Replies "reply" "replies"}} <span class="hide-narrow">&middot; {{plural .Data.Topic.Views "view" "views"}}</span></p>
 </header>
 {{template "heldnote" .Data.Held}}
+<div class="head-row">
+  {{- if .Data.CanReply}}<a class="button-quiet button-link" href="{{.Data.ReplyHref}}">Reply</a>{{end}}
+  {{- if .Data.CanLock}}
+  <form class="mark-form" method="post" action="{{.Data.LockHref}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="button-quiet">Lock</button>
+  </form>
+  {{- end}}
+  {{- if .Data.CanUnlock}}
+  <form class="mark-form" method="post" action="{{.Data.UnlockHref}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="button-quiet">Unlock</button>
+  </form>
+  {{- end}}
+  {{template "pager" pagerAt .Data.Pager "Pages, top"}}
+</div>
 
 {{- with .Data.Poll}}
 <section class="poll" aria-labelledby="poll-title">
@@ -30,22 +46,7 @@
 </section>
 {{- end}}
 
-<div class="head-row">
-  {{- if .Data.CanReply}}<a class="button-quiet button-link" href="{{.Data.ReplyHref}}">Reply</a>{{end}}
-  {{- if .Data.CanLock}}
-  <form class="mark-form" method="post" action="{{.Data.LockHref}}">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <button type="submit" class="button-quiet">Lock</button>
-  </form>
-  {{- end}}
-  {{- if .Data.CanUnlock}}
-  <form class="mark-form" method="post" action="{{.Data.UnlockHref}}">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <button type="submit" class="button-quiet">Unlock</button>
-  </form>
-  {{- end}}
-  {{template "pager" pagerAt .Data.Pager "Pages, top"}}
-</div>
+
 
 <div class="posts">
 {{- range .Data.Posts}}

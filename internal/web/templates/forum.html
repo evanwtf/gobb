@@ -1,8 +1,10 @@
 {{define "content"}}
 {{template "crumbs" .Data.Crumbs}}
-<header class="page-head">
-  <h1>{{.Data.Forum.Name}}{{if .Data.Forum.Locked}} <span class="tag">Locked</span>{{end}}
-    {{- if .Data.Forum.Description}} <span class="page-desc">{{.Data.Forum.Description}}</span>{{end}}</h1>
+<header class="page-head page-head-inline">
+  <h1>{{.Data.Forum.Name}}{{if .Data.Forum.Locked}} <span class="tag">Locked</span>{{end}}</h1>
+  {{- if .Data.Forum.Description}}
+  <p class="page-desc">{{.Data.Forum.Description}}</p>
+  {{- end}}
 </header>
 {{template "heldnote" .Data.Held}}
 
@@ -58,5 +60,5 @@
 {{- end}}
 {{end}}
 {{define "navaction"}}{{if .Viewer.UserID}}
-<li class="nav-action">{{template "markform" markShort (path "f" (printf "%d" .Data.Forum.ID) "read") "Mark this forum read" "Mark read" .}}</li>
+<li class="nav-action">{{template "markform" markShort (path "f" (printf "%d" .Data.Forum.ID) "read") "Mark this forum read" "Mark read" "this forum" .}}</li>
 {{- end}}{{end}}

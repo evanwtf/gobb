@@ -40,9 +40,11 @@ func (s *site) parseTemplates() error {
 		"markForm": func(action, label string, p *page) markFormData {
 			return markFormData{Action: action, Label: label, CSRF: p.CSRF, Return: p.Return}
 		},
-		// markShort is markForm with a shorter label for a phone.
-		"markShort": func(action, label, short string, p *page) markFormData {
-			return markFormData{Action: action, Label: label, Short: short, CSRF: p.CSRF, Return: p.Return}
+		// markShort is markForm with a shorter label for a phone. Context follows
+		// the short label for screen readers only, so the spoken name still starts
+		// with the words on the button.
+		"markShort": func(action, label, short, context string, p *page) markFormData {
+			return markFormData{Action: action, Label: label, Short: short, Context: context, CSRF: p.CSRF, Return: p.Return}
 		},
 	}
 	s.pages = map[string]*template.Template{}
@@ -61,6 +63,8 @@ type markFormData struct {
 	Action, Label, CSRF, Return string
 	// Short is the label on a phone, or empty for Label on every screen.
 	Short string
+	// Context is the hidden text after Short, such as "this forum".
+	Context string
 }
 
 // index serves the board index.

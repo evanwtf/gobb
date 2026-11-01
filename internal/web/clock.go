@@ -52,19 +52,23 @@ func timeTag(t time.Time, c clock, dateOnly bool) template.HTML {
 }
 
 // shortTag writes t as a <time> element for a list row, where space is short.
-// In the relative format it shows a short age, such as "4d" or "9y", with the
-// standard text in the title attribute. In the other formats it shows the date
-// and no hour.
+// In the relative format it shows a short age, such as "4d" or "9y". In the
+// other formats it shows the date and no hour. The title attribute holds the
+// full time in the format of c, so the hour is never lost.
 func shortTag(t time.Time, c clock) template.HTML {
-	if c.Format != "relative" {
-		return timeTag(t, c, true)
-	}
 	loc := c.Loc
 	if loc == nil {
 		loc = time.UTC
 	}
-	return template.HTML(`<time datetime="` + t.UTC().Format(time.RFC3339) + `" title="` +
-		t.In(loc).Format(timeLayout) + `">` + shortText(t, c.Now, loc) + `</time>`)
+	local := t.In(loc)
+	text, title := local.Format(dateLayout), local.Format(timeLayout)
+	switch c.Format {
+	case "iso":
+		text, title = local.Format(isoDateLayout), local.Format(isoTimeLayout)
+	case "relative":
+		text = shortText(t, c.Now, loc)
+	}
+	return template.HTML(`<time datetime="` + t.UTC().Format(time.RFC3339) + `" title="` + title + `">` + text + `</time>`)
 }
 
 // shortText is relText in short units: "now", "45s", "5m", "3h", "4d", "11mo",

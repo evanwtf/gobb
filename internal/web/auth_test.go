@@ -113,7 +113,7 @@ func TestSignInFlow(t *testing.T) {
 	}
 
 	home := bodyOf(t, getAs(t, h, "/", cookies))
-	if !strings.Contains(home, "Account menu for ") || !strings.Contains(home, "<bdi>alice</bdi>") {
+	if !strings.Contains(home, "Account menu for ") || !strings.Contains(home, `<bdi title="alice">alice</bdi>`) {
 		t.Errorf("the index for alice lacks the signed-in marker:\n%s", home)
 	}
 	if strings.Contains(home, `href="/login`) {
@@ -155,8 +155,6 @@ func TestSignInFlow(t *testing.T) {
 	}
 }
 
-// headerParts splits the header of a page into the part above the nav (the
-// brand and the member's links) and the nav. It fails the test when the markup
 // headerParts splits the header of page into the nav and the rest: the brand,
 // the search and the member's links.
 func headerParts(t *testing.T, page string) (top, nav string) {
@@ -187,11 +185,11 @@ func TestHeaderUser(t *testing.T) {
 	if menu == "" {
 		t.Fatalf("the header of a member has no account menu:\n%s", top)
 	}
-	if !strings.Contains(menu, `<summary><span class="visually-hidden">Account menu for </span><bdi>alice</bdi>`) {
+	if !strings.Contains(menu, `<summary><span class="visually-hidden">Account menu for </span><bdi title="alice">alice</bdi>`) {
 		t.Errorf("the menu does not name the member:\n%s", menu)
 	}
 	if !strings.Contains(menu, `<a href="/account">Your account</a>`) {
-		t.Errorf("the menu has no link to the account page:\n%s", menu)
+		t.Errorf("the menu has no link to the account page, or it is current on the index:\n%s", menu)
 	}
 	if !strings.Contains(menu, `action="/logout"`) || !strings.Contains(menu, `name="csrf"`) || !strings.Contains(menu, ">Sign out</button>") {
 		t.Errorf("the Sign out form is not in the menu:\n%s", menu)
@@ -199,8 +197,20 @@ func TestHeaderUser(t *testing.T) {
 	if !strings.Contains(menu, `<li class="menu-narrow"><a href="/team">Team</a></li>`) {
 		t.Errorf("the menu lacks the narrow Team link:\n%s", menu)
 	}
-	if !strings.Contains(nav, `<li class="nav-wide"><a href="/team">Team</a></li>`) {
-		t.Errorf("Team in the nav of a member is not a wide link:\n%s", nav)
+	for _, link := range []string{`<li class="nav-wide"><a href="/team">Team</a></li>`, `<li class="nav-wide"><a href="/members">Members</a></li>`} {
+		if !strings.Contains(nav, link) {
+			t.Errorf("the nav of a member lacks the wide link %s:\n%s", link, nav)
+		}
+	}
+	// Mark all read sits at the end of the tabs on the index.
+	if !regexp.MustCompile(`(?s)<li class="nav-action">\s*<form class="mark-form" method="post" action="/read">.*>Mark all read</button>`).MatchString(nav) {
+		t.Errorf("the nav of a member on the index has no Mark all read:\n%s", nav)
+	}
+	// On a forum it is Mark this forum read, with a short label for a phone whose
+	// spoken name starts with the words on the button.
+	_, nav2 := headerParts(t, bodyOf(t, getAs(t, h, "/f/2", cookies)))
+	if !strings.Contains(nav2, `<span class="label-wide">Mark this forum read</span><span class="label-narrow">Mark read<span class="visually-hidden">: this forum</span></span></button>`) {
+		t.Errorf("the nav of a forum has no Mark this forum read with its short label:\n%s", nav2)
 	}
 	for _, gone := range []string{"Account menu for ", "Sign out", `action="/logout"`} {
 		if strings.Contains(nav, gone) {
@@ -222,6 +232,9 @@ func TestHeaderUser(t *testing.T) {
 	}
 	if !strings.Contains(nav, `<li><a href="/team">Team</a></li>`) {
 		t.Errorf("Team in the nav of a guest is a wide link:\n%s", nav)
+	}
+	if strings.Contains(nav, "nav-action") {
+		t.Errorf("the nav of a guest has a mark-read button:\n%s", nav)
 	}
 	for _, gone := range []string{"Sign in", "Account menu for "} {
 		if strings.Contains(nav, gone) {
@@ -290,7 +303,7 @@ func TestSignInOverPlainHTTP(t *testing.T) {
 			if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/t/1" {
 				t.Fatalf("after sign-in: %d at %s", resp.StatusCode, resp.Request.URL)
 			}
-			if !strings.Contains(string(got), "<bdi>alice</bdi>") || !strings.Contains(string(got), "Account menu for ") {
+			if !strings.Contains(string(got), `<bdi title="alice">alice</bdi>`) || !strings.Contains(string(got), "Account menu for ") {
 				t.Error("the page after sign-in does not show alice")
 			}
 			var haveSession bool

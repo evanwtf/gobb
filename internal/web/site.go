@@ -510,6 +510,8 @@ type navLink struct {
 	Current     bool
 	// Badge is a short note after the label, such as "2 new", or empty.
 	Badge string
+	// Short is the label on a phone, or empty for Label on every screen.
+	Short string
 	// Wide marks a link that the nav shows only on a wide screen. On a phone the
 	// account menu holds it, so it is set only for a member, who has the menu.
 	Wide bool
@@ -671,7 +673,7 @@ func (s *site) addNewLink(p *page) {
 	if p.Viewer.UserID == 0 {
 		return
 	}
-	label := "New since your last visit"
+	label, short := "New since your last visit", "New"
 	unread := p.navUnread
 	if unread == nil {
 		_, n, err := board.NewCounts(p.ctx, s.pool, p.Viewer)
@@ -686,8 +688,9 @@ func (s *site) addNewLink(p *page) {
 			return
 		}
 		label += " (" + strconv.Itoa(*unread) + ")"
+		short += " (" + strconv.Itoa(*unread) + ")"
 	}
-	p.Nav = append(p.Nav, navLink{Label: label, Href: s.path("new"), Current: p.navKey == "new"})
+	p.Nav = append(p.Nav, navLink{Label: label, Short: short, Href: s.path("new"), Current: p.navKey == "new"})
 }
 
 // render executes the page template into a buffer, so that a template error
