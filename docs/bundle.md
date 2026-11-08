@@ -65,7 +65,8 @@ Field names are the JSON names. A field with a `?` after its name in a table may
 `null`. Every other field is required. A missing field and an unknown field are both
 errors. This holds for every JSON object in a row, not only the top level: the keys
 of `password`, `body`, `signature`, `file`, and each item of `settings`, `options` and
-`recipients` are required too. A key appears once, in lower case. `null` is allowed
+`recipients` are required too. The one exception is `conversation_id` in `pms.jsonl`,
+which a row may leave out. A key appears once, in lower case. `null` is allowed
 only on a field with a `?`. A list or an object that the tables name (`settings`,
 `options`, `recipients`, `match`) is never `null`; write `[]` or `{}`.
 
@@ -510,6 +511,7 @@ One row is one private message with all its recipients.
 | `show_signature` | bool | |
 | `author_deleted` | bool | Whether the author deleted their copy. |
 | `recipients` | list | Each has `user_id`, `kind`, `read` and `deleted`. It may be empty only when `author_id` is set. |
+| `conversation_id`? | id | The message that this one answers, or the first message of its conversation. `null` starts a conversation. The key may be absent, which means `null`. |
 
 In a recipient, `user_id` is a row of `users.jsonl`, `kind` is `to` or `bcc`, and `read`
 and `deleted` are bools. A user appears once per message. A message with no
@@ -517,8 +519,27 @@ and `deleted` are bools. A user appears once per message. A message with no
 `author_name` is the same as in `posts.jsonl`: it is a label, and gobb does not tie it
 to `author_id`.
 
+A conversation is a first message and the replies to it. `conversation_id` joins a
+message to a conversation:
+
+- It names a row of `pms.jsonl` with an `id` that is the same as or less than this
+  message's `id`. A message that names itself starts a conversation, the same as `null`.
+- The two messages share at least one party: the author (by `author_id`) or a
+  recipient of either kind.
+- It may name a message that itself names an earlier one. gobb follows the links and
+  stores the first message of the chain as the conversation.
+
+gobb 0.12.0 added `conversation_id` to format version 2 as an optional key, so a row may
+leave it out. An older gobb refuses the key as an unknown field: import a bundle that
+holds it with gobb 0.12.0 or later. Without the key, every message starts its own
+conversation. With `gobb import --thread-messages`, a message with no link whose subject
+starts with "Re:" joins the newest earlier conversation with the same people (the author
+and the `to` recipients) and the same subject (without its "Re:" prefixes, in any case).
+This is the rule of `gobb messages thread`. The flag is off by default, because two
+unrelated talks can share a subject.
+
 ```json
-{"id":1,"author_id":1,"author_name":"alice","author_ip":null,"created_at":"2025-12-01T18:00:00Z","subject":"Hello","body":{"source":"Hi Bob.","markdown":true,"smilies":true,"autolink":true},"show_signature":false,"author_deleted":false,"recipients":[{"user_id":2,"kind":"to","read":true,"deleted":false}]}
+{"id":2,"author_id":2,"author_name":"bob","author_ip":null,"created_at":"2025-12-02T09:00:00Z","subject":"Re: Hello","body":{"source":"Hi Alice.","markdown":true,"smilies":true,"autolink":true},"show_signature":false,"author_deleted":false,"recipients":[{"user_id":1,"kind":"to","read":false,"deleted":false}],"conversation_id":1}
 ```
 
 ## topic_marks.jsonl

@@ -110,8 +110,10 @@ func migrate(ctx context.Context, _ []string) error {
 func importBundle(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Fprintln(os.Stderr, "usage: gobb import [--replace] <bundle>") }
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, "usage: gobb import [--replace] [--thread-messages] <bundle>") }
 	replace := fs.Bool("replace", false, "empty the database and move the old files aside first")
+	thread := fs.Bool("thread-messages", false,
+		"join private messages that the bundle links to no conversation, by people and subject")
 	if err := fs.Parse(args); err != nil {
 		// The flag package has printed the message and the usage.
 		return errUsage
@@ -132,7 +134,9 @@ func importBundle(ctx context.Context, args []string) error {
 	if err := applyMigrations(ctx, pool); err != nil {
 		return err
 	}
-	counts, err := importer.Run(ctx, pool, fs.Arg(0), importer.Options{DataDir: cfg.DataDir, Replace: *replace})
+	counts, err := importer.Run(ctx, pool, fs.Arg(0), importer.Options{
+		DataDir: cfg.DataDir, Replace: *replace, ThreadMessages: *thread,
+	})
 	if err != nil {
 		return err
 	}

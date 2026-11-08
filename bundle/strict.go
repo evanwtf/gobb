@@ -22,6 +22,11 @@ type jsonField struct {
 	name  string
 	index int
 	typ   reflect.Type
+	// mayOmit is true for a pointer field with the tag bundle:"may-omit": its key
+	// may be absent, and an absent key means null. Only a field that a later
+	// change added to a row has the tag, so that a bundle written before the
+	// change stays valid. The writer still writes the key.
+	mayOmit bool
 }
 
 var fieldCache sync.Map // reflect.Type -> []jsonField
@@ -38,7 +43,8 @@ func jsonFields(t reflect.Type) []jsonField {
 		if !f.IsExported() || name == "-" || name == "" {
 			continue
 		}
-		out = append(out, jsonField{name: name, index: i, typ: f.Type})
+		mayOmit := f.Tag.Get("bundle") == "may-omit" && f.Type.Kind() == reflect.Pointer
+		out = append(out, jsonField{name: name, index: i, typ: f.Type, mayOmit: mayOmit})
 	}
 	fieldCache.Store(t, out)
 	return out
@@ -57,7 +63,8 @@ func isNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "
 // that encoding/json does not:
 //
 //   - the text is valid UTF-8, and one value follows no other data;
-//   - every key of every struct in T is present, and no other key is;
+//   - every key of every struct in T is present, and no other key is; the key
+//     of a pointer field tagged bundle:"may-omit" may be absent;
 //   - no key appears twice;
 //   - null appears only where T has a pointer;
 //   - no string holds U+0000.
@@ -127,6 +134,9 @@ func walk(raw json.RawMessage, t reflect.Type, path string) *Error {
 		for _, f := range fields {
 			known[f.name] = true
 			v, ok := vals[f.name]
+			if !ok && f.mayOmit {
+				continue
+			}
 			if !ok {
 				return &Error{Field: joinPath(path, f.name), Msg: "missing"}
 			}

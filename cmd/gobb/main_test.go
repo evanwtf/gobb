@@ -144,6 +144,27 @@ func TestImportCommand(t *testing.T) {
 	if code := run(ctx, []string{"import", "--replace", dir}); code != 0 {
 		t.Errorf("import --replace exit = %d, want 0", code)
 	}
+	// Message 2 of the small board answers message 1 by its subject, with no
+	// link. It starts its own conversation unless --thread-messages is given.
+	conversationOf := func() int64 {
+		var cid int64
+		if err := pool.QueryRow(ctx, `select conversation_id from pms where id = 2`).Scan(&cid); err != nil {
+			t.Fatal(err)
+		}
+		return cid
+	}
+	if cid := conversationOf(); cid != 2 {
+		t.Errorf("without --thread-messages, message 2 is in conversation %d, want 2", cid)
+	}
+	// A new data directory: two --replace runs in one second would name the
+	// same .replaced-<time> directory.
+	t.Setenv("GOBB_DATA_DIR", t.TempDir())
+	if code := run(ctx, []string{"import", "--replace", "--thread-messages", dir}); code != 0 {
+		t.Fatalf("import --replace --thread-messages exit = %d, want 0", code)
+	}
+	if cid := conversationOf(); cid != 1 {
+		t.Errorf("with --thread-messages, message 2 is in conversation %d, want 1", cid)
+	}
 }
 
 func TestImportCommandUsage(t *testing.T) {
@@ -155,6 +176,7 @@ func TestImportCommandUsage(t *testing.T) {
 		{"import", "--bogus", "a"},
 		// The flag must come before the path: the flag package stops at "a".
 		{"import", "a", "--replace"},
+		{"import", "a", "--thread-messages"},
 	} {
 		var got bytes.Buffer
 		old := stdout

@@ -339,6 +339,10 @@ type PM struct {
 	ShowSignature bool        `json:"show_signature"`
 	AuthorDeleted bool        `json:"author_deleted"`
 	Recipients    []Recipient `json:"recipients"`
+	// ConversationID names the message that this one answers, or the first
+	// message of its conversation. nil starts a conversation. The key may be
+	// absent from a row, which means nil.
+	ConversationID *int64 `json:"conversation_id" bundle:"may-omit"`
 }
 
 // TopicMark is a row of topic_marks.jsonl: the time a user last read a topic.

@@ -3,11 +3,15 @@ package importer
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"maps"
 	"net/netip"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/evanwtf/gobb/bundle"
+	"github.com/evanwtf/gobb/internal/pmthread"
 	"github.com/evanwtf/gobb/internal/postbody"
 	"github.com/evanwtf/gobb/markup"
 )
@@ -243,6 +247,10 @@ func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 		"body_tree", "body_text", "enable_markdown", "enable_smilies",
 		"enable_autolink", "enable_sig", "author_deleted", "conversation_id")
 	rcpts := newBulk(tx, "pms", "pm_recipients", "pm_id", "user_id", "kind", "is_read", "is_deleted")
+	// links maps a message to the message its conversation_id names, when that
+	// is another message. The rows land with that ID, and resolveLinks then
+	// moves each one to the first message of its chain.
+	links := map[int64]int64{}
 	n := 0
 	err := bundle.Each(r.Reader, func(line int, m bundle.PM) error {
 		ip, err := ipValue(m.AuthorIP)
@@ -253,9 +261,14 @@ func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 		if err != nil {
 			return idErr("pms", line, m.ID, "body", err)
 		}
+		cid := m.ID
+		if m.ConversationID != nil && *m.ConversationID != m.ID {
+			cid = *m.ConversationID
+			links[m.ID] = cid
+		}
 		if err := pms.add(ctx, line, m.ID, m.AuthorID, m.AuthorName, ip, m.CreatedAt, m.Subject,
 			m.Body.Source, tree, text, m.Body.Markdown, m.Body.Smilies, m.Body.Autolink,
-			m.ShowSignature, m.AuthorDeleted, m.ID); err != nil {
+			m.ShowSignature, m.AuthorDeleted, cid); err != nil {
 			return err
 		}
 		for _, c := range m.Recipients {
@@ -272,7 +285,52 @@ func loadPMs(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 	if err := pms.flush(ctx); err != nil {
 		return n, err
 	}
-	return n, rcpts.flush(ctx)
+	if err := rcpts.flush(ctx); err != nil {
+		return n, err
+	}
+	if err := resolveLinks(ctx, tx, links); err != nil {
+		return n, err
+	}
+	if r.threadMessages {
+		joined, err := pmthread.Join(ctx, tx, false)
+		if err != nil {
+			return n, fmt.Errorf("importer: %w", err)
+		}
+		slog.Info("messages joined by people and subject", "joined", joined)
+	}
+	return n, nil
+}
+
+// resolveLinks sets the conversation of each linked message to the first
+// message of its chain. A link names a message with a lower ID, which
+// bundle.Check has proved, so one pass in ID order finds every first message: the
+// message a link names is resolved before the link. A link to a message that is
+// not lower is an error, because such links could form a cycle.
+func resolveLinks(ctx context.Context, tx pgx.Tx, links map[int64]int64) error {
+	root := make(map[int64]int64, len(links))
+	var ids, cids []int64
+	for _, id := range slices.Sorted(maps.Keys(links)) {
+		to := links[id]
+		if to >= id {
+			return fmt.Errorf("importer: pms: message %d: conversation_id %d is not lower, so the links could form a cycle", id, to)
+		}
+		r, ok := root[to]
+		if !ok {
+			r = to
+		}
+		root[id] = r
+		if r != to {
+			ids, cids = append(ids, id), append(cids, r)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `update pms p set conversation_id = j.cid
+  from unnest($1::bigint[], $2::bigint[]) as j(id, cid) where p.id = j.id`, ids, cids); err != nil {
+		return fmt.Errorf("importer: join linked messages: %w", err)
+	}
+	return nil
 }
 
 func loadTopicMarks(ctx context.Context, tx pgx.Tx, r *source) (int, error) {

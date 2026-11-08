@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.0 (2026-11-08)
+
+- **Imported private messages join their conversations** (#35, the last part of
+  #32). The bundle's `pms.jsonl` row takes an optional `conversation_id` that names
+  the message it answers; gobb follows a chain of links to the first message. Check
+  refuses a link to a missing or later message, or between messages with no party
+  in common. The key may be left out, so older version 2 bundles still import; a
+  bundle that carries it needs gobb 0.12.0 or later.
+- **`gobb import --thread-messages`** (off by default) joins replies that have no
+  link by people and "Re:" subject, with the same rule as `gobb messages thread`.
+  Both now share one copy of that rule.
+
 ## 0.11.0 (2026-11-08)
 
 ### Set a topic's type (evanwtf/gobb#54)

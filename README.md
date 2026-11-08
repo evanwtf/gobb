@@ -47,8 +47,11 @@ too, run `docker compose down -v`.
 
 ## Import a bundle
 
-`gobb import [--replace] <bundle>` loads a bundle into the database and the data
-volume. The bundle is a directory or a `.tar.gz` file. Put the flag before the path.
+`gobb import [--replace] [--thread-messages] <bundle>` loads a bundle into the database
+and the data volume. The bundle is a directory or a `.tar.gz` file. Put the flags before
+the path. `--thread-messages` joins a private-message reply that the bundle links to no
+conversation by its people and subject, the rule of `gobb messages thread`. It is off by
+default, because two unrelated talks can share a subject.
 The format is in [docs/bundle.md](docs/bundle.md), and
 [docs/example-bundle/](docs/example-bundle/) is a small example. gobb 0.2.0 reads format
 version 2 and refuses a bundle of version 1.
