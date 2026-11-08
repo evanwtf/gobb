@@ -100,7 +100,11 @@ func TestRenderTable(t *testing.T) {
 		{"instagram", renderEmbed("instagram", "CxYz_12-ab"),
 			`<div class="embed-link"><a href="https://www.instagram.com/p/CxYz_12-ab/" rel="nofollow ugc noopener">https://www.instagram.com/p/CxYz_12-ab/</a></div>`},
 		{"reddit", renderEmbed("reddit", "programming/abc123"),
-			`<div class="embed-link"><a href="https://www.reddit.com/r/programming/comments/abc123/" rel="nofollow ugc noopener">View post on Reddit</a></div>`},
+			`<iframe class="embed reddit" src="https://embed.reddit.com/r/programming/comments/abc123/?embed=true" title="Reddit post" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>` +
+				`<div class="embed-link"><a href="https://www.reddit.com/r/programming/comments/abc123/" rel="nofollow ugc noopener">View post on Reddit</a></div>`},
+		{"reddit comment", renderEmbed("reddit", "programming/abc123/def456"),
+			`<iframe class="embed reddit comment" src="https://embed.reddit.com/r/programming/comments/abc123/comment/def456/?embed=true&amp;showmedia=false&amp;showmore=false&amp;depth=1" title="Reddit comment" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>` +
+				`<div class="embed-link"><a href="https://www.reddit.com/r/programming/comments/abc123/comment/def456/" rel="nofollow ugc noopener">View comment on Reddit</a></div>`},
 		{"tiktok", renderEmbed("tiktok", "6718335390845095173"),
 			`<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/6718335390845095173" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`},
 		{"threads", renderEmbed("threads", "zuck/C04flh-M8ii"),
@@ -125,14 +129,23 @@ func TestRenderEmbedsAlwaysLazyAndTitled(t *testing.T) {
 	ids := map[string]string{
 		"youtube": "M7lc1UVf-VE", "vimeo": "76979871", "tiktok": "6718335390845095173",
 		"spotify": "track/4cOdK2wGLETKBW3PvgPWqT", "soundcloud": "forss/flickermood",
+		"reddit": "programming/abc123", "reddit comment": "programming/abc123/def456",
 	}
-	for tag, id := range ids {
+	for name, id := range ids {
+		tag, _, _ := strings.Cut(name, " ")
 		out := renderHTML(renderEmbed(tag, id))
 		if !strings.Contains(out, ` loading="lazy"`) || !strings.Contains(out, ` title="`) {
-			t.Errorf("%s: iframe lacks loading or title: %s", tag, out)
+			t.Errorf("%s: iframe lacks loading or title: %s", name, out)
+		}
+		// Only the Reddit frame is sandboxed, with Reddit's own sandbox.
+		if tag == "reddit" {
+			if !strings.Contains(out, ` sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"`) {
+				t.Errorf("%s: no Reddit sandbox: %s", name, out)
+			}
+			continue
 		}
 		if strings.Contains(out, "sandbox") {
-			t.Errorf("%s: sandbox attribute present: %s", tag, out)
+			t.Errorf("%s: sandbox attribute present: %s", name, out)
 		}
 	}
 }
@@ -331,7 +344,7 @@ func TestRenderOriginsEveryEmbed(t *testing.T) {
 	r := Render(tree(kids...), RenderContext{})
 	// X, Instagram and Threads are plain links (ruling R49): they add no origin.
 	wantFrame := []string{
-		"https://open.spotify.com", "https://player.vimeo.com", "https://w.soundcloud.com",
+		"https://embed.reddit.com", "https://open.spotify.com", "https://player.vimeo.com", "https://w.soundcloud.com",
 		"https://www.tiktok.com", "https://www.youtube-nocookie.com",
 	}
 	if !reflect.DeepEqual(r.FrameSrc, wantFrame) {
@@ -877,20 +890,68 @@ func TestRenderEmbedsNeedNoScript(t *testing.T) {
 	}
 }
 
-// Reddit renders as a plain link: no script, no frame, no origin.
-func TestRenderRedditIsAPlainLink(t *testing.T) {
-	r := Render(renderEmbed("reddit", "programming/abc123"), RenderContext{})
-	if len(r.FrameSrc)+len(r.ScriptSrc)+len(r.ConnectSrc)+len(r.Scripts) != 0 {
-		t.Errorf("origins for a Reddit link: %v %v %v %v", r.FrameSrc, r.ScriptSrc, r.ConnectSrc, r.Scripts)
-	}
-	out := string(r.HTML)
-	for _, bad := range []string{"<iframe", "<script", "<blockquote", "embed.reddit.com"} {
-		if strings.Contains(out, bad) {
-			t.Errorf("the Reddit link holds %q: %s", bad, out)
+// Reddit renders as its embed frame, with a plain link after it. The frame
+// adds only its own origin: no Reddit script runs in the page (ruling R49).
+func TestRenderRedditIsAFrameAndALink(t *testing.T) {
+	for _, tc := range []struct{ id, src, href, text string }{
+		{"programming/abc123", "https://embed.reddit.com/r/programming/comments/abc123/?embed=true",
+			"https://www.reddit.com/r/programming/comments/abc123/", "View post on Reddit"},
+		{"programming/abc123/def456",
+			"https://embed.reddit.com/r/programming/comments/abc123/comment/def456/?embed=true&amp;showmedia=false&amp;showmore=false&amp;depth=1",
+			"https://www.reddit.com/r/programming/comments/abc123/comment/def456/", "View comment on Reddit"},
+	} {
+		r := Render(renderEmbed("reddit", tc.id), RenderContext{})
+		if !reflect.DeepEqual(r.FrameSrc, []string{"https://embed.reddit.com"}) {
+			t.Errorf("%s: FrameSrc = %v", tc.id, r.FrameSrc)
+		}
+		if len(r.ScriptSrc)+len(r.ConnectSrc)+len(r.Scripts) != 0 {
+			t.Errorf("%s: script origins for a Reddit embed: %v %v %v", tc.id, r.ScriptSrc, r.ConnectSrc, r.Scripts)
+		}
+		out := string(r.HTML)
+		for _, bad := range []string{"<script", "<blockquote", "widgets.js", "allow=", "embed_host_url", "utm_"} {
+			if strings.Contains(out, bad) {
+				t.Errorf("%s: the embed holds %q: %s", tc.id, bad, out)
+			}
+		}
+		if !strings.Contains(out, ` src="`+tc.src+`"`) {
+			t.Errorf("%s: no frame src %s in %s", tc.id, tc.src, out)
+		}
+		// The link comes after the frame, so it shows when Reddit refuses it.
+		link := `<div class="embed-link"><a href="` + tc.href + `" rel="nofollow ugc noopener">` + tc.text + `</a></div>`
+		if !strings.HasSuffix(out, "</iframe>"+link) {
+			t.Errorf("%s: the frame is not followed by the link %s: %s", tc.id, link, out)
 		}
 	}
-	if !strings.Contains(out, ">View post on Reddit</a>") {
-		t.Errorf("no link text: %s", out)
+}
+
+// Hostile Reddit links stay text or plain links: none reaches the frame src or
+// an attribute, and none adds the Reddit origin.
+func TestRenderHostileRedditLinks(t *testing.T) {
+	for _, in := range []string{
+		`https://www.reddit.com/r/a"><script>alert(1)</script>/comments/abc123/`,
+		`https://www.reddit.com/r/golang/comments/abc"onload="x/`,
+		`https://www.reddit.com/r/golang/comments/abc123/x"onmouseover="alert(1)/def456/`,
+		`https://www.reddit.com/r/golang/comments/abc123/slug/def"456/`,
+		`https://www.reddit.com/r/golang/comments/abc123/slug/def456%2F..%2F..%2Fx/`,
+		"https://www.reddit.com/r/../comments/abc/",
+		"https://www.reddit.com/r/golang/comments/../../x/",
+		"https://www.reddit.com/r/golang/comments/abc123/slug/../../../evil/",
+		"https://www.reddit.com.evil.example/r/golang/comments/abc123/",
+		"https://evil.example/r/golang/comments/abc123/comment/def456/",
+		"https://redd.it/abc123",
+		"https://www.reddit.com/r/golang/s/AbCdEf123",
+		"javascript:alert(1)//www.reddit.com/r/golang/comments/abc123/",
+	} {
+		r := Render(Parse(in, allOn), RenderContext{})
+		out := string(r.HTML)
+		if len(r.FrameSrc) != 0 || strings.Contains(out, "<iframe") || strings.Contains(out, "embed.reddit.com") {
+			t.Errorf("%q became an embed: %s %v", in, out, r.FrameSrc)
+		}
+		for _, bad := range []string{"<script", `"onload`, `"onmouseover`, `href="javascript:`} {
+			if strings.Contains(out, bad) {
+				t.Errorf("%q: the output holds %q: %s", in, bad, out)
+			}
+		}
 	}
 }
 

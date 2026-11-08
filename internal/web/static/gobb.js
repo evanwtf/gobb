@@ -459,3 +459,50 @@
     }
   });
 })();
+
+// ---- Height of a Reddit embed ------------------------------------------------
+// A Reddit frame posts {"type":"resize.embed","data":<height in px>} as a JSON
+// string when its content changes height. The frame gets that height, clamped
+// to 8rem to 40rem. Only a message from https://embed.reddit.com whose source is
+// the window of a Reddit frame on this page counts. Without script, the frame
+// keeps the height of gobb.css and scrolls inside.
+(function () {
+  "use strict";
+
+  var ORIGIN = "https://embed.reddit.com";
+  var MIN_REM = 8;
+  var MAX_REM = 40;
+
+  window.addEventListener("message", function (event) {
+    if (event.origin !== ORIGIN || typeof event.data !== "string") {
+      return;
+    }
+    var frames = document.querySelectorAll("iframe.embed.reddit");
+    var frame = null;
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow === event.source) {
+        frame = frames[i];
+        break;
+      }
+    }
+    if (!frame) {
+      return;
+    }
+    var msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch (e) {
+      return;
+    }
+    if (!msg || msg.type !== "resize.embed") {
+      return;
+    }
+    var px = Number(msg.data);
+    if (!isFinite(px) || px <= 0) {
+      return;
+    }
+    var rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    px = Math.min(Math.max(px, MIN_REM * rem), MAX_REM * rem);
+    frame.style.height = Math.round(px) + "px";
+  });
+})();

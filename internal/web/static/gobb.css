@@ -840,6 +840,14 @@ iframe.embed {
 iframe.embed.tiktok { max-width: 22rem; aspect-ratio: 9 / 16; }
 iframe.embed.spotify { aspect-ratio: auto; height: 152px; max-width: 40rem; background: none; }
 iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; background: none; }
+/* Reddit's frame posts its height, and gobb.js applies it. Without script the
+   frame keeps this height and scrolls inside. The link to Reddit follows it. */
+iframe.embed.reddit { aspect-ratio: auto; height: 26rem; max-width: 40rem; margin-bottom: 0.2em; background: none; }
+iframe.embed.reddit.comment { height: 16rem; }
+@media (max-width: 699px) {
+  /* A comment wraps to more lines on a phone. */
+  iframe.embed.reddit.comment { height: 22rem; }
+}
 
 /* Embeds that need a script from their provider show a plain link until it runs. */
 .post-body blockquote.twitter-tweet,

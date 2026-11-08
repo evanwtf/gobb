@@ -115,6 +115,22 @@ func isSoundcloudID(s string) bool {
 	return segs[1] == "sets" && slugChars(segs[2], 100)
 }
 
+// isRedditID accepts "sub/post" for a post and "sub/post/comment" for a
+// comment. A subreddit name is 2 to 21 letters, digits and "_". A post ID and a
+// comment ID are 1 to 12 lower-case letters and digits (base 36).
+func isRedditID(s string) bool {
+	segs := strings.Split(s, "/")
+	if len(segs) < 2 || len(segs) > 3 || !idChars(segs[0], 2, 21, true) || strings.Contains(segs[0], "-") {
+		return false
+	}
+	for _, id := range segs[1:] {
+		if !lowerDigits(id, 1, 12) {
+			return false
+		}
+	}
+	return true
+}
+
 // spotifyTypes are the content types that have a Spotify player.
 var spotifyTypes = map[string]bool{"track": true, "album": true, "playlist": true, "episode": true, "show": true}
 
@@ -194,17 +210,19 @@ var embedRules = map[string]embedRule{
 	},
 	"reddit": {
 		hosts: hostSet([]string{"reddit.com"}, map[string]string{"old.reddit.com": "reddit.com", "new.reddit.com": "reddit.com"}),
-		bare: func(s string) bool {
-			return idPair(s, func(a string) bool { return idChars(a, 2, 21, true) && !strings.Contains(a, "-") },
-				func(b string) bool { return lowerDigits(b, 1, 12) })
-		},
+		bare:  isRedditID,
 		url: func(_, path string, _ url.Values) string {
 			segs := segments(path)
-			if (len(segs) == 4 || len(segs) == 5) && segs[0] == "r" && segs[2] == "comments" &&
-				(len(segs) == 4 || idChars(segs[4], 1, 300, true)) {
-				return segs[1] + "/" + segs[3]
+			if len(segs) < 4 || len(segs) > 6 || segs[0] != "r" || segs[2] != "comments" ||
+				(len(segs) >= 5 && !idChars(segs[4], 1, 300, true)) {
+				return ""
 			}
-			return ""
+			// A comment link is ".../comments/{post}/{slug}/{comment}". The slug
+			// is the post title, or "comment" in a link from the share menu.
+			if len(segs) == 6 {
+				return segs[1] + "/" + segs[3] + "/" + segs[5]
+			}
+			return segs[1] + "/" + segs[3]
 		},
 	},
 	"tiktok": {
@@ -273,10 +291,13 @@ func IsEmbed(name string) bool {
 // parameter of a YouTube watch URL. The scheme may be missing.
 //
 // Short links need a server lookup, so EmbedID returns false for them. That
-// covers redd.it, vm.tiktok.com, spotify.link and on.soundcloud.com. The
-// youtu.be form is a plain ID in the path, so it works. A SoundCloud value must
-// name a track ("user/track") or a set ("user/sets/set"); pages such as
-// "search/sounds" and "user/likes" give false. EmbedID returns false
+// covers redd.it (it names the post but not its subreddit, and the Reddit embed
+// needs both), Reddit share links ("/r/sub/s/..."), vm.tiktok.com, spotify.link
+// and on.soundcloud.com. The youtu.be form is a plain ID in the path, so it
+// works. A Reddit value names a post ("sub/post") or a comment
+// ("sub/post/comment"). A SoundCloud value must name a track ("user/track") or
+// a set ("user/sets/set"); pages such as "search/sounds" and "user/likes" give
+// false. EmbedID returns false
 // when the tag is unknown or the value is not a bare ID or a URL of the medium.
 func EmbedID(tag, value string) (string, bool) {
 	rule, ok := embedRules[tag]

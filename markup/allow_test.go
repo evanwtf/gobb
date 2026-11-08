@@ -15,6 +15,7 @@ const richSource = "# h1\n\n## h2\n\n### h3\n\n#### h4\n\n---\n\n> quote\n\n- a\
 	"[l](https://example.com/x) [m](mailto:a@b.c) <a@b.c> ![i](/p.png) ![n](/note.png) :) line\\\nbreak\n\n" +
 	"https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nhttps://vimeo.com/123456\n\nhttps://x.com/a/status/1234567890\n\n" +
 	"https://www.instagram.com/p/CxYzAbCd12/\n\nhttps://www.reddit.com/r/golang/comments/abc123/title/\n\n" +
+	"https://www.reddit.com/r/golang/comments/abc123/comment/def456/\n\n" +
 	"https://www.tiktok.com/@user/video/7234567890123456789\n\nhttps://www.threads.com/@user/post/CxYz_123\n\n" +
 	"https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC\n\nhttps://soundcloud.com/artist/track-name\n"
 
