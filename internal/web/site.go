@@ -100,9 +100,17 @@ type Options struct {
 	SearchMaxRunning int
 	// RefuseSearch, when set, sees each search before the limits of search, and
 	// may refuse it with the page of a search over the limit, and a Retry-After
-	// of retry. Nil refuses nothing. It must not touch the database. Defensive
-	// Mode uses it to refuse the searches of guests.
+	// of retry. It must not touch the database. Nil means the check of
+	// Defensive Mode: a search with no session cookie while Defensive Mode is on
+	// ([site.refuseGuestSearch]). A guest with a made-up cookie passes it; the
+	// search checks the viewer again after the session lookup.
 	RefuseSearch func(r *http.Request) (refuse bool, retry time.Duration)
+	// Signin is the sign-in schedule. Nil means the owner's defaults
+	// ([login.DefaultSchedule]).
+	Signin *login.ScheduleConfig
+	// Defense is Defensive Mode. Nil means a new one with the defaults. The
+	// caller that passes one refreshes it on a timer ([login.Defense.Refresh]).
+	Defense *login.Defense
 }
 
 // The defaults of Options.PoolWait, SearchPerSecond and SearchMaxRunning.
@@ -216,6 +224,13 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if opt.LoginGate != nil {
 		lo.Gate = opt.LoginGate
 	}
+	if opt.Signin != nil {
+		lo.Schedule = login.NewSchedule(*opt.Signin)
+	}
+	if opt.Defense == nil {
+		opt.Defense = lo.Defense
+	}
+	lo.Defense = opt.Defense
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
 		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(opt.Mail), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight),
 		adminWrites: newAdminWrites(opt), mailTests: newMailTests(), searches: newSearchLimits(opt)}
@@ -233,6 +248,9 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	}
 	if s.opt.PoolWait <= 0 {
 		s.opt.PoolWait = defaultPoolWait
+	}
+	if s.opt.RefuseSearch == nil {
+		s.opt.RefuseSearch = s.refuseGuestSearch
 	}
 	s.base = normalizeBase(opt.BasePath)
 	var err error

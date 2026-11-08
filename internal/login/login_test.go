@@ -25,10 +25,14 @@ var (
 	ip  = netip.MustParseAddr("10.1.2.3")
 )
 
+// newService returns a service with the default gate and no sign-in schedule,
+// for the tests of the check itself. The tests of the schedule build their own.
 func newService(t *testing.T) (*login.Service, *pgxpool.Pool) {
 	t.Helper()
 	pool, _ := boardtest.Load(t, bundletest.Small())
-	return login.New(pool), pool
+	opt := login.DefaultOptions()
+	opt.Schedule, opt.Defense = nil, nil
+	return login.NewWith(pool, opt), pool
 }
 
 func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {

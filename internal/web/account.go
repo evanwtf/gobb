@@ -291,7 +291,7 @@ func (s *site) accountMember(w http.ResponseWriter, r *http.Request, option, act
 // limitMessage is the text of a sign-in limit. /login and the account page say
 // the same words.
 func limitMessage(l *login.LimitedError) string {
-	return "Too many sign-in attempts. Try again in " + waitText(l.RetryAfter) + "."
+	return "Too many sign-in attempts. Try again in " + signinWaitText(l.RetryAfter) + "."
 }
 
 // verifyCurrent checks the current password of the member with

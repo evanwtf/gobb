@@ -267,9 +267,9 @@ func CheckCSRF(secret, got string) bool {
 	return subtle.ConstantTimeCompare([]byte(CSRFToken(secret)), []byte(got)) == 1
 }
 
-// ipKeepFor is how long user_ips keeps an address after its last sighting
-// (spec 10).
-const ipKeepFor = 90 * 24 * time.Hour
+// DefaultAddressKeep is how long user_ips keeps an address after its last
+// sighting, unless GOBB_ADDRESS_KEEP_DAYS says otherwise: one year (spec 10).
+const DefaultAddressKeep = 365 * 24 * time.Hour
 
 // CountLive returns the number of sessions that have not expired at now.
 func CountLive(ctx context.Context, q db.Querier, now time.Time) (int64, error) {
@@ -281,15 +281,19 @@ func CountLive(ctx context.Context, q db.Querier, now time.Time) (int64, error) 
 }
 
 // Cleanup deletes the sessions that have expired by now, and the user_ips rows
-// last seen more than 90 days before now. It returns how many of each. A session
-// that has expired is dead to [Lookup] already, so the delete only frees space.
-func Cleanup(ctx context.Context, q db.Querier, now time.Time) (sessions, ips int64, err error) {
+// last seen more than keep before now. A keep of zero or less is
+// [DefaultAddressKeep]. It returns how many of each. A session that has expired
+// is dead to [Lookup] already, so the delete only frees space.
+func Cleanup(ctx context.Context, q db.Querier, now time.Time, keep time.Duration) (sessions, ips int64, err error) {
+	if keep <= 0 {
+		keep = DefaultAddressKeep
+	}
 	tag, err := q.Exec(ctx, `delete from sessions where expires_at <= $1`, now)
 	if err != nil {
 		return 0, 0, fmt.Errorf("session: cleanup sessions: %w", err)
 	}
 	sessions = tag.RowsAffected()
-	tag, err = q.Exec(ctx, `delete from user_ips where last_seen_at < $1`, now.Add(-ipKeepFor))
+	tag, err = q.Exec(ctx, `delete from user_ips where last_seen_at < $1`, now.Add(-keep))
 	if err != nil {
 		return sessions, 0, fmt.Errorf("session: cleanup user_ips: %w", err)
 	}

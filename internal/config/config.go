@@ -43,7 +43,61 @@ type Config struct {
 	PublicURL string
 	// Load holds the limits that keep a flood from filling the database pool.
 	Load Load
+	// Signin holds the sign-in schedule, Defensive Mode and the time that gobb
+	// keeps an address.
+	Signin Signin
 }
+
+// Signin holds the settings of the sign-in schedule and of Defensive Mode
+// (spec 10, "Load protection"). Each one comes from a GOBB_ variable and has the
+// owner's default.
+type Signin struct {
+	// FreeFailures is how many failures of an address or a name leave no wait
+	// after them, from GOBB_SIGNIN_FREE_FAILURES.
+	FreeFailures int
+	// Waits are the waits after the failures that follow the free ones, in
+	// order, from GOBB_SIGNIN_WAITS.
+	Waits []time.Duration
+	// LastWait is the wait after every later failure, from
+	// GOBB_SIGNIN_LAST_WAIT.
+	LastWait time.Duration
+	// ResetAfter is the time with no failure that clears a count, from
+	// GOBB_SIGNIN_RESET_AFTER.
+	ResetAfter time.Duration
+	// AddressKeep is how long gobb keeps a member's address after its last
+	// use, from GOBB_ADDRESS_KEEP_DAYS.
+	AddressKeep time.Duration
+	// DefensiveFailures: Defensive Mode turns on above this many failed
+	// sign-ins in DefensiveWindow, from GOBB_DEFENSIVE_FAILURES.
+	DefensiveFailures int
+	// DefensiveWindow is the window of the trigger, from
+	// GOBB_DEFENSIVE_WINDOW.
+	DefensiveWindow time.Duration
+	// DefensiveQuiet is the time at or below the trigger rate that turns
+	// Defensive Mode off, from GOBB_DEFENSIVE_QUIET.
+	DefensiveQuiet time.Duration
+	// DefensiveGap is the least time between two tries of an untrusted address
+	// while Defensive Mode is on, from GOBB_DEFENSIVE_GAP. Zero means none.
+	DefensiveGap time.Duration
+}
+
+// The defaults of the sign-in settings. (owner)
+const (
+	DefaultSigninFreeFailures = 2
+	DefaultSigninWaits        = "15s,15s,60s,60s,60s"
+	DefaultSigninLastWait     = 900 * time.Second
+	DefaultSigninResetAfter   = 24 * time.Hour
+	DefaultAddressKeepDays    = 365
+	DefaultDefensiveFailures  = 100
+	DefaultDefensiveWindow    = 60 * time.Second
+	DefaultDefensiveQuiet     = 10 * time.Minute
+	DefaultDefensiveGap       = 5 * time.Second
+
+	maxSigninFreeFailures = 100
+	maxSigninWaits        = 20
+	maxAddressKeepDays    = 3650
+	maxDefensiveFailures  = 10000
+)
 
 // Load holds the settings of the load protection of the database pool and of
 // search. Each one comes from a GOBB_ variable and has a default for a small
@@ -139,7 +193,72 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if c.Load, err = loadFromEnv(getenv); err != nil {
 		return Config{}, err
 	}
+	if c.Signin, err = signinFromEnv(getenv); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+// signinFromEnv reads the sign-in settings. An unset or empty variable takes
+// its default.
+func signinFromEnv(getenv func(string) string) (Signin, error) {
+	get := func(key string) string { return strings.TrimSpace(getenv(key)) }
+	var (
+		s   Signin
+		err error
+	)
+	if s.FreeFailures, err = intSetting("GOBB_SIGNIN_FREE_FAILURES", get("GOBB_SIGNIN_FREE_FAILURES"), DefaultSigninFreeFailures, 0, maxSigninFreeFailures); err != nil {
+		return Signin{}, err
+	}
+	waits := get("GOBB_SIGNIN_WAITS")
+	if waits == "" {
+		waits = DefaultSigninWaits
+	}
+	for part := range strings.SplitSeq(waits, ",") {
+		d, err := time.ParseDuration(strings.TrimSpace(part))
+		if err != nil || d < time.Second || d > 24*time.Hour || len(s.Waits) == maxSigninWaits {
+			return Signin{}, fmt.Errorf("config: GOBB_SIGNIN_WAITS: must be 1 to %d durations from 1s to 24h, separated by commas, such as 15s,15s,60s", maxSigninWaits)
+		}
+		s.Waits = append(s.Waits, d)
+	}
+	for _, d := range []struct {
+		key      string
+		into     *time.Duration
+		def      time.Duration
+		min, max time.Duration
+	}{
+		{"GOBB_SIGNIN_LAST_WAIT", &s.LastWait, DefaultSigninLastWait, time.Second, 24 * time.Hour},
+		{"GOBB_SIGNIN_RESET_AFTER", &s.ResetAfter, DefaultSigninResetAfter, time.Minute, 30 * 24 * time.Hour},
+		{"GOBB_DEFENSIVE_WINDOW", &s.DefensiveWindow, DefaultDefensiveWindow, time.Second, time.Hour},
+		{"GOBB_DEFENSIVE_QUIET", &s.DefensiveQuiet, DefaultDefensiveQuiet, time.Second, 24 * time.Hour},
+		{"GOBB_DEFENSIVE_GAP", &s.DefensiveGap, DefaultDefensiveGap, 0, time.Hour},
+	} {
+		if *d.into, err = durationSetting(d.key, get(d.key), d.def, d.min, d.max); err != nil {
+			return Signin{}, err
+		}
+	}
+	days, err := intSetting("GOBB_ADDRESS_KEEP_DAYS", get("GOBB_ADDRESS_KEEP_DAYS"), DefaultAddressKeepDays, 1, maxAddressKeepDays)
+	if err != nil {
+		return Signin{}, err
+	}
+	s.AddressKeep = time.Duration(days) * 24 * time.Hour
+	if s.DefensiveFailures, err = intSetting("GOBB_DEFENSIVE_FAILURES", get("GOBB_DEFENSIVE_FAILURES"), DefaultDefensiveFailures, 1, maxDefensiveFailures); err != nil {
+		return Signin{}, err
+	}
+	return s, nil
+}
+
+// durationSetting reads one duration setting: def when v is empty, otherwise a
+// Go duration from lo to hi.
+func durationSetting(key, v string, def, lo, hi time.Duration) (time.Duration, error) {
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < lo || d > hi {
+		return 0, fmt.Errorf("config: %s: must be a duration from %s to %s, such as %s", key, lo, hi, def)
+	}
+	return d, nil
 }
 
 // loadFromEnv reads the load settings. An unset or empty variable takes its

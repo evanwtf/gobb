@@ -78,7 +78,7 @@ func TestCleanupLogsCounts(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
 
-	cleanup(t.Context(), pool, func() time.Time { return now })
+	cleanup(t.Context(), pool, func() time.Time { return now }, 0)
 
 	out := buf.String()
 	if !strings.Contains(out, "sessions=1") || !strings.Contains(out, "ips=0") {
@@ -113,7 +113,7 @@ func TestCleanupLogsMailCount(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	cleanup(t.Context(), pool, func() time.Time { return now })
+	cleanup(t.Context(), pool, func() time.Time { return now }, 0)
 
 	if out := buf.String(); !strings.Contains(out, "email cleanup") || !strings.Contains(out, "rows=1") {
 		t.Errorf("log = %q, want an email cleanup line with rows=1", out)

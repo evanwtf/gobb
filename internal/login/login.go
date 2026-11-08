@@ -21,7 +21,6 @@ import (
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/metrics"
 	"github.com/evanwtf/gobb/internal/password"
-	"github.com/evanwtf/gobb/internal/ratelimit"
 )
 
 var (
@@ -54,14 +53,20 @@ func (e *BannedError) Error() string {
 	return "login: banned: " + e.Reason
 }
 
-// LimitedError means a limit on failed sign-ins holds the address or the name.
-// Check returns it before any password check. When only the limit of the name is
-// full, a lookup of the name and one query on user_ips run first, to see whether
-// the account has used the address; the same two run whether or not an account
-// has the name. No password hash runs.
+// LimitedError means that the sign-in schedule refuses the try: its wait has
+// not ended (see [Service.Check]). Check returns it before any password check,
+// and the try changes no count. When only the wait of the name holds, a lookup
+// of the name and one query on user_ips run first, to see whether the address
+// is one of the member's trusted addresses; the same two run whether or not an
+// account has the name. While Defensive Mode is on, one query on user_ips may
+// run first to see whether the address is any member's trusted address. No
+// password hash runs.
 type LimitedError struct {
-	// RetryAfter is how long until the longer of the two limits has room again.
+	// RetryAfter is how long until the wait that refused the try ends.
 	RetryAfter time.Duration
+	// Reason is the wait that refused the try: [ReasonAddress], [ReasonName] or
+	// [ReasonDefensive].
+	Reason string
 }
 
 // Error implements error.
@@ -78,20 +83,8 @@ const maxName = 512
 // need more.
 const DefaultFloor = 400 * time.Millisecond
 
-// The defaults of [New]. Spec 19 leaves the numbers to the builder.
+// The defaults of the gate of [New]. Spec 19 leaves the numbers to the builder.
 const (
-	// DefaultIPFailures is how many failed sign-ins one address may make in
-	// DefaultIPWindow.
-	DefaultIPFailures = 10
-	// DefaultIPWindow is the window of the limit per address.
-	DefaultIPWindow = 15 * time.Minute
-	// DefaultNameFailures is how many failed sign-ins one name may take in
-	// DefaultNameWindow.
-	DefaultNameFailures = 20
-	// DefaultNameWindow is the window of the limit per name.
-	DefaultNameWindow = time.Hour
-	// DefaultMaxKeys is the most keys that each limiter holds.
-	DefaultMaxKeys = 10000
 	// DefaultBudgetKiB is the most memory that password checks may use
 	// together: 128 MiB. [BudgetKiB] gives less under a lower memory limit.
 	DefaultBudgetKiB = 128 * 1024
@@ -126,15 +119,15 @@ func BudgetKiB(limit int64) uint64 {
 	return min(DefaultBudgetKiB, kib-gateHeadroomKiB)
 }
 
-// Options sets up a [Service]. A nil field turns that part off: a nil limiter
-// does not limit, and a nil Gate does not hold checks back. A nil Verify is
-// [password.Verify].
+// Options sets up a [Service]. A nil field turns that part off: a nil Schedule
+// does not limit, a nil Defense is never on, and a nil Gate does not hold
+// checks back. A nil Verify is [password.Verify].
 type Options struct {
-	// IPLimit counts the failed sign-ins of each client address.
-	IPLimit *ratelimit.Limiter
-	// NameLimit counts the failed sign-ins of each cleaned name, whether or not
-	// an account has the name.
-	NameLimit *ratelimit.Limiter
+	// Schedule counts the failed sign-ins of each client address and of each
+	// cleaned name, whether or not an account has the name.
+	Schedule *Schedule
+	// Defense is Defensive Mode. Each failed sign-in counts in it.
+	Defense *Defense
 	// Gate limits the memory of the password checks that run at one time.
 	Gate *Gate
 	// Verify checks a password against a stored hash. A test may replace it.
@@ -195,15 +188,15 @@ func (c *clock) waited(d time.Duration) {
 	}
 }
 
-// DefaultOptions returns new limiters and a new gate with the default numbers,
-// and [password.Verify]. Each call returns its own limiters and gate, so two
-// services share no counts.
+// DefaultOptions returns a new schedule, a new Defensive Mode and a new gate
+// with the default numbers, and [password.Verify]. Each call returns its own,
+// so two services share no counts.
 func DefaultOptions() Options {
 	return Options{
-		IPLimit:   ratelimit.New(DefaultIPFailures, DefaultIPWindow, DefaultMaxKeys).Named("signin_address"),
-		NameLimit: ratelimit.New(DefaultNameFailures, DefaultNameWindow, DefaultMaxKeys).Named("signin_name"),
-		Gate:      NewGate(DefaultBudgetKiB),
-		Verify:    password.Verify,
+		Schedule: NewSchedule(DefaultSchedule()),
+		Defense:  NewDefense(DefaultDefense()),
+		Gate:     NewGate(DefaultBudgetKiB),
+		Verify:   password.Verify,
 	}
 }
 
@@ -236,22 +229,33 @@ type candidate struct {
 // Check finds the user for name (a username or an email address) and verifies
 // pw. On success it returns the ID of the user.
 //
-// The limits come first, and they are reserved, not only tested: Check takes one
-// event from the limit of the address and one from the limit of the cleaned name,
-// each in one step under the lock of its limiter, before any hash. Parallel
-// guesses therefore cannot pass a limit that the first of them has not reached.
-// If either limit is full, Check returns a [*LimitedError] with the longer wait;
-// it runs no password check and does not wait for the floor. A name with no
-// account is limited like one with an account. A try that the address limit
-// refuses takes nothing from the name limit. A try that the name limit refuses
-// keeps its address event, so one address cannot send unlimited lookups at a
-// locked name.
+// The sign-in schedule comes first ([Schedule], spec 10). It keeps one count of
+// failures for the client address (an IPv4 address, or an IPv6 /64) and one for
+// the cleaned name, whether or not an account has the name. The first
+// FreeFailures failures of a count leave no wait; each later failure starts a
+// wait before the next try (15 s, 15 s, 60 s, 60 s, 60 s, then 900 s by
+// default). A try made before a wait ends gets a [*LimitedError] at once: it
+// runs no password check, does not wait for the floor, and changes no count. A
+// count clears after ResetAfter (24 hours) with no failure.
 //
-// One exception: when only the limit of the name is full, and the address of the
-// client is one that an account with that name has used before (user_ips), the
-// limit of the name does not apply to this try. The limit of the address still
-// does. The lookup runs for every name, with or without an account, so a
-// stranger sees the same answer either way.
+// The schedule is reserved, not only tested: a try that passes holds a pending
+// failure on each count, in one step under the lock of the schedule, before any
+// hash. Parallel guesses therefore cannot pass a wait that the first of them
+// would start. The address goes first: a try that its wait refuses does not
+// look at the name.
+//
+// The wait of the name does not hold an address that is one of the member's
+// trusted addresses: an address in user_ips of an account that the name finds,
+// whose member is in good standing (active and not banned). A failure from such
+// an address does not count against the name either, so a stranger who
+// hammers a name cannot lock the member out at home. The lookup that decides
+// runs when the wait of the name would refuse the try, for every name, with or
+// without an account, so a stranger sees the same answer either way. For a
+// failure, it runs after the password check, inside the floor.
+//
+// While Defensive Mode is on ([Defense]), an address that is no member's
+// trusted address has no free failure, and waits at least Gap between two tries
+// that pass. A trusted address keeps the normal schedule.
 //
 // Then the order is fixed, so that the errors tell a stranger nothing:
 //  1. A name that is not valid UTF-8, or is too long, is [ErrWrong].
@@ -273,9 +277,13 @@ type candidate struct {
 // [ErrBusy] and a cancel of ctx happen once, at the same point, for every name.
 // When the gate stays full, Check returns [ErrBusy].
 //
-// A wrong password or an ambiguous address keeps the two reserved events. Any
-// other end gives them back: a good password, [ErrBusy], [ErrInactive], a ban, a
-// context or a database error. A good password also clears the name.
+// A wrong password or an ambiguous address is a failure: it counts against the
+// address, against the name (unless the address is one of the member's trusted
+// addresses), and in Defensive Mode. Any other end gives the pending tries back:
+// a good password, [ErrBusy], [ErrInactive], a ban, a context or a database
+// error. A good password also clears the count of the name. It does not clear
+// the count of the address, so one account of one's own cannot reset an address
+// that guesses at other names.
 //
 // Every return after the reservation, except a good password, comes no sooner
 // than Floor after the call began, plus the time that it waited for the gate,
@@ -345,11 +353,12 @@ func signinResult(err error) string {
 func (s *Service) checkWith(ctx context.Context, name, pw string, ip netip.Addr, now time.Time, finish func(ctx context.Context, userID, epoch int64) error) (int64, error) {
 	c := &clock{from: time.Now()}
 	k := s.keys(name, ip)
-	held, err := s.reserve(ctx, name, k, now)
+	st, err := s.reserve(ctx, name, k, now)
 	if err != nil {
 		return 0, err
 	}
-	id, epoch, err := s.check(ctx, c, name, pw, ip, now)
+	var found []int64
+	id, epoch, err := s.check(ctx, c, name, pw, ip, now, &found)
 	if err == nil && finish != nil {
 		if err = finish(ctx, id, epoch); errors.Is(err, ErrStale) {
 			err = ErrWrong
@@ -359,40 +368,45 @@ func (s *Service) checkWith(ctx context.Context, name, pw string, ip netip.Addr,
 		}
 	}
 	if err == nil {
-		s.refund(held, k, now, false)
-		if s.opt.NameLimit != nil && k.nameOK {
-			s.opt.NameLimit.Reset(k.name)
-		}
+		s.end(st, now, false, false, true)
 		return id, nil
 	}
-	// Every failure that follows the reservation takes the floor. The events of
-	// a wrong password stay; any other end gives them back.
-	if !errors.Is(err, ErrWrong) && !errors.Is(err, ErrAmbiguous) {
-		s.refund(held, k, now, true)
+	// Every failure that follows the reservation takes the floor. A wrong
+	// password and an ambiguous address count; any other end gives the pending
+	// tries back.
+	failed := errors.Is(err, ErrWrong) || errors.Is(err, ErrAmbiguous)
+	nameCounts := true
+	if failed && st != nil && st.heldName {
+		// A failure from one of the member's trusted addresses does not count
+		// against the name. The lookup runs inside the floor. When it fails, the
+		// failure counts.
+		if known, kerr := s.trustedFor(ctx, found, k, now); kerr == nil && known {
+			nameCounts = false
+		}
+	}
+	s.end(st, now, failed, nameCounts, false)
+	if failed && s.opt.Defense != nil {
+		s.opt.Defense.Record(now)
 	}
 	s.wait(c.from)
 	return id, err
 }
 
-// limitKeys are the keys of one sign-in in the two limiters.
+// limitKeys are the keys of one sign-in in the schedule.
 type limitKeys struct {
-	ip string
-	// prefix is the range of the client that the address limit counts: the
-	// address for IPv4, the /64 for IPv6. It is invalid when the address is.
+	// prefix is the range of the client that the address count keys: the
+	// address for IPv4, the /64 for IPv6. It is the zero Prefix when the
+	// address is not valid.
 	prefix netip.Prefix
 	name   string
 	// nameOK is false for a name that is not valid UTF-8 or is too long. Such a
-	// name has no key in the name limit, and counts against the address only.
+	// name has no count, and the try counts against the address only.
 	nameOK bool
 }
 
-// held says which events a try has reserved.
-type held struct{ ip, name bool }
-
-// keys returns the limiter keys of a sign-in. The address key is the plain
-// address for IPv4 (an IPv4-mapped address first becomes the IPv4 address) and
-// the /64 for IPv6, since one client holds a whole /64. The name key is the
-// cleaned name.
+// keys returns the keys of a sign-in. The address key is the plain address for
+// IPv4 (an IPv4-mapped address first becomes the IPv4 address) and the /64 for
+// IPv6, since one client holds a whole /64. The name key is the cleaned name.
 func (s *Service) keys(name string, ip netip.Addr) limitKeys {
 	var k limitKeys
 	if ip.IsValid() {
@@ -402,9 +416,6 @@ func (s *Service) keys(name string, ip netip.Addr) limitKeys {
 			bits = 32
 		}
 		k.prefix = netip.PrefixFrom(ip, bits).Masked()
-		k.ip = k.prefix.String()
-	} else {
-		k.ip = "invalid"
 	}
 	if utf8.ValidString(name) && len(name) <= maxName {
 		k.name, k.nameOK = account.CleanUsername(name), true
@@ -412,67 +423,81 @@ func (s *Service) keys(name string, ip netip.Addr) limitKeys {
 	return k
 }
 
-// reserve takes one event from each limit, or returns a [*LimitedError] with the
-// longer wait of the limits that are full. The address limit comes first: when it
-// is full, the try takes nothing from the name limit (the name's wait is only
-// read). When the name limit is the one that is full, and the client address is
-// known to an account with that name, the name limit is skipped. A try that the
-// name limit refuses keeps its address event, so that one address cannot send
-// unlimited lookups at a locked name. A database error gives the events back.
-func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now time.Time) (held, error) {
-	var h held
-	if s.opt.IPLimit != nil {
-		ok, ipWait := s.opt.IPLimit.Take(k.ip, now)
-		if !ok {
-			wait := ipWait
-			if s.opt.NameLimit != nil && k.nameOK {
-				if over, w := s.opt.NameLimit.Over(k.name, now); over {
-					wait = max(wait, w)
-				}
+// reserve passes the try through the schedule, or returns a [*LimitedError]
+// with the wait that refuses it. A refusal changes no count. The trust of the
+// address is asked of the database only when it decides the answer: the trust
+// for any member while Defensive Mode is on and its rules would refuse, and the
+// trust for the account of the name when the wait of the name would refuse. A
+// nil schedule passes every try, and reserve returns nil.
+func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now time.Time) (*tryState, error) {
+	if s.opt.Schedule == nil {
+		return nil, nil
+	}
+	st := &tryState{addr: k.prefix, hasName: k.nameOK}
+	if k.nameOK {
+		st.name = keyOfName(k.name)
+	}
+	var r rules
+	if s.opt.Defense != nil && s.opt.Defense.On(now) {
+		r = rules{on: true, gap: s.opt.Defense.cfg.Gap}
+	}
+	for {
+		s.opt.Schedule.try(st, now, r)
+		var (
+			ok  bool
+			err error
+		)
+		switch st.need {
+		case needAddrTrust:
+			if ok, err = s.addressTrusted(ctx, k, now); err != nil {
+				return nil, err
 			}
-			return held{}, &LimitedError{RetryAfter: wait}
+			st.addrTrust = untrusted
+			if ok {
+				st.addrTrust = trusted
+			}
+			continue
+		case needNameTrust:
+			if ok, err = s.knownAddress(ctx, name, k, now); err != nil {
+				return nil, err
+			}
+			st.nameTrust = untrusted
+			if ok {
+				st.nameTrust = trusted
+			}
+			continue
 		}
-		h.ip = true
+		break
 	}
-	if s.opt.NameLimit != nil && k.nameOK {
-		// A full name limit refuses only an address that the account has not
-		// used, so the metric counts the refusal here and not in the limiter.
-		ok, nameWait := s.opt.NameLimit.TryTake(k.name, now)
-		if ok {
-			h.name = true
-			return h, nil
-		}
-		known, err := s.knownAddress(ctx, name, k)
-		if err != nil {
-			s.refund(h, k, now, true)
-			return held{}, err
-		}
-		if !known {
-			s.opt.NameLimit.Refused()
-			return held{}, &LimitedError{RetryAfter: nameWait}
-		}
+	if st.refused {
+		metrics.SigninRefusals.Inc(st.reason)
+		return nil, &LimitedError{RetryAfter: st.wait, Reason: st.reason}
 	}
-	return h, nil
+	return st, nil
 }
 
-// refund gives back the events that h holds. The name event goes back only when
-// withName is true; a good password clears the whole name instead.
-func (s *Service) refund(h held, k limitKeys, now time.Time, withName bool) {
-	if h.ip {
-		s.opt.IPLimit.Refund(k.ip, now)
+// end ends the try st at now (see [Schedule.end]). A nil st does nothing.
+func (s *Service) end(st *tryState, now time.Time, failed, nameCounts, clearName bool) {
+	if st == nil {
+		return
 	}
-	if h.name && withName {
-		s.opt.NameLimit.Refund(k.name, now)
-	}
+	s.opt.Schedule.end(st, now, failed, nameCounts, clearName)
 }
 
-// knownAddress reports whether an account that name finds has used the client
-// range (user_ips). It looks the name up even when no account has it, and runs
-// the query for the addresses with an empty list of accounts, so the work does
-// not tell a stranger whether the name exists. The unspecified address (0.0.0.0
-// or ::) is never known: it stands for every client whose address could not be
-// read.
-func (s *Service) knownAddress(ctx context.Context, name string, k limitKeys) (bool, error) {
+// goodStanding is the SQL condition that the member u is in good standing:
+// active, and held by no user ban that has not ended at $2. The spec adds "out
+// of the holding area", which gobb does not have yet.
+const goodStanding = `u.state = 'active' and not exists (select 1 from bans b
+ where b.kind = 'user' and b.user_id = u.id and (b.ends_at is null or b.ends_at > $2))`
+
+// knownAddress reports whether the client range is one of the trusted
+// addresses of an account that name finds: a row of user_ips of that account,
+// whose member is in good standing. It looks the name up even when no account
+// has it, and runs the query for the addresses with an empty list of accounts,
+// so the work does not tell a stranger whether the name exists. The unspecified
+// address (0.0.0.0 or ::) is never known: it stands for every client whose
+// address could not be read.
+func (s *Service) knownAddress(ctx context.Context, name string, k limitKeys, now time.Time) (bool, error) {
 	users, err := s.find(ctx, name)
 	if err != nil {
 		return false, err
@@ -484,15 +509,47 @@ func (s *Service) knownAddress(ctx context.Context, name string, k limitKeys) (b
 	for _, u := range users {
 		ids = append(ids, u.id)
 	}
+	return s.trustedQuery(ctx, ids, k, now)
+}
+
+// trustedFor is [Service.knownAddress] for the accounts ids that a check has
+// already found.
+func (s *Service) trustedFor(ctx context.Context, ids []int64, k limitKeys, now time.Time) (bool, error) {
+	if len(ids) == 0 || !k.prefix.IsValid() || k.prefix.Addr().IsUnspecified() {
+		return false, nil
+	}
+	return s.trustedQuery(ctx, ids, k, now)
+}
+
+// trustedQuery runs the query of knownAddress and trustedFor.
+func (s *Service) trustedQuery(ctx context.Context, ids []int64, k limitKeys, now time.Time) (bool, error) {
 	var prefix any
 	if k.prefix.IsValid() {
 		prefix = k.prefix
 	}
 	var known bool
-	err = s.q.QueryRow(ctx, `select exists (
-select 1 from user_ips where user_id = any($1) and ip <<= $2::inet)`, ids, prefix).Scan(&known)
+	err := s.q.QueryRow(ctx, `select exists (
+select 1 from user_ips ui join users u on u.id = ui.user_id
+ where ui.user_id = any($1) and ui.ip <<= $3::inet and `+goodStanding+`)`, ids, now, prefix).Scan(&known)
 	if err != nil {
 		return false, fmt.Errorf("login: known address: %w", err)
+	}
+	return known, nil
+}
+
+// addressTrusted reports whether the client range is a trusted address of any
+// member in good standing. Defensive Mode asks it. The unspecified address is
+// never trusted.
+func (s *Service) addressTrusted(ctx context.Context, k limitKeys, now time.Time) (bool, error) {
+	if !k.prefix.IsValid() || k.prefix.Addr().IsUnspecified() {
+		return false, nil
+	}
+	var known bool
+	err := s.q.QueryRow(ctx, `select exists (
+select 1 from user_ips ui join users u on u.id = ui.user_id
+ where ui.ip <<= $1::inet and `+goodStanding+`)`, k.prefix, now).Scan(&known)
+	if err != nil {
+		return false, fmt.Errorf("login: trusted address: %w", err)
 	}
 	return known, nil
 }
@@ -785,7 +842,9 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	return s.opt.Gate.AcquireCollected(ctx, kib, s.GateWait)
 }
 
-func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time) (int64, int64, error) {
+// check verifies pw for name (steps 1 to 8 of [Service.Check]). It puts the IDs
+// of the accounts that the name finds in found.
+func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip.Addr, now time.Time, found *[]int64) (int64, int64, error) {
 	if !utf8.ValidString(name) || len(name) > maxName {
 		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {
 			return 0, 0, err
@@ -795,6 +854,9 @@ func (s *Service) check(ctx context.Context, c *clock, name, pw string, ip netip
 	users, err := s.find(ctx, name)
 	if err != nil {
 		return 0, 0, err
+	}
+	for _, u := range users {
+		*found = append(*found, u.id)
 	}
 	if len(users) == 0 {
 		if err := s.runJobs(ctx, c, pw, []hashJob{dummyJob()}); err != nil {

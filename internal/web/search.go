@@ -46,6 +46,25 @@ func newSearchLimits(opt Options) searchLimits {
 	}
 }
 
+// defensiveSearchRetry is the Retry-After of a guest search that Defensive
+// Mode refuses. Defensive Mode lasts at least its quiet time, which is longer;
+// a minute keeps a browser from asking again at once without a long promise.
+const defensiveSearchRetry = time.Minute
+
+// refuseGuestSearch is the default of Options.RefuseSearch: it refuses a
+// search that carries no session cookie while Defensive Mode is on. It reads
+// no database. A made-up session cookie passes it; [site.search] checks the
+// viewer again after the session lookup.
+func (s *site) refuseGuestSearch(r *http.Request) (bool, time.Duration) {
+	if !s.opt.Defense.On(s.opt.Now()) {
+		return false, 0
+	}
+	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
+		return false, 0
+	}
+	return true, defensiveSearchRetry
+}
+
 // searchGate checks the limits of search before a search touches the database.
 // Defensive Mode (Options.RefuseSearch) goes first, then the rate of the board,
 // then the searches that run now. A refused search gets the page of
@@ -175,7 +194,8 @@ func (s *site) search(w http.ResponseWriter, r *http.Request) {
 		s.badPage(w, r)
 		return
 	}
-	if strings.TrimSpace(query.Get("q")) != "" || strings.TrimSpace(query.Get("author")) != "" {
+	searching := strings.TrimSpace(query.Get("q")) != "" || strings.TrimSpace(query.Get("author")) != ""
+	if searching {
 		release, ok := s.searchGate(w, r)
 		if !ok {
 			return
@@ -185,6 +205,13 @@ func (s *site) search(w http.ResponseWriter, r *http.Request) {
 	p, err := s.begin(w, r, "Search", "search")
 	if err != nil {
 		s.serverError(w, r, err)
+		return
+	}
+	// The gate saw only whether a session cookie came. A made-up cookie gets
+	// past it, so the search asks again now that the session is known: a guest
+	// does not search while Defensive Mode is on.
+	if searching && p.Viewer.UserID == 0 && s.opt.Defense.On(s.opt.Now()) {
+		s.searchOff(w, defensiveSearchRetry)
 		return
 	}
 	if !p.Viewer.Perms.Has("account.search", 0) {

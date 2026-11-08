@@ -47,7 +47,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := login.NewGate(1 << 17)
-	pool, h, err := setup(t.Context(), cfg, gate, func() {})
+	pool, h, err := setup(t.Context(), cfg, gate, login.NewDefense(login.DefaultDefense()), func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,8 +98,9 @@ func TestMetricsEndpoint(t *testing.T) {
 		"\ngobb_signin_floor_seconds ",
 		"\ngo_goroutines ",
 		// The rate limits of the server, from the smallest table to the largest.
-		`gobb_rate_limit_keys{limit="signin_address"} `,
-		`gobb_rate_limit_keys_full{limit="signin_name"} `,
+		"\ngobb_defensive_mode ",
+		`gobb_signin_refusals_total{reason="defensive"} `,
+		`gobb_signin_schedule_evictions_total{table="name"} `,
 		`gobb_rate_limit_fullest_ratio{limit="reset_account"} `,
 		`gobb_rate_limit_max_events{limit="reset_board_hour"} `,
 		`gobb_rate_limit_window_seconds{limit="posts_member"} `,

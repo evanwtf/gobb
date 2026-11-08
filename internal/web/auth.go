@@ -385,10 +385,17 @@ func retrySeconds(d time.Duration) int {
 // or "N minutes". It never says "0 minutes".
 func waitText(d time.Duration) string {
 	n := max(1, int((d+time.Minute-1)/time.Minute))
-	if n == 1 {
-		return "1 minute"
+	return plural(n, "minute", "minutes")
+}
+
+// signinWaitText returns the wait of the sign-in schedule: in whole seconds,
+// rounded up, up to two minutes ("1 second", "15 seconds", "120 seconds"), and
+// in whole minutes above that ("15 minutes"). It never says "0".
+func signinWaitText(d time.Duration) string {
+	if n := retrySeconds(d); n <= 120 {
+		return plural(n, "second", "seconds")
 	}
-	return strconv.Itoa(n) + " minutes"
+	return waitText(d)
 }
 
 // toIndex answers 303 to the board index. It is the answer of "Sign out" for a

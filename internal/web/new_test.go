@@ -25,6 +25,9 @@ func siteWithPool(t *testing.T, b *bundletest.Board, opt Options) (http.Handler,
 	if opt.LoginFloor == 0 {
 		opt.LoginFloor = time.Millisecond
 	}
+	if opt.Signin == nil {
+		opt.Signin = testSchedule()
+	}
 	h, err := New(t.Context(), pool, opt)
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
