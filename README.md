@@ -294,6 +294,10 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_PUBLIC_URL` | The address of the board, such as `https://board.example.org/forum/`. The links in email, `/robots.txt`, the sitemap and the canonical links of the pages use it. The rules are in "Email". Unset, the pages have no canonical link, the sitemap and `robots.txt` take the host of each request, and the server logs a warning at start. | unset |
 | `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS`, `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM`, `GOBB_MAIL_PER_HOUR`, `GOBB_MAIL_PER_DAY` | Email settings (see "Email"). | email off |
 | `GOBB_METRICS_LISTEN` | Address of the metrics listener, such as `127.0.0.1:9187` (see "Metrics"). | off |
+| `GOBB_DB_MAX_CONNS` | The most database connections that the server opens, from 1 to 100. It replaces any `pool_max_conns` in `GOBB_DSN` (see "Load limits"). | `4` |
+| `GOBB_DB_POOL_WAIT` | The longest time that a request waits for a free database connection, as a duration from `10ms` to `5s`. | `1s` |
+| `GOBB_SEARCH_PER_SECOND` | The most searches that the whole board runs in any second, from 1 to 1,000. | `5` |
+| `GOBB_SEARCH_MAX_RUNNING` | The most searches that run at one time, from 1 to `GOBB_DB_MAX_CONNS`. | `2` (`1` when `GOBB_DB_MAX_CONNS` is 1) |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
 | `GOBB_METRICS_PORT` | Compose only, with `compose.metrics.yaml`: the host port of the metrics listener, on 127.0.0.1. | `9187` |
@@ -607,6 +611,29 @@ the operator:
   later start, when no costly hash is left. A check that finds no room for 5
   seconds answers 503.
 
+### Load limits
+
+gobb never lets a request wait long for a database connection. A flood of visitors
+then gets quick refusals, and the server stays up.
+
+- The pool holds at most `GOBB_DB_MAX_CONNS` connections (4 unless set). The email
+  worker, the cleanup and the metrics gauges share the pool with the requests.
+- A request waits at most `GOBB_DB_POOL_WAIT` (1 s unless set) for each connection.
+  The limit covers the wait only, and a query that has its connection keeps the
+  10 s deadline of the request. A request that waits longer gets 503 with
+  `Retry-After: 2`, and later waits of that request fail at once. The 503 page
+  comes from memory and needs no connection. `gobb_db_pool_wait_timeouts_total`
+  counts these requests.
+- Search has its own limits, for the whole board: `GOBB_SEARCH_PER_SECOND`
+  searches in any second (5 unless set), and `GOBB_SEARCH_MAX_RUNNING` searches at
+  one time (2 unless set). There is no limit per address or per member. A search
+  over a limit gets 429 with `Retry-After`, on a page of the board that says
+  "Search functionality is currently disabled." That page touches no database.
+  Only a request with search words or an author counts; the bare search form does
+  not. `gobb_rate_limited_total{limit="search"}` and `gobb_search_busy_total`
+  count the refusals.
+- The start-up log line `load limits` gives the four values.
+
 ### Memory
 
 At start, gobb sets the memory limit of the Go runtime. When `GOMEMLIMIT` is set,
@@ -688,6 +715,8 @@ curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
 | `gobb_memory_gate_holders`, `_waiting`, `_used_bytes`, `_budget_bytes` | gauges | none |
 | `gobb_db_pool_conns`, `_acquired_conns`, `_idle_conns`, `_max_conns` | gauges | none |
 | `gobb_db_pool_acquires_total`, `_empty_acquires_total`, `_canceled_acquires_total`, `_acquire_seconds_total`, `_new_conns_total` | counters | none |
+| `gobb_db_pool_wait_timeouts_total` | counter: requests that waited longer than `GOBB_DB_POOL_WAIT` for a connection, and got 503 | none |
+| `gobb_search_busy_total` | counter: searches refused because `GOBB_SEARCH_MAX_RUNNING` searches were running | none |
 | `gobb_build_info` | gauge, value 1 | `version`, `commit` |
 | `go_goroutines`, `go_memstats_heap_alloc_bytes`, `go_memstats_sys_bytes`, `go_gc_heap_goal_bytes`, `go_memory_limit_bytes`, `go_gc_cycles_total` | Go runtime | none |
 | `process_start_time_seconds`, `process_cpu_seconds_total`, `process_resident_memory_bytes` (Linux) | process | none |
@@ -699,7 +728,7 @@ method (`/t/{id}`), and never the path. `none` is a request that no pattern took
 at a locked name from an address that the account has used is no refusal.
 
 The other `gobb_rate_limit_` metrics show how full each limit gets, in the same `limit`
-label (14 names, never a key). `gobb_rate_limit_allowed_total` counts the events that a
+label (16 names, never a key). `gobb_rate_limit_allowed_total` counts the events that a
 limit recorded. `gobb_rate_limit_fill_ratio` has one observation for each of them: the
 events of that key in the window after it, over the limit, so `1` is a key at the limit.
 `gobb_rate_limit_refunds_total` counts the events that a refund gave back. A refund

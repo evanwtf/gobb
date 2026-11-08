@@ -6,9 +6,83 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/evanwtf/gobb/internal/board"
+	"github.com/evanwtf/gobb/internal/metrics"
+	"github.com/evanwtf/gobb/internal/ratelimit"
 )
+
+// searchLimits are the limits of search for the whole board. There is no limit
+// per address or per member.
+type searchLimits struct {
+	// rate counts the searches of the board in a sliding window of one second,
+	// under one key.
+	rate *ratelimit.Limiter
+	// running is the semaphore of the searches that run now.
+	running chan struct{}
+}
+
+// searchKey is the one key of the search rate: the whole board.
+const searchKey = "board"
+
+// searchOffText is the text of the page of a refused search. (owner)
+const searchOffText = "Search functionality is currently disabled."
+
+// searchOffPage is the page of a refused search when the error template fails.
+const searchOffPage = "<!doctype html>\n<html lang=\"en\"><title>Search unavailable</title><p>" + searchOffText + "</p></html>\n"
+
+func newSearchLimits(opt Options) searchLimits {
+	perSecond, running := opt.SearchPerSecond, opt.SearchMaxRunning
+	if perSecond <= 0 {
+		perSecond = defaultSearchPerSecond
+	}
+	if running <= 0 {
+		running = defaultSearchMaxRunning
+	}
+	return searchLimits{
+		rate:    ratelimit.New(perSecond, time.Second, 1).Named("search"),
+		running: make(chan struct{}, running),
+	}
+}
+
+// searchGate checks the limits of search before a search touches the database.
+// Defensive Mode (Options.RefuseSearch) goes first, then the rate of the board,
+// then the searches that run now. A refused search gets the page of
+// [site.searchOff] and ok is false. Otherwise the caller must call release when
+// the search is done.
+func (s *site) searchGate(w http.ResponseWriter, r *http.Request) (release func(), ok bool) {
+	if s.opt.RefuseSearch != nil {
+		if refuse, retry := s.opt.RefuseSearch(r); refuse {
+			s.searchOff(w, retry)
+			return nil, false
+		}
+	}
+	// A refusal counts in gobb_rate_limited_total{limit="search"}.
+	if ok, wait := s.searches.rate.Take(searchKey, s.opt.Now()); !ok {
+		s.searchOff(w, wait)
+		return nil, false
+	}
+	select {
+	case s.searches.running <- struct{}{}:
+		return func() { <-s.searches.running }, true
+	default:
+		metrics.SearchBusy.Inc()
+		s.searchOff(w, time.Second)
+		return nil, false
+	}
+}
+
+// searchOff answers a refused search: 429 with Retry-After, in the layout of
+// the board, from the settings in memory. It touches no database, so a flood of
+// searches never reaches the pool.
+func (s *site) searchOff(w http.ResponseWriter, retry time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(retry)))
+	d := errorData{Status: http.StatusTooManyRequests, Heading: "Search unavailable", Message: searchOffText}
+	if !s.writeFrame(w, http.StatusTooManyRequests, d) {
+		writeHTML(w, http.StatusTooManyRequests, []byte(searchOffPage))
+	}
+}
 
 // forumOption is one entry of the forum select of the search form.
 type forumOption struct {
@@ -88,16 +162,25 @@ func (s *site) searchHref(text string, forum int64, author, sort string, n int) 
 	return href
 }
 
-// search serves GET /search?q=&forum=&author=&sort=&page=. A viewer without
-// account.search gets 403 before any other check. A text over 256 bytes gets 400,
-// and so does a page or forum number that is not a number. A page past the last
-// gets 404.
+// search serves GET /search?q=&forum=&author=&sort=&page=. A request with search
+// words or an author passes the limits of search first ([site.searchGate]),
+// before it touches the database; the bare form does not. A viewer without
+// account.search then gets 403 before any other check. A text over 256 bytes
+// gets 400, and so does a page or forum number that is not a number. A page past
+// the last gets 404.
 func (s *site) search(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	page, err := board.ParsePage(query.Get("page"))
 	if err != nil {
 		s.badPage(w, r)
 		return
+	}
+	if strings.TrimSpace(query.Get("q")) != "" || strings.TrimSpace(query.Get("author")) != "" {
+		release, ok := s.searchGate(w, r)
+		if !ok {
+			return
+		}
+		defer release()
 	}
 	p, err := s.begin(w, r, "Search", "search")
 	if err != nil {

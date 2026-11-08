@@ -4,6 +4,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -24,11 +25,26 @@ var (
 )
 
 // Open creates a pool for dsn and pings the database before it returns. The pool
-// counts its statements for [Counter].
+// counts its statements for [Counter], and limits the wait for a connection of a
+// context from [WithPoolWait]. The size of the pool is the size that dsn sets,
+// or the driver's default.
 func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	return OpenSized(ctx, dsn, 0)
+}
+
+// OpenSized is [Open] with a pool of at most maxConns connections. It replaces
+// any pool_max_conns in dsn. Zero keeps the size of [Open].
+func OpenSized(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open pool: %w", err)
+	}
+	if maxConns < 0 || maxConns > math.MaxInt32 {
+		return nil, fmt.Errorf("db: open pool: %d connections is out of range", maxConns)
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = int32(maxConns)
+		cfg.MinConns = min(cfg.MinConns, cfg.MaxConns)
 	}
 	Trace(cfg.ConnConfig)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

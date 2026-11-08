@@ -89,6 +89,10 @@ func TestMetricsEndpoint(t *testing.T) {
 		"\ngobb_memory_gate_holders 0\n",
 		"\ngobb_db_pool_conns ",
 		"\ngobb_db_pool_acquires_total ",
+		"\ngobb_db_pool_wait_timeouts_total ",
+		"\ngobb_search_busy_total ",
+		"\ngobb_db_pool_max_conns 4\n",
+		"\ngobb_rate_limit_max_events{limit=\"search\"} 5\n",
 		"\ngobb_signin_floor_seconds ",
 		"\ngo_goroutines ",
 		// The rate limits of the server, from the smallest table to the largest.

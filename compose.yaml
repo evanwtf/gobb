@@ -45,6 +45,10 @@ services:
       GOBB_MAIL_FROM: ${GOBB_MAIL_FROM:-}
       GOBB_MAIL_PER_HOUR: ${GOBB_MAIL_PER_HOUR:-}
       GOBB_MAIL_PER_DAY: ${GOBB_MAIL_PER_DAY:-}
+      GOBB_DB_MAX_CONNS: ${GOBB_DB_MAX_CONNS:-}
+      GOBB_DB_POOL_WAIT: ${GOBB_DB_POOL_WAIT:-}
+      GOBB_SEARCH_PER_SECOND: ${GOBB_SEARCH_PER_SECOND:-}
+      GOBB_SEARCH_MAX_RUNNING: ${GOBB_SEARCH_MAX_RUNNING:-}
       # Empty keeps the metrics listener off. compose.metrics.yaml turns it on and
       # publishes its port.
       GOBB_METRICS_LISTEN: ${GOBB_METRICS_LISTEN:-}

@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evanwtf/gobb/internal/config"
 )
@@ -547,5 +548,70 @@ func TestFromEnvPublicURL(t *testing.T) {
 				t.Errorf("PublicURL = %q, want %q", c.PublicURL, tc.want)
 			}
 		})
+	}
+}
+
+// The load settings default to a small board on a 1 GB host.
+func TestFromEnvLoadDefaults(t *testing.T) {
+	c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.Load{DBMaxConns: 4, DBPoolWait: time.Second, SearchPerSecond: 5, SearchMaxRunning: 2}
+	if c.Load != want {
+		t.Errorf("Load = %+v, want %+v", c.Load, want)
+	}
+}
+
+func TestFromEnvLoadValues(t *testing.T) {
+	c, err := config.FromEnv(env(map[string]string{
+		"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": " 8 ", "GOBB_DB_POOL_WAIT": "250ms",
+		"GOBB_SEARCH_PER_SECOND": "20", "GOBB_SEARCH_MAX_RUNNING": "8",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.Load{DBMaxConns: 8, DBPoolWait: 250 * time.Millisecond, SearchPerSecond: 20, SearchMaxRunning: 8}
+	if c.Load != want {
+		t.Errorf("Load = %+v, want %+v", c.Load, want)
+	}
+	// With a pool of one, the default of the running searches shrinks to fit.
+	c, err = config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": "1"}))
+	if err != nil || c.Load.SearchMaxRunning != 1 {
+		t.Errorf("pool of 1: SearchMaxRunning = %d, %v; want 1", c.Load.SearchMaxRunning, err)
+	}
+	// The bounds themselves are allowed.
+	for k, v := range map[string]string{"GOBB_DB_MAX_CONNS": "100", "GOBB_DB_POOL_WAIT": "10ms", "GOBB_SEARCH_PER_SECOND": "1000"} {
+		if _, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", k: v})); err != nil {
+			t.Errorf("%s=%s: %v", k, v, err)
+		}
+	}
+	if c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_DB_POOL_WAIT": "5s"})); err != nil || c.Load.DBPoolWait != 5*time.Second {
+		t.Errorf("GOBB_DB_POOL_WAIT=5s: %v, %v", c.Load.DBPoolWait, err)
+	}
+}
+
+func TestFromEnvLoadInvalid(t *testing.T) {
+	for _, c := range []struct{ key, value string }{
+		{"GOBB_DB_MAX_CONNS", "0"},
+		{"GOBB_DB_MAX_CONNS", "101"},
+		{"GOBB_DB_MAX_CONNS", "-1"},
+		{"GOBB_DB_MAX_CONNS", "four"},
+		{"GOBB_DB_POOL_WAIT", "1"},
+		{"GOBB_DB_POOL_WAIT", "9ms"},
+		{"GOBB_DB_POOL_WAIT", "5001ms"},
+		{"GOBB_DB_POOL_WAIT", "-1s"},
+		{"GOBB_DB_POOL_WAIT", "soon"},
+		{"GOBB_SEARCH_PER_SECOND", "0"},
+		{"GOBB_SEARCH_PER_SECOND", "1001"},
+		{"GOBB_SEARCH_PER_SECOND", "5.5"},
+		{"GOBB_SEARCH_MAX_RUNNING", "0"},
+		{"GOBB_SEARCH_MAX_RUNNING", "5"}, // more than the pool of 4
+		{"GOBB_SEARCH_MAX_RUNNING", "x"},
+	} {
+		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", c.key: c.value}))
+		if err == nil || !strings.Contains(err.Error(), c.key) {
+			t.Errorf("%s=%q: err = %v, want an error that names %s", c.key, c.value, err, c.key)
+		}
 	}
 }
