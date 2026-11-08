@@ -80,8 +80,10 @@ var errFull = errors.New("bundle: error limit reached")
 //   - every file that a row names exists under files/ with the stated size and
 //     SHA-256, rows that name one path agree, and every file under files/ is
 //     named by a row;
-//   - a row of member_addresses.jsonl names a user, and the pair of the user
-//     and the address is unique (an IPv4-mapped address is its IPv4 address).
+//   - a row of member_addresses.jsonl names a user, the pair of the user and
+//     the address is unique (an IPv4-mapped address is its IPv4 address), and
+//     the address is a public unicast address ([MemberAddressAllowed]); one
+//     error gives the number of rows that are not.
 //
 // Nothing references a gone user, except a user route with a fixed target.
 //
@@ -140,6 +142,7 @@ func Check(r *Reader) error {
 	scan(w, w.staticPage)
 	w.endPages()
 	scan(w, w.memberAddress)
+	w.endMemberAddresses()
 	w.checkFiles()
 
 	if w.fatal != nil {
@@ -269,6 +272,7 @@ type whole struct {
 	members, topicMarks, forumMarks  pairSet
 	smileys, routes, prefixes, pages keySet
 	addresses                        keySet // user ID and address of member_addresses
+	notGlobal, notGlobalLine         int    // member addresses that are not public, and the first line
 
 	grantForums []lineRef // forum IDs that grants name, checked after forums
 	pageRoutes  []slugRef // slugs that page routes name, checked after static_pages
@@ -873,6 +877,59 @@ func (w *whole) memberAddress(line int, a MemberAddress) {
 	addr := netip.MustParseAddr(a.IP).Unmap()
 	key := strconv.FormatInt(a.UserID, 10) + " " + addr.String()
 	w.uniqueKey(file, line, "ip", fmt.Sprintf("the pair (user_id %d, ip %s)", a.UserID, addr), w.addresses, key)
+	if !MemberAddressAllowed(addr) {
+		if w.notGlobal == 0 {
+			w.notGlobalLine = line
+		}
+		w.notGlobal++
+	}
+}
+
+// endMemberAddresses reports, in one error, the rows whose address is not a
+// public unicast address.
+func (w *whole) endMemberAddresses() {
+	if w.notGlobal > 0 {
+		w.bad("member_addresses.jsonl", 0, "ip",
+			"%d rows hold an address that is not a public unicast address (loopback, private, link-local, multicast, shared (RFC 6598) or documentation); the first is on line %d",
+			w.notGlobal, w.notGlobalLine)
+	}
+}
+
+// MemberAddressAllowed reports whether a member address may come in through a
+// bundle. It is [PublicUnicast]. A test that writes addresses from the
+// documentation ranges replaces it, and puts it back when it ends; nothing else
+// sets it.
+var MemberAddressAllowed = PublicUnicast
+
+// The ranges that [PublicUnicast] refuses beyond the checks of net/netip.
+var (
+	// sharedRange is the shared address space of RFC 6598, a /10 that starts
+	// at 100.64 in its first two bytes.
+	sharedRange = netip.PrefixFrom(netip.AddrFrom4([4]byte{100, 64, 0, 0}), 10)
+	docRanges   = []netip.Prefix{
+		netip.MustParsePrefix("192.0.2.0/24"),
+		netip.MustParsePrefix("198.51.100.0/24"),
+		netip.MustParsePrefix("203.0.113.0/24"),
+		netip.MustParsePrefix("2001:db8::/32"),
+	}
+)
+
+// PublicUnicast reports whether a is an address that a member's client can
+// have on the internet: a global unicast address that is not private (RFC 1918,
+// fc00::/7), not shared (RFC 6598) and not in a documentation range. It
+// refuses loopback, link-local, multicast and the unspecified address too. An
+// IPv4-mapped address is checked as its IPv4 address.
+func PublicUnicast(a netip.Addr) bool {
+	a = a.Unmap()
+	if !a.IsGlobalUnicast() || a.IsPrivate() || sharedRange.Contains(a) {
+		return false
+	}
+	for _, p := range docRanges {
+		if p.Contains(a) {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *whole) staticPage(line int, p StaticPage) {

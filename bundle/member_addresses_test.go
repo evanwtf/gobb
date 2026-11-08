@@ -3,6 +3,7 @@ package bundle_test
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,15 @@ import (
 	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/bundletest"
 )
+
+// allowDocumentationAddresses lets the test write member addresses from the
+// documentation ranges, which Check refuses on a real board.
+func allowDocumentationAddresses(t *testing.T) {
+	t.Helper()
+	old := bundle.MemberAddressAllowed
+	bundle.MemberAddressAllowed = func(a netip.Addr) bool { return a.IsValid() }
+	t.Cleanup(func() { bundle.MemberAddressAllowed = old })
+}
 
 // A bundle with no member addresses leaves the file and its count out, and
 // Each reads no row of it.
@@ -41,6 +51,7 @@ func TestMemberAddressesAbsent(t *testing.T) {
 // A bundle with member addresses holds the file and its count, and Check
 // accepts it.
 func TestMemberAddressesPresent(t *testing.T) {
+	allowDocumentationAddresses(t)
 	b := bundletest.Small()
 	b.MemberAddresses = []bundle.MemberAddress{{UserID: 1, IP: "192.0.2.10"}, {UserID: 1, IP: "2001:db8::10"}, {UserID: 2, IP: "192.0.2.10"}}
 	dir := bundletest.Write(t, b)
@@ -61,6 +72,7 @@ func TestMemberAddressesPresent(t *testing.T) {
 }
 
 func TestMemberAddressesRefused(t *testing.T) {
+	allowDocumentationAddresses(t)
 	for _, c := range []struct {
 		name string
 		rows []bundle.MemberAddress
@@ -114,6 +126,7 @@ func TestMemberAddressFieldChecks(t *testing.T) {
 
 // The manifest counts the optional file exactly when the bundle holds it.
 func TestMemberAddressesManifestMustAgree(t *testing.T) {
+	allowDocumentationAddresses(t)
 	withFile := func(t *testing.T) string {
 		b := bundletest.Small()
 		b.MemberAddresses = []bundle.MemberAddress{{UserID: 1, IP: "192.0.2.1"}}
@@ -161,4 +174,57 @@ func TestMemberAddressesManifestMustAgree(t *testing.T) {
 			t.Errorf("Open = %v", err)
 		}
 	})
+}
+
+// Check refuses member addresses that no client on the internet has, and says
+// how many rows hold one.
+func TestMemberAddressesMustBePublic(t *testing.T) {
+	b := bundletest.Small()
+	b.MemberAddresses = []bundle.MemberAddress{
+		{UserID: 1, IP: "8.8.8.8"}, // public: allowed
+		{UserID: 1, IP: "127.0.0.1"},
+		{UserID: 1, IP: "10.1.2.3"},
+		{UserID: 2, IP: "192.0.2.10"},
+	}
+	err := checkBoard(t, b)
+	want := "member_addresses.jsonl: ip: 3 rows hold an address that is not a public unicast address"
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "the first is on line 2") {
+		t.Errorf("Check = %v, want %q and the first line 2", err, want)
+	}
+}
+
+func TestPublicUnicast(t *testing.T) {
+	v4 := func(a, b, c, d byte) netip.Addr { return netip.AddrFrom4([4]byte{a, b, c, d}) }
+	for _, c := range []struct {
+		addr netip.Addr
+		want bool
+	}{
+		{v4(8, 8, 8, 8), true},
+		{netip.MustParseAddr("2606:4700::1111"), true},
+		{netip.MustParseAddr("::ffff:8.8.8.8"), true},
+		{v4(127, 0, 0, 1), false},
+		{netip.MustParseAddr("::1"), false},
+		{v4(10, 0, 0, 1), false},
+		{v4(172, 16, 0, 1), false},  // RFC 1918
+		{v4(192, 168, 1, 1), false}, // RFC 1918
+		{netip.MustParseAddr("fd00::1"), false},
+		{v4(169, 254, 1, 1), false},
+		{netip.MustParseAddr("fe80::1"), false},
+		{v4(224, 0, 0, 1), false},
+		{netip.MustParseAddr("ff02::1"), false},
+		{v4(100, 64, 0, 1), false},      // the first of RFC 6598
+		{v4(100, 127, 255, 254), false}, // the last of RFC 6598
+		{v4(100, 128, 0, 1), true},
+		{v4(192, 0, 2, 1), false},
+		{v4(198, 51, 100, 1), false},
+		{v4(203, 0, 113, 1), false},
+		{netip.MustParseAddr("2001:db8::1"), false},
+		{v4(0, 0, 0, 0), false},
+		{netip.MustParseAddr("::"), false},
+		{v4(255, 255, 255, 255), false},
+	} {
+		if got := bundle.PublicUnicast(c.addr); got != c.want {
+			t.Errorf("PublicUnicast(%s) = %t, want %t", c.addr, got, c.want)
+		}
+	}
 }

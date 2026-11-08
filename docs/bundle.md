@@ -690,17 +690,20 @@ with no file.
 | Field | Type | Rule |
 |---|---|---|
 | `user_id` | id | A row of `users.jsonl`. |
-| `ip` | ip | Not the unspecified address (`0.0.0.0` or `::`). |
+| `ip` | ip | A public unicast address: not the unspecified address (`0.0.0.0` or `::`), and not loopback, private (RFC 1918, `fc00::/7`), link-local, multicast, shared (RFC 6598) or a documentation range (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`). |
 
 The pair (`user_id`, `ip`) is unique. gobb stores an IPv4-mapped address
 (`::ffff:192.0.2.1`) as its IPv4 address, so the two forms of one address are the same
-pair. An IPv6 address stands for its /64.
+pair. An IPv6 address stands for its /64. An address that is not public stops the
+import with one error that gives the number of such rows and the first line.
 
 gobb takes no time from the bundle. The import stores each address as last seen at the
 time of the import, whatever its age on the source system, and keeps it for
 `GOBB_ADDRESS_KEEP_DAYS` (365 days unless set) after the import. The import leaves out
 the addresses of a member whom a user ban holds at the time of the import, because a ban
 removes a member's addresses. `gobb import` prints the number of rows that it stored.
+
+The example uses a documentation address. A real bundle may not hold one.
 
 ```json
 {"user_id":1,"ip":"192.0.2.10"}

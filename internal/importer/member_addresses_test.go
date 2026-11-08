@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -16,6 +17,11 @@ import (
 // longer. An IPv4-mapped address becomes its IPv4 address. The addresses of a
 // member whom a user ban holds at the import are left out.
 func TestImportMemberAddresses(t *testing.T) {
+	// The test writes addresses from the documentation ranges, which a real
+	// import refuses.
+	oldAllowed := bundle.MemberAddressAllowed
+	bundle.MemberAddressAllowed = func(a netip.Addr) bool { return a.IsValid() }
+	t.Cleanup(func() { bundle.MemberAddressAllowed = oldAllowed })
 	pool := dbtest.New(t)
 	importAt := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 	oldNow := now
