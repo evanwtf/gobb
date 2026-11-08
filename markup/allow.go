@@ -80,7 +80,7 @@ var fixedValues = map[string]map[string][]string{
 		"loading":         {"lazy"},
 		"referrerpolicy":  {"strict-origin-when-cross-origin"},
 		"allowfullscreen": {""},
-		"sandbox":         {redditSandbox},
+		"sandbox":         {frameSandbox, videoSandbox},
 	},
 }
 
