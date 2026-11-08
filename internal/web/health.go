@@ -20,7 +20,9 @@ type Pinger interface {
 }
 
 // Health returns a handler for GET /healthz. It answers 200 "ok" when p
-// answers within two seconds, and 503 "db unavailable" when it does not.
+// answers within two seconds, and 503 "db unavailable" when it does not. In
+// the server, the ping takes a connection from the pool under the wait limit of
+// the request (GOBB_DB_POOL_WAIT), so a full pool answers 503 after that limit.
 // Other methods get 405.
 func Health(p Pinger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

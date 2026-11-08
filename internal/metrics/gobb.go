@@ -56,10 +56,10 @@ var (
 	// banned, no usable address, or no right to change the password).
 	ResetSkipped = Default.CounterVec("gobb_reset_emails_skipped_total",
 		"Password reset emails not sent, by reason.", "reason")
-	// PoolWaitTimeouts counts the requests that waited past the limit for a
-	// database connection (GOBB_DB_POOL_WAIT), and so got 503.
+	// PoolWaitTimeouts counts the requests whose wait for a database
+	// connection ran out (GOBB_DB_POOL_WAIT).
 	PoolWaitTimeouts = Default.CounterVec("gobb_db_pool_wait_timeouts_total",
-		"Requests that found no free database connection within the wait limit.")
+		"Requests whose wait for a database connection ran out.")
 	// SearchBusy counts the searches refused because the most searches that
 	// may run at one time were running.
 	SearchBusy = Default.CounterVec("gobb_search_busy_total",

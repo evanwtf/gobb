@@ -454,18 +454,22 @@ func (s *site) guard(next http.Handler) http.Handler {
 // database connection in time.
 const poolBusyRetrySeconds = 2
 
-// poolBusyWriter turns a 500 into a 503 with Retry-After when the request found
-// no free database connection in time. [site.serverError] answers such a
-// request with the 503 page itself; this covers the handlers that answer a
-// failed query with their own 500, such as the JSON answers of the forms.
+// poolBusyWriter answers a 500 or a 503 of a request that found no free
+// database connection in time with 503 and Retry-After. A Retry-After that the
+// handler set stays. [site.serverError] answers such a request with the 503 page
+// itself; this covers the handlers that answer a failed query with their own
+// status, such as the JSON answers of the forms ([failStatus] gives them 503
+// for a deadline, and the guard of a save gives 500).
 type poolBusyWriter struct {
 	http.ResponseWriter
 	ctx context.Context
 }
 
 func (w *poolBusyWriter) WriteHeader(code int) {
-	if code == http.StatusInternalServerError && db.PoolWaitTimedOut(w.ctx) {
-		w.Header().Set("Retry-After", strconv.Itoa(poolBusyRetrySeconds))
+	if (code == http.StatusInternalServerError || code == http.StatusServiceUnavailable) && db.PoolWaitTimedOut(w.ctx) {
+		if w.Header().Get("Retry-After") == "" {
+			w.Header().Set("Retry-After", strconv.Itoa(poolBusyRetrySeconds))
+		}
 		code = http.StatusServiceUnavailable
 	}
 	w.ResponseWriter.WriteHeader(code)
@@ -1124,9 +1128,16 @@ func (s *site) buildStaticErrors(f *frame) (map[int][]byte, error) {
 // board in it gets 503 and a hint, and one WARN line until a board appears.
 //
 // A request that found no free database connection in time gets 503 with
-// Retry-After, from the settings in memory: the page needs no connection.
+// Retry-After, from the settings in memory: the page needs no connection. So
+// does an error that wraps [db.ErrPoolWait], such as a sitemap build of another
+// request that found the pool full. The db package writes the WARN line of
+// these requests ([db.Tracer]); serverError logs only an error that is not
+// the end of a wait or of a deadline, which the pool timeout did not explain.
 func (s *site) serverError(w http.ResponseWriter, r *http.Request, err error) {
-	if db.PoolWaitTimedOut(r.Context()) {
+	if db.PoolWaitTimedOut(r.Context()) || errors.Is(err, db.ErrPoolWait) {
+		if !errors.Is(err, db.ErrPoolWait) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			slog.Error("request failed", "method", r.Method, "path", logPath(r), "err", err)
+		}
 		s.poolBusy(w)
 		return
 	}

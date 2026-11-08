@@ -59,7 +59,7 @@ type Load struct {
 	// second, from GOBB_SEARCH_PER_SECOND.
 	SearchPerSecond int
 	// SearchMaxRunning is the most searches that run at one time, from
-	// GOBB_SEARCH_MAX_RUNNING. It is never more than DBMaxConns.
+	// GOBB_SEARCH_MAX_RUNNING. It is at most DBMaxConns - 1, and at least 1.
 	SearchMaxRunning int
 }
 
@@ -143,8 +143,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 }
 
 // loadFromEnv reads the load settings. An unset or empty variable takes its
-// default. GOBB_SEARCH_MAX_RUNNING may not be more than GOBB_DB_MAX_CONNS; when
-// it is unset, its default shrinks to fit a smaller pool.
+// default. GOBB_SEARCH_MAX_RUNNING may not be more than GOBB_DB_MAX_CONNS - 1
+// (1 for a pool of one); when it is unset, its default shrinks to fit a smaller
+// pool.
 func loadFromEnv(getenv func(string) string) (Load, error) {
 	get := func(key string) string { return strings.TrimSpace(getenv(key)) }
 	var l Load
@@ -163,11 +164,14 @@ func loadFromEnv(getenv func(string) string) (Load, error) {
 	if l.SearchPerSecond, err = intSetting("GOBB_SEARCH_PER_SECOND", get("GOBB_SEARCH_PER_SECOND"), DefaultSearchPerSecond, 1, maxSearchPerSecond); err != nil {
 		return Load{}, err
 	}
-	l.SearchMaxRunning = min(DefaultSearchMaxRunning, l.DBMaxConns)
+	// Searches never hold the whole pool: one connection stays for the pages,
+	// except in a pool of one.
+	most := max(1, l.DBMaxConns-1)
+	l.SearchMaxRunning = min(DefaultSearchMaxRunning, most)
 	if v := get("GOBB_SEARCH_MAX_RUNNING"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > l.DBMaxConns {
-			return Load{}, fmt.Errorf("config: GOBB_SEARCH_MAX_RUNNING: must be a number from 1 to GOBB_DB_MAX_CONNS (%d)", l.DBMaxConns)
+		if err != nil || n < 1 || n > most {
+			return Load{}, fmt.Errorf("config: GOBB_SEARCH_MAX_RUNNING: must be a number from 1 to GOBB_DB_MAX_CONNS - 1 (%d)", most)
 		}
 		l.SearchMaxRunning = n
 	}

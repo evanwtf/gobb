@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -83,7 +85,8 @@ func (Tracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.
 
 // TraceAcquireEnd frees the deadline of the wait. A wait that failed because
 // its own deadline passed, and not the deadline of the request, marks the
-// request and counts once in gobb_db_pool_wait_timeouts_total.
+// request, counts once in gobb_db_pool_wait_timeouts_total, and goes into the
+// WARN line of [timeoutLog].
 func (Tracer) TraceAcquireEnd(ctx context.Context, _ *pgxpool.Pool, d pgxpool.TraceAcquireEndData) {
 	cancel, ok := ctx.Value(acquireCancelKey{}).(context.CancelFunc)
 	if !ok {
@@ -93,5 +96,36 @@ func (Tracer) TraceAcquireEnd(ctx context.Context, _ *pgxpool.Pool, d pgxpool.Tr
 	w, _ := ctx.Value(poolWaitKey{}).(*poolWait)
 	if w != nil && d.Err != nil && errors.Is(context.Cause(ctx), ErrPoolWait) && w.timedOut.CompareAndSwap(false, true) {
 		metrics.PoolWaitTimeouts.Inc()
+		poolWaitLog.note(time.Now())
 	}
+}
+
+// poolWaitLog writes the WARN line of the requests whose wait ran out.
+var poolWaitLog = &timeoutLog{every: time.Minute}
+
+// timeoutLog writes at most one WARN line in each period of every, with the
+// count of the requests whose connection wait ran out since the last line. The
+// first timeout after a quiet period writes a line at once. A flood therefore
+// writes one line a minute, not one line a request.
+type timeoutLog struct {
+	every time.Duration
+	mu    sync.Mutex
+	last  time.Time
+	n     int
+}
+
+// note records one timeout at now, and writes the line when the period since
+// the last line has passed.
+func (l *timeoutLog) note(now time.Time) {
+	l.mu.Lock()
+	l.n++
+	if !l.last.IsZero() && now.Sub(l.last) < l.every {
+		l.mu.Unlock()
+		return
+	}
+	n := l.n
+	l.n, l.last = 0, now
+	l.mu.Unlock()
+	slog.Warn("requests found no free database connection within GOBB_DB_POOL_WAIT and got 503", "count", n,
+		"note", "see gobb_db_pool_wait_timeouts_total; raise GOBB_DB_MAX_CONNS or find the slow queries")
 }

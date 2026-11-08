@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -566,19 +567,29 @@ func TestFromEnvLoadDefaults(t *testing.T) {
 func TestFromEnvLoadValues(t *testing.T) {
 	c, err := config.FromEnv(env(map[string]string{
 		"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": " 8 ", "GOBB_DB_POOL_WAIT": "250ms",
-		"GOBB_SEARCH_PER_SECOND": "20", "GOBB_SEARCH_MAX_RUNNING": "8",
+		"GOBB_SEARCH_PER_SECOND": "20", "GOBB_SEARCH_MAX_RUNNING": "7",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config.Load{DBMaxConns: 8, DBPoolWait: 250 * time.Millisecond, SearchPerSecond: 20, SearchMaxRunning: 8}
+	want := config.Load{DBMaxConns: 8, DBPoolWait: 250 * time.Millisecond, SearchPerSecond: 20, SearchMaxRunning: 7}
 	if c.Load != want {
 		t.Errorf("Load = %+v, want %+v", c.Load, want)
 	}
-	// With a pool of one, the default of the running searches shrinks to fit.
-	c, err = config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": "1"}))
-	if err != nil || c.Load.SearchMaxRunning != 1 {
-		t.Errorf("pool of 1: SearchMaxRunning = %d, %v; want 1", c.Load.SearchMaxRunning, err)
+	// Searches leave one connection for the pages: with a pool of two, the
+	// default shrinks to 1. A pool of one still allows one search.
+	for conns, want := range map[string]int{"1": 1, "2": 1, "3": 2} {
+		c, err = config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": conns}))
+		if err != nil || c.Load.SearchMaxRunning != want {
+			t.Errorf("pool of %s: SearchMaxRunning = %d, %v; want %d", conns, c.Load.SearchMaxRunning, err, want)
+		}
+	}
+	// The bound is GOBB_DB_MAX_CONNS - 1, and 1 for a pool of one.
+	for conns, running := range map[string]string{"4": "3", "1": "1", "2": "1"} {
+		c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": conns, "GOBB_SEARCH_MAX_RUNNING": running}))
+		if err != nil || strconv.Itoa(c.Load.SearchMaxRunning) != running {
+			t.Errorf("pool of %s, %s running: %d, %v", conns, running, c.Load.SearchMaxRunning, err)
+		}
 	}
 	// The bounds themselves are allowed.
 	for k, v := range map[string]string{"GOBB_DB_MAX_CONNS": "100", "GOBB_DB_POOL_WAIT": "10ms", "GOBB_SEARCH_PER_SECOND": "1000"} {
@@ -606,12 +617,17 @@ func TestFromEnvLoadInvalid(t *testing.T) {
 		{"GOBB_SEARCH_PER_SECOND", "1001"},
 		{"GOBB_SEARCH_PER_SECOND", "5.5"},
 		{"GOBB_SEARCH_MAX_RUNNING", "0"},
-		{"GOBB_SEARCH_MAX_RUNNING", "5"}, // more than the pool of 4
+		{"GOBB_SEARCH_MAX_RUNNING", "4"}, // the whole pool of 4
+		{"GOBB_SEARCH_MAX_RUNNING", "5"},
 		{"GOBB_SEARCH_MAX_RUNNING", "x"},
 	} {
 		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", c.key: c.value}))
 		if err == nil || !strings.Contains(err.Error(), c.key) {
 			t.Errorf("%s=%q: err = %v, want an error that names %s", c.key, c.value, err, c.key)
 		}
+	} // With a pool of two, two searches at once would hold the whole pool.
+	_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": "2", "GOBB_SEARCH_MAX_RUNNING": "2"}))
+	if err == nil || !strings.Contains(err.Error(), "GOBB_SEARCH_MAX_RUNNING") {
+		t.Errorf("pool of 2, 2 running: err = %v, want an error that names GOBB_SEARCH_MAX_RUNNING", err)
 	}
 }

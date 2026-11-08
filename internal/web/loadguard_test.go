@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/metrics"
 )
@@ -117,10 +119,98 @@ func TestPoolBusyWriter(t *testing.T) {
 	if rec.Code != 503 || rec.Header().Get("Retry-After") != "2" {
 		t.Errorf("a 500 after a pool timeout = %d, Retry-After %q; want 503, 2", rec.Code, rec.Header().Get("Retry-After"))
 	}
+	// failStatus gives a deadline 503: it gets the Retry-After too.
+	rec = httptest.NewRecorder()
+	(&poolBusyWriter{ResponseWriter: rec, ctx: ctx}).WriteHeader(503)
+	if rec.Code != 503 || rec.Header().Get("Retry-After") != "2" {
+		t.Errorf("a 503 after a pool timeout = %d, Retry-After %q; want 503, 2", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	// A Retry-After of the handler stays.
+	rec = httptest.NewRecorder()
+	rec.Header().Set("Retry-After", "5")
+	(&poolBusyWriter{ResponseWriter: rec, ctx: ctx}).WriteHeader(503)
+	if got := rec.Header().Get("Retry-After"); got != "5" {
+		t.Errorf("the handler's Retry-After = %q, want 5", got)
+	}
 	rec = httptest.NewRecorder()
 	(&poolBusyWriter{ResponseWriter: rec, ctx: ctx}).WriteHeader(404)
-	if rec.Code != 404 {
-		t.Errorf("a 404 after a pool timeout = %d", rec.Code)
+	if rec.Code != 404 || rec.Header().Get("Retry-After") != "" {
+		t.Errorf("a 404 after a pool timeout = %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+// A save from gobb.js (X-Gobb-Save: 1) under a full pool gets 503 with
+// Retry-After, as JSON.
+func TestPoolWaitJSONSave(t *testing.T) {
+	_, h, pool := loadSite(t, postingBoard(), Options{PoolWait: 100 * time.Millisecond})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	release := holdAll(t, pool)
+	rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Asia/Tokyo"}, "csrf": {token}}, saveHeader)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "2" {
+		t.Errorf("a save under a full pool = %d, Retry-After %q; want 503, 2", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want the JSON of a save", ct)
+	}
+	release()
+	rec = postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Asia/Tokyo"}, "csrf": {token}}, saveHeader)
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("the save after the flood = %d, want 204", rec.Code)
+	}
+}
+
+// A sitemap build that finds the pool full answers 503, for the request that
+// built it and for a request that waited for that build. The waiting request
+// does not wait for the pool again.
+func TestPoolWaitSitemap(t *testing.T) {
+	_, h, pool := loadSite(t, bundletest.Small(), Options{PoolWait: 500 * time.Millisecond})
+	release := holdAll(t, pool)
+	builds, timeouts := sitemapBuilds.Load(), metrics.PoolWaitTimeouts.Value()
+	codes := make([]*httptest.ResponseRecorder, 2)
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sitemap.xml", nil))
+			codes[i] = rec
+		}()
+		// The second request comes while the first build waits for the pool.
+		time.Sleep(100 * time.Millisecond)
+	}
+	wg.Wait()
+	for i, rec := range codes {
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "2" {
+			t.Errorf("request %d: %d, Retry-After %q; want 503, 2", i+1, rec.Code, rec.Header().Get("Retry-After"))
+		}
+	}
+	if got := sitemapBuilds.Load() - builds; got != 1 {
+		t.Errorf("%d builds, want 1: the second request did not wait for the first", got)
+	}
+	// Only the build waited for the pool. The request that waited for the build
+	// answered from it, and did not wait again for an error page.
+	if got := metrics.PoolWaitTimeouts.Value() - timeouts; got != 1 {
+		t.Errorf("%d pool timeouts, want 1", got)
+	}
+	// The failed build is not kept.
+	release()
+	if rec := get(t, h, "/sitemap.xml"); rec.Code != http.StatusOK {
+		t.Errorf("the sitemap after the flood = %d, want 200", rec.Code)
+	}
+}
+
+// The serve defaults in config and the zero-value defaults of Options agree.
+func TestLoadDefaultsAgree(t *testing.T) {
+	if config.DefaultDBPoolWait != defaultPoolWait {
+		t.Errorf("pool wait: config %v, web %v", config.DefaultDBPoolWait, defaultPoolWait)
+	}
+	if config.DefaultSearchPerSecond != defaultSearchPerSecond {
+		t.Errorf("searches per second: config %d, web %d", config.DefaultSearchPerSecond, defaultSearchPerSecond)
+	}
+	if config.DefaultSearchMaxRunning != defaultSearchMaxRunning {
+		t.Errorf("searches at once: config %d, web %d", config.DefaultSearchMaxRunning, defaultSearchMaxRunning)
 	}
 }
 
