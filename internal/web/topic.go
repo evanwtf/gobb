@@ -70,6 +70,10 @@ type optionView struct {
 	Percent int
 }
 
+// afterTopicView, when set, runs after the topic page reads its topic. A test
+// pauses a render there.
+var afterTopicView func(id int64, err error)
+
 // topic serves GET /t/{id}.
 func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
@@ -89,6 +93,9 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	tp, err := board.TopicView(ctx, s.pool, p.Viewer, id, page)
+	if afterTopicView != nil {
+		afterTopicView(id, err)
+	}
 	var moved board.MovedError
 	switch {
 	case errors.As(err, &moved):

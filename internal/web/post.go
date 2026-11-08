@@ -399,11 +399,23 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 			switch kind {
 			case kindTopic, kindReply:
 				// A new post that waits for approval changes nothing a guest sees.
-				if err == nil && s.heldPost(ctx, postID) {
-					return
+				var topic int64
+				if err == nil {
+					t, held := s.newPostRefs(ctx, postID)
+					if held {
+						return
+					}
+					topic = t
 				}
 				if kind == kindTopic {
-					s.changedListings()
+					// The page of the new topic may hold a 404 from before it
+					// existed: drop the topic itself, with the listings. When the
+					// topic is not known, the listings drop alone.
+					if topic != 0 {
+						s.changedTopic(topic)
+					} else {
+						s.changedListings()
+					}
 				} else {
 					s.changedTopic(id)
 				}

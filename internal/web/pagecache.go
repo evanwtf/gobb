@@ -77,10 +77,29 @@ type GuestCache struct {
 	// guards skip.
 	warmMu sync.Mutex
 	// skip holds the keys that answered other than 200 or 503 (a page that a
-	// guest cannot see, a redirect) in generation skipGen. The passes of that
-	// generation do not render them again.
-	skip    map[string]bool
-	skipGen uint64
+	// guest cannot see, a redirect), or whose render panicked. The passes do not
+	// render them again until a drop reaches them ([skipMark]).
+	skip map[string]skipMark
+}
+
+// skipMark is why the start-up render skips a key: the generation of the cache
+// before its render, and what the page depends on. A drop after gen that
+// reaches the page ends the skip. A page that a guest cannot see may become one
+// with a new topic, so the mark counts as a listing too: a drop of any topic or
+// of the listings ends it. A render that panicked has no entry; any drop ends
+// its skip (all is true).
+type skipMark struct {
+	gen   uint64
+	entry pagecache.Entry
+	all   bool
+}
+
+// ended reports whether a drop since the mark reaches the page.
+func (m skipMark) ended(c *pagecache.Cache) bool {
+	if m.all {
+		return c.Gen() != m.gen
+	}
+	return c.DroppedSince(m.gen, m.entry)
 }
 
 // NewGuestCache returns a cache that holds at most limit bytes of pages. warm
@@ -168,6 +187,17 @@ func (k cacheKey) target() *url.URL {
 	}
 	u.RawQuery = q.Encode()
 	return u
+}
+
+// scope returns what the page of k depends on before it renders: its topic, and
+// whether it is a listing. A static page depends on neither: only a drop of
+// every page reaches it.
+func (k cacheKey) scope() pagecache.Scope {
+	sc := pagecache.Scope{Listing: k.kind == cacheIndex || k.kind == cacheForum}
+	if k.kind == cacheTopic {
+		sc.Topic = k.id
+	}
+	return sc
 }
 
 // keyFor returns the key of the guest page of r, and false when the request is
@@ -360,7 +390,7 @@ func (s *site) cached(kind cacheKind, h http.HandlerFunc) http.HandlerFunc {
 			h(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id)))
 			return
 		}
-		cp, _, err := s.guestPage(r.Context(), context.Background(), k)
+		e, _, err := s.guestPage(r.Context(), context.Background(), k)
 		switch {
 		case errors.Is(err, pagecache.ErrPanic):
 			// The handler panicked; the cache logged it. This request gets a 500,
@@ -374,6 +404,7 @@ func (s *site) cached(kind cacheKind, h http.HandlerFunc) http.HandlerFunc {
 			s.poolBusy(w)
 			return
 		}
+		cp := e.Value.(*cachedPage)
 		s.serveCached(w, r, id, cp)
 		if kind == cacheTopic && cp.status == http.StatusOK && isNavigation(r) {
 			s.addView(r.Context(), k.id)
@@ -381,19 +412,20 @@ func (s *site) cached(kind cacheKind, h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// guestPage returns the page of k from the cache, rendering it on a miss. ctx
+// guestPage returns the entry of the page of k from the cache, rendering it on
+// a miss; its Value is a *cachedPage. ctx
 // is the wait of the caller. A render that this call starts runs under parent,
 // with its own deadline: a request passes context.Background, so no request
 // cuts short a render that others wait for; the start-up render passes its own
 // context, so the render stops when the server does.
-func (s *site) guestPage(ctx, parent context.Context, k cacheKey) (*cachedPage, bool, error) {
-	res, hit, err := s.guest.Pages.Do(ctx, k.String(), func() (pagecache.Result, error) {
+func (s *site) guestPage(ctx, parent context.Context, k cacheKey) (pagecache.Entry, bool, error) {
+	res, hit, err := s.guest.Pages.Do(ctx, k.String(), k.scope(), func() (pagecache.Result, error) {
 		return s.renderGuest(parent, k)
 	})
 	if err != nil {
-		return nil, false, err
+		return pagecache.Entry{}, false, err
 	}
-	return res.Entry.Value.(*cachedPage), hit, nil
+	return res.Entry, hit, nil
 }
 
 // renderGuest renders the page of k as a guest with no cookie but the scheme
@@ -447,13 +479,11 @@ func (s *site) renderGuest(parent context.Context, k cacheKey) (pagecache.Result
 	}
 	cp := &cachedPage{status: rec.status, header: hdr, parts: parts, slots: slots, hash: hex.EncodeToString(sum.Sum(nil)), pages: note.pages}
 	size := entrySize(k, body, parts, slots, hdr, note.users)
+	sc := k.scope()
 	e := pagecache.Entry{
 		Value: cp, Size: size,
-		Listing: k.kind == cacheIndex || k.kind == cacheForum,
-		Users:   note.users, Expires: note.expires,
-	}
-	if k.kind == cacheTopic {
-		e.Topic = k.id
+		Topic: sc.Topic, Listing: sc.Listing,
+		Users: note.users, Expires: note.expires,
 	}
 	// Only a whole page is kept. An error page, a redirect and a 503 go to the
 	// requests that waited for this render, and the next request renders again.
@@ -652,12 +682,15 @@ func (s *site) changedScope(sc postScope) {
 	s.guest.wake()
 }
 
-// heldPost reports whether post id waits for approval. Such a post changes
-// nothing that a guest sees: not the topic, not the counts. A failed read says
-// false, so the caller drops.
-func (s *site) heldPost(ctx context.Context, id int64) bool {
-	_, _, visibility, err := board.PostRefs(ctx, s.pool, id)
-	return err == nil && visibility == "unapproved"
+// newPostRefs returns the topic of the new post id, and whether it waits for
+// approval. A held post changes nothing that a guest sees: not the topic, not
+// the counts. A failed read gives topic 0 and held false, so the caller drops.
+func (s *site) newPostRefs(ctx context.Context, id int64) (topic int64, held bool) {
+	t, _, visibility, err := board.PostRefs(ctx, s.pool, id)
+	if err != nil {
+		return 0, false
+	}
+	return t, visibility == "unapproved"
 }
 
 // wrote reports whether a board write that returned err may have changed the
@@ -829,8 +862,13 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 	g.warmPasses.Add(1)
 	g.warmRunning.Store(true)
 	defer g.warmRunning.Store(false)
-	if gen := g.Pages.Gen(); g.skip == nil || gen != g.skipGen {
-		g.skip, g.skipGen = map[string]bool{}, gen
+	if g.skip == nil {
+		g.skip = map[string]skipMark{}
+	}
+	for key, m := range g.skip {
+		if m.ended(g.Pages) {
+			delete(g.skip, key)
+		}
 	}
 	scheme := s.defaultScheme()
 	var largest int64
@@ -842,8 +880,11 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 		if e, hit := g.Pages.Peek(key); hit {
 			return e.Value.(*cachedPage).pages, true
 		}
-		if g.skip[key] {
-			return 0, true
+		if m, ok := g.skip[key]; ok {
+			if !m.ended(g.Pages) {
+				return 0, true
+			}
+			delete(g.skip, key)
 		}
 		for {
 			st := g.Pages.Stats()
@@ -854,11 +895,11 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 				return 0, false
 			}
 			gen := g.Pages.Gen()
-			cp, _, err := s.guestPage(ctx, ctx, k)
+			e, _, err := s.guestPage(ctx, ctx, k)
 			if errors.Is(err, pagecache.ErrPanic) {
 				// The cache logged the panic. The page is skipped until a drop;
 				// the pass goes on.
-				g.skip[key] = true
+				g.skip[key] = skipMark{gen: gen, all: true}
 				return 0, true
 			}
 			if err != nil {
@@ -867,6 +908,7 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 			if ctx.Err() != nil {
 				return 0, false
 			}
+			cp := e.Value.(*cachedPage)
 			if cp.status == http.StatusServiceUnavailable {
 				// The pool was busy after all: wait and try again.
 				if !sleepCtx(ctx, warmBackoff) {
@@ -874,14 +916,19 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 				}
 				continue
 			}
-			if e, stored := g.Pages.Peek(key); stored {
-				largest = max(largest, e.Size)
+			if kept, stored := g.Pages.Peek(key); stored {
+				largest = max(largest, kept.Size)
 				g.warmRendered.Add(1)
 				if onWarm != nil {
 					onWarm(key)
 				}
-			} else if cp.status != http.StatusOK && gen == g.Pages.Gen() {
-				g.skip[key] = true
+			} else if cp.status != http.StatusOK {
+				m := skipMark{gen: gen, entry: pagecache.Entry{Topic: e.Topic, Listing: true, Users: e.Users}}
+				// A drop during the render that reaches the page may have
+				// changed the answer: no skip then.
+				if !m.ended(g.Pages) {
+					g.skip[key] = m
+				}
 			}
 			return cp.pages, true
 		}

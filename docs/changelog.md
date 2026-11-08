@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.2 (2026-11-08)
+
+- **Guest page cache** (#75): a drop discards only what it reaches, including
+  renders in progress. A drop of one topic, the listings or one member no longer
+  discards renders of unrelated pages, so the cache keeps filling under a stream of
+  writes. A new topic drops its own page, and a result that is never stored (a 404,
+  a redirect) is stale after any drop, so a guest never gets a 404 rendered before
+  the topic existed. A request waits for at most three renders. The cache keeps a
+  record of the last 4096 drops (96 KiB), and a render older than that record is
+  not stored.
+
 ## 0.19.1 (2026-11-08)
 
 - **Restore** (#67): the README restore no longer drops the live database first.
