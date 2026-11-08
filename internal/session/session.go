@@ -42,6 +42,11 @@ const (
 // deleted, or has expired.
 var ErrNone = errors.New("session: no such session")
 
+// ErrUnknown is the [ErrNone] of a token that names no row at all: a made-up
+// or deleted token. errors.Is(ErrUnknown, ErrNone) is true. The caller has no
+// row to delete.
+var ErrUnknown = fmt.Errorf("%w: unknown token", ErrNone)
+
 // Session is one row of the sessions table.
 type Session struct {
 	// ID is the hex SHA-256 of the token.
@@ -184,21 +189,26 @@ on conflict (user_id, ip) do update set last_seen_at = excluded.last_seen_at`,
 // by other means. The ban test reads the index bans_user_idx.
 func Lookup(ctx context.Context, q db.Querier, token string, now time.Time) (Session, error) {
 	if token == "" || len(token) > 128 {
-		return Session{}, ErrNone
+		return Session{}, ErrUnknown
 	}
 	var s Session
+	var live bool
 	err := q.QueryRow(ctx, `
-select s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.remember
-  from sessions s join users u on u.id = s.user_id
- where s.id = $1 and s.expires_at > $2 and u.state = 'active'
+select s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.remember,
+       s.expires_at > $2 and u.state is not distinct from 'active'
    and not exists (select 1 from bans b
-                    where b.kind = 'user' and b.user_id = s.user_id and (b.ends_at is null or b.ends_at > $2))`, hashToken(token), now).
-		Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt, &s.Remember)
+                    where b.kind = 'user' and b.user_id = s.user_id and (b.ends_at is null or b.ends_at > $2))
+  from sessions s left join users u on u.id = s.user_id
+ where s.id = $1`, hashToken(token), now).
+		Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt, &s.Remember, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Session{}, ErrNone
+		return Session{}, ErrUnknown
 	}
 	if err != nil {
 		return Session{}, fmt.Errorf("session: lookup: %w", err)
+	}
+	if !live {
+		return Session{}, ErrNone
 	}
 	return s, nil
 }

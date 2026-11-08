@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -159,6 +160,82 @@ func CountView(ctx context.Context, q db.Querier, topicID int64) error {
 	_, err := q.Exec(ctx, `update topics set view_count = view_count + 1 where id = $1`, topicID)
 	if err != nil {
 		return fmt.Errorf("board: count view of topic %d: %w", topicID, err)
+	}
+	return nil
+}
+
+// AddViews adds ns[i] views to topic ids[i], in one statement. The batched
+// writes of the server call it ([batch.Writer]); ids should be sorted, so two
+// writers never wait on each other's rows.
+func AddViews(ctx context.Context, q db.Querier, ids, ns []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+update topics t set view_count = t.view_count + v.n
+  from unnest($1::bigint[], $2::bigint[]) as v(id, n)
+ where t.id = v.id`, ids, ns)
+	if err != nil {
+		return fmt.Errorf("board: add views: %w", err)
+	}
+	return nil
+}
+
+// AddressRange returns the range that address ip counts as for trust: the
+// IPv4 address itself, or the /64 of an IPv6 address (spec 10). A batch of
+// writes keeps one address per range. It reports false for an address that is
+// not recorded: an invalid one, and the unspecified one, which stands for a
+// client whose address could not be read.
+func AddressRange(ip netip.Addr) (netip.Prefix, bool) {
+	ip = ip.Unmap().WithZone("")
+	if !ip.IsValid() || ip.IsUnspecified() {
+		return netip.Prefix{}, false
+	}
+	if ip.Is4() {
+		return netip.PrefixFrom(ip, 32), true
+	}
+	return netip.PrefixFrom(ip, 64).Masked(), true
+}
+
+// RecordAddress records that member userID used address ip at time at
+// ([RecordAddresses]).
+func RecordAddress(ctx context.Context, q db.Querier, userID int64, ip netip.Addr, at time.Time) error {
+	return RecordAddresses(ctx, q, []int64{userID}, []netip.Addr{ip}, []time.Time{at})
+}
+
+// RecordAddresses records, in one statement, that member users[i] used address
+// ips[i] at time ats[i], in user_ips: the member's trusted addresses (spec 10).
+// The row holds the address itself, as a sign-in writes it; the trust checks
+// match it by its /64. An address that [AddressRange] refuses is skipped. Only
+// a member who is active and not banned at that time gets a row: a ban removes
+// the member's addresses, and a visit from before the ban, written after it,
+// must not bring one back.
+func RecordAddresses(ctx context.Context, q db.Querier, users []int64, ips []netip.Addr, ats []time.Time) error {
+	var us []int64
+	var texts []string
+	var ts []time.Time
+	for i, ip := range ips {
+		if _, ok := AddressRange(ip); !ok {
+			continue
+		}
+		us = append(us, users[i])
+		texts = append(texts, ip.Unmap().WithZone("").String())
+		ts = append(ts, ats[i])
+	}
+	if len(us) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+insert into user_ips (user_id, ip, last_seen_at)
+select v.u, v.ip::inet, v.at
+  from unnest($1::bigint[], $2::text[], $3::timestamptz[]) as v(u, ip, at)
+  join users m on m.id = v.u and m.state = 'active'
+ where not exists (select 1 from bans b
+                    where b.kind = 'user' and b.user_id = v.u and (b.ends_at is null or b.ends_at > v.at))
+on conflict (user_id, ip) do update set last_seen_at = greatest(user_ips.last_seen_at, excluded.last_seen_at)`,
+		us, texts, ts)
+	if err != nil {
+		return fmt.Errorf("board: record member addresses: %w", err)
 	}
 	return nil
 }

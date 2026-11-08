@@ -580,3 +580,29 @@ func TestLookupReadsTheBanIndex(t *testing.T) {
 		t.Errorf("the plan does not use bans_user_idx:\n%s", plan.String())
 	}
 }
+
+// A token with no row is ErrUnknown, so the caller deletes nothing. A row that
+// is dead (expired, or of an inactive user) is ErrNone but not ErrUnknown.
+func TestLookupTellsAnUnknownTokenFromADeadOne(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	ctx := t.Context()
+	for _, tok := range []string{"made-up", ""} {
+		if _, err := session.Lookup(ctx, pool, tok, t0); !errors.Is(err, session.ErrUnknown) || !errors.Is(err, session.ErrNone) {
+			t.Errorf("Lookup(%q) = %v, want ErrUnknown, which is ErrNone", tok, err)
+		}
+	}
+	token, _, err := session.Create(ctx, pool, 2, false, netip.MustParseAddr("10.1.2.3"), "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := t0.Add(400 * 24 * time.Hour)
+	if _, err := session.Lookup(ctx, pool, token, expired); !errors.Is(err, session.ErrNone) || errors.Is(err, session.ErrUnknown) {
+		t.Errorf("Lookup of an expired session = %v, want ErrNone and not ErrUnknown", err)
+	}
+	if _, err := pool.Exec(ctx, `update users set state = 'inactive' where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Lookup(ctx, pool, token, t0); !errors.Is(err, session.ErrNone) || errors.Is(err, session.ErrUnknown) {
+		t.Errorf("Lookup of an inactive user = %v, want ErrNone and not ErrUnknown", err)
+	}
+}

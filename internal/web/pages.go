@@ -84,6 +84,10 @@ func (s *site) index(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	if n := noteFrom(r.Context()); n != nil {
+		// The birthdays are today's: the page ends at midnight.
+		n.expires = nextMidnight(s.opt.Now(), p.Viewer.Loc)
+	}
 	p.Data = indexData{Groups: groupForums(forums), Birthdays: birthdays}
 	s.render(w, http.StatusOK, "index.html", p)
 }

@@ -39,6 +39,8 @@ type topicData struct {
 	KindHref string
 	// Held is true after a post that waits for approval: the page then says so.
 	Held bool
+	// HeldSlot, when set, stands in for the note ([forumData.HeldSlot]).
+	HeldSlot string
 }
 
 // postView is a post with its rendered HTML.
@@ -99,6 +101,21 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	if n := noteFrom(ctx); n != nil {
+		// The page shows the card of each author: a change to one drops it.
+		n.pages = tp.Pages
+		for _, post := range tp.Posts {
+			if post.Author.ID != 0 {
+				n.users = append(n.users, post.Author.ID)
+			}
+			if post.Card != nil {
+				n.users = append(n.users, post.Card.ID)
+			}
+			if post.EditedBy != nil && post.EditedBy.ID != 0 {
+				n.users = append(n.users, post.EditedBy.ID)
+			}
+		}
+	}
 	// A top-level navigation counts a view and marks the page read, but only once
 	// the page is built: a page that fails writes nothing. The page shows the view
 	// that it counts.
@@ -112,7 +129,7 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d := topicData{Topic: tp.Topic, Forum: tp.Forum, Held: r.URL.Query().Get("held") == "1"}
+	d := topicData{Topic: tp.Topic, Forum: tp.Forum, Held: r.URL.Query().Get("held") == "1", HeldSlot: s.heldSlot(ctx)}
 	d.CanReply = tp.CanReply
 	d.CanLock, d.CanUnlock = tp.CanLock, tp.CanUnlock
 	d.LockHref = s.path("t", strconv.FormatInt(id, 10), "lock")

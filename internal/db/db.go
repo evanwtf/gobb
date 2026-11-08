@@ -59,13 +59,15 @@ func OpenSized(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, er
 }
 
 // DataTables returns the names of the base tables of the current schema, except
-// schema_migrations, sorted. These are the tables that hold forum data. The
-// importer checks them for rows and truncates them.
+// schema_migrations and page_cache_epoch, sorted. These are the tables that hold
+// forum data. The importer checks them for rows and truncates them.
+// page_cache_epoch holds only a mark for the cache of a running server, which a
+// command writes after it changes the board.
 func DataTables(ctx context.Context, q Querier) ([]string, error) {
 	rows, err := q.Query(ctx,
 		`select table_name from information_schema.tables
 		 where table_schema = current_schema() and table_type = 'BASE TABLE'
-		   and table_name <> 'schema_migrations'
+		   and table_name not in ('schema_migrations', 'page_cache_epoch')
 		 order by table_name`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list data tables: %w", err)

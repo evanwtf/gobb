@@ -29,6 +29,9 @@ type forumData struct {
 	PostHref string
 	// Held is true after a post that waits for approval: the page then says so.
 	Held bool
+	// HeldSlot, when set, stands in for the note: a render for the guest page
+	// cache fills it in for each request ([site.heldSlot]).
+	HeldSlot string
 }
 
 // topicRowView is a topic row with the clock of the page.
@@ -127,6 +130,7 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		CanStart:   fp.CanStart,
 		PostHref:   s.path("f", strconv.FormatInt(id, 10), "post"),
 		Held:       r.URL.Query().Get("held") == "1",
+		HeldSlot:   s.heldSlot(r.Context()),
 	}
 	s.render(w, http.StatusOK, "forum.html", p)
 }

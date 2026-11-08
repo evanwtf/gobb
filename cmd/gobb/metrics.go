@@ -12,11 +12,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/evanwtf/gobb/internal/batch"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/mail"
 	"github.com/evanwtf/gobb/internal/metrics"
+	"github.com/evanwtf/gobb/internal/pagecache"
 	"github.com/evanwtf/gobb/internal/session"
 	"github.com/evanwtf/gobb/internal/version"
+	"github.com/evanwtf/gobb/internal/web"
 )
 
 const (
@@ -28,8 +31,9 @@ const (
 )
 
 // registerServeMetrics adds to metrics.Default the build info and the gauges
-// that read the pool, the memory gate or the database of this process.
-func registerServeMetrics(pool *pgxpool.Pool, gate *login.Gate) {
+// that read the pool, the memory gate, the guest page cache (nil when it is
+// off), the batched writes or the database of this process.
+func registerServeMetrics(pool *pgxpool.Pool, gate *login.Gate, guest *web.GuestCache, writes *batch.Writer) {
 	r := metrics.Default
 	r.Info("gobb_build_info", "The version and the commit of the build.",
 		[]string{"version", "commit"}, []string{version.Version, version.Build()})
@@ -78,6 +82,65 @@ func registerServeMetrics(pool *pgxpool.Pool, gate *login.Gate) {
 		stat(func(s *pgxpool.Stat) float64 { return s.AcquireDuration().Seconds() }))
 	r.CounterFunc("gobb_db_pool_new_conns_total", "Database connections opened.",
 		stat(func(s *pgxpool.Stat) float64 { return float64(s.NewConnsCount()) }))
+
+	registerCacheMetrics(r, guest)
+	r.CounterFunc("gobb_batch_flushes_total", "Flushes of the batched writes (view counts, visit times, member addresses) that wrote.",
+		func() (float64, bool) { return float64(writes.Stats().Flushes), true })
+	r.CounterFunc("gobb_batch_flush_errors_total", "Flushes of the batched writes that failed; their writes wait for the next one.",
+		func() (float64, bool) { return float64(writes.Stats().Failures), true })
+	r.GaugeFunc("gobb_batch_pending", "Writes that wait for the next flush: topics with views, member visit times and member addresses.",
+		func() (float64, bool) { return float64(writes.Stats().Pending), true })
+}
+
+// registerCacheMetrics adds the metrics of the guest page cache. With the cache
+// off, they read 0.
+func registerCacheMetrics(r *metrics.Registry, guest *web.GuestCache) {
+	pages := func(f func(pagecache.Stats) float64) func() (float64, bool) {
+		return func() (float64, bool) {
+			if guest == nil {
+				return 0, true
+			}
+			return f(guest.Pages.Stats()), true
+		}
+	}
+	warm := func(f func(web.WarmStats) float64) func() (float64, bool) {
+		return func() (float64, bool) {
+			if guest == nil {
+				return 0, true
+			}
+			return f(guest.WarmStats()), true
+		}
+	}
+	r.CounterFunc("gobb_page_cache_hits_total", "Guest page requests served from the page cache.",
+		pages(func(s pagecache.Stats) float64 { return float64(s.Hits) }))
+	r.CounterFunc("gobb_page_cache_misses_total", "Guest page requests that found no page in the cache and waited for a render.",
+		pages(func(s pagecache.Stats) float64 { return float64(s.Misses) }))
+	r.CounterFunc("gobb_page_cache_evictions_total", "Pages that the cache dropped to stay under its memory limit.",
+		pages(func(s pagecache.Stats) float64 { return float64(s.Evictions) }))
+	r.CounterFunc("gobb_page_cache_drops_total", "Drops of pages after a change to the board.",
+		pages(func(s pagecache.Stats) float64 { return float64(s.Drops) }))
+	r.GaugeFunc("gobb_page_cache_bytes", "Bytes of pages in the guest page cache.",
+		pages(func(s pagecache.Stats) float64 { return float64(s.Bytes) }))
+	r.GaugeFunc("gobb_page_cache_entries", "Pages in the guest page cache.",
+		pages(func(s pagecache.Stats) float64 { return float64(s.Entries) }))
+	r.GaugeFunc("gobb_page_cache_limit_bytes", "The memory limit of the guest page cache (GOBB_PAGE_CACHE_MIB).",
+		func() (float64, bool) {
+			if guest == nil {
+				return 0, true
+			}
+			return float64(guest.Pages.Limit()), true
+		})
+	r.CounterFunc("gobb_page_cache_warm_pages_total", "Pages that the start-up render of the cache rendered and stored.",
+		warm(func(s web.WarmStats) float64 { return float64(s.Rendered) }))
+	r.CounterFunc("gobb_page_cache_warm_passes_total", "Passes of the start-up render: one at start, and one after each drop.",
+		warm(func(s web.WarmStats) float64 { return float64(s.Passes) }))
+	r.GaugeFunc("gobb_page_cache_warm_running", "1 while a pass of the start-up render runs, 0 otherwise.",
+		warm(func(s web.WarmStats) float64 {
+			if s.Running {
+				return 1
+			}
+			return 0
+		}))
 }
 
 // startMetrics starts the metrics listener on addr, which serves only GET

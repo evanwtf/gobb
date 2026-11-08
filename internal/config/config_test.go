@@ -559,7 +559,8 @@ func TestFromEnvLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config.Load{DBMaxConns: 4, DBPoolWait: time.Second, SearchPerSecond: 5, SearchMaxRunning: 2}
+	want := config.Load{DBMaxConns: 4, DBPoolWait: time.Second, SearchPerSecond: 5, SearchMaxRunning: 2,
+		PageCacheBytes: 16 << 20, PageCacheWarm: true, FlushEvery: 30 * time.Second}
 	if c.Load != want {
 		t.Errorf("Load = %+v, want %+v", c.Load, want)
 	}
@@ -569,11 +570,13 @@ func TestFromEnvLoadValues(t *testing.T) {
 	c, err := config.FromEnv(env(map[string]string{
 		"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": " 8 ", "GOBB_DB_POOL_WAIT": "250ms",
 		"GOBB_SEARCH_PER_SECOND": "20", "GOBB_SEARCH_MAX_RUNNING": "7",
+		"GOBB_PAGE_CACHE_MIB": "64", "GOBB_PAGE_CACHE_WARM": "false", "GOBB_WRITE_FLUSH_INTERVAL": "1m",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config.Load{DBMaxConns: 8, DBPoolWait: 250 * time.Millisecond, SearchPerSecond: 20, SearchMaxRunning: 7}
+	want := config.Load{DBMaxConns: 8, DBPoolWait: 250 * time.Millisecond, SearchPerSecond: 20, SearchMaxRunning: 7,
+		PageCacheBytes: 64 << 20, PageCacheWarm: false, FlushEvery: time.Minute}
 	if c.Load != want {
 		t.Errorf("Load = %+v, want %+v", c.Load, want)
 	}
@@ -592,8 +595,13 @@ func TestFromEnvLoadValues(t *testing.T) {
 			t.Errorf("pool of %s, %s running: %d, %v", conns, running, c.Load.SearchMaxRunning, err)
 		}
 	}
+	// 0 turns the page cache off.
+	if c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_PAGE_CACHE_MIB": "0"})); err != nil || c.Load.PageCacheBytes != 0 {
+		t.Errorf("GOBB_PAGE_CACHE_MIB=0: %d, %v", c.Load.PageCacheBytes, err)
+	}
 	// The bounds themselves are allowed.
-	for k, v := range map[string]string{"GOBB_DB_MAX_CONNS": "100", "GOBB_DB_POOL_WAIT": "10ms", "GOBB_SEARCH_PER_SECOND": "1000"} {
+	for k, v := range map[string]string{"GOBB_DB_MAX_CONNS": "100", "GOBB_DB_POOL_WAIT": "10ms", "GOBB_SEARCH_PER_SECOND": "1000",
+		"GOBB_PAGE_CACHE_MIB": "1024", "GOBB_WRITE_FLUSH_INTERVAL": "1s", "GOBB_PAGE_CACHE_WARM": "true"} {
 		if _, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", k: v})); err != nil {
 			t.Errorf("%s=%s: %v", k, v, err)
 		}
@@ -621,6 +629,13 @@ func TestFromEnvLoadInvalid(t *testing.T) {
 		{"GOBB_SEARCH_MAX_RUNNING", "4"}, // the whole pool of 4
 		{"GOBB_SEARCH_MAX_RUNNING", "5"},
 		{"GOBB_SEARCH_MAX_RUNNING", "x"},
+		{"GOBB_PAGE_CACHE_MIB", "-1"},
+		{"GOBB_PAGE_CACHE_MIB", "1025"},
+		{"GOBB_PAGE_CACHE_MIB", "16MiB"},
+		{"GOBB_PAGE_CACHE_WARM", "yes"},
+		{"GOBB_WRITE_FLUSH_INTERVAL", "30"},
+		{"GOBB_WRITE_FLUSH_INTERVAL", "999ms"},
+		{"GOBB_WRITE_FLUSH_INTERVAL", "11m"},
 	} {
 		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", c.key: c.value}))
 		if err == nil || !strings.Contains(err.Error(), c.key) {

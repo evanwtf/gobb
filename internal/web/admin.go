@@ -98,7 +98,7 @@ func (a adminRoutes) page(pattern string, h http.HandlerFunc) {
 
 // write adds the POST route /admin<pattern>, with a body of at most limit bytes.
 func (a adminRoutes) write(pattern string, limit int64, h http.HandlerFunc) {
-	a.Handle("POST /admin"+pattern, a.s.protect(limit, a.s.adminLimited(h)))
+	a.Handle("POST /admin"+pattern, a.s.protect(limit, a.s.adminLimited(a.s.adminWrite(h))))
 }
 
 // upload adds the POST route /admin<pattern> for a form that carries a file,
@@ -107,7 +107,7 @@ func (a adminRoutes) write(pattern string, limit int64, h http.HandlerFunc) {
 // body is read as multipart/form-data, in memory. The admin write limit counts
 // it. See [site.protectAdminUpload].
 func (a adminRoutes) upload(pattern string, limit int64, h http.HandlerFunc) {
-	a.Handle("POST /admin"+pattern, a.s.protectAdminUpload(limit, h))
+	a.Handle("POST /admin"+pattern, a.s.protectAdminUpload(limit, a.s.adminWrite(h)))
 }
 
 // dangerous adds the POST route /admin<pattern> for a change that needs a

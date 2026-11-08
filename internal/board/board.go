@@ -196,6 +196,10 @@ type Viewer struct {
 	// null. A topic whose last post is not after it counts as read. It is zero
 	// for a guest.
 	MarkFloor time.Time
+	// LastActive is the member's last_active_at: the time of the last activity
+	// that the database holds. It is zero for a guest, and for a member with no
+	// activity yet.
+	LastActive time.Time
 }
 
 // Guest returns the viewer who is not signed in. The guest sees times in the
@@ -226,12 +230,13 @@ func Member(ctx context.Context, q db.Querier, userID int64, s Settings) (Viewer
 	var (
 		name, zone, scheme, state, dateFormat string
 		lastVisit, markFloor                  time.Time
+		lastActive                            *time.Time
 	)
 	err := q.QueryRow(ctx, `
 select username, timezone, color_scheme, state, date_format,
-       coalesce(last_visit_at, registered_at), coalesce(last_mark_at, registered_at)
+       coalesce(last_visit_at, registered_at), coalesce(last_mark_at, registered_at), last_active_at
   from users where id = $1`, userID).
-		Scan(&name, &zone, &scheme, &state, &dateFormat, &lastVisit, &markFloor)
+		Scan(&name, &zone, &scheme, &state, &dateFormat, &lastVisit, &markFloor, &lastActive)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Viewer{}, ErrNotFound
 	}
@@ -261,10 +266,14 @@ select username, timezone, color_scheme, state, date_format,
 			scheme = Schemes[0]
 		}
 	}
-	return Viewer{
+	v := Viewer{
 		UserID: userID, Name: name, Perms: acl.Resolve(subject),
 		Loc: loc, Scheme: scheme, DateFormat: dateFormat, LastVisit: lastVisit, MarkFloor: markFloor,
-	}, nil
+	}
+	if lastActive != nil {
+		v.LastActive = *lastActive
+	}
+	return v, nil
 }
 
 // SetScheme stores scheme as the color scheme of member userID. It reports

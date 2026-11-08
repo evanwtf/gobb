@@ -121,6 +121,15 @@ type Load struct {
 	// SearchMaxRunning is the most searches that run at one time, from
 	// GOBB_SEARCH_MAX_RUNNING. It is at most DBMaxConns - 1, and at least 1.
 	SearchMaxRunning int
+	// PageCacheBytes is the memory limit of the guest page cache, from
+	// GOBB_PAGE_CACHE_MIB. Zero turns the cache off.
+	PageCacheBytes int64
+	// PageCacheWarm turns on the start-up render of the guest page cache, from
+	// GOBB_PAGE_CACHE_WARM: "true" (the default) or "false".
+	PageCacheWarm bool
+	// FlushEvery is the time between two flushes of the batched writes (view
+	// counts, activity times, member addresses), from GOBB_WRITE_FLUSH_INTERVAL.
+	FlushEvery time.Duration
 }
 
 // The defaults and the bounds of the load settings. A request has 10 s for its
@@ -134,6 +143,13 @@ const (
 	DefaultSearchPerSecond  = 5
 	maxSearchPerSecond      = 1000
 	DefaultSearchMaxRunning = 2
+	// The first board's guests see about 160 pages, the largest 75 KB: about
+	// 6 MiB. 16 MiB holds them twice over and stays small under a 256 MiB cap.
+	DefaultPageCacheMiB = 16
+	maxPageCacheMiB     = 1024
+	DefaultFlushEvery   = 30 * time.Second
+	minFlushEvery       = time.Second
+	maxFlushEvery       = 10 * time.Minute
 )
 
 const (
@@ -311,6 +327,26 @@ func loadFromEnv(getenv func(string) string) (Load, error) {
 			return Load{}, fmt.Errorf("config: GOBB_SEARCH_MAX_RUNNING: must be a number from 1 to GOBB_DB_MAX_CONNS - 1 (%d)", most)
 		}
 		l.SearchMaxRunning = n
+	}
+	mib, err := intSetting("GOBB_PAGE_CACHE_MIB", get("GOBB_PAGE_CACHE_MIB"), DefaultPageCacheMiB, 0, maxPageCacheMiB)
+	if err != nil {
+		return Load{}, err
+	}
+	l.PageCacheBytes = int64(mib) << 20
+	switch v := get("GOBB_PAGE_CACHE_WARM"); v {
+	case "", "true":
+		l.PageCacheWarm = true
+	case "false":
+	default:
+		return Load{}, errors.New(`config: GOBB_PAGE_CACHE_WARM: must be "true" or "false"`)
+	}
+	l.FlushEvery = DefaultFlushEvery
+	if v := get("GOBB_WRITE_FLUSH_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < minFlushEvery || d > maxFlushEvery {
+			return Load{}, fmt.Errorf("config: GOBB_WRITE_FLUSH_INTERVAL: must be a duration from %s to %s, such as 30s", minFlushEvery, maxFlushEvery)
+		}
+		l.FlushEvery = d
 	}
 	return l, nil
 }

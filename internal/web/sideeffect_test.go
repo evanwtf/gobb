@@ -122,11 +122,12 @@ func TestGetHasNoSideEffects(t *testing.T) {
 	carol := signIn(t, h, "carol", "example-password")
 	paths := append(slices.Clone(getPaths), "/t/7", "/t/7/new", "/t/7?page=2", "/f/2?page=2")
 
-	// The dump must see a real change: a navigation to a topic is one.
+	// The dump must see a real change: a navigation to a topic is one. It also
+	// records the address of the visit in user_ips (spec 10, "Sessions").
 	before := dumpData(t, pool)
 	getWith(t, h, "/t/1", carol, asPage)
-	if diff := diffTables(before, dumpData(t, pool)); !slices.Equal(diff, []string{"topic_marks", "topics"}) {
-		t.Fatalf("a navigation changed %v, want [topic_marks topics]", diff)
+	if diff := diffTables(before, dumpData(t, pool)); !slices.Equal(diff, []string{"topic_marks", "topics", "user_ips"}) {
+		t.Fatalf("a navigation changed %v, want [topic_marks topics user_ips]", diff)
 	}
 
 	before = dumpData(t, pool)

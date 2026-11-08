@@ -301,11 +301,14 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_DB_POOL_WAIT` | The longest time that a request waits for a free database connection, as a duration from `10ms` to `5s`. | `1s` |
 | `GOBB_SEARCH_PER_SECOND` | The most searches that the whole board runs in any second, from 1 to 1,000. | `5` |
 | `GOBB_SEARCH_MAX_RUNNING` | The most searches that run at one time, from 1 to `GOBB_DB_MAX_CONNS` − 1, so searches never hold the whole pool (a pool of one allows 1). | `2` (`1` when `GOBB_DB_MAX_CONNS` is 1 or 2) |
+| `GOBB_PAGE_CACHE_MIB` | The memory of the guest page cache, in MiB, from 0 to 1,024. `0` turns the cache off. The server uses at most a quarter of the Go memory limit, or 64 MiB with no limit (see "Guest page cache"). | `16` |
+| `GOBB_PAGE_CACHE_WARM` | `true` or `false`. Render the guest pages into the cache at start, and again after a change drops them. | `true` |
+| `GOBB_WRITE_FLUSH_INTERVAL` | The time between two writes of the batched view counts, visit times and member addresses, from `1s` to `10m` (see "Batched writes"). | `30s` |
 | `GOBB_SIGNIN_FREE_FAILURES` | How many failed sign-ins of an address or a name leave no wait after them, from 0 to 100 (see "Sign-in limits"). | `2` |
 | `GOBB_SIGNIN_WAITS` | The waits after the failures that follow the free ones, in order: 1 to 20 durations from `1s` to `24h`, separated by commas. | `15s,15s,60s,60s,60s` |
 | `GOBB_SIGNIN_LAST_WAIT` | The wait after every later failure, from `1s` to `24h`. | `900s` |
 | `GOBB_SIGNIN_RESET_AFTER` | The time with no failure that clears a count, from `1m` to `720h`, and at least the longest wait. | `24h` |
-| `GOBB_ADDRESS_KEEP_DAYS` | How many days gobb keeps a member's address after the last sign-in from it, from 1 to 3,650. An imported address counts from the import. | `365` |
+| `GOBB_ADDRESS_KEEP_DAYS` | How many days gobb keeps a member's address after its last use (a sign-in, or a signed-in visit), from 1 to 3,650. An imported address counts from the import. | `365` |
 | `GOBB_DEFENSIVE_FAILURES` | Defensive Mode turns on above this many failed sign-ins of the whole board in `GOBB_DEFENSIVE_WINDOW`, from 1 to 10,000. | `100` |
 | `GOBB_DEFENSIVE_WINDOW` | The window of that count, from `1s` to `1h`. | `60s` |
 | `GOBB_DEFENSIVE_QUIET` | How long the rate stays at or below the trigger before Defensive Mode turns off, from `1s` to `24h`. | `10m` |
@@ -601,8 +604,10 @@ Notes for the operator:
   holds in a wait can get back in through a reset.
 - The name count counts the name as typed, after cleaning. A username and an email
   address for one account are two names, so that account has two counts.
-- A member's *trusted addresses* are the addresses that the member signed in from,
-  kept for one year after the last sign-in from each (`GOBB_ADDRESS_KEEP_DAYS`). An
+- A member's *trusted addresses* are the addresses that the member signed in from or
+  visited from while signed in, kept for one year after the last use of each
+  (`GOBB_ADDRESS_KEEP_DAYS`). A visit's address reaches the database with the batched
+  writes (see "Batched writes"). An
   address is trusted only while its member is active and not banned. A ban and the
   Spammer action remove the member's addresses. A failure from one of the member's
   trusted addresses does not count against the name, and the wait of the name does
@@ -687,7 +692,74 @@ then gets quick refusals, and the server stays up.
   Only a request with search words or an author counts; the bare search form does
   not. `gobb_rate_limited_total{limit="search"}` and `gobb_search_busy_total`
   count the refusals.
-- The start-up log line `load limits` gives the four values.
+- The start-up log line `load limits` gives these values, and the three of the
+  page cache and the batched writes below.
+
+### Guest page cache
+
+A page that a guest can see is built once and served from memory: the index, each
+page of a forum or a topic, and the static pages. A member always gets a live page.
+A flood of guests then costs the database almost nothing.
+
+- The cache holds at most `GOBB_PAGE_CACHE_MIB` of pages (16 MiB unless set). Over
+  the limit, the least recently used page goes. The first board's guests see about
+  160 pages of at most 75 KB, so the default holds every one. `0` turns the cache off.
+  The server caps the setting at a quarter of the Go memory limit (a quarter of 70%
+  of `GOBB_MEM_LIMIT` under Compose: 44 MiB at `256m`), or at 64 MiB when there is no
+  limit, and logs a warning when it cuts the setting. The count of an entry covers its
+  body and its bookkeeping, and is close to the real use of the heap.
+- A page is kept by its path, its page number and the color scheme. No scheme and the
+  board's default scheme share a page. The note of a held post (`?held=1`) is filled
+  in for each request. Any other query parameter is left out of the key and of the
+  page, so a random query string cannot force a render. The page never holds the host
+  of a request.
+- Each request fills in its own csrf token and the time in the build line. A cached
+  page carries a weak `ETag`, and a request that sends it back in `If-None-Match` gets
+  304. `Cache-Control` stays `private, no-cache`.
+- When many guests ask for a missing page at once, one request renders it and the
+  others wait for that render. Only a page of status 200 is kept: an error page or a
+  redirect is rendered for each request.
+- A write drops the pages it changes. A reply, an edit, a delete, a restore, an
+  approval, a lock or a change of the topic type drops the pages of that topic, the
+  index, every forum page, and the pages that show the author's posts. A new topic
+  drops the index, the forum pages and the pages that show the author's posts. A new
+  post that waits for approval drops nothing: a guest does not see it. A change to a
+  signature, an avatar or a profile drops the pages that show that member's posts; a
+  birthday drops the index too.
+- Every write in the admin area drops every page, refused or not. Outside the admin
+  area, a write that the board refuses (bad input, no right, a locked topic, no such
+  post) drops nothing. A write that fails for any other reason (a timeout, a lost
+  connection) drops its pages at once, and once more 2 s later, since it may still
+  commit.
+- The commands that write from outside the server (`gobb user`, `gobb ban lift`,
+  `gobb import`) set a mark in the database. The server reads it every 5 s and empties
+  the cache when it changes.
+- A change made with SQL by hand reaches no cache. Restart the server after it, or
+  bump the mark: `update page_cache_epoch set value = value + 1`.
+- The index lists today's birthdays, so it ends at midnight in the board's time zone.
+  A topic page shows the view count of its render until a change drops it. The
+  download counts of its attachments are those of the render too; the server does not
+  change them, so only a change by hand makes them old.
+- At start, unless `GOBB_PAGE_CACHE_WARM` is `false`, a worker renders pages until the
+  cache is full: the index, the first page of each forum, then every page of each
+  topic, newest activity first. It renders one page at a time, and waits while all
+  but one of the pool's connections are in use. After a write drops pages, it renders
+  them again.
+
+### Batched writes
+
+A page view does not write. View counts, the activity times of members and the
+addresses of their visits wait in memory, and go to the database in one transaction
+every `GOBB_WRITE_FLUSH_INTERVAL` (30 s unless set). The server writes them once more
+when it stops, inside the 30 s `stop_grace_period`. A crash loses at most one interval.
+
+- The first page of a member's new visit (more than 30 minutes since the last
+  activity) writes the visit at once, because "New since your last visit" on that page
+  reads it.
+- Each signed-in visit records the member's address, which keeps a "remember me"
+  member's current address trusted (see "Sign-in limits"). A member who is banned or
+  inactive by the time of the write gets no address.
+- A failed write is logged, and its rows wait for the next one.
 
 ### Memory
 
@@ -775,6 +847,14 @@ curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
 | `gobb_db_pool_acquires_total`, `_empty_acquires_total`, `_canceled_acquires_total`, `_acquire_seconds_total`, `_new_conns_total` | counters | none |
 | `gobb_db_pool_wait_timeouts_total` | counter: requests whose wait for a connection ran out (`GOBB_DB_POOL_WAIT`) | none |
 | `gobb_search_busy_total` | counter: searches refused because `GOBB_SEARCH_MAX_RUNNING` searches were running | none |
+| `gobb_page_cache_hits_total`, `_misses_total` | counters: guest page requests served from the cache, and those that waited for a render | none |
+| `gobb_page_cache_evictions_total` | counter: pages dropped to stay under `GOBB_PAGE_CACHE_MIB` | none |
+| `gobb_page_cache_drops_total` | counter: drops of pages after a change to the board | none |
+| `gobb_page_cache_bytes`, `_entries`, `_limit_bytes` | gauges: the size of the cache, its pages, and its limit | none |
+| `gobb_page_cache_warm_pages_total`, `_warm_passes_total` | counters: pages that the start-up render stored, and its passes | none |
+| `gobb_page_cache_warm_running` | gauge: 1 while a pass of the start-up render runs | none |
+| `gobb_batch_flushes_total`, `gobb_batch_flush_errors_total` | counters: flushes of the batched writes that wrote, and that failed | none |
+| `gobb_batch_pending` | gauge: writes that wait for the next flush | none |
 | `gobb_build_info` | gauge, value 1 | `version`, `commit` |
 | `go_goroutines`, `go_memstats_heap_alloc_bytes`, `go_memstats_sys_bytes`, `go_gc_heap_goal_bytes`, `go_memory_limit_bytes`, `go_gc_cycles_total` | Go runtime | none |
 | `process_start_time_seconds`, `process_cpu_seconds_total`, `process_resident_memory_bytes` (Linux) | process | none |
