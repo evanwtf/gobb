@@ -795,6 +795,49 @@ WARN line stays, because the gate never holds more than 128 MiB.
 Press Ctrl-C or send SIGTERM to stop. The server finishes the open requests and closes
 the database pool, inside 20 seconds. A second signal exits at once.
 
+### Load test
+
+`scripts/loadtest` sends a mix of requests to a running gobb for a set time, then
+checks that the server refused quickly and recovered. CI runs it on the example
+bundle under the 256 MiB cap, after the burst of wrong passwords. To run it on a
+local stack, start the stack as CI does: the CI files trust every peer as a proxy
+(so the test can send each request from its own address) and allow sign-in over
+plain HTTP. Use these files on a test stack only.
+
+```sh
+export COMPOSE_FILE=compose.yaml:compose.metrics.yaml:.github/compose.ci.yaml:.github/compose.memcap.yaml
+export POSTGRES_PASSWORD=test
+docker compose up -d --build --wait
+docker compose stop gobb
+docker compose run --rm -v "$PWD/docs/example-bundle:/import:ro" gobb import /import
+docker compose up -d --wait
+export BASE="http://$(docker compose port gobb 8080)/"
+go run ./scripts/loadtest -duration 60s -c 256 -search-forbidden \
+  -member-name alice -member-password example-password "$BASE"
+sh scripts/memcap-check.sh "$(docker compose ps -q gobb)" 268435456
+```
+
+The mix holds guest views of the index, the forums and the topics; guest views of
+pages that do not exist (a topic past the last one, a page number past the end);
+guest searches; wrong passwords over 500 names and 5,000 IPv6 /64s; and the pages
+and searches of a signed-in member. `-mix` sets the weight of each class, and
+`-help` lists every flag. The example board does not let guests search, so
+`-search-forbidden` allows a 403 for a guest search.
+
+The test fails when:
+
+- an answer is not 200, 304, 429 or 503, or 404 for a page that does not exist;
+- a 429 or a 503 takes longer than 2 s (`-refuse-bound`);
+- a request gets no answer: a dropped connection, or nothing within 30 s;
+- after the load and a 5 s pause, a page of the set-up does not answer 200 within
+  2 s (`-recovery-bound`).
+
+It prints, for each class, the count of each status and the 50th, 95th and 99th
+percentiles of the time, and the slowest request. `scripts/memcap-check.sh` then
+reads the cgroup of the container (Linux only): it fails on a restart, an OOM kill,
+or a peak at the cap. The test sends requests only to a loopback address, unless
+you pass `-any-host`.
+
 ### Metrics
 
 gobb serves Prometheus metrics on a second listener. It is off until
