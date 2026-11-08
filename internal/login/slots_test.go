@@ -102,3 +102,30 @@ func TestSlotFreedAfterAPanickingCheck(t *testing.T) {
 		t.Errorf("%d slots held after a panic, want 0", n)
 	}
 }
+
+// A sign-in holds one slot over its whole check, and a sign-in that finds no
+// slot gets ErrBusy without a check.
+func TestSigninHoldsOneSlotOverTheCheck(t *testing.T) {
+	opt := DefaultOptions()
+	opt.Gate = NewGate(1024)
+	opt.Schedule = nil
+	s := NewWith(nil, opt)
+	s.Floor = 0
+	s.Slots = make(chan struct{}, 1)
+	var during int
+	s.opt.Verify = func(string, string, string) (bool, bool) { during = len(s.Slots); return false, false }
+	if _, err := s.Check(t.Context(), "\xff", "pw", netip.Addr{}, time.Now()); !errors.Is(err, ErrWrong) {
+		t.Fatalf("a check with a free slot: %v, want ErrWrong", err)
+	}
+	if during != 1 || len(s.Slots) != 0 {
+		t.Errorf("slots during the check %d and after %d, want 1 and 0", during, len(s.Slots))
+	}
+	s.Slots <- struct{}{}
+	during = -1
+	if _, err := s.Check(t.Context(), "\xff", "pw", netip.Addr{}, time.Now()); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a check with no slot: %v, want ErrBusy", err)
+	}
+	if during != -1 {
+		t.Error("the check ran without a slot")
+	}
+}

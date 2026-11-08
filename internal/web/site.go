@@ -516,10 +516,11 @@ func (s *site) guard(next http.Handler) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 		defer cancel()
 		ctx = db.WithPoolWait(ctx, s.opt.PoolWait)
-		// The waits of a sign-in for the pool and for the gate share one budget
-		// of GateWait from the start of the request, so a busy sign-in answers
-		// 503 within it ([login.WithWaitDeadline]).
-		if c, ok := ctx.Value(reqClockKey{}).(reqClock); ok {
+		// The gate wait of a password POST ends GateWait after the start of the
+		// request: a sign-in that spent that long waiting for the pool does not
+		// wait for the gate too ([login.WithWaitDeadline]). Its pool waits have
+		// their own budget, PoolWait in total.
+		if c, ok := ctx.Value(reqClockKey{}).(reqClock); ok && isPasswordPost(r, s.base) {
 			ctx = login.WithWaitDeadline(ctx, c.start.Add(s.login.GateWait))
 		}
 		next.ServeHTTP(&poolBusyWriter{ResponseWriter: w, ctx: ctx}, r.WithContext(ctx))
