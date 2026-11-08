@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,8 +22,12 @@ import (
 // member/pw answers 303 with a session; any other answers 200 (a wrong
 // password). Each hook may change one answer.
 type fakeBoard struct {
-	// topic, when set, answers a view of /t/1 or /t/2 in place of 200.
-	topic func(member bool) int
+	// topic, when set, answers a view of /t/1 or /t/2 in place of 200. A 429
+	// or 503 carries Retry-After unless noRetry is set.
+	topic   func(member bool) int
+	noRetry bool
+	// hang, when set, makes a member view of /t/1 wait this long.
+	hang time.Duration
 	// searchDelay delays every 429 of search.
 	searchDelay time.Duration
 	// drop closes the connection of every guest view of /f/1, with no answer.
@@ -63,6 +68,12 @@ func (b *fakeBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			code = b.afterTopic
 		} else if b.topic != nil && b.loadStarted.Load() && !b.loadEnded.Load() {
 			code = b.topic(member)
+		}
+		if member && b.hang > 0 && r.URL.Path == "/t/1" && b.loadStarted.Load() {
+			time.Sleep(b.hang)
+		}
+		if (code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable) && !b.noRetry {
+			w.Header().Set("Retry-After", "2")
 		}
 		w.WriteHeader(code)
 	case strings.HasPrefix(r.URL.Path, "/t/") || strings.HasPrefix(r.URL.Path, "/f/"):
@@ -138,7 +149,7 @@ func TestHealthyBoardPasses(t *testing.T) {
 	for _, want := range []string{
 		"targets: 4 guest pages (1 forums, 2 topics), 4 member pages",
 		"\npage ", "\nmiss ", "\nsearch ", "\nsignin ", "\nmember ", "\nmsearch ",
-		"recovery: 4 guest and 4 member views and /healthz, 0 failed",
+		"recovery: 4 guest and 4 member views, /login and /healthz, 0 failed",
 		"ok: every answer was allowed",
 	} {
 		if !strings.Contains(out, want) {
@@ -173,13 +184,14 @@ func TestNotFoundOnARealPageFails(t *testing.T) {
 	}
 }
 
-// Quick 429s and 503s pass: the refusals are the load protection at work.
+// Quick 429s and 503s with Retry-After pass for the classes that may be
+// refused: the refusals are the load protection at work.
 func TestQuickRefusalsPass(t *testing.T) {
 	b := &fakeBoard{topic: func(member bool) int {
 		if member {
 			return http.StatusServiceUnavailable
 		}
-		return http.StatusTooManyRequests
+		return http.StatusOK
 	}}
 	code, out := runAgainst(t, b, nil)
 	if code != 0 {
@@ -187,6 +199,47 @@ func TestQuickRefusalsPass(t *testing.T) {
 	}
 	if !strings.Contains(out, "503 x") || !strings.Contains(out, "429 x") {
 		t.Errorf("the report lacks the 429 and 503 counts:\n%s", out)
+	}
+}
+
+// A guest page that the board caches must never be refused: a 503 or 429 on
+// the page class fails.
+func TestRefusedGuestPageFails(t *testing.T) {
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests} {
+		b := &fakeBoard{topic: func(member bool) int {
+			if member {
+				return http.StatusOK
+			}
+			return status
+		}}
+		code, out := runAgainst(t, b, nil)
+		if code != 1 || !strings.Contains(out, fmt.Sprintf("page /t/1: status %d is not allowed", status)) {
+			t.Errorf("guest page %d: exit %d, want 1 and a page line:\n%s", status, code, out)
+		}
+	}
+}
+
+// A refusal with no Retry-After fails.
+func TestRefusalWithoutRetryAfterFails(t *testing.T) {
+	b := &fakeBoard{noRetry: true, topic: func(member bool) int {
+		if member {
+			return http.StatusServiceUnavailable
+		}
+		return http.StatusOK
+	}}
+	code, out := runAgainst(t, b, nil)
+	if code != 1 || !strings.Contains(out, "has no Retry-After") {
+		t.Fatalf("exit %d, want 1 and a Retry-After line:\n%s", code, out)
+	}
+}
+
+// A request that the end of the load cuts off counts as an error when it had
+// already run longer than the refusal bound.
+func TestStuckRequestAtTheEndFails(t *testing.T) {
+	b := &fakeBoard{hang: 2 * time.Second}
+	code, out := runAgainst(t, b, func(c *config) { c.refuseBound = 100 * time.Millisecond })
+	if code != 1 || !strings.Contains(out, "cut off at the end of the load") {
+		t.Fatalf("exit %d, want 1 and a cut-off line:\n%s", code, out)
 	}
 }
 
@@ -201,9 +254,21 @@ func TestSlowRefusalFails(t *testing.T) {
 	}
 }
 
-// A slow 200 is not a refusal, so the bound does not apply to it.
+// A slow 200 is not a refusal, so the bound does not apply to it. The views
+// are slow only in the first 200 ms of the 300 ms load, so none is still
+// running when the load ends (that one would count as stuck).
 func TestSlowSuccessPasses(t *testing.T) {
-	b := &fakeBoard{topic: func(bool) int { time.Sleep(40 * time.Millisecond); return http.StatusOK }}
+	var (
+		once  sync.Once
+		start time.Time
+	)
+	b := &fakeBoard{topic: func(bool) int {
+		once.Do(func() { start = time.Now() })
+		if time.Since(start) < 200*time.Millisecond {
+			time.Sleep(40 * time.Millisecond)
+		}
+		return http.StatusOK
+	}}
 	code, out := runAgainst(t, b, func(c *config) { c.refuseBound = 10 * time.Millisecond })
 	if code != 0 {
 		t.Fatalf("exit %d, want 0:\n%s", code, out)

@@ -29,13 +29,19 @@
 // one at a time, and /healthz. This is the recovery check.
 //
 // The command exits 1 when any of these holds:
-//   - an answer is not in the allowed set of its class: 200 and 304, 404 for a
-//     miss only, 403 for a guest search only with -search-forbidden, and 429 and
-//     503 for every class;
-//   - a 429 or a 503 took longer than -refuse-bound;
+//   - an answer is not in the allowed set of its class: 200 and 304 for every
+//     class; 404 for a miss only; 403 for a guest search only with
+//     -search-forbidden; and 429 and 503 for every class but page. A guest page
+//     that the board holds in its page cache must never be refused, so a 429
+//     or 503 there means the cache no longer serves it before the limits;
+//   - a 429 or a 503 took longer than -refuse-bound, or came with no
+//     Retry-After header;
 //   - a request failed with no answer: a refused or dropped connection, or no
-//     answer within -timeout;
-//   - a recovery view did not answer 200 within -recovery-bound.
+//     answer within -timeout. A request that the end of the load cut off counts
+//     too when it had already run longer than -refuse-bound;
+//   - a recovery view did not answer 200 within -recovery-bound. The recovery
+//     views are the pages found at set-up, the sign-in page (a guest page that
+//     the cache does not hold) and /healthz.
 //
 // It exits 2 on a usage error, or when the set-up fails (no page found, no csrf
 // field, a member sign-in that does not answer 303).
@@ -226,6 +232,9 @@ func parseMix(s string) (map[string]int, error) {
 
 // allowed returns the statuses that class may answer.
 func allowed(class string, searchForbidden bool) []int {
+	if class == classPage {
+		return []int{http.StatusOK, http.StatusNotModified}
+	}
 	set := []int{http.StatusOK, http.StatusNotModified, http.StatusTooManyRequests, http.StatusServiceUnavailable}
 	switch class {
 	case classMiss:
@@ -265,7 +274,7 @@ type tester struct {
 
 // failure is one request that broke a rule.
 type failure struct {
-	kind   string // "status", "slow", "error"
+	kind   string // "status", "slow", "noretry", "error"
 	class  string
 	path   string
 	status int
@@ -279,6 +288,8 @@ func (f failure) String() string {
 		return fmt.Sprintf("%s %s: status %d is not allowed (took %s)", f.class, f.path, f.status, ms(f.took))
 	case "slow":
 		return fmt.Sprintf("%s %s: status %d took %s", f.class, f.path, f.status, ms(f.took))
+	case "noretry":
+		return fmt.Sprintf("%s %s: status %d has no Retry-After", f.class, f.path, f.status)
 	}
 	return fmt.Sprintf("%s %s: %s (after %s)", f.class, f.path, f.err, ms(f.took))
 }
@@ -291,6 +302,9 @@ type classStats struct {
 	slowest  time.Duration
 	slowPath string
 	slowCode int
+	// slowRefusal is the slowest 429 or 503, and refusalPath its path.
+	slowRefusal time.Duration
+	refusalPath string
 }
 
 func (c *classStats) add(path string, code int, took time.Duration) {
@@ -306,6 +320,9 @@ func (c *classStats) add(path string, code int, took time.Duration) {
 	if took >= c.slowest {
 		c.slowest, c.slowPath, c.slowCode = took, path, code
 	}
+	if isRefusal(code) && took >= c.slowRefusal {
+		c.slowRefusal, c.refusalPath = took, path
+	}
 }
 
 func (c *classStats) merge(o *classStats) {
@@ -319,6 +336,9 @@ func (c *classStats) merge(o *classStats) {
 	c.took = append(c.took, o.took...)
 	if o.slowest >= c.slowest && len(o.took) > 0 {
 		c.slowest, c.slowPath, c.slowCode = o.slowest, o.slowPath, o.slowCode
+	}
+	if o.slowRefusal >= c.slowRefusal && o.refusalPath != "" {
+		c.slowRefusal, c.refusalPath = o.slowRefusal, o.refusalPath
 	}
 }
 
@@ -416,7 +436,7 @@ func runWithHooks(ctx context.Context, cfg config, out io.Writer, h hooks) int {
 	bad := t.recovery(ctx, out)
 
 	failed := false
-	for _, kind := range []string{"status", "slow", "error"} {
+	for _, kind := range []string{"status", "slow", "noretry", "error"} {
 		if n := res.failures[kind]; n > 0 {
 			failed = true
 			fmt.Fprintf(out, "FAIL: %d %s\n", n, failureWords[kind])
@@ -437,9 +457,10 @@ func runWithHooks(ctx context.Context, cfg config, out io.Writer, h hooks) int {
 }
 
 var failureWords = map[string]string{
-	"status": "answers with a status that the class does not allow",
-	"slow":   "refusals (429 or 503) slower than the bound",
-	"error":  "requests with no answer (connection error or timeout)",
+	"status":  "answers with a status that the class does not allow",
+	"slow":    "refusals (429 or 503) slower than the bound",
+	"noretry": "refusals (429 or 503) with no Retry-After",
+	"error":   "requests with no answer (connection error or timeout)",
 }
 
 // setup builds the client, finds the pages, gets the csrf token of the
@@ -741,16 +762,20 @@ func (t *tester) one(ctx context.Context, rng *rand.Rand, res *result) {
 	if xff != "" {
 		req.Header.Set("X-Forwarded-For", xff)
 	}
-	code, took, err := t.send(req)
+	code, retry, took, err := t.send(req)
 	if err != nil && ctx.Err() != nil {
-		// The load ended during this request; it says nothing of the server.
-		return
+		// The load ended during this request. A short one says nothing of the
+		// server; one that already ran past the refusal bound was stuck.
+		if took <= t.cfg.refuseBound {
+			return
+		}
+		err = fmt.Errorf("cut off at the end of the load after %s: %w", ms(took), err)
 	}
-	t.check(res, class, "/"+path, code, took, err)
+	t.check(res, class, "/"+path, code, retry, took, err)
 }
 
 // check records one answer in res, with any rule that it broke.
-func (t *tester) check(res *result, class, path string, code int, took time.Duration, err error) {
+func (t *tester) check(res *result, class, path string, code int, retry bool, took time.Duration, err error) {
 	res.stats(class).add(path, code, took)
 	switch {
 	case err != nil:
@@ -759,24 +784,27 @@ func (t *tester) check(res *result, class, path string, code int, took time.Dura
 		res.fail(failure{kind: "status", class: class, path: path, status: code, took: took})
 	case isRefusal(code) && took > t.cfg.refuseBound:
 		res.fail(failure{kind: "slow", class: class, path: path, status: code, took: took})
+	case isRefusal(code) && !retry:
+		res.fail(failure{kind: "noretry", class: class, path: path, status: code, took: took})
 	}
 }
 
-// send sends req, reads the whole body, and returns the status and the time
-// to the end of the body. code is 0 when err is set.
-func (t *tester) send(req *http.Request) (int, time.Duration, error) {
+// send sends req, reads the whole body, and returns the status, whether the
+// answer has a Retry-After header, and the time to the end of the body. code
+// is 0 when err is set.
+func (t *tester) send(req *http.Request) (code int, retry bool, took time.Duration, err error) {
 	start := time.Now()
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return 0, time.Since(start), err
+		return 0, false, time.Since(start), err
 	}
 	_, err = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	took := time.Since(start)
+	took = time.Since(start)
 	if err != nil {
-		return 0, took, err
+		return 0, false, took, err
 	}
-	return resp.StatusCode, took, nil
+	return resp.StatusCode, resp.Header.Get("Retry-After") != "", took, nil
 }
 
 // missPath returns a guest page that does not exist: a topic past the last
@@ -819,7 +847,7 @@ func (t *tester) recovery(ctx context.Context, out io.Writer) int {
 		if session != nil {
 			req.AddCookie(session)
 		}
-		code, took, err := t.send(req)
+		code, _, took, err := t.send(req)
 		switch {
 		case err != nil:
 			bad++
@@ -838,8 +866,11 @@ func (t *tester) recovery(ctx context.Context, out io.Writer) int {
 	for _, p := range t.member {
 		view("member", p, t.session)
 	}
+	// The sign-in page is a guest page that the board does not cache: it must
+	// answer too, through the limits.
+	view("guest", "login", nil)
 	view("guest", "healthz", nil)
-	fmt.Fprintf(out, "recovery: %d guest and %d member views and /healthz, %d failed\n", len(t.guest), len(t.member), bad)
+	fmt.Fprintf(out, "recovery: %d guest and %d member views, /login and /healthz, %d failed\n", len(t.guest), len(t.member), bad)
 	return bad
 }
 
@@ -856,7 +887,7 @@ func (t *tester) mixString() string {
 
 // printLoad prints one line for each class, and the totals.
 func (t *tester) printLoad(out io.Writer, res *result, elapsed time.Duration) {
-	fmt.Fprintf(out, "%-8s %8s %7s  %-6s %-6s %-6s %-8s  %s\n", "class", "requests", "per s", "p50", "p95", "p99", "max", "statuses; the slowest")
+	fmt.Fprintf(out, "%-8s %8s %7s  %-6s %-6s %-6s %-8s %-8s  %s\n", "class", "requests", "per s", "p50", "p95", "p99", "max", "refusal", "statuses; the slowest; the slowest refusal")
 	total := 0
 	refusals := map[int]int{}
 	for _, c := range classOrder {
@@ -886,9 +917,13 @@ func (t *tester) printLoad(out io.Writer, res *result, elapsed time.Duration) {
 		if s.slowCode == 0 {
 			slow = "error"
 		}
-		fmt.Fprintf(out, "%-8s %8d %7.1f  %-6s %-6s %-6s %-8s  %s; %s %s\n", c, n, float64(n)/elapsed.Seconds(),
-			ms(percentile(s.took, 50)), ms(percentile(s.took, 95)), ms(percentile(s.took, 99)), ms(s.slowest),
-			strings.Join(st, ", "), slow, s.slowPath)
+		refusal, refusalAt := "-", "none"
+		if s.refusalPath != "" {
+			refusal, refusalAt = ms(s.slowRefusal), s.refusalPath
+		}
+		fmt.Fprintf(out, "%-8s %8d %7.1f  %-6s %-6s %-6s %-8s %-8s  %s; %s %s; %s\n", c, n, float64(n)/elapsed.Seconds(),
+			ms(percentile(s.took, 50)), ms(percentile(s.took, 95)), ms(percentile(s.took, 99)), ms(s.slowest), refusal,
+			strings.Join(st, ", "), slow, s.slowPath, refusalAt)
 	}
 	fmt.Fprintf(out, "total: %d requests in %s (%.1f per s); 429 x%d, 503 x%d\n", total, elapsed.Round(time.Millisecond),
 		float64(total)/elapsed.Seconds(), refusals[http.StatusTooManyRequests], refusals[http.StatusServiceUnavailable])
