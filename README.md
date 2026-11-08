@@ -204,11 +204,14 @@ mkdir -p "$BACKUP_DIR"
 
 ### Restore
 
-The restore drops the `gobb` database, creates it again, and loads the dump into the
-empty database. It does not use `pg_restore --clean`: that option drops only the tables
-that are in the dump, so a table that a newer migration added would stay, and the next
-upgrade would try to create it again. The restore then empties the data volume and
-unpacks the archive.
+The restore loads the dump into a new database, `gobb_new`, and checks it. Only then
+does it swap the two: the live `gobb` becomes `gobb_old`, and `gobb_new` becomes
+`gobb`. A dump that fails partway stops the restore before the swap, so the live
+database keeps its data. The restore does not use `pg_restore --clean`: that option
+drops only the tables that are in the dump, so a table that a newer migration added
+would stay, and the next upgrade would try to create it again. A new database has no
+such table. After the swap, the restore empties the data volume and unpacks the
+archive.
 
 Set the folder of the backups first. The line keeps a `BACKUP_DIR` that this shell
 already has, and otherwise uses the folder of the backup section. A new shell does not
@@ -228,12 +231,21 @@ export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p'
 echo "STAMP=$STAMP"
 ```
 
-The second command is one chain, and the first failure stops it. Nothing is stopped or
-deleted until these checks pass: `STAMP` is not empty, the dump and the archive both
-exist and are not empty, `pg_restore --list` reads the dump, and `tar tzf` reads the
-archive. Each check prints its own message on stderr when it fails, and the chain exits
-with a non-zero status. Read the message, fix the cause and run it again. The
-`postgres` service must be running.
+The second command is one chain, and the first failure stops it. Each step that fails
+prints its own message on stderr, and the chain exits with a non-zero status. The
+`postgres` service must be running. The chain does these steps in order:
+
+1. It checks the inputs. `STAMP` is not empty, the dump and the archive both exist and
+   are not empty, `pg_restore --list` reads the dump, and `tar tzf` reads the archive.
+   No database called `gobb_old` exists (see the end of this section).
+2. It stops gobb, drops any `gobb_new` that an earlier restore left, and creates an
+   empty `gobb_new`.
+3. It loads the dump into `gobb_new`. `--exit-on-error` stops at the first error, so a
+   damaged or truncated dump fails here.
+4. It checks that `schema_migrations` and `users` in `gobb_new` both hold rows.
+5. It swaps the databases in one transaction. A rename needs no connections to either
+   database, and gobb is stopped, so nothing holds one.
+6. It empties the data volume and unpacks the archive.
 
 <!-- block: restore -->
 ```sh
@@ -242,9 +254,12 @@ with a non-zero status. Read the message, fix the cause and run it again. The
 { test -s "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" || { echo "no archive for $STAMP in $BACKUP_DIR" >&2; false; }; } && \
 { docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$STAMP.dump" > /dev/null || { echo "pg_restore cannot read the dump for $STAMP" >&2; false; }; } && \
 { tar tzf "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" > /dev/null || { echo "tar cannot read the archive for $STAMP" >&2; false; }; } && \
+{ test "$(docker compose exec -T postgres psql -U gobb -d postgres -tA -c "select count(*) from pg_database where datname = 'gobb_old'")" = 0 || { echo "gobb_old exists from an earlier restore, or psql failed: drop gobb_old first" >&2; false; }; } && \
 docker compose stop gobb && \
-docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database if exists gobb with (force)' -c 'create database gobb' && \
-docker compose exec -T postgres pg_restore -U gobb -d gobb --exit-on-error < "$BACKUP_DIR/gobb-$STAMP.dump" && \
+docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database if exists gobb_new with (force)' -c 'create database gobb_new' && \
+{ docker compose exec -T postgres pg_restore -U gobb -d gobb_new --exit-on-error --no-owner < "$BACKUP_DIR/gobb-$STAMP.dump" || { echo "pg_restore failed for $STAMP: the live database is untouched" >&2; false; }; } && \
+{ test "$(docker compose exec -T postgres psql -U gobb -d gobb_new -tA -c 'select (select count(*) from schema_migrations) > 0 and (select count(*) from users) > 0')" = t || { echo "gobb_new for $STAMP has no migrations or no users: the live database is untouched" >&2; false; }; } && \
+{ docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -1 -c 'alter database gobb rename to gobb_old' -c 'alter database gobb_new rename to gobb' || { echo "the swap failed: the live database is untouched" >&2; false; }; } && \
 docker run --rm --volumes-from "$(docker compose ps -aq gobb)" -v "$BACKUP_DIR:/backup:ro" \
   --entrypoint sh postgres:18 \
   -c 'tar tzf "/backup/gobb-data-$1.tar.gz" > /dev/null && find /var/lib/gobb -mindepth 1 -delete && tar xzf "/backup/gobb-data-$1.tar.gz" -C /var/lib/gobb' sh "$STAMP"
@@ -254,10 +269,34 @@ Then set `GOBB_VERSION` back to the version that wrote the backup, and run
 `docker compose up -d --wait`. gobb reads the legacy routes and the stored password
 hashes once at start, so always start it after a restore.
 
+**If the chain fails before the swap**, the live `gobb` database is as it was. Read the
+message and fix the cause. Gobb may be stopped, so drop the partial `gobb_new` and start
+gobb again on the live database, with the `GOBB_VERSION` that you have now. To try
+again, run the chain again: it drops `gobb_new` itself.
+
+<!-- block: restore-cleanup -->
+```sh
+docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database if exists gobb_new with (force)'
+docker compose up -d --wait
+```
+
+**After the swap**, `gobb_old` holds the database as it was before the restore. Keep it
+until the restored board works: sign in and open a few pages. Then drop it. The next
+restore refuses to start while `gobb_old` exists, so that it cannot overwrite a copy
+you still want:
+
+<!-- block: restore-drop-old -->
+```sh
+docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database gobb_old'
+```
+
 CI runs these commands on every push. It restores a dump over a database that holds an
 extra table, and checks that the table is gone and that the row count of every table is
-the same (`scripts/rowcounts`). It also runs the restore with the archive missing, and
-checks that the restore deletes nothing and fails.
+the same (`scripts/rowcounts`). It runs the restore with the archive missing, with an
+unreadable dump and with an unreadable archive, and checks that the restore deletes
+nothing and fails. It runs the restore with a truncated dump and with the dump of an
+empty database, and checks that the restore fails before the swap, that the live
+database keeps every row, and that gobb serves its pages again on it.
 
 ## Run the server
 

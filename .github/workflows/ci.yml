@@ -414,14 +414,20 @@ jobs:
       # 1. Back up with gobb running, as the README says.
       # 2. Stop gobb, restore the dump into a copy (gobb_check), and compare the row
       #    counts of the live database with the copy: the dump is complete.
-      # 3. Add a table to the live database. It stands in for a table of a newer
+      # 3. Run the restore with a truncated dump, then with the dump of an empty
+      #    database. Both pass the checks of the inputs, so the load into gobb_new
+      #    or the check of gobb_new must stop them before the swap. The live
+      #    database must keep every row, and gobb must serve its pages on it.
+      # 4. Add a table to the live database. It stands in for a table of a newer
       #    migration, and it has a foreign key to users, which `pg_restore --clean`
       #    could not drop.
-      # 4. Run the restore with each input broken in turn: the restore must exit
-      #    non-zero and delete nothing, neither the database nor the data volume.
-      # 5. Run the restore for real. The extra table must be gone, every row count
+      # 5. Run the restore with each input broken in turn, and with a gobb_old left
+      #    over: the restore must exit non-zero and delete nothing, neither the
+      #    database nor the data volume.
+      # 6. Run the restore for real. The extra table must be gone, every row count
       #    (schema_migrations too) must equal the copy, and the data volume must
-      #    hold the same files. Then gobb must start on the restored board.
+      #    hold the same files. Then gobb must start on the restored board, and
+      #    the README drops gobb_old.
       - name: Back up and restore, and compare the row counts
         shell: bash
         run: |
@@ -439,6 +445,9 @@ jobs:
           hostport=$(docker compose port postgres 5432)
           dsn() { echo "postgres://gobb:$POSTGRES_PASSWORD@$hostport/$1?sslmode=disable"; }
           counts() { GOBB_SOURCE_DSN=$(dsn "$1") GOBB_RESTORED_DSN=$(dsn "$2") go run ./scripts/rowcounts; }
+          # The OID of the database called gobb. A swap gives the name to another
+          # database, so the OID changes.
+          liveoid() { sql -d postgres -c "select oid from pg_database where datname = 'gobb'"; }
           # The number of files in the data volume of the gobb container.
           files() {
             docker run --rm --volumes-from "$(docker compose ps -aq gobb)" \
@@ -471,12 +480,11 @@ jobs:
           echo "files in the data volume: $before"
           [ "$before" -gt 0 ] || { echo "the data volume is empty, so a deleted volume would not show"; exit 1; }
 
-          # 3. A table of a newer migration.
-          sql -d gobb -c 'create table newer_table (id int primary key, user_id int references users (id))' -c 'insert into newer_table (id) values (1)'
-
-          # 4. Each broken input must stop the restore before it deletes anything.
-          # The second argument is the message that the failed check must print on
-          # stderr, so a restore that stops in silence fails this step.
+          # Each broken input must stop the restore before the swap, and before it
+          # deletes anything. The second argument is the message that the failed
+          # step must print on stderr, so a restore that stops in silence fails
+          # this step.
+          oid=$(liveoid)
           refuses() {
             local why=$1 want=$2 status=0 err="$BACKUP_DIR/refusal.err"
             block restore 2> "$err" || status=$?
@@ -484,13 +492,49 @@ jobs:
             [ "$status" -ne 0 ] || { echo "the restore passed with $why"; exit 1; }
             grep -F -- "$want" "$err" > /dev/null || { echo "$why: the restore did not print \"$want\""; exit 1; }
             rm -f "$err"
-            [ "$(sql -d gobb -c 'select count(*) from newer_table')" = 1 ] || { echo "$why: the restore dropped the database"; exit 1; }
+            [ "$(liveoid)" = "$oid" ] || { echo "$why: the restore replaced the live database"; exit 1; }
             [ "$(files)" = "$before" ] || { echo "$why: the restore changed the data volume"; exit 1; }
             echo "refused with $why, and deleted nothing"
           }
+          bad=29990101-000000
+
+          # 3. A dump that fails partway, and a dump that loads but holds no board.
+          # Both pass `pg_restore --list` and `tar tzf`, so only the load into
+          # gobb_new or the check of gobb_new can stop them.
+          cp "$BACKUP_DIR/gobb-data-$good.tar.gz" "$BACKUP_DIR/gobb-data-$bad.tar.gz"
+          # The data blocks come after the table of contents, at the end of the
+          # file, so a cut of the last 512 bytes leaves a list that reads.
+          size=$(wc -c < "$BACKUP_DIR/gobb-$good.dump")
+          head -c "$((size - 512))" "$BACKUP_DIR/gobb-$good.dump" > "$BACKUP_DIR/gobb-$bad.dump"
+          docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$bad.dump" > /dev/null \
+            || { echo "pg_restore --list cannot read the truncated dump, so the case below tests the wrong check"; exit 1; }
+          STAMP=$bad
+          refuses "a truncated dump" "pg_restore failed for $bad: the live database is untouched"
+          sql -d postgres -c 'create database gobb_empty'
+          docker compose exec -T postgres pg_dump -U gobb -d gobb_empty -Fc > "$BACKUP_DIR/gobb-$bad.dump"
+          sql -d postgres -c 'drop database gobb_empty'
+          refuses "the dump of an empty database" "gobb_new for $bad has no migrations or no users: the live database is untouched"
+          rm -f "$BACKUP_DIR/gobb-$bad.dump" "$BACKUP_DIR/gobb-data-$bad.tar.gz"
+          # The live database keeps every row. gobb is stopped, so nothing writes
+          # to it between the copy and this count.
+          counts gobb_check gobb
+          # The README cleanup drops gobb_new and starts gobb on the live database.
+          [ "$(sql -d postgres -c "select count(*) from pg_database where datname = 'gobb_new'")" = 1 ] \
+            || { echo "the failed restore left no gobb_new, so the cleanup below proves nothing"; exit 1; }
+          block restore-cleanup
+          [ "$(sql -d postgres -c "select count(*) from pg_database where datname = 'gobb_new'")" = 0 ] \
+            || { echo "the cleanup left gobb_new"; exit 1; }
+          port=$(docker compose port gobb 8080)
+          curl -fsS "http://$port/healthz"
+          sh scripts/smoke-serve.sh "http://$port"
+          docker compose stop gobb
+
+          # 4. A table of a newer migration.
+          sql -d gobb -c 'create table newer_table (id int primary key, user_id int references users (id))' -c 'insert into newer_table (id) values (1)'
+
+          # 5. Each broken input of the checks before the stop.
           # A stamp with a dump and no archive is newer than the good one. The picker
           # must skip it.
-          bad=29990101-000000
           cp "$BACKUP_DIR/gobb-$good.dump" "$BACKUP_DIR/gobb-$bad.dump"
           block restore-pick
           [ "$STAMP" = "$good" ] || { echo "the picker chose $STAMP, want $good"; exit 1; }
@@ -506,18 +550,28 @@ jobs:
           printf 'not an archive' > "$BACKUP_DIR/gobb-data-$bad.tar.gz"
           refuses "an archive that tar cannot read" "tar cannot read the archive for $bad"
           rm -f "$BACKUP_DIR/gobb-$bad.dump" "$BACKUP_DIR/gobb-data-$bad.tar.gz"
+          # A gobb_old from an earlier restore. The swap could not rename gobb to it.
+          block restore-pick
+          sql -d postgres -c 'create database gobb_old'
+          refuses "a gobb_old left over" "gobb_old exists from an earlier restore"
+          sql -d postgres -c 'drop database gobb_old'
+          [ "$(sql -d gobb -c 'select count(*) from newer_table')" = 1 ] || { echo "newer_table lost its row before the restore"; exit 1; }
 
-          # 5. The restore.
+          # 6. The restore.
           block restore-pick
           [ "$STAMP" = "$good" ] || { echo "the picker chose $STAMP, want $good"; exit 1; }
           block restore
+          [ "$(liveoid)" != "$oid" ] || { echo "the restore did not swap the databases"; exit 1; }
           [ -z "$(sql -d gobb -c "select to_regclass('public.newer_table')")" ] || { echo "newer_table survived the restore"; exit 1; }
+          [ "$(sql -d gobb_old -c 'select count(*) from newer_table')" = 1 ] || { echo "gobb_old is not the database from before the restore"; exit 1; }
           counts gobb_check gobb
           [ "$(files)" = "$before" ] || { echo "the data volume differs after the restore"; exit 1; }
           docker compose up -d --wait
           port=$(docker compose port gobb 8080)
           curl -fsS "http://$port/healthz"
           sh scripts/smoke-serve.sh "http://$port"
+          block restore-drop-old
+          [ "$(sql -d postgres -c "select count(*) from pg_database where datname = 'gobb_old'")" = 0 ] || { echo "gobb_old survived the drop"; exit 1; }
 
       # Compose gives gobb a 30 s grace period. A clean stop must end well inside
       # it, with exit code 0 (137 means Docker sent SIGKILL).
