@@ -59,9 +59,6 @@ type Post struct {
 	EditedAt   *time.Time
 	EditedBy   *Author
 	EditReason string
-	// IP is the address of the author. It is empty unless the viewer has
-	// mod.view_ip in the forum.
-	IP string
 	// Attachments lists the files that the tree does not show inline.
 	Attachments []Attachment
 }
@@ -179,8 +176,9 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 		return TopicPage{}, ErrNotFound
 	}
 
-	showIP := v.Perms.Has("mod.view_ip", forumID)
-	out.Posts, err = readPosts(ctx, q, sc, topicID, page, showIP)
+	// The topic page never reads the address of an author. A holder of
+	// mod.view_ip opens it on its own page; see [PostIP].
+	out.Posts, err = readPosts(ctx, q, sc, topicID, page)
 	if err != nil {
 		return TopicPage{}, err
 	}
@@ -212,17 +210,16 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 const postOrder = ` order by p.created_at, p.id`
 
 // readPosts reads one page of the posts that sc lets the viewer see, in order.
-func readPosts(ctx context.Context, q db.Querier, sc scope, topicID int64, page int, showIP bool) ([]Post, error) {
+func readPosts(ctx context.Context, q db.Querier, sc scope, topicID int64, page int) ([]Post, error) {
 	rows, err := q.Query(ctx, `
 select p.id, coalesce(p.author_id, 0), coalesce(u.username, p.author_name), p.created_at,
        p.subject, p.visibility, p.body_tree, p.enable_sig,
-       p.edit_count, p.edited_at, coalesce(p.edited_by, 0), coalesce(eu.username, ''), p.edit_reason,
-       case when $8::bool then coalesce(host(p.author_ip), '') else '' end
+       p.edit_count, p.edited_at, coalesce(p.edited_by, 0), coalesce(eu.username, ''), p.edit_reason
   from posts p
   left join users u on u.id = p.author_id
   left join users eu on eu.id = p.edited_by
  where p.topic_id = $5 and `+visible("p", 1)+postOrder+`
- limit $6 offset $7`, append(sc.args(), topicID, postsPerPage, (page-1)*postsPerPage, showIP)...)
+ limit $6 offset $7`, append(sc.args(), topicID, postsPerPage, (page-1)*postsPerPage)...)
 	if err != nil {
 		return nil, fmt.Errorf("board: read posts: %w", err)
 	}
@@ -237,7 +234,7 @@ select p.id, coalesce(p.author_id, 0), coalesce(u.username, p.author_name), p.cr
 			editor   string
 		)
 		if err := rows.Scan(&p.ID, &p.Author.ID, &p.Author.Name, &p.At, &p.Subject, &p.Visibility,
-			&raw, &wantSig, &p.EditCount, &p.EditedAt, &editorID, &editor, &p.EditReason, &p.IP); err != nil {
+			&raw, &wantSig, &p.EditCount, &p.EditedAt, &editorID, &editor, &p.EditReason); err != nil {
 			return nil, fmt.Errorf("board: read posts: %w", err)
 		}
 		p.Tree = decodeTree(raw, "post", p.ID)
@@ -476,6 +473,55 @@ select p.topic_id, t.forum_id
 		return 0, 0, fmt.Errorf("board: locate post %d: %w", postID, err)
 	}
 	return topicID, forumID, nil
+}
+
+// PostAddress is what the address page of one post shows.
+type PostAddress struct {
+	PostID, TopicID, ForumID int64
+	TopicTitle               string
+	Author                   Author
+	At                       time.Time
+	// IP is the stored address of the author, or empty when the post has none.
+	IP string
+}
+
+// PostIP returns the address of the author of post postID, for v. Only a
+// member with mod.view_ip in the forum of the topic gets it. A guest, a member
+// without the right there, and a post or topic that v may not see all give
+// [ErrNotFound], so the answer does not tell a viewer without the right that
+// the post exists.
+func PostIP(ctx context.Context, q db.Querier, v Viewer, postID int64) (PostAddress, error) {
+	if v.UserID == 0 {
+		return PostAddress{}, ErrNotFound
+	}
+	sc, err := newScope(ctx, q, v)
+	if err != nil {
+		return PostAddress{}, err
+	}
+	var out PostAddress
+	err = q.QueryRow(ctx, `
+select p.id, p.topic_id, t.forum_id, t.title,
+       coalesce(p.author_id, 0), coalesce(u.username, p.author_name), p.created_at
+  from posts p
+  join topics t on t.id = p.topic_id
+  left join users u on u.id = p.author_id
+ where p.id = $5 and `+visible("p", 1)+` and `+visible("t", 1), append(sc.args(), postID)...).
+		Scan(&out.PostID, &out.TopicID, &out.ForumID, &out.TopicTitle, &out.Author.ID, &out.Author.Name, &out.At)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PostAddress{}, ErrNotFound
+	}
+	if err != nil {
+		return PostAddress{}, fmt.Errorf("board: read post %d: %w", postID, err)
+	}
+	if !v.Perms.Has("mod.view_ip", out.ForumID) {
+		return PostAddress{}, ErrNotFound
+	}
+	// The address is read only after the check, so a viewer without the right
+	// never has it in memory.
+	if err := q.QueryRow(ctx, `select coalesce(host(author_ip), '') from posts where id = $1`, postID).Scan(&out.IP); err != nil {
+		return PostAddress{}, fmt.Errorf("board: read the address of post %d: %w", postID, err)
+	}
+	return out, nil
 }
 
 // AttachmentMeta describes a file that the viewer may download.

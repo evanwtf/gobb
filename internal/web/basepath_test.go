@@ -40,7 +40,7 @@ func TestBasePathEverywhere(t *testing.T) {
 	b := linkBoard()
 	allowGroup(b, 2, 2, "post.delete_own")
 	// Alice, an admin, moderates forum 2 for the moderator forms below.
-	for _, o := range []string{"mod.delete", "mod.approve", "mod.lock"} {
+	for _, o := range []string{"mod.delete", "mod.approve", "mod.lock", "mod.view_ip"} {
 		allowGroup(b, 4, 2, o)
 	}
 	for _, g := range []int64{1, 2} {
@@ -68,7 +68,7 @@ func TestBasePathEverywhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"/forum/", "/forum/f/2", "/forum/f/1", "/forum/new", "/forum/t/1", "/forum/u/1", "/forum/members", "/forum/team", "/forum/search?q=example",
-		"/forum/messages", "/forum/messages/sent", "/forum/messages/1", "/forum/messages/new?to=bob", "/forum/messages/1/reply?quote=1"} {
+		"/forum/messages", "/forum/messages/sent", "/forum/messages/1", "/forum/messages/new?to=bob", "/forum/messages/1/reply?quote=1", "/forum/p/1/ip"} {
 		rec := getAs(t, h, p, alice)
 		if rec.Code != http.StatusOK {
 			t.Errorf("member %s: status %d", p, rec.Code)
@@ -76,9 +76,12 @@ func TestBasePathEverywhere(t *testing.T) {
 		}
 		body := bodyOf(t, rec)
 		checkBasePath(t, "member "+p, body, "/forum/")
-		if p != "/forum/t/1" && !strings.Contains(body, `action="/forum/`) {
+		if p != "/forum/t/1" && p != "/forum/p/1/ip" && !strings.Contains(body, `action="/forum/`) {
 			t.Errorf("member %s: no form", p)
 		}
+	}
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/forum/t/1", alice)), `href="/forum/p/1/ip"`) {
+		t.Error("the topic page lacks the address link under the base path")
 	}
 	for _, want := range []string{`action="/forum/read"`, `href="/forum/t/1/new"`} {
 		if !strings.Contains(bodyOf(t, getAs(t, h, "/forum/", alice))+bodyOf(t, getAs(t, h, "/forum/f/2", alice)), want) {

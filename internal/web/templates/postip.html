@@ -1,0 +1,15 @@
+{{define "content"}}
+<section class="notice" aria-labelledby="ip-title">
+  <h1 id="ip-title">IP address</h1>
+  <p>Post by {{template "author" .Data.Author}}, {{time .Data.At .Clock}}, in <a href="{{.Data.PostHref}}"><bdi>{{.Data.TopicTitle}}</bdi></a>.</p>
+  {{- if .Data.IP}}
+  <p><code>{{.Data.IP}}</code></p>
+  {{- if .Data.BanHref}}
+  <p><a class="button-quiet button-link" href="{{.Data.BanHref}}">Ban this address</a></p>
+  {{- end}}
+  {{- else}}
+  <p>The board has no address for this post.</p>
+  {{- end}}
+  <p class="muted">Only moderators who may see addresses can open this page. Keep the address to yourself.</p>
+</section>
+{{end}}

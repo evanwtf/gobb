@@ -27,6 +27,7 @@ var getPaths = []string{
 	"/t/2/new",
 	"/p/1",
 	"/p/3",
+	"/p/1/ip",
 	"/a/1",
 	"/a/2",
 	"/new",

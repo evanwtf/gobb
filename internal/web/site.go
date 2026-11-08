@@ -175,7 +175,7 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html", "queue.html",
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html", "queue.html", "postip.html",
 	"admin.html", "admin-bans.html", "admin-confirm.html", "admin-delete.html", "admin-forum.html", "admin-forums.html", "admin-group.html", "admin-groups.html", "admin-grid.html", "admin-log.html", "admin-member.html", "admin-members.html", "admin-page.html", "admin-pages.html", "admin-perms.html", "admin-rank.html", "admin-ranks.html", "admin-role.html", "admin-roles.html", "admin-settings.html", "admin-smiley.html", "admin-smilies.html", "admin-spammer.html", "admin-user-grants.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
@@ -275,6 +275,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.Handle("POST /read", s.protect(maxPostBody, s.markAllRead))
 	inner.Handle("POST /f/{id}/read", s.protect(maxPostBody, s.markForumRead))
 	inner.HandleFunc("GET /p/{id}", s.post)
+	inner.HandleFunc("GET /p/{id}/ip", s.postIP)
 	inner.HandleFunc("GET /a/{id}", s.attachment)
 	inner.HandleFunc("GET /u/{id}", s.profile)
 	inner.HandleFunc("GET /members", s.members)

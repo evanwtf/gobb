@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 
@@ -172,6 +173,15 @@ func loadGroupMembers(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 	return n, err
 }
 
+// viewIPOption shows the address of the author of a post. The importer leaves
+// a Yes for it out of every role: see loadRoles.
+const viewIPOption = "mod.view_ip"
+
+// loadRoles loads the roles and their settings. A Yes for mod.view_ip in a role
+// is dropped, and the role goes on r.viewIPRoles for [viewIPReport]. A No or a
+// Never for it stays, because neither one gives the right. A grant of
+// mod.view_ip to a user or a group is not a role setting, so loadGrants keeps
+// it.
 func loadRoles(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 	n := 0
 	err := bundle.Each(r.Reader, func(line int, x bundle.Role) error {
@@ -181,10 +191,18 @@ func loadRoles(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 		if err != nil {
 			return idErr("roles", line, x.ID, "insert", err)
 		}
+		dropped := false
 		for i, s := range x.Settings {
 			v, err := settingValue(s.Setting)
 			if err != nil {
 				return idErr("roles", line, x.ID, fmt.Sprintf("settings[%d].setting", i), err)
+			}
+			if s.Option == viewIPOption && s.Setting == bundle.Yes {
+				// A role gives the right to every holder of the role, often
+				// more people than the owner means. The owner grants it again by
+				// hand, to a user or a group.
+				dropped = true
+				continue
 			}
 			_, err = tx.Exec(ctx,
 				`insert into acl_role_settings (role_id, option, setting) values ($1, $2, $3)`,
@@ -192,6 +210,9 @@ func loadRoles(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 			if err != nil {
 				return idErr("roles", line, x.ID, fmt.Sprintf("settings[%d]", i), err)
 			}
+		}
+		if dropped {
+			r.viewIPRoles = append(r.viewIPRoles, viewIPRole{id: x.ID, name: x.Name})
 		}
 		n++
 		return nil
@@ -337,4 +358,66 @@ func loadStaticPages(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+// viewIPRole is a role that held a Yes for mod.view_ip in the bundle.
+type viewIPRole struct {
+	id   int64
+	name string
+}
+
+// viewIPReport reads, inside the import transaction, what the operator must
+// see about mod.view_ip: each role that lost it, with the number of grants that
+// use the role, and each user or group grant that still gives it. It returns
+// the log lines as one function, so that the caller writes them after the
+// commit and never reports an import that rolled back.
+func viewIPReport(ctx context.Context, tx pgx.Tx, roles []viewIPRole) (func(), error) {
+	type roleLine struct {
+		viewIPRole
+		grants int
+	}
+	type holderLine struct {
+		kind, name string
+		id, forum  int64
+	}
+	var dropped []roleLine
+	for _, x := range roles {
+		var n int
+		if err := tx.QueryRow(ctx, `
+select (select count(*) from acl_group_grants where role_id = $1)
+     + (select count(*) from acl_user_grants where role_id = $1)`, x.id).Scan(&n); err != nil {
+			return nil, fmt.Errorf("importer: count the grants of role %d: %w", x.id, err)
+		}
+		dropped = append(dropped, roleLine{viewIPRole: x, grants: n})
+	}
+	rows, err := tx.Query(ctx, `
+select 'user', g.user_id, coalesce(u.username, ''), g.forum_id
+  from acl_user_grants g left join users u on u.id = g.user_id
+ where g.option = $1 and g.setting = $2
+union all
+select 'group', g.group_id, coalesce(gr.name, ''), g.forum_id
+  from acl_group_grants g left join groups gr on gr.id = g.group_id
+ where g.option = $1 and g.setting = $2
+ order by 1, 2, 4`, viewIPOption, int16(acl.Yes))
+	if err != nil {
+		return nil, fmt.Errorf("importer: list the holders of %s: %w", viewIPOption, err)
+	}
+	holders, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (holderLine, error) {
+		var h holderLine
+		err := row.Scan(&h.kind, &h.id, &h.name, &h.forum)
+		return h, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("importer: list the holders of %s: %w", viewIPOption, err)
+	}
+	return func() {
+		for _, x := range dropped {
+			slog.Warn("import: removed mod.view_ip from role; members who hold this role no longer see post addresses",
+				"role", x.name, "role_id", x.id, "grants", x.grants)
+		}
+		for _, h := range holders {
+			slog.Info("import: kept a direct grant of mod.view_ip; this holder sees post addresses",
+				"holder", h.kind, "id", h.id, "name", h.name, "forum_id", h.forum)
+		}
+	}, nil
 }

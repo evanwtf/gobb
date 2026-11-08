@@ -80,9 +80,9 @@ func TestTopicViewGuest(t *testing.T) {
 	if p4.Author.ID != 0 || p4.Author.Name != "Visitor" || p4.Card != nil {
 		t.Errorf("post 4 author = %+v, card %+v; want a guest named Visitor", p4.Author, p4.Card)
 	}
-	for _, p := range tp.Posts {
-		if p.IP != "" {
-			t.Errorf("post %d shows IP %q to a guest", p.ID, p.IP)
+	for i, b := range tp.Buttons {
+		if b.IP {
+			t.Errorf("post %d offers the address page to a guest", tp.Posts[i].ID)
 		}
 	}
 }
@@ -206,7 +206,8 @@ func TestTopicViewMarker(t *testing.T) {
 	}
 }
 
-// A moderator sees the unapproved post and its IP when the grant allows.
+// A moderator sees the unapproved post, and the link to the address page when
+// the grant allows. The topic page itself never holds an address.
 func TestTopicViewModerator(t *testing.T) {
 	ctx := context.Background()
 	b := bundletest.Small()
@@ -226,8 +227,10 @@ func TestTopicViewModerator(t *testing.T) {
 	if tp.Posts[2].Visibility != "unapproved" || tp.Posts[0].Visibility != "approved" {
 		t.Errorf("visibility = %q, %q", tp.Posts[0].Visibility, tp.Posts[2].Visibility)
 	}
-	if tp.Posts[0].IP != "10.0.0.5" || tp.Posts[3].IP != "2001:db8::7" {
-		t.Errorf("IPs = %q, %q", tp.Posts[0].IP, tp.Posts[3].IP)
+	for i, b := range tp.Buttons {
+		if !b.IP {
+			t.Errorf("post %d: no address link for a holder of mod.view_ip", tp.Posts[i].ID)
+		}
 	}
 
 	// Carol sees her own unapproved post, and no IP.
@@ -239,8 +242,8 @@ func TestTopicViewModerator(t *testing.T) {
 	if got := postIDs(tp.Posts); !equalIDs(got, []int64{1, 2, 3, 4}) {
 		t.Errorf("carol sees %v", got)
 	}
-	if tp.Posts[0].IP != "" {
-		t.Errorf("carol sees IP %q", tp.Posts[0].IP)
+	if tp.Buttons[0].IP {
+		t.Error("carol has the address link of post 1")
 	}
 	// A deleted post shows to a viewer with mod.delete only.
 	if _, err := pool.Exec(ctx, `update posts set visibility = 'deleted' where id = 2`); err != nil {
@@ -471,4 +474,41 @@ func (s *lastPostSpy) Query(ctx context.Context, sql string, args ...any) (pgx.R
 		s.lastPosts++
 	}
 	return s.counting.Query(ctx, sql, args...)
+}
+
+// PostIP gives the address to a holder of mod.view_ip in the forum of the post,
+// and ErrNotFound to everyone else.
+func TestPostIP(t *testing.T) {
+	ctx := context.Background()
+	b := bundletest.Small()
+	b.Posts[0].AuthorIP = ptr("192.0.2.41")
+	group, yes := int64(3), bundle.Yes
+	opt := "mod.view_ip"
+	// Bob's group holds the right in forum 3 only; post 1 is in forum 2.
+	b.Grants = append(b.Grants, bundle.Grant{GroupID: &group, ForumID: 3, Option: &opt, Setting: &yes})
+	pool, _ := boardtest.Load(t, b)
+
+	bob := memberOn(t, pool, 2, "bob")
+	if _, err := board.PostIP(ctx, pool, bob, 1); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("holder in another forum: err = %v, want ErrNotFound", err)
+	}
+	if _, err := pool.Exec(ctx, `update acl_group_grants set forum_id = 2 where option = 'mod.view_ip'`); err != nil {
+		t.Fatal(err)
+	}
+	bob = memberOn(t, pool, 2, "bob")
+	a, err := board.PostIP(ctx, pool, bob, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.IP != "192.0.2.41" || a.PostID != 1 || a.TopicID != 1 || a.ForumID != 2 || a.Author.Name != "alice" {
+		t.Errorf("PostIP = %+v", a)
+	}
+	for name, v := range map[string]board.Viewer{"guest": guestOn(t, pool), "carol": memberOn(t, pool, 3, "carol")} {
+		if _, err := board.PostIP(ctx, pool, v, 1); !errors.Is(err, board.ErrNotFound) {
+			t.Errorf("%s: err = %v, want ErrNotFound", name, err)
+		}
+	}
+	if _, err := board.PostIP(ctx, pool, bob, 9999); !errors.Is(err, board.ErrNotFound) {
+		t.Errorf("missing post: err = %v, want ErrNotFound", err)
+	}
 }

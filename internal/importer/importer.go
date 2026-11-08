@@ -63,6 +63,9 @@ type source struct {
 	topicForum map[int64]int64
 	// threadMessages is [Options.ThreadMessages].
 	threadMessages bool
+	// viewIPRoles are the roles whose Yes for mod.view_ip the roles loader
+	// dropped. load reports them after the commit.
+	viewIPRoles []viewIPRole
 }
 
 // loader loads one data file inside the import transaction and returns the
@@ -277,9 +280,15 @@ func load(ctx context.Context, conn *pgxpool.Conn, tables []string, r *source, r
 	if err := reserveGoneUserIDs(ctx, tx); err != nil {
 		return nil, err
 	}
+	report, err := viewIPReport(ctx, tx, r.viewIPRoles)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("importer: commit: %w", err)
 	}
+	// After the commit: a rolled-back import changed no role and no grant.
+	report()
 	return counts, nil
 }
 
