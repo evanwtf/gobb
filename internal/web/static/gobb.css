@@ -161,16 +161,16 @@ p { margin: 0; }
 .brand {
   display: inline-flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 0.1rem;
   color: var(--header-text);
   max-width: 100%;
 }
 .brand:hover { text-decoration: none; }
 .brand { padding: 0.4rem 0; }
-/* The image keeps its own shape: the height is capped, and the width follows it
-   or the space left, whichever is less. */
-.header-image { display: block; width: auto; height: auto; max-width: 100%; max-height: 2.75rem; object-fit: contain; border-radius: 4px; }
+/* The image keeps its own shape. The height is fixed, so the header does not
+   move when the image loads; the width follows, up to the space left, and
+   object-fit letterboxes an image that is too wide. */
+.header-image { display: block; align-self: flex-start; width: auto; height: 2.75rem; max-width: 100%; object-fit: contain; object-position: left center; border-radius: 4px; }
 .brand-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
 .brand-desc { font-size: 0.8rem; opacity: 0.88; }
 
@@ -283,7 +283,7 @@ p { margin: 0; }
 
 @media (max-width: 699px) {
   .header-bar { column-gap: 0.25rem; min-height: 0; padding-right: 0.5rem; }
-  .header-image { max-height: 2.9rem; }
+  .header-image { height: 2.9rem; }
   .brand { padding: 0.3rem 0; }
   .site-nav a { padding: 0 0.6rem; font-size: 0.95rem; }
   .site-nav .nav-wide { display: none; }
@@ -1377,15 +1377,21 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
   /* A forum on the index: the name and its counts, then the last post. The row
      holds the padding; the cells have none. */
   .forums tr { padding: 0.45rem 0.85rem; gap: 0.1rem 0.6rem; }
-  .forums td, .forums.topics td { padding: 0; }
+  .forums td { padding: 0; }
+  /* The base rules above this block beat the earlier phone rules of the same
+     weight, so the phone values are set again here. */
+  .forum-main::before { top: 0.1rem; bottom: 0.1rem; }
+  .forum-count { font-size: inherit; }
+  .author-name { margin: 0; }
   .forums:not(.topics) .forum-main { flex: 1 1 0; min-width: 0; }
   .forum-desc { display: none; }
   .forums:not(.topics) td.num { font-size: 0.8rem; }
   .forums:not(.topics) td.num::before { content: none; }
   .forums:not(.topics) td.num + td.num::before { content: "/ "; }
   .forums:not(.topics) .forum-count { font-weight: 600; color: var(--muted); }
-  .forums:not(.topics) td.last { flex: 1 0 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .forums:not(.topics) td.last > * { white-space: nowrap; }
+  .forums:not(.topics) td.last { flex: 1 0 100%; display: flex; align-items: baseline; column-gap: 0.3em; white-space: nowrap; overflow: hidden; }
+  .forums:not(.topics) td.last > * { flex: none; white-space: nowrap; }
+  .forums:not(.topics) td.last > .last-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .forums:not(.topics) td.last::before, .topic-line td.last::before { content: none; }
   .forums:not(.topics) .last-title { display: inline; font-weight: 500; color: var(--text); }
   .forums:not(.topics) .last-meta::before { content: "\00b7\00a0"; color: var(--muted); }

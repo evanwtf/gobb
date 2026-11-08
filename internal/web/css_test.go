@@ -176,3 +176,29 @@ func TestCSSHeaderLinks(t *testing.T) {
 		t.Error("the focus ring of the account menu and .brand does not use --header-text")
 	}
 }
+
+// TestCSSPhoneResets pins the phone values that the compact block sets again.
+// A base rule later in the file beats an earlier phone rule of the same weight,
+// so without these the rows of a list on a phone take the wide layout's padding.
+func TestCSSPhoneResets(t *testing.T) {
+	b, err := fs.ReadFile(staticFS, "static/gobb.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(b)
+	i := strings.LastIndex(css, "@media (max-width: 699px)")
+	if i < 0 {
+		t.Fatal("no phone block")
+	}
+	last := css[i:]
+	for _, want := range []string{
+		".forums td { padding: 0; }",
+		".forum-main::before { top: 0.1rem; bottom: 0.1rem; }",
+		".forum-count { font-size: inherit; }",
+		".author-name { margin: 0; }",
+	} {
+		if !strings.Contains(last, want) {
+			t.Errorf("the last phone block lacks %q", want)
+		}
+	}
+}
