@@ -2,6 +2,8 @@ package login
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -175,6 +177,58 @@ func TestLoadFloorKeepsTheLowestSample(t *testing.T) {
 	}
 }
 
+// The step times the shapes in rounds: each shape once per round, so the
+// samples of each shape spread over the whole step. A done ctx stops the step
+// before the next check and LoadFloor returns its error.
+func TestLoadFloorRoundsAndStops(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	gobb := strings.Replace(argonAt(19456), "t=4,p=2", "t=2,p=1", 1)
+	setHashes(t, pool, [4][2]string{{"gobb", gobb}, {"legacy", bcryptHash}, {"legacy", argonAt(65536)}, {"legacy", ""}})
+
+	t.Run("rounds", func(t *testing.T) {
+		s := NewWith(pool, Options{Gate: NewGate(DefaultBudgetKiB)})
+		var shapes []string
+		s.timeVerify = timing("", 0, time.Millisecond, &shapes)
+		if err := s.LoadFloor(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		const n = 3 // the dummy check (alice's hash shares it), bcrypt, argon2id
+		if len(shapes) != n*floorSamples {
+			t.Fatalf("timed %d checks, want %d", len(shapes), n*floorSamples)
+		}
+		for round := range floorSamples {
+			got := slices.Sorted(slices.Values(shapes[round*n : (round+1)*n]))
+			want := []string{shapeDummy, shapeHeavy, shapeBcrypt}
+			if !slices.Equal(got, want) {
+				t.Errorf("round %d timed %q, want each shape once: %q", round, got, want)
+			}
+		}
+	})
+
+	t.Run("a done ctx stops the step", func(t *testing.T) {
+		// No gate, so the check of ctx in LoadFloor stops the step, not the gate.
+		s := NewWith(pool, Options{})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		checks := 0
+		s.timeVerify = func(string, string) time.Duration {
+			checks++
+			cancel() // a stop signal during the first check
+			return time.Millisecond
+		}
+		err := s.LoadFloor(ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+		if checks != 1 {
+			t.Errorf("timed %d checks, want 1", checks)
+		}
+		if s.Floor != DefaultFloor {
+			t.Errorf("floor = %v, want it unchanged at %v", s.Floor, DefaultFloor)
+		}
+	})
+}
+
 // The start-up step logs one INFO line: the floor in ms, T in ms, K, the number
 // of shapes and the samples per shape. It logs no name and no hash.
 func TestLoadFloorLogs(t *testing.T) {
@@ -232,10 +286,9 @@ func TestLoadFloorProbeIsLong(t *testing.T) {
 
 // Each timing check at start (floorSamples per shape) holds the gate, with the
 // charge of a check of that hash (chargeKiB), and gives it back before the
-// next one. Each release
-// collects. After the last release, the step runs one more garbage collection,
-// so the memory of the checks (and of the dummy hash) does not sit under the
-// first sign-ins. The test counts the forced collections of the step: one per
+// next one. Each release collects. After the last release, the step runs one
+// more garbage collection, so the memory of the checks (and of the dummy hash)
+// does not sit under the first sign-ins. The test counts the forced collections of the step: one per
 // release, and one after the last.
 func TestLoadFloorHoldsTheGate(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
