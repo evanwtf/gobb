@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -515,24 +516,26 @@ func (s *site) serveCached(w http.ResponseWriter, r *http.Request, id identity, 
 			return
 		}
 	}
-	var body bytes.Buffer
-	body.Write(cp.parts[0])
+	w.WriteHeader(cp.status)
+	if r.Method == http.MethodHead {
+		return
+	}
+	// The parts go straight to w, with no copy of the page: a flood of hits
+	// costs no memory per page. The ETag above comes from the hash of the
+	// stored parts, the token and held, so it needs no joined body.
+	_, _ = w.Write(cp.parts[0])
 	for i, slot := range cp.slots {
 		switch slot {
 		case slotCSRF:
-			body.WriteString(template.HTMLEscapeString(token))
+			_, _ = io.WriteString(w, template.HTMLEscapeString(token))
 		case slotFooter:
-			body.WriteString(template.HTMLEscapeString(footerLine(r.Context(), cp.status, false)))
+			_, _ = io.WriteString(w, template.HTMLEscapeString(footerLine(r.Context(), cp.status, false)))
 		case slotHeld:
 			if held {
-				body.WriteString(s.heldNote)
+				_, _ = io.WriteString(w, s.heldNote)
 			}
 		}
-		body.Write(cp.parts[i+1])
-	}
-	w.WriteHeader(cp.status)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(body.Bytes())
+		_, _ = w.Write(cp.parts[i+1])
 	}
 }
 
