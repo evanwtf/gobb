@@ -92,7 +92,9 @@ const (
 	// together: 128 MiB. [BudgetKiB] gives less under a lower memory limit.
 	DefaultBudgetKiB = 128 * 1024
 	// DefaultGateWait is how long a check waits for the gate before ErrBusy.
-	DefaultGateWait = 5 * time.Second
+	// A refusal must come quickly (spec 10, "Load protection"); a gobb server
+	// takes the wait from GOBB_SIGNIN_GATE_WAIT.
+	DefaultGateWait = time.Second
 )
 
 // gateHeadroomKiB is the memory that the gate leaves to the rest of the server
@@ -164,7 +166,8 @@ type Service struct {
 	// set Floor directly and skip LoadFloor. Zero means no floor.
 	Floor time.Duration
 	// GateWait is how long a check waits for room in the gate. New sets it to
-	// [DefaultGateWait].
+	// [DefaultGateWait]. A context from [WithWaitDeadline] shortens the wait to
+	// the time left before its deadline.
 	GateWait time.Duration
 	// stored is the cost of the most costly stored hash, in KiB, that
 	// LoadCharge found. Zero until LoadCharge runs.
@@ -871,7 +874,22 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	if s.opt.Gate == nil {
 		return func() {}, nil
 	}
-	return s.opt.Gate.AcquireCollected(ctx, kib, s.GateWait)
+	wait := s.GateWait
+	if d, ok := ctx.Value(waitDeadlineKey{}).(time.Time); ok {
+		wait = max(0, min(wait, time.Until(d)))
+	}
+	return s.opt.Gate.AcquireCollected(ctx, kib, wait)
+}
+
+type waitDeadlineKey struct{}
+
+// WithWaitDeadline returns a context under which a wait for the gate ends no
+// later than deadline, even when GateWait is longer. A gate with room grants it
+// even after the deadline. The server sets it for the password POSTs to the
+// start of the request plus GateWait, so a sign-in that spent its budget
+// waiting for the pool does not wait for the gate too.
+func WithWaitDeadline(ctx context.Context, deadline time.Time) context.Context {
+	return context.WithValue(ctx, waitDeadlineKey{}, deadline)
 }
 
 // check verifies pw for name (steps 1 to 8 of [Service.Check]). It puts the IDs

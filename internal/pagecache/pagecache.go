@@ -143,6 +143,18 @@ func (c *Cache) getLocked(key string) (Entry, bool) {
 	return it.entry, true
 }
 
+// Lookup returns the stored entry of key, as [Cache.Get] does: it marks the
+// entry as used and drops an expired one. It counts a hit when it finds the
+// entry, and nothing when it does not. It never renders: a caller that finds
+// nothing goes on to [Cache.Do], which counts the miss.
+func (c *Cache) Lookup(key string) (Entry, bool) {
+	e, ok := c.Get(key)
+	if ok {
+		c.hits.Add(1)
+	}
+	return e, ok
+}
+
 // Peek returns the entry of key when it has one that has not expired. Unlike
 // [Cache.Get], it does not mark the entry as used, so a worker that walks the
 // cache does not change the order of eviction.

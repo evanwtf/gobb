@@ -560,7 +560,8 @@ func TestFromEnvLoadDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := config.Load{DBMaxConns: 4, DBPoolWait: time.Second, SearchPerSecond: 5, SearchMaxRunning: 2,
-		PageCacheBytes: 16 << 20, PageCacheWarm: true, FlushEvery: 30 * time.Second}
+		PageCacheBytes: 16 << 20, PageCacheWarm: true, FlushEvery: 30 * time.Second,
+		SigninGateWait: time.Second, MaxInFlight: config.DefaultMaxInFlight, MaxSigninInFlight: config.DefaultMaxSigninInFlight}
 	if c.Load != want {
 		t.Errorf("Load = %+v, want %+v", c.Load, want)
 	}
@@ -571,12 +572,14 @@ func TestFromEnvLoadValues(t *testing.T) {
 		"GOBB_DSN": "postgres://x", "GOBB_DB_MAX_CONNS": " 8 ", "GOBB_DB_POOL_WAIT": "250ms",
 		"GOBB_SEARCH_PER_SECOND": "20", "GOBB_SEARCH_MAX_RUNNING": "7",
 		"GOBB_PAGE_CACHE_MIB": "64", "GOBB_PAGE_CACHE_WARM": "false", "GOBB_WRITE_FLUSH_INTERVAL": "1m",
+		"GOBB_SIGNIN_GATE_WAIT": "300ms", "GOBB_MAX_IN_FLIGHT": "50", "GOBB_MAX_SIGNIN_IN_FLIGHT": "50",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := config.Load{DBMaxConns: 8, DBPoolWait: 250 * time.Millisecond, SearchPerSecond: 20, SearchMaxRunning: 7,
-		PageCacheBytes: 64 << 20, PageCacheWarm: false, FlushEvery: time.Minute}
+		PageCacheBytes: 64 << 20, PageCacheWarm: false, FlushEvery: time.Minute,
+		SigninGateWait: 300 * time.Millisecond, MaxInFlight: 50, MaxSigninInFlight: 50}
 	if c.Load != want {
 		t.Errorf("Load = %+v, want %+v", c.Load, want)
 	}
@@ -601,13 +604,34 @@ func TestFromEnvLoadValues(t *testing.T) {
 	}
 	// The bounds themselves are allowed.
 	for k, v := range map[string]string{"GOBB_DB_MAX_CONNS": "100", "GOBB_DB_POOL_WAIT": "10ms", "GOBB_SEARCH_PER_SECOND": "1000",
-		"GOBB_PAGE_CACHE_MIB": "1024", "GOBB_WRITE_FLUSH_INTERVAL": "1s", "GOBB_PAGE_CACHE_WARM": "true"} {
+		"GOBB_PAGE_CACHE_MIB": "1024", "GOBB_WRITE_FLUSH_INTERVAL": "1s", "GOBB_PAGE_CACHE_WARM": "true",
+		"GOBB_SIGNIN_GATE_WAIT": "100ms", "GOBB_MAX_IN_FLIGHT": "1"} {
 		if _, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", k: v})); err != nil {
 			t.Errorf("%s=%s: %v", k, v, err)
 		}
 	}
 	if c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_DB_POOL_WAIT": "5s"})); err != nil || c.Load.DBPoolWait != 5*time.Second {
 		t.Errorf("GOBB_DB_POOL_WAIT=5s: %v, %v", c.Load.DBPoolWait, err)
+	}
+	if c, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_SIGNIN_GATE_WAIT": "10s", "GOBB_MAX_IN_FLIGHT": "100000"})); err != nil ||
+		c.Load.SigninGateWait != 10*time.Second || c.Load.MaxInFlight != 100000 {
+		t.Errorf("the upper bounds: %v, %d, %v", c.Load.SigninGateWait, c.Load.MaxInFlight, err)
+	}
+}
+
+// The sign-in limit is at most the main one, and its default shrinks to fit.
+func TestFromEnvSigninInFlight(t *testing.T) {
+	for _, c := range []struct {
+		main, signin string
+		want         int
+	}{{"", "", 32}, {"10", "", 10}, {"10", "10", 10}, {"", "256", 256}, {"100", "1", 1}} {
+		c2, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_MAX_IN_FLIGHT": c.main, "GOBB_MAX_SIGNIN_IN_FLIGHT": c.signin}))
+		if err != nil || c2.Load.MaxSigninInFlight != c.want {
+			t.Errorf("main %q, signin %q: %d, %v; want %d", c.main, c.signin, c2.Load.MaxSigninInFlight, err, c.want)
+		}
+	}
+	if _, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_MAX_IN_FLIGHT": "10", "GOBB_MAX_SIGNIN_IN_FLIGHT": "11"})); err == nil {
+		t.Error("a sign-in limit above the main one: no error")
 	}
 }
 
@@ -636,6 +660,17 @@ func TestFromEnvLoadInvalid(t *testing.T) {
 		{"GOBB_WRITE_FLUSH_INTERVAL", "30"},
 		{"GOBB_WRITE_FLUSH_INTERVAL", "999ms"},
 		{"GOBB_WRITE_FLUSH_INTERVAL", "11m"},
+		{"GOBB_SIGNIN_GATE_WAIT", "1"},
+		{"GOBB_SIGNIN_GATE_WAIT", "99ms"},
+		{"GOBB_SIGNIN_GATE_WAIT", "10001ms"},
+		{"GOBB_SIGNIN_GATE_WAIT", "-1s"},
+		{"GOBB_MAX_IN_FLIGHT", "0"},
+		{"GOBB_MAX_IN_FLIGHT", "100001"},
+		{"GOBB_MAX_IN_FLIGHT", "-5"},
+		{"GOBB_MAX_IN_FLIGHT", "many"},
+		{"GOBB_MAX_SIGNIN_IN_FLIGHT", "0"},
+		{"GOBB_MAX_SIGNIN_IN_FLIGHT", "257"}, // more than the main limit of 256
+		{"GOBB_MAX_SIGNIN_IN_FLIGHT", "x"},
 	} {
 		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", c.key: c.value}))
 		if err == nil || !strings.Contains(err.Error(), c.key) {

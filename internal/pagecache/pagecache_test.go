@@ -275,3 +275,27 @@ func TestRenderPanicIsAnError(t *testing.T) {
 		t.Errorf("a render after a panic: %v", err)
 	}
 }
+
+// Lookup counts a hit when it finds the key, nothing when it does not, and
+// never renders.
+func TestLookupCountsHitsOnly(t *testing.T) {
+	c := New(1<<20, time.Now)
+	if _, ok := c.Lookup("a"); ok {
+		t.Fatal("found a key that is not there")
+	}
+	if st := c.Stats(); st.Hits != 0 || st.Misses != 0 {
+		t.Fatalf("an empty lookup counted %d hits and %d misses", st.Hits, st.Misses)
+	}
+	if _, _, err := c.Do(context.Background(), "a", func() (Result, error) {
+		return Result{Entry: Entry{Value: 1, Size: 1}, Store: true}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e, ok := c.Lookup("a")
+	if !ok || e.Value != 1 {
+		t.Fatalf("Lookup = %v, %v", e.Value, ok)
+	}
+	if st := c.Stats(); st.Hits != 1 || st.Misses != 1 {
+		t.Errorf("hits %d, misses %d; want 1 and 1 (the miss of Do)", st.Hits, st.Misses)
+	}
+}

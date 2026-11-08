@@ -558,9 +558,12 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *lo
 		LoginGate:      gate,
 		PublicURL:      cfg.PublicURL,
 
-		PoolWait:         cfg.Load.DBPoolWait,
-		SearchPerSecond:  cfg.Load.SearchPerSecond,
-		SearchMaxRunning: cfg.Load.SearchMaxRunning,
+		PoolWait:          cfg.Load.DBPoolWait,
+		SearchPerSecond:   cfg.Load.SearchPerSecond,
+		SearchMaxRunning:  cfg.Load.SearchMaxRunning,
+		LoginGateWait:     cfg.Load.SigninGateWait,
+		MaxInFlight:       cfg.Load.MaxInFlight,
+		MaxSigninInFlight: cfg.Load.MaxSigninInFlight,
 
 		Signin:  scheduleConfig(cfg.Signin),
 		Defense: defense,
@@ -577,7 +580,9 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *lo
 	slog.Info("load limits", "db_max_conns", cfg.Load.DBMaxConns, "db_pool_wait", cfg.Load.DBPoolWait.String(),
 		"search_per_second", cfg.Load.SearchPerSecond, "search_max_running", cfg.Load.SearchMaxRunning,
 		"page_cache_mib", cfg.Load.PageCacheBytes>>20, "page_cache_warm", cfg.Load.PageCacheWarm,
-		"write_flush_interval", cfg.Load.FlushEvery.String())
+		"write_flush_interval", cfg.Load.FlushEvery.String(),
+		"signin_gate_wait", cfg.Load.SigninGateWait.String(), "max_in_flight", cfg.Load.MaxInFlight,
+		"max_signin_in_flight", cfg.Load.MaxSigninInFlight)
 	// With no email settings, Mail stays nil and the reset pages are off.
 	if cfg.Mail != nil {
 		sender := mail.NewSMTP(*cfg.Mail)

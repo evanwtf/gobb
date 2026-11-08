@@ -149,3 +149,30 @@ func TestOpenSized(t *testing.T) {
 		t.Error("OpenSized(-1) worked")
 	}
 }
+
+// The waits of one request share one budget: a wait that took part of it
+// leaves the rest to the next.
+func TestPoolWaitIsOneBudgetPerRequest(t *testing.T) {
+	pool, release := onePool(t)
+	ctx := db.WithPoolWait(t.Context(), 400*time.Millisecond)
+	// The first wait ends when the held connection comes back, after 250 ms.
+	time.AfterFunc(250*time.Millisecond, release)
+	if _, err := pool.Exec(ctx, "select 1"); err != nil {
+		t.Fatalf("the first wait: %v", err)
+	}
+	held, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	start := time.Now()
+	if _, err := pool.Exec(ctx, "select 1"); err == nil {
+		t.Fatal("the second query ran on a full pool")
+	}
+	if took := time.Since(start); took > 300*time.Millisecond {
+		t.Errorf("the second wait took %v, want what was left of 400ms (about 150ms)", took)
+	}
+	if !db.PoolWaitTimedOut(ctx) {
+		t.Error("PoolWaitTimedOut = false after the budget ran out")
+	}
+}

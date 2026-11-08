@@ -74,7 +74,7 @@ type Options struct {
 	// minutes. Zero means the default (10). A test that sends a lot raises it.
 	MessageSends int
 	// LoginGateWait is how long a password check waits for the gate. Zero means
-	// the default of 5 seconds. Tests set it small.
+	// [login.DefaultGateWait] (1 s). Tests set it small.
 	LoginGateWait time.Duration
 	// Mail turns the password reset by email on. Nil turns it off: the reset
 	// routes answer 404 and the sign-in page has no link to them.
@@ -112,6 +112,14 @@ type Options struct {
 	// Defense is Defensive Mode. Nil means a new one with the defaults. The
 	// caller that passes one refreshes it on a timer ([login.Defense.Refresh]).
 	Defense *login.Defense
+	// MaxInFlight is the most requests that the server handles at one time.
+	// A request past it gets 503 at once ([site.limitInFlight]). Zero means
+	// [DefaultMaxInFlight]; a negative value turns both in-flight limits off.
+	MaxInFlight int
+	// MaxSigninInFlight is the most password POSTs ([isPasswordPost]) under way
+	// at one time, on slots of their own that do not count in MaxInFlight.
+	// Zero means [DefaultMaxSigninInFlight]. It is never more than MaxInFlight.
+	MaxSigninInFlight int
 	// GuestCache is the guest page cache. Nil turns it off: every page is
 	// rendered for its request. One cache serves one site.
 	GuestCache *GuestCache
@@ -173,6 +181,9 @@ type site struct {
 	// one holds up to a megabyte of body in memory before the decode takes its
 	// share of the gate. A test makes it smaller.
 	uploadSlots chan struct{}
+	// inFlight holds the semaphores of the requests under way
+	// ([site.limitInFlight]).
+	inFlight inFlightLimits
 	// uploading holds the IDs of the members who have an avatar upload in flight:
 	// a member has one at a time.
 	uploading sync.Map
@@ -260,6 +271,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if opt.LoginFloor != 0 {
 		s.login.Floor = opt.LoginFloor
 	}
+	s.inFlight = newInFlightLimits(opt)
 	if opt.LoginGateWait != 0 {
 		s.login.GateWait = opt.LoginGateWait
 	}
@@ -430,7 +442,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		onNew(s)
 	}
 	metrics.SigninFloor.Set(s.login.Floor.Seconds())
-	return metered(timed(secure(s.guard(root)))), nil
+	return metered(timed(secure(s.limitInFlight(s.guard(root))))), nil
 }
 
 // routes is a ServeMux that remembers the patterns registered on it, so a test
@@ -503,6 +515,13 @@ func (s *site) guard(next http.Handler) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 		defer cancel()
 		ctx = db.WithPoolWait(ctx, s.opt.PoolWait)
+		// The gate wait of a password POST ends GateWait after the start of the
+		// request: a sign-in that spent that long waiting for the pool does not
+		// wait for the gate too ([login.WithWaitDeadline]). Its pool waits have
+		// their own budget, PoolWait in total.
+		if c, ok := ctx.Value(reqClockKey{}).(reqClock); ok && isPasswordPost(r, s.base) {
+			ctx = login.WithWaitDeadline(ctx, c.start.Add(s.login.GateWait))
+		}
 		next.ServeHTTP(&poolBusyWriter{ResponseWriter: w, ctx: ctx}, r.WithContext(ctx))
 	})
 }

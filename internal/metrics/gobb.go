@@ -60,6 +60,11 @@ var (
 	// connection ran out (GOBB_DB_POOL_WAIT).
 	PoolWaitTimeouts = Default.CounterVec("gobb_db_pool_wait_timeouts_total",
 		"Requests whose wait for a database connection ran out.")
+	// InFlightRefusals counts the requests refused because the most requests
+	// that may run at one time were running, by limit: all (GOBB_MAX_IN_FLIGHT)
+	// or signin (GOBB_MAX_SIGNIN_IN_FLIGHT, the password POSTs).
+	InFlightRefusals = Default.CounterVec("gobb_in_flight_refusals_total",
+		"Requests refused with 503 because their in-flight limit was full, by limit: all or signin.", "limit")
 	// SearchBusy counts the searches refused because the most searches that
 	// may run at one time were running.
 	SearchBusy = Default.CounterVec("gobb_search_busy_total",
@@ -88,6 +93,9 @@ func init() {
 	}
 	for _, r := range []string{"address", "name", "defensive"} {
 		SigninRefusals.Init(r)
+	}
+	for _, l := range []string{"all", "signin"} {
+		InFlightRefusals.Init(l)
 	}
 	for _, t := range []string{"address", "name"} {
 		SigninScheduleEvictions.Init(t)

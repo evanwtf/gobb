@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.19.0 (2026-11-08)
+
+- **Load protection, part four** (#2): a load test in CI, and the limits it showed
+  were missing.
+  - **Requests in flight.** A request past `GOBB_MAX_IN_FLIGHT` (256) gets 503 with
+    `Retry-After` at once, from a page rendered at start, with no template and no
+    database. Only GET `/healthz` (its database ping is cached for 1 s), GET and HEAD
+    of the known static files and the favicon, and cached guest pages skip the
+    limit. Before this, 4,096 connections at once got gobb killed under the 256 MiB
+    cap; now the peak is about 205 MiB with no kill.
+  - **Cached guest pages first.** A guest with no session cookie whose page is in the
+    cache is served before the limit, with no render and no database, and the page
+    is written without a copy. Under a flood of database-bound requests, every
+    cached guest page still answers 200.
+  - **Password POSTs** (sign-in, password and email change, the reset link, admin
+    confirm) read their body first (at most 48 KB), then take one of
+    `GOBB_MAX_SIGNIN_IN_FLIGHT` (32) slots of their own, so a slow body holds no slot
+    and a sign-in flood cannot fill the main limit.
+  - **Quick refusals.** A sign-in that finds the password gate full gets 503 within
+    `GOBB_SIGNIN_GATE_WAIT` (1 s, was a fixed 5 s) of the request's start; uploads
+    share the wait. `GOBB_DB_POOL_WAIT` now caps a request's total wait for database
+    connections, not each wait.
+  - **Load test.** `scripts/loadtest` sends a mix of guest pages, page misses,
+    searches, wrong passwords from many addresses, and a member's pages. CI runs it
+    at 512 connections for 60 s under the 256 MiB cap, after the burst of wrong
+    passwords. It fails on a refused guest page, an answer outside the allowed set, a
+    429 or 503 without `Retry-After` or slower than 2 s, a stuck request, a failed
+    recovery, a restart, or a memory peak at the cap. `scripts/memcap-check.sh` holds
+    the cgroup check that both steps use.
+  - New metric `gobb_in_flight_refusals_total{limit="all"|"signin"}`. A reverse
+    proxy in front should buffer request and response bodies: slow clients still
+    hold main slots (#77).
+
 ## 0.18.0 (2026-11-08)
 
 - **Load protection, part three** (#2): the guest page cache and batched writes.

@@ -112,8 +112,9 @@ type Load struct {
 	// DBMaxConns is the most database connections that the pool opens, from
 	// GOBB_DB_MAX_CONNS. It replaces any pool_max_conns in GOBB_DSN.
 	DBMaxConns int
-	// DBPoolWait is the longest time that a request waits for a free
-	// connection before it gets 503, from GOBB_DB_POOL_WAIT.
+	// DBPoolWait is the longest time that a request waits for free
+	// connections, in total over the request, before it gets 503, from
+	// GOBB_DB_POOL_WAIT.
 	DBPoolWait time.Duration
 	// SearchPerSecond is the most searches that the whole board runs in any
 	// second, from GOBB_SEARCH_PER_SECOND.
@@ -130,6 +131,23 @@ type Load struct {
 	// FlushEvery is the time between two flushes of the batched writes (view
 	// counts, activity times, member addresses), from GOBB_WRITE_FLUSH_INTERVAL.
 	FlushEvery time.Duration
+	// SigninGateWait is how long after the start of the request a password
+	// POST may still wait for room in the memory gate, from
+	// GOBB_SIGNIN_GATE_WAIT; past it the sign-in gets 503. Despite the name,
+	// avatar and icon uploads also wait at most this long for the same gate.
+	SigninGateWait time.Duration
+	// MaxInFlight is the most requests under way at one time, from
+	// GOBB_MAX_IN_FLIGHT. A request past it gets 503 at once. Outside it: GET
+	// /healthz, GET and HEAD of /favicon.ico and the known static files, guest
+	// pages served from the page cache, and the password POSTs, which have
+	// MaxSigninInFlight.
+	MaxInFlight int
+	// MaxSigninInFlight is the most password POSTs (sign-in, password and
+	// email change, admin confirm, reset link) under way at one time, from
+	// GOBB_MAX_SIGNIN_IN_FLIGHT. A password POST takes its slot, outside
+	// MaxInFlight, once its body is read, and gets 503 at once when none is
+	// free.
+	MaxSigninInFlight int
 }
 
 // The defaults and the bounds of the load settings. A request has 10 s for its
@@ -150,6 +168,18 @@ const (
 	DefaultFlushEvery   = 30 * time.Second
 	minFlushEvery       = time.Second
 	maxFlushEvery       = 10 * time.Minute
+	// A sign-in that finds the gate full waits this long, then gets 503. A
+	// refusal must come quickly (spec 10, "Load protection").
+	DefaultSigninGateWait = time.Second
+	minSigninGateWait     = 100 * time.Millisecond
+	maxSigninGateWait     = 10 * time.Second
+	// DefaultMaxInFlight keeps the memory of the requests under way inside the
+	// 256 MiB cap of Compose. The README ("Load limits") gives the measurement.
+	DefaultMaxInFlight = 256
+	maxMaxInFlight     = 100000
+	// DefaultMaxSigninInFlight: a wrong password holds its slot for the floor
+	// and the gate wait, so a sign-in flood gets slots of its own.
+	DefaultMaxSigninInFlight = 32
 )
 
 const (
@@ -347,6 +377,19 @@ func loadFromEnv(getenv func(string) string) (Load, error) {
 			return Load{}, fmt.Errorf("config: GOBB_WRITE_FLUSH_INTERVAL: must be a duration from %s to %s, such as 30s", minFlushEvery, maxFlushEvery)
 		}
 		l.FlushEvery = d
+	}
+	if l.SigninGateWait, err = durationSetting("GOBB_SIGNIN_GATE_WAIT", get("GOBB_SIGNIN_GATE_WAIT"), DefaultSigninGateWait, minSigninGateWait, maxSigninGateWait); err != nil {
+		return Load{}, err
+	}
+	if l.MaxInFlight, err = intSetting("GOBB_MAX_IN_FLIGHT", get("GOBB_MAX_IN_FLIGHT"), DefaultMaxInFlight, 1, maxMaxInFlight); err != nil {
+		return Load{}, err
+	}
+	// With no setting, the default shrinks to fit a smaller main limit.
+	l.MaxSigninInFlight = min(DefaultMaxSigninInFlight, l.MaxInFlight)
+	if v := get("GOBB_MAX_SIGNIN_IN_FLIGHT"); v != "" {
+		if l.MaxSigninInFlight, err = intSetting("GOBB_MAX_SIGNIN_IN_FLIGHT", v, 0, 1, l.MaxInFlight); err != nil {
+			return Load{}, fmt.Errorf("%w (GOBB_MAX_IN_FLIGHT)", err)
+		}
 	}
 	return l, nil
 }

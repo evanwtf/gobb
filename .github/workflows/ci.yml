@@ -379,30 +379,33 @@ jobs:
           # 20 names, two each, so every try runs a password check and none waits.
           # A missing name runs the same check as a real one.
           sh scripts/login-burst.sh "http://$port" 40 20 $(seq -f 'burst%g' 1 20) || status=$?
-          state=$(docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}}' "$cid")
-          echo "restarts and OOM kill: $state"
-          docker stats --no-stream --format 'docker stats now: {{.MemUsage}} ({{.MemPerc}})' "$cid"
-          [ "$state" = "0 false" ] || { echo "gobb restarted or the kernel killed it"; exit 1; }
+          # Restarts and the OOM flag of Docker, then the cgroup (v2): its peak
+          # must stay under the cap, and the kernel must have killed nothing.
+          sh scripts/memcap-check.sh "$cid" 268435456 || exit 1
           [ "$status" = 0 ] || exit 1
-          # The cgroup (v2) of the container: its peak must stay under the cap,
-          # and the kernel must have killed nothing. A restart makes a new
-          # cgroup, so the restart count above is the check that sees a kill.
-          id=$(docker inspect -f '{{.Id}}' "$cid")
-          dir=
-          for d in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
-            if [ -r "$d/memory.peak" ] && [ -r "$d/memory.events" ]; then
-              dir=$d
-              break
-            fi
-          done
-          [ -n "$dir" ] || { echo "cgroup memory.peak is not readable on this runner"; exit 1; }
-          peak=$(cat "$dir/memory.peak")
-          oom=$(awk '$1 == "oom_kill" { print $2 }' "$dir/memory.events")
-          echo "cgroup path used: $dir"
-          echo "memory.peak: $peak bytes ($((peak / 1048576)) MiB)"
-          echo "memory.events oom_kill: $oom"
-          [ "$oom" = 0 ] || { echo "the kernel killed a process in the container"; exit 1; }
-          [ "$peak" -lt 268435456 ] || { echo "memory.peak reached the 256 MiB cap"; exit 1; }
+
+      # The load test of section 10 of the spec: about 60 s of guest pages, page
+      # misses, guest searches, wrong passwords over many names and /64s, and
+      # the pages and searches of a member, 512 requests at once: twice the
+      # default GOBB_MAX_IN_FLIGHT, so that limit refuses some. Every answer
+      # must be allowed, every 429 and 503 must come within 2 s, and after the
+      # load each page must answer 200 again with no restart. The step then
+      # checks the memory of the cgroup as the burst step does. The counters show
+      # what the load protection did.
+      - name: A mixed load under the memory cap
+        run: |
+          port=$(docker compose port gobb 8080)
+          mport=$(docker compose port gobb 9187)
+          cid=$(docker compose ps -q gobb)
+          go build -o "$RUNNER_TEMP/loadtest" ./scripts/loadtest
+          status=0
+          "$RUNNER_TEMP/loadtest" -duration 60s -c 512 -search-forbidden \
+            -member-name alice -member-password example-password "http://$port/" || status=$?
+          rm -f "$RUNNER_TEMP/loadtest"
+          curl -fsS "http://$mport/metrics" | grep -E '^gobb_(page_cache_(hits|misses)_total|db_pool_wait_timeouts_total|search_busy_total|in_flight_refusals_total|rate_limited_total[{]limit="search"[}]|defensive_mode|signin_refusals_total|signin_attempts_total[{]result="(wrong|busy|limited)"[}])[ {]' || true
+          sh scripts/memcap-check.sh "$cid" 268435456 || status=1
+          curl -fsS -o /dev/null -w 'healthz after the load: %{http_code}\n' "http://$port/healthz" || status=1
+          exit "$status"
 
       # The backup and the restore of the README ("Back up and upgrade"). The step
       # runs the commands that the README shows: scripts/readme-block.sh takes each
