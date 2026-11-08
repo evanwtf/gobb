@@ -50,7 +50,7 @@ uvx pre-commit install --hook-type pre-commit --hook-type commit-msg     # once 
 uvx pre-commit run --all-files                                           # all hooks
 sh scripts/check-public.sh                                               # the public-repo guard alone
 ./gobb serve                                                             # run the server; needs GOBB_DSN, see the README
-./gobb import [--replace] <bundle>                                       # load a bundle (directory or .tar.gz) into an empty database; --replace empties the database first
+./gobb import [--replace] [--thread-messages] <bundle>                   # load a bundle (directory or .tar.gz) into an empty database; --replace empties the database first; --thread-messages joins unlinked replies by people and subject
 ./gobb perms export > perms.jsonl                                        # write the effective permissions as JSON Lines
 ./gobb user reset-password <name>                                        # new random password, printed once on stdout; ends the member's sessions
 ./gobb user ban <name> [-reason TEXT]                                    # ban a member (no end date) and end the sessions

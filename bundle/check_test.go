@@ -113,6 +113,32 @@ func TestCheckRefuses(t *testing.T) {
 		{"pm author that does not exist", func(b *bundletest.Board) {
 			b.PMs[0].AuthorID = p(int64(99))
 		}, "pms.jsonl:1: author_id: no row in users.jsonl has id 99"},
+		{"pm reply that names its first message", func(b *bundletest.Board) {
+			b.PMs[1].ConversationID = p(int64(1))
+		}, ""},
+		{"pm that names itself", func(b *bundletest.Board) {
+			b.PMs[0].ConversationID = p(int64(1))
+		}, ""},
+		{"pm that names a message that names another", func(b *bundletest.Board) {
+			b.PMs[1].ConversationID = p(int64(1))
+			b.PMs = append(b.PMs, pmFrom(3, 1, 2))
+		}, ""},
+		{"pm that names a blind-copy recipient's message", func(b *bundletest.Board) {
+			// carol (3) is a bcc recipient of message 1, so she is a party to it.
+			b.PMs = append(b.PMs, pmFrom(3, 3, 1))
+			b.PMs[2].Recipients[0].UserID = 4
+		}, ""},
+		{"pm that names a message that does not exist", func(b *bundletest.Board) {
+			b.PMs[1].ConversationID = p(int64(99))
+		}, "pms.jsonl:2: conversation_id: no row in pms.jsonl has id 99"},
+		{"pm that names a later message", func(b *bundletest.Board) {
+			b.PMs[0].ConversationID = p(int64(2))
+		}, "pms.jsonl:1: conversation_id: names message 2, which has a higher id"},
+		{"pm that shares no party with the message it names", func(b *bundletest.Board) {
+			// dave (4) to carol (3); message 2 is between bob (2) and alice (1).
+			b.PMs = append(b.PMs, pmFrom(3, 4, 2))
+			b.PMs[2].Recipients[0].UserID = 3
+		}, "pms.jsonl:3: conversation_id: message 2 shares no party with this one"},
 		{"attachment uploader that does not exist", func(b *bundletest.Board) {
 			b.Attachments[0].UploaderID = p(int64(99))
 		}, "attachments.jsonl:1: uploader_id: no row in users.jsonl has id 99"},
@@ -307,6 +333,66 @@ func TestCheckRefuses(t *testing.T) {
 				t.Fatalf("Check = %v\nwant one error that starts with %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// pmFrom returns a private message with id from author to user 2 (or 1 when the
+// author is 2), whose conversation_id is link.
+func pmFrom(id, author, link int64) bundle.PM {
+	to := int64(2)
+	if author == 2 {
+		to = 1
+	}
+	return bundle.PM{
+		ID: id, AuthorID: p(author), AuthorName: "someone", CreatedAt: bundletest.Small().PMs[1].CreatedAt,
+		Subject: "Re: Welcome aboard", Body: bundle.Body{Source: "More.", Markdown: true},
+		Recipients:     []bundle.Recipient{{UserID: to, Kind: "to"}},
+		ConversationID: p(link),
+	}
+}
+
+// A bundle written before conversation_id existed leaves the key out. Check
+// reads such a row as a message that starts its own conversation.
+func TestCheckPMWithoutConversationKey(t *testing.T) {
+	dir := bundletest.Write(t, bundletest.Small())
+	editLines(t, dir, "pms.jsonl", func(_ int, m map[string]any) {
+		if _, ok := m["conversation_id"]; !ok {
+			t.Fatal("the writer left out conversation_id")
+		}
+		delete(m, "conversation_id")
+	})
+	if err := openAndCheck(dir); err != nil {
+		t.Fatalf("Check = %v; want nil", err)
+	}
+	// Any other missing key is still an error.
+	editLines(t, dir, "pms.jsonl", func(_ int, m map[string]any) { delete(m, "subject") })
+	if err := openAndCheck(dir); err == nil || !strings.Contains(err.Error(), "subject: missing") {
+		t.Fatalf("Check = %v; want subject: missing", err)
+	}
+}
+
+// A row that fails its field check stops the scan of pms.jsonl. A link to a
+// message after that row is then not a fault: Check reports the real error only.
+func TestCheckPMLinkPastAFailingRow(t *testing.T) {
+	b := bundletest.Small()
+	// Message 3 links to message 2, which comes after it in the file.
+	b.PMs = []bundle.PM{b.PMs[0], pmFrom(3, 2, 2), b.PMs[1]}
+	dir := bundletest.Write(t, b)
+	editLines(t, dir, "pms.jsonl", func(line int, m map[string]any) {
+		if line == 3 {
+			m["recipients"].([]any)[0].(map[string]any)["kind"] = "cc"
+		}
+	})
+	r, err := bundle.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var errs bundle.Errors
+	if err := bundle.Check(r); !errors.As(err, &errs) {
+		t.Fatalf("Check = %v, want bundle.Errors", err)
+	}
+	if len(errs) != 1 || !strings.HasPrefix(errs[0].Error(), "pms.jsonl:3: recipients[0].kind: ") {
+		t.Fatalf("Check = %v\nwant one error on recipients[0].kind of line 3", errs)
 	}
 }
 

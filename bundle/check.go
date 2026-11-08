@@ -71,6 +71,9 @@ var errFull = errors.New("bundle: error limit reached")
 //     than its votes, and a user has no more vote rows than max_options;
 //   - a grant of a role fits its scope: a forum role needs a forum, a board
 //     role needs forum_id 0, and a mod role fits both;
+//   - a private message's conversation_id names a message in pms.jsonl with the
+//     same or a lower ID, and the two messages share a party (the author or a
+//     recipient);
 //   - a legacy route with a fixed target names a row that exists, and a page
 //     route names a static page; a user route may name a gone user;
 //   - every file that a row names exists under files/ with the stated size and
@@ -91,7 +94,7 @@ func Check(r *Reader) error {
 		r:     r,
 		ranks: seenIDs{}, users: seenIDs{}, gone: seenIDs{}, groups: seenIDs{},
 		posts: seenIDs{}, attachments: seenIDs{}, pms: seenIDs{},
-		roles: map[int64]roleInfo{}, forums: map[int64]forumInfo{},
+		roles: map[int64]roleInfo{}, forums: map[int64]forumInfo{}, pmInfo: map[int64]pmInfo{},
 		topics: map[int64]topicInfo{}, polls: map[int64]pollInfo{},
 		tallies: map[pollOption]tally{}, voters: map[pollVoter]int{},
 		votes: map[voteKey]int{}, clean: map[string]int64{},
@@ -123,6 +126,7 @@ func Check(r *Reader) error {
 	scan(w, w.pollVote)
 	scan(w, w.attachment)
 	scan(w, w.pm)
+	w.endPMs()
 	scan(w, w.topicMark)
 	scan(w, w.forumMark)
 	scan(w, w.ban)
@@ -179,6 +183,13 @@ type topicInfo struct {
 	line    int
 	movedTo int64 // 0 when the topic is not a marker
 	hasPost bool
+}
+
+// pmInfo is what the conversation check needs of a private message.
+type pmInfo struct {
+	line    int
+	link    int64   // conversation_id; 0 when it is null
+	parties []int64 // author_id and the recipients, sorted
 }
 
 type pollInfo struct {
@@ -238,6 +249,8 @@ type whole struct {
 	forumOrder                                          []int64
 	topics                                              map[int64]topicInfo
 	topicOrder                                          []int64
+	pmInfo                                              map[int64]pmInfo
+	pmOrder                                             []int64
 	polls                                               map[int64]pollInfo
 	tallies                                             map[pollOption]tally
 	voters                                              map[pollVoter]int
@@ -712,6 +725,48 @@ func (w *whole) pm(line int, m PM) {
 	w.optRef(file, line, "author_id", w.users, m.AuthorID, "users.jsonl")
 	for i, r := range m.Recipients {
 		w.ref(file, line, "recipients["+strconv.Itoa(i)+"].user_id", w.users, r.UserID, "users.jsonl")
+	}
+	if _, dup := w.pmInfo[m.ID]; dup {
+		return
+	}
+	info := pmInfo{line: line}
+	if m.ConversationID != nil {
+		info.link = *m.ConversationID
+	}
+	if m.AuthorID != nil {
+		info.parties = append(info.parties, *m.AuthorID)
+	}
+	for _, r := range m.Recipients {
+		info.parties = append(info.parties, r.UserID)
+	}
+	slices.Sort(info.parties)
+	w.pmInfo[m.ID] = info
+	w.pmOrder = append(w.pmOrder, m.ID)
+}
+
+// endPMs checks each conversation_id once every message is known: it names a
+// message with the same or a lower ID, and the two messages share a party.
+func (w *whole) endPMs() {
+	// A row that failed stops the scan, so later messages are unknown: a link
+	// to one of them is not a fault.
+	if w.halt {
+		return
+	}
+	const file, field = "pms.jsonl", "conversation_id"
+	for _, id := range w.pmOrder {
+		m := w.pmInfo[id]
+		if m.link == 0 || m.link == id {
+			continue
+		}
+		to, ok := w.pmInfo[m.link]
+		switch {
+		case !ok:
+			w.bad(file, m.line, field, "no row in pms.jsonl has id %d", m.link)
+		case m.link > id:
+			w.bad(file, m.line, field, "names message %d, which has a higher id; name this message or an earlier one", m.link)
+		case !slices.ContainsFunc(m.parties, func(p int64) bool { _, found := slices.BinarySearch(to.parties, p); return found }):
+			w.bad(file, m.line, field, "message %d shares no party with this one", m.link)
+		}
 	}
 }
 

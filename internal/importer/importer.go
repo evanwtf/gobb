@@ -39,6 +39,11 @@ type Options struct {
 	// every data table, and it moves the old data directories to
 	// DataDir/.replaced-<UTC time>/.
 	Replace bool
+	// ThreadMessages joins a private message that the bundle links to no
+	// conversation to an earlier one with the same people and subject, by the
+	// rule of [pmthread.Join]. It is off by default, because two unrelated talks
+	// can share a subject.
+	ThreadMessages bool
 }
 
 // now returns the time that names the .replaced-<stamp> directory. The tests
@@ -56,6 +61,8 @@ type source struct {
 	// topicForum maps a topic ID to its forum ID. The topics loader fills it,
 	// and the posts loader reads it. It holds IDs only.
 	topicForum map[int64]int64
+	// threadMessages is [Options.ThreadMessages].
+	threadMessages bool
 }
 
 // loader loads one data file inside the import transaction and returns the
@@ -171,7 +178,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, src string, opt Options) (coun
 		return nil, err
 	}
 
-	counts, err = load(ctx, conn, tables, &source{Reader: r, smilies: smilies}, opt.Replace)
+	counts, err = load(ctx, conn, tables, &source{Reader: r, smilies: smilies, threadMessages: opt.ThreadMessages}, opt.Replace)
 	if err != nil {
 		return nil, err
 	}

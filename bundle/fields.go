@@ -721,6 +721,7 @@ func (p PM) check() []*Error {
 	var v vet
 	v.id("id", p.ID)
 	v.optID("author_id", p.AuthorID)
+	v.optID("conversation_id", p.ConversationID)
 	v.label("author_name", p.AuthorName)
 	v.ip("author_ip", p.AuthorIP)
 	v.title("subject", p.Subject)
