@@ -1013,7 +1013,8 @@ func (s *site) serveGuestHit(w http.ResponseWriter, r *http.Request) bool {
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
 		return false
 	}
-	if !isCleanPath(r.URL.Path) {
+	// A path with escapes goes the slotted way: the mux may read it otherwise.
+	if r.URL.RawPath != "" || !isCleanPath(r.URL.Path) {
 		return false
 	}
 	rest, ok := strings.CutPrefix(r.URL.Path, s.base)

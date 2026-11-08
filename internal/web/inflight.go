@@ -17,14 +17,17 @@ const DefaultMaxInFlight = 256
 // config.DefaultMaxSigninInFlight.
 const DefaultMaxSigninInFlight = 32
 
-// inFlightLimits are the two semaphores of [limitInFlight]. Both are nil when
-// the limit is off.
+// inFlightLimits are the two semaphores of the in-flight limits. Both are nil
+// when the limits are off.
 type inFlightLimits struct {
-	// all is shared by every request but the password POSTs.
+	// all is taken by [limitInFlight] for every request but the cheap ones
+	// it exempts, the cached guest pages and the password POSTs.
 	all chan struct{}
-	// signin is for the password POSTs ([isPasswordPost]) alone. A wrong
-	// password holds its slot for the floor of a failed sign-in and the gate
-	// wait, so a flood of them would otherwise fill all and refuse the pages.
+	// signin bounds the password checks and hashes under way. The login
+	// service takes a slot only around its wait for the memory gate and the
+	// password work ([login.Service.Slots]), not around the whole request: a
+	// slow request body then holds no slot, and the floor of a failed sign-in
+	// runs after the slot is free.
 	signin chan struct{}
 }
 
@@ -46,23 +49,30 @@ func newInFlightLimits(opt Options) inFlightLimits {
 	return inFlightLimits{all: make(chan struct{}, all), signin: make(chan struct{}, min(signin, all))}
 }
 
-// limitInFlight lets at most cap(all) requests run at one time, and at most
-// cap(signin) password POSTs, on their own slots. A request past its limit gets
-// 503 at once with Retry-After, on the busy page that needs no database
-// ([site.refuseInFlight]), and counts in gobb_in_flight_refusals_total with
-// limit "all" or "signin". It does not wait: a queue would hold the memory of
-// each waiting request, which is what the limit exists to bound.
+// limitInFlight lets at most cap(all) requests run at one time. A request past
+// the limit gets 503 at once with Retry-After, on the busy page that needs no
+// database ([site.refuseInFlight]), and counts in
+// gobb_in_flight_refusals_total{limit="all"}. It does not wait: a queue would
+// hold the memory of each waiting request, which is what the limit exists to
+// bound.
 //
-// Three paths skip the limits, because they cost almost nothing and an
-// operator or a refused page needs them: /healthz (the health check of the
-// container), /favicon.ico and the static files under <base>static/ (served
-// from memory; the busy page itself links the stylesheet).
+// These requests skip the limit:
+//   - GET /healthz (the health check of the container; it pings the database
+//     at most once a second, [Health]), and GET or HEAD of /favicon.ico and of
+//     a known file under <base>static/ ([staticTypes]): served from memory, and
+//     the busy page itself links the stylesheet. Any other method, and an
+//     unknown static name (whose 404 page runs queries), takes a slot.
+//   - a guest page in the page cache ([site.serveGuestHit]): no render and no
+//     database, and it is what most visitors ask for.
+//   - the password POSTs ([isPasswordPost]): they take a slot of
+//     GOBB_MAX_SIGNIN_IN_FLIGHT around the password work instead.
+//
+// A slow request body or a slow reader holds its slot for as long as it
+// lasts. A reverse proxy that buffers the bodies (nginx does by default) keeps
+// that from the server.
 //
 // The slot is given back in a deferred call, so a handler that panics frees it
 // too.
-//
-// A guest page in the page cache skips the limits too ([site.serveGuestHit]):
-// it costs no render and no database, and it is what most visitors ask for.
 func (s *site) limitInFlight(next http.Handler) http.Handler {
 	return limitInFlight(s.inFlight, s.base, s.refuseInFlight, s.serveGuestHit, next)
 }
@@ -78,10 +88,12 @@ func (s *site) refuseInFlight(w http.ResponseWriter) {
 
 // isPasswordPost reports whether r is a POST that checks or hashes a password
 // through the memory gate: the sign-in, the change of the password or of the
-// email address (both check the current password), and the new password of a
-// reset link. path is r.URL.Path; base is the base path of the site.
+// email address (both check the current password), the confirm page of the
+// admin area (it checks the admin's password), and the new password of a reset
+// link. base is the base path of the site. A path with escapes (RawPath set) is
+// not one: it takes a slot of the main limit, which is the safe side.
 func isPasswordPost(r *http.Request, base string) bool {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost || r.URL.RawPath != "" {
 		return false
 	}
 	p, ok := strings.CutPrefix(r.URL.Path, base)
@@ -89,11 +101,32 @@ func isPasswordPost(r *http.Request, base string) bool {
 		return false
 	}
 	switch p {
-	case "login", "account/password", "account/email":
+	case "login", "account/password", "account/email", "admin/confirm":
 		return true
 	}
 	token, ok := strings.CutPrefix(p, "reset/")
 	return ok && token != "" && !strings.Contains(token, "/")
+}
+
+// exempt reports whether r is a cheap request that skips the main limit: GET
+// /healthz, and GET or HEAD of /favicon.ico or of a known static file.
+func exempt(r *http.Request, base string) bool {
+	if r.URL.RawPath != "" {
+		return false
+	}
+	p := r.URL.Path
+	if p == "/healthz" {
+		return r.Method == http.MethodGet
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if p == "/favicon.ico" {
+		return true
+	}
+	name, ok := strings.CutPrefix(p, base+"static/")
+	_, known := staticTypes[name]
+	return ok && known
 }
 
 // limitInFlight is [site.limitInFlight] with its parts: the limits (nil
@@ -104,24 +137,19 @@ func limitInFlight(l inFlightLimits, base string, refuse func(http.ResponseWrite
 	if l.all == nil {
 		return next
 	}
-	static := base + "static/"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if p == "/healthz" || p == "/favicon.ico" || strings.HasPrefix(p, static) {
+		if exempt(r, base) || isPasswordPost(r, base) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		if bypass != nil && bypass(w, r) {
 			return
 		}
-		slots, name := l.all, "all"
-		if l.signin != nil && isPasswordPost(r, base) {
-			slots, name = l.signin, "signin"
-		}
+		slots := l.all
 		select {
 		case slots <- struct{}{}:
 		default:
-			metrics.InFlightRefusals.Inc(name)
+			metrics.InFlightRefusals.Inc("all")
 			refuse(w)
 			return
 		}

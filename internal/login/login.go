@@ -166,8 +166,16 @@ type Service struct {
 	// set Floor directly and skip LoadFloor. Zero means no floor.
 	Floor time.Duration
 	// GateWait is how long a check waits for room in the gate. New sets it to
-	// [DefaultGateWait].
+	// [DefaultGateWait]. A context from [WithWaitDeadline] shortens the wait to
+	// the time left before its deadline.
 	GateWait time.Duration
+	// Slots, when not nil, bounds the password checks and hashes under way: a
+	// check takes a slot just before it waits for the gate, without waiting, and
+	// gives it back with the gate, before the floor. A check that finds no slot
+	// gets [ErrBusy] and counts in gobb_in_flight_refusals_total{limit="signin"}.
+	// The server sets it to the semaphore of GOBB_MAX_SIGNIN_IN_FLIGHT, so the
+	// slot covers the password work and not the read of a slow request body.
+	Slots chan struct{}
 	// stored is the cost of the most costly stored hash, in KiB, that
 	// LoadCharge found. Zero until LoadCharge runs.
 	stored atomic.Uint64
@@ -870,10 +878,45 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	if s.onAcquire != nil {
 		s.onAcquire(kib)
 	}
-	if s.opt.Gate == nil {
-		return func() {}, nil
+	freeSlot := func() {}
+	if s.Slots != nil {
+		select {
+		case s.Slots <- struct{}{}:
+			freeSlot = func() { <-s.Slots }
+		default:
+			metrics.InFlightRefusals.Inc("signin")
+			return nil, ErrBusy
+		}
 	}
-	return s.opt.Gate.AcquireCollected(ctx, kib, s.GateWait)
+	if s.opt.Gate == nil {
+		return freeSlot, nil
+	}
+	wait := s.GateWait
+	if d, ok := ctx.Value(waitDeadlineKey{}).(time.Time); ok {
+		wait = max(0, min(wait, time.Until(d)))
+	}
+	release, err := s.opt.Gate.AcquireCollected(ctx, kib, wait)
+	if err != nil {
+		freeSlot()
+		return nil, err
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			release()
+			freeSlot()
+		})
+	}, nil
+}
+
+type waitDeadlineKey struct{}
+
+// WithWaitDeadline returns a context under which a wait for the gate ends no
+// later than deadline, even when GateWait is longer. The server passes the
+// start of the request plus GateWait, so the waits of one sign-in for the pool
+// and for the gate share one budget, and a busy sign-in answers 503 within it.
+func WithWaitDeadline(ctx context.Context, deadline time.Time) context.Context {
+	return context.WithValue(ctx, waitDeadlineKey{}, deadline)
 }
 
 // check verifies pw for name (steps 1 to 8 of [Service.Check]). It puts the IDs

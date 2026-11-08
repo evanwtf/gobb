@@ -272,6 +272,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		s.login.Floor = opt.LoginFloor
 	}
 	s.inFlight = newInFlightLimits(opt)
+	s.login.Slots = s.inFlight.signin
 	if opt.LoginGateWait != 0 {
 		s.login.GateWait = opt.LoginGateWait
 	}
@@ -515,6 +516,12 @@ func (s *site) guard(next http.Handler) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 		defer cancel()
 		ctx = db.WithPoolWait(ctx, s.opt.PoolWait)
+		// The waits of a sign-in for the pool and for the gate share one budget
+		// of GateWait from the start of the request, so a busy sign-in answers
+		// 503 within it ([login.WithWaitDeadline]).
+		if c, ok := ctx.Value(reqClockKey{}).(reqClock); ok {
+			ctx = login.WithWaitDeadline(ctx, c.start.Add(s.login.GateWait))
+		}
 		next.ServeHTTP(&poolBusyWriter{ResponseWriter: w, ctx: ctx}, r.WithContext(ctx))
 	})
 }

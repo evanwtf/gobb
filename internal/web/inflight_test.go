@@ -1,6 +1,8 @@
 package web
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,7 +23,7 @@ func TestInFlightLimitRefusesAtOnce(t *testing.T) {
 	t.Cleanup(func() { onNew = nil })
 	h, _ := siteAndPool(t, bundletest.Small(), Options{MaxInFlight: 2})
 	onNew = nil
-	if cap(s.inFlight.all) != 2 || cap(s.inFlight.signin) != 2 {
+	if cap(s.inFlight.all) != 2 || cap(s.inFlight.signin) != 2 || s.login.Slots != s.inFlight.signin {
 		t.Fatalf("the limits hold %d and %d slots, want 2 and 2 (the sign-in default of 32, cut to the main limit)",
 			cap(s.inFlight.all), cap(s.inFlight.signin))
 	}
@@ -56,6 +58,20 @@ func TestInFlightLimitRefusesAtOnce(t *testing.T) {
 			t.Errorf("%s with the limit full = %d, want 200", path, rec.Code)
 		}
 	}
+	// Only GET or HEAD of a known static file skips the limit: a miss renders
+	// the 404 page, which runs queries, and so does any other method.
+	for _, c := range []struct{ method, path string }{
+		{http.MethodGet, "/static/nope.css"},
+		{http.MethodPost, "/static/gobb.css"},
+		{http.MethodPost, "/favicon.ico"},
+		{http.MethodPost, "/healthz"},
+		{http.MethodHead, "/healthz"},
+		{http.MethodGet, "/static/gobb%2Ecss"},
+	} {
+		if rec := do(t, h, c.method, c.path); rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s %s with the limit full = %d, want 503", c.method, c.path, rec.Code)
+		}
+	}
 	if n := len(s.inFlight.all); n != 2 {
 		t.Errorf("%d slots held, want the 2 taken by the test", n)
 	}
@@ -83,15 +99,14 @@ func TestInFlightSlotFreedAfterPanic(t *testing.T) {
 					t.Errorf("try %d: recovered %v, want the handler's panic", i, p)
 				}
 			}()
-			// Odd tries are sign-ins, on the slots of their own.
 			req := httptest.NewRequest(http.MethodGet, "/t/1", nil)
 			if i%2 == 1 {
-				req = httptest.NewRequest(http.MethodPost, "/login", nil)
+				req = httptest.NewRequest(http.MethodPost, "/t/1/reply", nil)
 			}
 			h.ServeHTTP(httptest.NewRecorder(), req)
 		}()
-		if a, b := len(l.all), len(l.signin); a != 0 || b != 0 {
-			t.Fatalf("try %d: %d and %d slots held after a panic, want 0", i, a, b)
+		if a := len(l.all); a != 0 {
+			t.Fatalf("try %d: %d slots held after a panic, want 0", i, a)
 		}
 	}
 }
@@ -144,59 +159,7 @@ func TestInFlightLimitHoldsUnderConcurrency(t *testing.T) {
 	}
 }
 
-// A flood of sign-ins fills the sign-in slots only: the pages stay admitted,
-// and a sign-in past its limit gets 503 at once.
-func TestSigninFloodLeavesPagesAdmitted(t *testing.T) {
-	l := inFlightLimits{all: make(chan struct{}, 4), signin: make(chan struct{}, 2)}
-	release := make(chan struct{})
-	h := limitInFlight(l, "/", refuse503, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			<-release // a sign-in that waits out its floor
-		}
-	}))
-	before := metrics.InFlightRefusals.Value("signin")
-	done := make(chan int, 2)
-	for range 2 {
-		go func() {
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/login", nil))
-			done <- rec.Code
-		}()
-	}
-	for deadline := time.Now().Add(5 * time.Second); len(l.signin) < 2 && time.Now().Before(deadline); {
-		time.Sleep(time.Millisecond)
-	}
-	if len(l.signin) != 2 || len(l.all) != 0 {
-		t.Fatalf("sign-in slots %d, main slots %d, want 2 and 0", len(l.signin), len(l.all))
-	}
-	start := time.Now()
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/login", nil))
-	if rec.Code != http.StatusServiceUnavailable || time.Since(start) > 200*time.Millisecond {
-		t.Errorf("a sign-in past its limit = %d after %s, want 503 at once", rec.Code, time.Since(start))
-	}
-	if got := metrics.InFlightRefusals.Value("signin") - before; got != 1 {
-		t.Errorf("signin refusals rose by %d, want 1", got)
-	}
-	for _, target := range []string{"/", "/t/1", "/search?q=x", "/account/password", "/reset/abc"} {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
-		if rec.Code != http.StatusOK {
-			t.Errorf("GET %s while the sign-ins are full = %d, want 200", target, rec.Code)
-		}
-	}
-	close(release)
-	for range 2 {
-		if c := <-done; c != http.StatusOK {
-			t.Errorf("an admitted sign-in = %d", c)
-		}
-	}
-	if len(l.signin) != 0 || len(l.all) != 0 {
-		t.Errorf("slots held at the end: %d and %d", len(l.signin), len(l.all))
-	}
-}
-
-// The password POSTs, and only they, take the sign-in slots.
+// The password POSTs skip the main limit, and only they do.
 func TestIsPasswordPost(t *testing.T) {
 	for _, c := range []struct {
 		method, path, base string
@@ -205,9 +168,11 @@ func TestIsPasswordPost(t *testing.T) {
 		{"POST", "/login", "/", true},
 		{"POST", "/account/password", "/", true},
 		{"POST", "/account/email", "/", true},
+		{"POST", "/admin/confirm", "/", true},
 		{"POST", "/reset/tok123", "/", true},
 		{"POST", "/forum/login", "/forum/", true},
 		{"POST", "/forum/reset/tok", "/forum/", true},
+		{"POST", "/log%69n", "/", false}, // escaped: takes a main slot
 		{"GET", "/login", "/", false},
 		{"GET", "/reset/tok", "/", false},
 		{"POST", "/reset", "/", false},
@@ -225,27 +190,77 @@ func TestIsPasswordPost(t *testing.T) {
 	}
 }
 
-// With the site built by New, a sign-in past its own limit gets the busy page
-// with Retry-After, while a page view is admitted.
-func TestSigninInFlightLimitOnTheSite(t *testing.T) {
+// signinSite is a site with a sign-in limit of 1 and its *site.
+func signinSite(t *testing.T) (http.Handler, *site) {
+	t.Helper()
 	var s *site
 	onNew = func(got *site) { s = got }
 	t.Cleanup(func() { onNew = nil })
 	h, _ := siteAndPool(t, bundletest.Small(), Options{MaxInFlight: 8, MaxSigninInFlight: 1})
 	onNew = nil
-	s.inFlight.signin <- struct{}{}
-	defer func() { <-s.inFlight.signin }()
+	if s.login.Slots == nil || cap(s.login.Slots) != 1 {
+		t.Fatal("the login service has no sign-in slots of 1")
+	}
+	return h, s
+}
+
+// A sign-in that finds its slots full gets 503 with the busy answer, after the
+// floor and without a wait for the gate, and counts. Page views stay admitted
+// while the sign-in slots are full.
+func TestSigninPastItsLimit(t *testing.T) {
+	h, s := signinSite(t)
+	s.login.Slots <- struct{}{}
+	defer func() { <-s.login.Slots }()
+	before := metrics.InFlightRefusals.Value("signin")
 	start := time.Now()
 	rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {"wrong"}})
-	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "2" || time.Since(start) > 200*time.Millisecond {
-		t.Errorf("sign-in past its limit = %d, Retry-After %q, after %s; want 503, 2, at once",
-			rec.Code, rec.Header().Get("Retry-After"), time.Since(start))
+	took := time.Since(start)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "5" {
+		t.Errorf("sign-in past its limit = %d, Retry-After %q; want 503 and 5", rec.Code, rec.Header().Get("Retry-After"))
 	}
-	if body := bodyOf(t, rec); !strings.Contains(body, "<html") {
-		t.Errorf("the refusal is not the busy page:\n%s", body)
+	if took > 300*time.Millisecond {
+		t.Errorf("the refusal took %s; it must not wait for a slot or the gate", took)
 	}
-	if rec := get(t, h, "/t/1"); rec.Code != http.StatusOK {
-		t.Errorf("/t/1 with the sign-in slots full = %d, want 200", rec.Code)
+	if got := metrics.InFlightRefusals.Value("signin") - before; got != 1 {
+		t.Errorf("signin refusals rose by %d, want 1", got)
+	}
+	for _, target := range []string{"/", "/t/1", "/login"} {
+		if rec := get(t, h, target); rec.Code != http.StatusOK {
+			t.Errorf("GET %s with the sign-in slots full = %d, want 200", target, rec.Code)
+		}
+	}
+}
+
+// A sign-in whose body has not all come holds no slot: the slot is taken only
+// around the password work, after the form is read. With a limit of one, a
+// stalled POST /login does not lock out the next sign-in.
+func TestSlowSigninBodyHoldsNoSlot(t *testing.T) {
+	h, s := signinSite(t)
+	pr, pw := io.Pipe()
+	req := httptest.NewRequest(http.MethodPost, "/login", pr)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.ContentLength = 1000
+	done := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		done <- rec.Code
+	}()
+	if _, err := pw.Write([]byte("name=alice&pass")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n, m := len(s.login.Slots), len(s.inFlight.all); n != 0 || m != 0 {
+		t.Errorf("a stalled body holds %d sign-in and %d main slots, want 0 and 0", n, m)
+	}
+	rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {"wrong"}})
+	if rec.Code != http.StatusOK {
+		t.Errorf("a sign-in beside a stalled one = %d, want 200 (a wrong password)", rec.Code)
+	}
+	pw.CloseWithError(errors.New("client gone"))
+	<-done
+	if n := len(s.login.Slots); n != 0 {
+		t.Errorf("%d sign-in slots held at the end", n)
 	}
 }
 

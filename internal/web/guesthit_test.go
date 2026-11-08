@@ -94,7 +94,9 @@ func TestGuestHitSkipsTheInFlightLimit(t *testing.T) {
 		t.Errorf("If-None-Match with the tag = %d, want 304", rec.Code)
 	}
 
-	for _, target := range []string{"/t/1?page=2", "/t/999", "/f/999", "/search?q=x"} {
+	// An escaped path (RawPath set) takes the slotted way, even when it means
+	// the same page.
+	for _, target := range []string{"/t/1?page=2", "/t/999", "/f/999", "/search?q=x", "/t%2F1", "/%74/1"} {
 		if rec := get(t, h, target); rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("guest %s (not in the cache) with the limit full = %d, want 503", target, rec.Code)
 		}
