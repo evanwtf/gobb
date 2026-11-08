@@ -148,12 +148,40 @@ func checkDataDirs(dataDir string) error {
 // receives the old data directories.
 const replacedName = "20060102T150405Z"
 
+// makeReplacedDir makes a new directory dataDir/.replaced-<UTC time> and
+// returns its path. The time has one-second resolution, so when a directory of
+// that name exists from an earlier run, it adds the first free suffix -2, -3
+// and so on. A non-directory in the way is an error.
+func makeReplacedDir(dataDir string, now time.Time) (string, error) {
+	base := filepath.Join(dataDir, ".replaced-"+now.UTC().Format(replacedName))
+	for i := 1; ; i++ {
+		name := base
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d", base, i)
+		}
+		err := os.Mkdir(name, 0o755)
+		if err == nil {
+			return name, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+		st, err := os.Lstat(name)
+		if err != nil {
+			return "", err
+		}
+		if !st.IsDir() {
+			return "", fmt.Errorf("importer: %s exists and is not a directory", name)
+		}
+	}
+}
+
 // installFiles moves the staged data directories into dataDir and creates the
 // empty ones with mode 0755. With replace set, it moves the existing data
-// directories to dataDir/.replaced-<UTC time>/ first.
+// directories to a new dataDir/.replaced-<UTC time>[-N]/ first.
 func installFiles(dataDir, staging string, replace bool, now time.Time) error {
 	if replace {
-		old := filepath.Join(dataDir, ".replaced-"+now.UTC().Format(replacedName))
+		old := ""
 		for _, d := range dataDirs {
 			from := filepath.Join(dataDir, d)
 			if _, err := os.Lstat(from); errors.Is(err, fs.ErrNotExist) {
@@ -161,8 +189,11 @@ func installFiles(dataDir, staging string, replace bool, now time.Time) error {
 			} else if err != nil {
 				return err
 			}
-			if err := os.MkdirAll(old, 0o755); err != nil {
-				return err
+			if old == "" {
+				var err error
+				if old, err = makeReplacedDir(dataDir, now); err != nil {
+					return err
+				}
 			}
 			if err := os.Rename(from, filepath.Join(old, d)); err != nil {
 				return err

@@ -37,7 +37,8 @@ type Options struct {
 	DataDir string
 	// Replace allows an import into a database that holds data. It truncates
 	// every data table, and it moves the old data directories to
-	// DataDir/.replaced-<UTC time>/.
+	// DataDir/.replaced-<UTC time>/, with a suffix -2, -3 and so on when an
+	// earlier run in the same second took that name.
 	Replace bool
 	// ThreadMessages joins a private message that the bundle links to no
 	// conversation to an earlier one with the same people and subject, by the
