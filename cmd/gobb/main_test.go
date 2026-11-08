@@ -160,9 +160,7 @@ func TestImportCommand(t *testing.T) {
 	if cid := conversationOf(); cid != 2 {
 		t.Errorf("without --thread-messages, message 2 is in conversation %d, want 2", cid)
 	}
-	// A new data directory: two --replace runs in one second would name the
-	// same .replaced-<time> directory.
-	t.Setenv("GOBB_DATA_DIR", t.TempDir())
+	// A second --replace run, often in the same second as the first.
 	if code := run(ctx, []string{"import", "--replace", "--thread-messages", dir}); code != 0 {
 		t.Fatalf("import --replace --thread-messages exit = %d, want 0", code)
 	}

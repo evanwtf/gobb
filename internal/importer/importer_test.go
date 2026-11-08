@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -479,6 +480,68 @@ func TestImportReplaceKeepsOldFiles(t *testing.T) {
 		t.Errorf("replaced directory name = %q", stamp)
 	}
 	noStaging(t, data)
+}
+
+// TestImportReplaceTwiceInOneSecond runs two --replace imports with a frozen
+// clock. The second run must not reuse the first run's .replaced-<time>
+// directory: it takes the name with the suffix -2.
+func TestImportReplaceTwiceInOneSecond(t *testing.T) {
+	pool := dbtest.New(t)
+	data := t.TempDir()
+	at := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	oldNow := now
+	t.Cleanup(func() { now = oldNow })
+	now = func() time.Time { return at }
+
+	avatar := func(content string) string {
+		return writeBoard(t, func(b *bundletest.Board) {
+			b.Files["avatars/1.png"] = []byte(content)
+			ref := bundletest.Ref("avatars/1.png", []byte(content))
+			b.Users[0].Avatar = &ref
+		})
+	}
+	mustRun(t, pool, avatar("first"), data, false)
+	mustRun(t, pool, avatar("second"), data, true)
+	mustRun(t, pool, avatar("third"), data, true)
+
+	stamp := filepath.Join(data, ".replaced-20300102T030405Z")
+	for dir, want := range map[string]string{
+		stamp:        "first",
+		stamp + "-2": "second",
+		data:         "third",
+	} {
+		got, err := os.ReadFile(filepath.Join(dir, "avatars", "1.png"))
+		if err != nil || string(got) != want {
+			t.Errorf("%s/avatars/1.png = %q, %v; want %q", filepath.Base(dir), got, err, want)
+		}
+	}
+	entries, _ := filepath.Glob(filepath.Join(data, ".replaced-*"))
+	if len(entries) != 2 {
+		t.Errorf("replaced directories = %v, want two", entries)
+	}
+	noStaging(t, data)
+}
+
+// TestMakeReplacedDirSuffix checks the names without a database: the first
+// free name wins, and a regular file in the way is an error.
+func TestMakeReplacedDirSuffix(t *testing.T) {
+	data := t.TempDir()
+	at := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	base := filepath.Join(data, ".replaced-20300102T030405Z")
+	for _, want := range []string{base, base + "-2", base + "-3"} {
+		got, err := makeReplacedDir(data, at)
+		if err != nil || got != want {
+			t.Fatalf("makeReplacedDir = %q, %v; want %q", got, err, want)
+		}
+	}
+	other := t.TempDir()
+	blocker := filepath.Join(other, ".replaced-20300102T030405Z")
+	if err := os.WriteFile(blocker, []byte("in the way"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := makeReplacedDir(other, at); err == nil {
+		t.Errorf("makeReplacedDir with a file in the way = %q, want an error", got)
+	}
 }
 
 func TestImportStopsOnCheck(t *testing.T) {

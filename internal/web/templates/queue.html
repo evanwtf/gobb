@@ -41,6 +41,9 @@
               <button class="button-quiet" type="submit">Delete</button>
             </form>
             {{- end}}
+            {{- if .CanViewIP}}
+            {{template "ip-link" .ID}}
+            {{- end}}
           </div>
         </td>
       </tr>

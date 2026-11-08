@@ -92,7 +92,7 @@ func TestRenderTable(t *testing.T) {
 		{"empty root", tree(), ``},
 
 		{"youtube", renderEmbed("youtube", "M7lc1UVf-VE"),
-			`<iframe class="embed youtube" src="https://www.youtube-nocookie.com/embed/M7lc1UVf-VE" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`},
+			`<iframe class="embed youtube" src="https://www.youtube-nocookie.com/embed/M7lc1UVf-VE" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation"></iframe>`},
 		{"vimeo", renderEmbed("vimeo", "76979871"),
 			`<iframe class="embed vimeo" src="https://player.vimeo.com/video/76979871" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`},
 		{"tweet", renderEmbed("tweet", "20"),
@@ -106,15 +106,15 @@ func TestRenderTable(t *testing.T) {
 			`<iframe class="embed reddit comment" src="https://embed.reddit.com/r/programming/comments/abc123/comment/def456/?embed=true&amp;showmedia=false&amp;showmore=false&amp;depth=1" title="Reddit comment" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>` +
 				`<div class="embed-link"><a href="https://www.reddit.com/r/programming/comments/abc123/comment/def456/" rel="nofollow ugc noopener">View comment on Reddit</a></div>`},
 		{"tiktok", renderEmbed("tiktok", "6718335390845095173"),
-			`<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/6718335390845095173" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen></iframe>`},
+			`<iframe class="embed tiktok" src="https://www.tiktok.com/player/v1/6718335390845095173" title="TikTok video" loading="lazy" allow="fullscreen" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation"></iframe>`},
 		{"threads", renderEmbed("threads", "zuck/C04flh-M8ii"),
 			`<div class="embed-link"><a href="https://www.threads.com/@zuck/post/C04flh-M8ii/" rel="nofollow ugc noopener">https://www.threads.com/@zuck/post/C04flh-M8ii/</a></div>`},
 		{"spotify", renderEmbed("spotify", "track/4cOdK2wGLETKBW3PvgPWqT"),
-			`<iframe class="embed spotify" src="https://open.spotify.com/embed/track/4cOdK2wGLETKBW3PvgPWqT" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture"></iframe>`},
+			`<iframe class="embed spotify" src="https://open.spotify.com/embed/track/4cOdK2wGLETKBW3PvgPWqT" title="Spotify" loading="lazy" allow="encrypted-media; fullscreen; picture-in-picture" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>`},
 		{"soundcloud track", renderEmbed("soundcloud", "forss/flickermood"),
-			`<iframe class="embed soundcloud" src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/forss/flickermood" title="SoundCloud" loading="lazy"></iframe>`},
+			`<iframe class="embed soundcloud" src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/forss/flickermood" title="SoundCloud" loading="lazy" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>`},
 		{"soundcloud set", renderEmbed("soundcloud", "forss/sets/soulhack"),
-			`<iframe class="embed soundcloud" src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/forss/sets/soulhack" title="SoundCloud" loading="lazy"></iframe>`},
+			`<iframe class="embed soundcloud" src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/forss/sets/soulhack" title="SoundCloud" loading="lazy" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,6 +124,11 @@ func TestRenderTable(t *testing.T) {
 		})
 	}
 }
+
+// unsandboxed lists the embed frames that carry no sandbox. Vimeo is the one
+// exception: its player could not be shown to play under the sandbox (issue
+// #64). Delete its entry when the Vimeo row gets videoSandbox.
+var unsandboxed = map[string]bool{"vimeo": true}
 
 func TestRenderEmbedsAlwaysLazyAndTitled(t *testing.T) {
 	ids := map[string]string{
@@ -137,15 +142,21 @@ func TestRenderEmbedsAlwaysLazyAndTitled(t *testing.T) {
 		if !strings.Contains(out, ` loading="lazy"`) || !strings.Contains(out, ` title="`) {
 			t.Errorf("%s: iframe lacks loading or title: %s", name, out)
 		}
-		// Only the Reddit frame is sandboxed, with Reddit's own sandbox.
-		if tag == "reddit" {
-			if !strings.Contains(out, ` sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"`) {
-				t.Errorf("%s: no Reddit sandbox: %s", name, out)
+		// Every frame is sandboxed, except the frames in unsandboxed. A video
+		// player may also present (cast); no frame gets more.
+		if unsandboxed[tag] {
+			if strings.Contains(out, "sandbox") {
+				t.Errorf("%s: want no sandbox: %s", name, out)
 			}
 			continue
 		}
-		if strings.Contains(out, "sandbox") {
-			t.Errorf("%s: sandbox attribute present: %s", name, out)
+		want := ` sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"`
+		switch tag {
+		case "youtube", "vimeo", "tiktok":
+			want = ` sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation"`
+		}
+		if !strings.Contains(out, want) || strings.Count(out, "sandbox=") != 1 {
+			t.Errorf("%s: want one sandbox,%s: %s", name, want, out)
 		}
 	}
 }

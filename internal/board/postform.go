@@ -173,7 +173,7 @@ func pageButtons(ctx context.Context, q db.Querier, v Viewer, out TopicPage, can
 		}
 		// The rule of PostIP. A deleted post that the viewer sees has an address
 		// too.
-		b.IP = v.Perms.Has("mod.view_ip", forumID)
+		b.IP = MayViewIP(v, forumID)
 		if p.Visibility == "deleted" {
 			// The rule of RestorePost. A deleted post offers nothing else.
 			b.Restore = v.Perms.Has("mod.delete", forumID)

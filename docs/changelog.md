@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.1 (2026-11-08)
+
+- **Import:** two `--replace` runs in the same second no longer collide. The second
+  run moves the old files to `.replaced-<time>-2/`, the next to `-3/`, and so on
+  (#60).
+- **Queue:** each held post shows the "IP" link to a holder of `mod.view_ip` in the
+  post's forum, as the topic page does. Both use one rule and one template (#62).
+- **Embeds:** the YouTube, TikTok, Spotify and SoundCloud frames now carry a
+  `sandbox`, as the Reddit frame does; the video players also get
+  `allow-presentation`. The Vimeo frame stays without one until a browser check
+  shows its player plays under it (#64, #73).
+
 ## 0.17.0 (2026-11-08)
 
 - **Load protection, part two** (#2): the sign-in schedule, trusted addresses and
