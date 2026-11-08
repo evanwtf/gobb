@@ -251,6 +251,16 @@ func load(ctx context.Context, conn *pgxpool.Conn, tables []string, r *source, r
 		counts[l.file] = n
 		slog.Info("loaded", "file", l.file, "rows", n)
 	}
+	// The migrations ran on an empty database, so the mod.pin migration found no
+	// mod.lock to copy. A bundle that never names mod.pin gets it here, wherever
+	// it sets mod.lock.
+	derived, err := db.DeriveModPin(ctx, tx)
+	if err != nil {
+		return nil, fmt.Errorf("importer: %w", err)
+	}
+	if derived {
+		slog.Info("derived mod.pin from mod.lock: the bundle names no mod.pin")
+	}
 	if err := counters.All(ctx, tx); err != nil {
 		return nil, fmt.Errorf("importer: %w", err)
 	}

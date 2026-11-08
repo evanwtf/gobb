@@ -169,6 +169,7 @@ func TestBasePathEverywhere(t *testing.T) {
 		loc    string
 	}{
 		{"/forum/t/1/unlock", url.Values{}, "/forum/t/1"},
+		{"/forum/t/1/type", url.Values{"kind": {"announce"}}, "/forum/t/1"},
 		{"/forum/p/4/delete", url.Values{"confirm": {"1"}}, "/forum/t/1"},
 		{"/forum/p/4/restore", url.Values{}, "/forum/p/4"},
 	} {
@@ -179,7 +180,7 @@ func TestBasePathEverywhere(t *testing.T) {
 			t.Errorf("POST %s = %d %q, want 303 %q", c.target, rec.Code, rec.Header().Get("Location"), c.loc)
 		}
 	}
-	for _, p := range []string{"/t/1/lock", "/p/4/restore"} {
+	for _, p := range []string{"/t/1/lock", "/t/1/type", "/p/4/restore"} {
 		if rec := request(t, h, http.MethodPost, p, alice, url.Values{}); rec.Code != http.StatusNotFound {
 			t.Errorf("POST %s without the prefix: status %d, want 404", p, rec.Code)
 		}

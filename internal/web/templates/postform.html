@@ -53,6 +53,16 @@
     {{- if .Data.Err.Title}}<p class="field-error" id="post-title-error" role="alert">{{.Data.Err.Title}}</p>{{end}}
   </div>
   {{- end}}
+  {{- with .Data.Kinds}}
+  <div class="field">
+    <label for="post-kind">Topic type</label>
+    <select id="post-kind" name="kind">
+      {{- range .}}
+      <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+      {{- end}}
+    </select>
+  </div>
+  {{- end}}
   <div class="field">
     <label for="post-body">Text</label>
     <textarea id="post-body" name="body" rows="14" aria-describedby="post-body-hint{{if .Data.Err.Body}} post-body-error{{end}}"

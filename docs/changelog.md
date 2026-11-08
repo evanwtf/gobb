@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.11.0 (2026-11-08)
+
+### Set a topic's type (evanwtf/gobb#54)
+
+- **A new right, `mod.pin`.** A member who holds it in a forum may make a topic of
+  that forum normal, sticky or an announcement. It is a moderator option, like
+  `mod.lock`: grant it per forum or board-wide on the permission pages.
+- **Global is for admins.** A global topic shows in every forum, so only an admin
+  may make a topic global, and only an admin may change a global topic back.
+  `mod.pin` never gives it. For the other changes an admin needs `mod.pin`, as for
+  `mod.lock`: an admin with `mod.pin` Never cannot make them.
+- **On the topic page.** A member who may change the type gets a "Topic type"
+  control in the row of Lock: a select and a Set button. It is a POST form with the
+  token, like Lock. It offers the types that the member may give, with the current
+  type selected.
+- **On the new-topic form.** A "Topic type" select. Sticky needs `topic.sticky` or
+  `mod.pin` in the forum, Announcement needs `topic.announce` or `mod.pin`, and
+  Global needs `admin`. The default is Normal. A member who may give no other type
+  never sees the select, and the server ignores a type that the member may not give.
+  `topic.global` is reserved and unused.
+- **Moved-topic markers.** An admin may set a marker to normal, to unpin a marker
+  from an import. Every other change to a marker is refused.
+- **The moderation log.** Each change of type writes one `topic.kind` row with the
+  old and the new type. A new topic that starts as other than Normal writes one
+  too.
+- **`mod.pin` where `mod.lock` is.** Migration 0017 gives `mod.pin` wherever
+  `mod.lock` is set, with the same holder, forum and value. `gobb import` and
+  `gobb import --replace` do the same after they load the grants, for a bundle that
+  names `mod.pin` nowhere. A bundle that names it keeps its own settings. A Never
+  stays a Never.
+- **`gobb perms export`** now lists `mod.pin`.
 ## 0.10.1 (2026-11-08)
 
 - **The sign-in floor no longer depends on how busy the host was at start** (#12).

@@ -28,6 +28,9 @@ var Options = []Option{
 	{"forum.search", Forum},
 	{"topic.start", Forum},
 	{"topic.reply", Forum},
+	// topic.sticky and topic.announce let a member start a sticky topic or an
+	// announcement (board.NewTopicKinds). topic.global is reserved and unused:
+	// global is for an admin only.
 	{"topic.sticky", Forum},
 	{"topic.announce", Forum},
 	{"topic.global", Forum},
@@ -52,6 +55,9 @@ var Options = []Option{
 	{"mod.delete", Moderator},
 	{"mod.approve", Moderator},
 	{"mod.lock", Moderator},
+	// mod.pin sets a topic normal, sticky or an announcement. Global is for an
+	// admin only (board.SetTopicKind).
+	{"mod.pin", Moderator},
 	{"mod.move", Moderator},
 	{"mod.view_ip", Moderator},
 

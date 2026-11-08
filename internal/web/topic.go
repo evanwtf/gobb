@@ -30,6 +30,11 @@ type topicData struct {
 	// UnlockHref are the addresses of the two forms.
 	CanLock, CanUnlock   bool
 	LockHref, UnlockHref string
+	// Kinds are the options of the "Topic type" select, with the current type
+	// selected. It is nil for a viewer who may not change the type. KindHref is
+	// the address of its form.
+	Kinds    []kindOption
+	KindHref string
 	// Held is true after a post that waits for approval: the page then says so.
 	Held bool
 }
@@ -110,6 +115,8 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	d.CanLock, d.CanUnlock = tp.CanLock, tp.CanUnlock
 	d.LockHref = s.path("t", strconv.FormatInt(id, 10), "lock")
 	d.UnlockHref = s.path("t", strconv.FormatInt(id, 10), "unlock")
+	d.Kinds = kindOptions(tp.Kinds, tp.Topic.Kind)
+	d.KindHref = s.path("t", strconv.FormatInt(id, 10), "type")
 	d.ReplyHref = s.path("t", strconv.FormatInt(id, 10), "reply")
 	d.Crumbs = s.crumbsFor(tp.Crumbs)
 	d.Crumbs = append(d.Crumbs, crumb{Label: tp.Forum.Name, Href: s.path("f", strconv.FormatInt(tp.Forum.ID, 10))})

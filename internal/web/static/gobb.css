@@ -1344,6 +1344,19 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
 .head-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; }
 .head-row .pager { flex: 1 1 auto; margin: 0; justify-content: flex-end; }
 .head-row form { margin: 0; }
+/* The "Topic type" control of a moderator: a label, a select and a button on
+   one line, sized like the buttons beside it. */
+.kind-form { display: inline-flex; align-items: center; gap: 0.35rem; }
+.kind-form label { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+.kind-form select {
+  padding: 0.35rem 0.5rem;
+  font: 0.9rem/1.4 var(--font);
+  color: var(--text);
+  background: var(--page);
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+}
+.kind-form select:focus-visible { outline: 3px solid var(--link); outline-offset: 1px; }
 
 .post { grid-template-columns: 10.5rem minmax(0, 1fr); }
 .post-author { padding: 0.85rem 0.75rem; }
@@ -1362,6 +1375,7 @@ td.num { padding-top: 0.45rem; white-space: nowrap; }
   .hide-narrow { display: none; }
   .head-row { gap: 0.35rem; margin-bottom: 0.5rem; }
   .head-row .button-quiet { min-height: 2.75rem; display: inline-flex; align-items: center; }
+  .kind-form select { min-height: 2.75rem; }
   .site-nav .nav-action { padding-right: 0.5rem; }
   .nav-action .button-quiet { min-height: 0; padding: 0.25rem 0.55rem; }
   .forums:not(.topics) .forum-count { font-size: inherit; }

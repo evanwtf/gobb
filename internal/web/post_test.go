@@ -732,6 +732,7 @@ var tokenRows = []tokenRow{
 	{"/p/3/approve", "bob", url.Values{}, ""},
 	{"/t/1/lock", "bob", url.Values{}, ""},
 	{"/t/1/unlock", "bob", url.Values{}, `update topics set locked = true where id = 1`},
+	{"/t/1/type", "bob", url.Values{"kind": {"announce"}}, ""},
 	{"/f/2/post", "", url.Values{"title": {"x"}, "body": {"No token."}, "guest_name": {"Visitor 9"}}, ""},
 	{"/t/1/reply", "", url.Values{"body": {"No token."}, "guest_name": {"Visitor 9"}}, ""},
 	{"/account/password", "alice", url.Values{"current": {testPassword}, "next": {"a new pass phrase"}, "confirm": {"a new pass phrase"}}, ""},
@@ -793,7 +794,7 @@ var tokenRows = []tokenRow{
 	{"/admin/groups/5/members/3/approve", "alice", url.Values{}, ""},
 }
 
-// tokenSite is the posting board where bob moderates forum 2 and guests may post
+// tokenSite is the posting board where bob moderates forum 2 (with mod.pin too) and guests may post
 // there with no approval, with the setup of the row applied.
 func tokenSite(t *testing.T, row tokenRow) (http.Handler, *pgxpool.Pool) {
 	t.Helper()
@@ -801,7 +802,7 @@ func tokenSite(t *testing.T, row tokenRow) (http.Handler, *pgxpool.Pool) {
 	b.Grants = append(b.Grants, guestGrant(2, "topic.start"), guestGrant(2, "topic.reply"),
 		guestGrant(2, "post.no_approval"), guestGrant(2, "post.markdown"))
 	h, pool := siteWithPool(t, b, testMailOptions())
-	for _, o := range []string{"mod.delete", "mod.approve", "mod.edit", "mod.lock"} {
+	for _, o := range []string{"mod.delete", "mod.approve", "mod.edit", "mod.lock", "mod.pin"} {
 		exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (2, 2, '`+o+`', 3)`)
 	}
 	if row.setup != "" {
