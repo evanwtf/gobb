@@ -2,7 +2,6 @@ package board
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -406,7 +405,8 @@ values ('ip', $1::cidr, $2, $3, $4, $5, $6) returning id`,
 // ended, is [ErrNotFound], and nothing is written.
 func LiftBan(ctx context.Context, pool *pgxpool.Pool, v Viewer, banID int64, now time.Time) error {
 	return AdminWrite(ctx, pool, v, now, func(tx pgx.Tx) (Change, error) {
-		return liftBanTx(ctx, tx, banID, now)
+		c, _, _, err := liftBanTx(ctx, tx, banID, now)
+		return c, err
 	})
 }
 
@@ -417,21 +417,12 @@ func LiftBan(ctx context.Context, pool *pgxpool.Pool, v Viewer, banID int64, now
 // written.
 func LiftBanCLI(ctx context.Context, pool *pgxpool.Pool, banID int64, now time.Time) (kind, target string, err error) {
 	err = inTx(ctx, pool, func(tx pgx.Tx) error {
-		c, err := liftBanTx(ctx, tx, banID, now)
+		var c Change
+		c, kind, target, err = liftBanTx(ctx, tx, banID, now)
 		if err != nil {
 			return err
 		}
-		kind, _ = c.Details["kind"].(string)
-		target, _ = c.Details["target"].(string)
-		details := map[string]any{"via": "cli"}
-		for k, val := range c.Details {
-			details[k] = val
-		}
-		b, err := json.Marshal(details)
-		if err != nil {
-			return fmt.Errorf("board: encode log details: %w", err)
-		}
-		return logMod(ctx, tx, Viewer{}, c.Action, c.TargetType, c.TargetID, string(b), now)
+		return logChange(ctx, tx, Viewer{}, c, "cli", now)
 	})
 	if err != nil {
 		return "", "", err
@@ -440,24 +431,23 @@ func LiftBanCLI(ctx context.Context, pool *pgxpool.Pool, banID int64, now time.T
 }
 
 // liftBanTx is the one write of a lift, for the web and the command line. It
-// writes no mod_log row: it returns the [Change] for the caller to log.
-func liftBanTx(ctx context.Context, tx pgx.Tx, banID int64, now time.Time) (Change, error) {
+// writes no mod_log row: it returns the [Change] for the caller to log, and the
+// kind and the target of the ban that it removed.
+func liftBanTx(ctx context.Context, tx pgx.Tx, banID int64, now time.Time) (c Change, kind, target string, err error) {
 	var userID int64
-	err := tx.QueryRow(ctx, `select coalesce(user_id, 0) from bans where id = $1`, banID).Scan(&userID)
+	err = tx.QueryRow(ctx, `select coalesce(user_id, 0) from bans where id = $1`, banID).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Change{}, ErrNotFound
+		return Change{}, "", "", ErrNotFound
 	}
 	if err != nil {
-		return Change{}, fmt.Errorf("board: read ban %d: %w", banID, err)
+		return Change{}, "", "", fmt.Errorf("board: read ban %d: %w", banID, err)
 	}
 	if userID != 0 {
 		if err := lockUser(ctx, tx, userID); err != nil {
-			return Change{}, err
+			return Change{}, "", "", err
 		}
 	}
-	var (
-		kind, username, email, cidr string
-	)
+	var username, email, cidr string
 	err = tx.QueryRow(ctx, `
 with gone as (
   delete from bans where id = $1 and (ends_at is null or ends_at > $2)
@@ -465,17 +455,17 @@ with gone as (
 select g.kind, coalesce(u.username, ''), coalesce(g.email, ''), coalesce(g.ip::text, '')
   from gone g left join users u on u.id = g.user_id`, banID, now).Scan(&kind, &username, &email, &cidr)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Change{}, ErrNotFound
+		return Change{}, "", "", ErrNotFound
 	}
 	if err != nil {
-		return Change{}, fmt.Errorf("board: lift ban %d: %w", banID, err)
+		return Change{}, "", "", fmt.Errorf("board: lift ban %d: %w", banID, err)
 	}
-	target := username
+	target = username
 	switch kind {
 	case BanEmailKind:
 		target = email
 	case BanIPKind:
 		target = rangeText(cidr)
 	}
-	return banChange("ban.lift", banID, kind, target, nil), nil
+	return banChange("ban.lift", banID, kind, target, nil), kind, target, nil
 }
