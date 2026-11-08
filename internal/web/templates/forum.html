@@ -6,7 +6,7 @@
   <p class="page-desc">{{.Data.Forum.Description}}</p>
   {{- end}}
 </header>
-{{template "heldnote" .Data.Held}}
+{{if .Data.HeldSlot}}{{.Data.HeldSlot}}{{else}}{{template "heldnote" .Data.Held}}{{end}}
 
 {{- if .Data.Forum.Rules}}
 <section class="rules" aria-labelledby="rules-title">

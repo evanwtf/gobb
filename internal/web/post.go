@@ -388,21 +388,30 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 			s.preview(w, r, p, fd, kind, d, reason)
 			return
 		}
+		// An edit reaches the topic of the post and its author's pages; it can
+		// send the post back to the queue, which changes the author's count.
+		var scope postScope
+		if kind == kindEdit {
+			scope = s.postScopeOf(ctx, id)
+		}
 		postID, err := s.save(ctx, kind, p, id, d, reason)
-		if wrote(err) {
+		s.afterWrite(err, func() {
 			switch kind {
-			case kindTopic:
-				s.changedListings()
-				s.changedUser(p.Viewer.UserID)
-			case kindReply:
-				s.changedTopic(id)
+			case kindTopic, kindReply:
+				// A new post that waits for approval changes nothing a guest sees.
+				if err == nil && s.heldPost(ctx, postID) {
+					return
+				}
+				if kind == kindTopic {
+					s.changedListings()
+				} else {
+					s.changedTopic(id)
+				}
 				s.changedUser(p.Viewer.UserID)
 			default:
-				// An edit can send the post back to the queue, which changes the
-				// post count of its author.
-				s.changedPost(ctx, id)
+				s.changedScope(scope)
 			}
-		}
+		})
 		if err != nil {
 			s.writeFailed(w, r, p, fd, kind, err)
 			return
@@ -633,10 +642,9 @@ func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, "confirm.html", p)
 		return
 	}
+	scope := s.postScopeOf(ctx, id)
 	err = board.DeletePost(ctx, s.pool, p.Viewer, id, s.opt.Now())
-	if wrote(err) {
-		s.changedPost(ctx, id)
-	}
+	s.afterWrite(err, func() { s.changedScope(scope) })
 	if s.deleteFailed(w, r, p, err) {
 		return
 	}

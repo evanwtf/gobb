@@ -21,11 +21,11 @@ import (
 // and bob (carol's post waits for approval), topic 5 of alice and bob, topic 6
 // of bob.
 var guestKeys = map[string]cacheKey{
-	"/":    {kind: cacheIndex},
-	"/f/2": {kind: cacheForum, id: 2, page: 1},
-	"/t/1": {kind: cacheTopic, id: 1, page: 1},
-	"/t/5": {kind: cacheTopic, id: 5, page: 1},
-	"/t/6": {kind: cacheTopic, id: 6, page: 1},
+	"/":    {scheme: "slate", kind: cacheIndex},
+	"/f/2": {scheme: "slate", kind: cacheForum, id: 2, page: 1},
+	"/t/1": {scheme: "slate", kind: cacheTopic, id: 1, page: 1},
+	"/t/5": {scheme: "slate", kind: cacheTopic, id: 5, page: 1},
+	"/t/6": {scheme: "slate", kind: cacheTopic, id: 6, page: 1},
 }
 
 // fillGuestPages asks for each page of guestKeys as a guest, so the cache holds
@@ -64,6 +64,9 @@ func form(kv ...string) url.Values {
 	return v
 }
 
+// carolPostsFreely lets carol post in forum 2 with no approval.
+const carolPostsFreely = `insert into acl_user_grants (user_id, forum_id, option, setting) values (3, 2, 'post.no_approval', 3)`
+
 func TestGuestCacheDropsOnEachWritePath(t *testing.T) {
 	type step struct {
 		as     string // the member who writes: alice, bob or carol
@@ -73,15 +76,22 @@ func TestGuestCacheDropsOnEachWritePath(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name string
+		// sql runs first, to set the scene.
+		sql string
 		// before runs before the cache is filled: a write that sets the scene.
 		before []step
 		write  step
 		kept   []string
 	}{
-		{name: "reply", write: step{"carol", "/t/5/reply", form("body", "A reply from carol."), http.StatusSeeOther},
+		{name: "reply", sql: carolPostsFreely, write: step{"carol", "/t/5/reply", form("body", "A reply from carol."), http.StatusSeeOther},
 			kept: []string{"/t/1", "/t/6"}},
-		{name: "new topic", write: step{"carol", "/f/2/post", form("title", "Carol's topic", "body", "Hello."), http.StatusSeeOther},
+		{name: "new topic", sql: carolPostsFreely, write: step{"carol", "/f/2/post", form("title", "Carol's topic", "body", "Hello."), http.StatusSeeOther},
 			kept: []string{"/t/1", "/t/5", "/t/6"}},
+		// A post that waits for approval changes nothing a guest sees.
+		{name: "held reply", write: step{"carol", "/t/5/reply", form("body", "A reply that waits."), http.StatusSeeOther},
+			kept: []string{"/", "/f/2", "/t/1", "/t/5", "/t/6"}},
+		{name: "held new topic", write: step{"carol", "/f/2/post", form("title", "Waiting topic", "body", "Hello."), http.StatusSeeOther},
+			kept: []string{"/", "/f/2", "/t/1", "/t/5", "/t/6"}},
 		// bob's edit of his own post in topic 6: his pages, the topic, the listings.
 		{name: "edit", write: step{"bob", "/p/9/edit", form("title", "Another poll", "body", "Vote now, please."), http.StatusSeeOther},
 			kept: nil},
@@ -144,6 +154,9 @@ func TestGuestCacheDropsOnEachWritePath(t *testing.T) {
 			// bob moderates forum 2.
 			for _, o := range []string{"mod.delete", "mod.approve", "mod.edit", "mod.lock", "mod.pin"} {
 				exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (2, 2, '`+o+`', 3)`)
+			}
+			if c.sql != "" {
+				exec(t, pool, c.sql)
 			}
 			// The sign-ins and the admin pass come first: they read the index.
 			cookies := map[string][]*http.Cookie{"": nil}

@@ -16,6 +16,10 @@ package pagecache
 import (
 	"container/list"
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +100,13 @@ func New(limit int64, now func() time.Time) *Cache {
 		now = time.Now
 	}
 	return &Cache{limit: limit, now: now, order: list.New(), items: map[string]*list.Element{}, flights: map[flightKey]*flight{}}
+}
+
+// Gen returns the generation: a number that every drop changes.
+func (c *Cache) Gen() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gen
 }
 
 // Limit returns the memory limit of the cache in bytes.
@@ -179,28 +190,34 @@ func (c *Cache) Do(ctx context.Context, key string, render func() (Result, error
 	c.flights[fk] = f
 	c.mu.Unlock()
 
-	// The render runs in this goroutine. A panic must not leave the waiters
-	// hanging, so the flight ends in a deferred step.
-	defer func() {
-		c.mu.Lock()
-		delete(c.flights, fk)
-		if f.err == nil && f.res.Store && c.gen == fk.gen {
-			c.putLocked(key, f.res.Entry)
-		}
-		c.mu.Unlock()
-		close(f.done)
-	}()
-	f.err = errPanic
-	f.res, f.err = render()
+	// The render runs in this goroutine. A panic becomes an error for the caller
+	// and the waiters: a worker that renders in a goroutine of its own must not
+	// end the process, and a request must not leave the waiters hanging.
+	f.res, f.err = safeRender(key, render)
+	c.mu.Lock()
+	delete(c.flights, fk)
+	if f.err == nil && f.res.Store && c.gen == fk.gen {
+		c.putLocked(key, f.res.Entry)
+	}
+	c.mu.Unlock()
+	close(f.done)
 	return f.res, false, f.err
 }
 
-// errPanic is the error that the waiters get when the render panics.
-var errPanic = panicError{}
+// ErrPanic is the error of a render that panicked. The panic and its stack are
+// logged once, where it happened.
+var ErrPanic = errors.New("pagecache: the render panicked")
 
-type panicError struct{}
-
-func (panicError) Error() string { return "pagecache: the render panicked" }
+// safeRender calls render and turns a panic into [ErrPanic].
+func safeRender(key string, render func() (Result, error)) (res Result, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("pagecache: a render panicked", "key", key, "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+			res, err = Result{}, ErrPanic
+		}
+	}()
+	return render()
+}
 
 // putLocked stores e under key, and drops the least recently used entries until
 // the cache is under its limit again. An entry larger than the limit is not

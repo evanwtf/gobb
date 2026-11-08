@@ -68,3 +68,18 @@ func TestFinalFlush(t *testing.T) {
 		t.Errorf("view_count = %d, want %d", after, before+1)
 	}
 }
+
+func TestCapPageCache(t *testing.T) {
+	const mib = 1 << 20
+	for _, c := range []struct{ want, limit, got int64 }{
+		{16 * mib, 179 * mib, 16 * mib}, // the default under a 256 MiB cap
+		{512 * mib, 179 * mib, 179 * mib / 4},
+		{512 * mib, 0, 64 * mib}, // no limit
+		{32 * mib, 0, 32 * mib},
+		{0, 179 * mib, 0}, // off stays off
+	} {
+		if got := capPageCache(c.want, c.limit); got != c.got {
+			t.Errorf("capPageCache(%d, %d) = %d, want %d", c.want, c.limit, got, c.got)
+		}
+	}
+}

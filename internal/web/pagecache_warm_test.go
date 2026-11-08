@@ -38,20 +38,20 @@ func recordWarm(t *testing.T) func() []string {
 // forums in board order, then the first pages of the topics by activity.
 func wantWarmOrder(t *testing.T, pool *pgxpool.Pool, g *GuestCache) []string {
 	t.Helper()
-	want := []string{cacheKey{kind: cacheIndex}.String()}
+	want := []string{cacheKey{scheme: "slate", kind: cacheIndex}.String()}
 	forums, err := board.ForumIDs(t.Context(), pool)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range forums {
-		want = append(want, cacheKey{kind: cacheForum, id: id, page: 1}.String())
+		want = append(want, cacheKey{scheme: "slate", kind: cacheForum, id: id, page: 1}.String())
 	}
-	topics, err := board.TopicsByActivity(t.Context(), pool, board.TopicByActivity{}, 1000)
+	topics, err := board.TopicsByActivity(t.Context(), pool, forums, board.TopicByActivity{}, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tp := range topics {
-		want = append(want, cacheKey{kind: cacheTopic, id: tp.ID, page: 1}.String())
+		want = append(want, cacheKey{scheme: "slate", kind: cacheTopic, id: tp.ID, page: 1}.String())
 	}
 	return slices.DeleteFunc(want, func(k string) bool { _, ok := g.Pages.Peek(k); return !ok })
 }
@@ -89,7 +89,7 @@ func TestWarmUpRendersEveryPageOfATopic(t *testing.T) {
 			pages = append(pages, k)
 		}
 	}
-	if !slices.Contains(pages, cacheKey{kind: cacheTopic, id: 7, page: 2}.String()) {
+	if !slices.Contains(pages, cacheKey{scheme: "slate", kind: cacheTopic, id: 7, page: 2}.String()) {
 		t.Errorf("the second page of topic 7 was not warmed: %q", pages)
 	}
 }
@@ -110,7 +110,7 @@ func TestWarmUpStopsAtTheLimit(t *testing.T) {
 	if len(seen()) == 0 || len(seen()) >= 8 {
 		t.Errorf("%d pages warmed under half the room", len(seen()))
 	}
-	if _, ok := g.Pages.Peek(cacheKey{kind: cacheIndex}.String()); !ok {
+	if _, ok := g.Pages.Peek(cacheKey{scheme: "slate", kind: cacheIndex}.String()); !ok {
 		t.Error("the index, the first page warmed, is gone")
 	}
 }
@@ -166,7 +166,7 @@ func TestWarmUpRendersADroppedPageAgain(t *testing.T) {
 		g.Run(ctx)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	key := cacheKey{kind: cacheTopic, id: 5, page: 1}.String()
+	key := cacheKey{scheme: "slate", kind: cacheTopic, id: 5, page: 1}.String()
 	waitFor := func(what string, ok func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(20 * time.Second)

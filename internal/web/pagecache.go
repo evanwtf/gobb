@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,11 +39,12 @@ import (
 //   - The build line of the footer, which holds the time of the request. It is
 //     a slot too.
 //   - The color scheme (the gobb_scheme cookie, or a ?scheme= preview). The key
-//     holds it; there are three schemes.
-//   - The page number and the ?held=1 note: the key holds them. Every other
-//     query parameter is left out of the key and of the page, so a random query
-//     string cannot force a render. The forms of the page send the guest back to
-//     the canonical address.
+//     holds it, with no scheme keyed as the board default; there are three.
+//   - The note of a held post (?held=1) on a forum or topic page: a slot.
+//   - The page number: the key holds it. Every other query parameter is left
+//     out of the key and of the page, so a random query string cannot force a
+//     render. The forms of the page send the guest back to the canonical
+//     address.
 //   - A dead session cookie: the request clears it, then gets the guest page.
 //
 // The page never holds the Host of a request: the render runs on a request that
@@ -69,6 +71,15 @@ type GuestCache struct {
 
 	warmRendered, warmPasses atomic.Uint64
 	warmRunning              atomic.Bool
+
+	// warmMu makes the passes of the start-up render run one at a time, and
+	// guards skip.
+	warmMu sync.Mutex
+	// skip holds the keys that answered other than 200 or 503 (a page that a
+	// guest cannot see, a redirect) in generation skipGen. The passes of that
+	// generation do not render them again.
+	skip    map[string]bool
+	skipGen uint64
 }
 
 // NewGuestCache returns a cache that holds at most limit bytes of pages. warm
@@ -117,9 +128,7 @@ type cacheKey struct {
 	id   int64
 	slug string
 	page int
-	held bool
-	// scheme is the scheme that the request asks for, or empty for the board
-	// default.
+	// scheme is the scheme that the request asks for, or the board default.
 	scheme string
 }
 
@@ -134,9 +143,6 @@ func (k cacheKey) String() string {
 		b.WriteString(strconv.FormatInt(k.id, 10))
 		b.WriteByte('|')
 		b.WriteString(strconv.Itoa(k.page))
-		if k.held {
-			b.WriteString("|held")
-		}
 	case cacheStatic:
 		b.WriteString(k.slug)
 	}
@@ -156,9 +162,6 @@ func (k cacheKey) target() *url.URL {
 		if k.page > 1 {
 			q.Set("page", strconv.Itoa(k.page))
 		}
-		if k.held {
-			q.Set("held", "1")
-		}
 	case cacheStatic:
 		u.Path = "/pages/" + k.slug
 	}
@@ -169,9 +172,9 @@ func (k cacheKey) target() *url.URL {
 // keyFor returns the key of the guest page of r, and false when the request is
 // not one the cache serves: a malformed ID or page number goes to the live
 // handler, which answers it.
-func keyFor(kind cacheKind, r *http.Request) (cacheKey, bool) {
+func (s *site) keyFor(kind cacheKind, r *http.Request) (cacheKey, bool) {
 	q := r.URL.Query()
-	k := cacheKey{kind: kind}
+	k := cacheKey{kind: kind, scheme: s.defaultScheme()}
 	if v := q.Get("scheme"); board.ValidScheme(v) {
 		k.scheme = v
 	} else if c, err := r.Cookie(schemeCookie); err == nil && board.ValidScheme(c.Value) {
@@ -187,7 +190,7 @@ func keyFor(kind cacheKind, r *http.Request) (cacheKey, bool) {
 		if err != nil {
 			return cacheKey{}, false
 		}
-		k.id, k.page, k.held = id, page, q.Get("held") == "1"
+		k.id, k.page = id, page
 	case cacheStatic:
 		k.slug = r.PathValue("slug")
 		if k.slug == "" || len(k.slug) > maxSlugKey {
@@ -195,6 +198,16 @@ func keyFor(kind cacheKind, r *http.Request) (cacheKey, bool) {
 		}
 	}
 	return k, true
+}
+
+// defaultScheme returns the board's default scheme from the settings in
+// memory, so a guest with no scheme and a guest who picked the default share a
+// key. A change of the setting drops every page (an admin write).
+func (s *site) defaultScheme() string {
+	if f := s.frame.Load(); f != nil && board.ValidScheme(f.settings.DefaultScheme) {
+		return f.settings.DefaultScheme
+	}
+	return board.Schemes[0]
 }
 
 // renderKey is the context key of the note of a render for the cache. Its
@@ -225,7 +238,19 @@ func noteFrom(ctx context.Context) *renderNote {
 const (
 	slotCSRF = iota
 	slotFooter
+	// slotHeld is the note of a held post, which a ?held=1 request shows.
+	slotHeld
+	slotCount
 )
+
+// heldSlot returns the slot of the held note for a render for the cache, and
+// "" for any other request: the page then shows the note itself.
+func (s *site) heldSlot(ctx context.Context) string {
+	if noteFrom(ctx) == nil {
+		return ""
+	}
+	return s.slotTokens[slotHeld]
+}
 
 // cachedPage is the value of a cache entry: an answer of a guest page, with the
 // slots that each request fills in.
@@ -251,11 +276,11 @@ func (cp *cachedPage) hasCSRF() bool {
 	return false
 }
 
-// newSlotTokens returns the two strings that stand for the slots in a render:
+// newSlotTokens returns the strings that stand for the slots in a render:
 // random per process, so no text of a post can hold one.
-func newSlotTokens() ([2]string, error) {
-	var out [2]string
-	for i, name := range []string{"csrf", "footer"} {
+func newSlotTokens() ([slotCount]string, error) {
+	var out [slotCount]string
+	for i, name := range []string{"csrf", "footer", "held"} {
 		b := make([]byte, 16)
 		if _, err := rand.Read(b); err != nil {
 			return out, err
@@ -266,7 +291,7 @@ func newSlotTokens() ([2]string, error) {
 }
 
 // splitSlots cuts body at each slot token.
-func splitSlots(body []byte, tokens [2]string) (parts [][]byte, slots []int) {
+func splitSlots(body []byte, tokens [slotCount]string) (parts [][]byte, slots []int) {
 	for {
 		at, which := -1, -1
 		for i, t := range tokens {
@@ -318,7 +343,7 @@ func (s *site) cached(kind cacheKind, h http.HandlerFunc) http.HandlerFunc {
 			h(w, r)
 			return
 		}
-		k, ok := keyFor(kind, r)
+		k, ok := s.keyFor(kind, r)
 		if !ok {
 			h(w, r)
 			return
@@ -335,7 +360,13 @@ func (s *site) cached(kind cacheKind, h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		cp, _, err := s.guestPage(r.Context(), context.Background(), k)
-		if err != nil {
+		switch {
+		case errors.Is(err, pagecache.ErrPanic):
+			// The handler panicked; the cache logged it. This request gets a 500,
+			// as a live page that fails to build does.
+			s.renderFailed(w, http.StatusInternalServerError)
+			return
+		case err != nil:
 			// The request ended while it waited for the render of another: its
 			// client left, or its deadline passed. No log line: under a flood
 			// there are many.
@@ -385,9 +416,7 @@ func (s *site) renderGuest(parent context.Context, k cacheKey) (pagecache.Result
 	// fixed, so no Host header of a request can reach the page.
 	r.Host = "gobb.invalid"
 	r.RemoteAddr = "192.0.2.1:1"
-	if k.scheme != "" {
-		r.AddCookie(&http.Cookie{Name: schemeCookie, Value: k.scheme})
-	}
+	r.AddCookie(&http.Cookie{Name: schemeCookie, Value: k.scheme})
 	switch k.kind {
 	case cacheForum, cacheTopic:
 		r.SetPathValue("id", strconv.FormatInt(k.id, 10))
@@ -395,6 +424,9 @@ func (s *site) renderGuest(parent context.Context, k cacheKey) (pagecache.Result
 		r.SetPathValue("slug", k.slug)
 	}
 	rec := &pageRecorder{header: http.Header{}}
+	if beforeGuestRender != nil {
+		beforeGuestRender(k.String())
+	}
 	h(&poolBusyWriter{ResponseWriter: rec, ctx: ctx}, r)
 	if rec.status == 0 {
 		rec.status = http.StatusOK
@@ -402,7 +434,8 @@ func (s *site) renderGuest(parent context.Context, k cacheKey) (pagecache.Result
 	hdr := rec.header.Clone()
 	hdr.Del("Set-Cookie")
 	hdr.Del("Content-Length")
-	body := rec.body.Bytes()
+	// A copy of the exact size: the buffer of the recorder has room to spare.
+	body := bytes.Clone(rec.body.Bytes())
 	parts, slots := splitSlots(body, s.slotTokens)
 	sum := sha256.New()
 	for i, p := range parts {
@@ -412,13 +445,7 @@ func (s *site) renderGuest(parent context.Context, k cacheKey) (pagecache.Result
 		}
 	}
 	cp := &cachedPage{status: rec.status, header: hdr, parts: parts, slots: slots, hash: hex.EncodeToString(sum.Sum(nil)), pages: note.pages}
-	size := int64(len(body)) + int64(len(parts))*24 + 512
-	for name, vs := range hdr {
-		size += int64(len(name))
-		for _, v := range vs {
-			size += int64(len(v))
-		}
-	}
+	size := entrySize(k, body, parts, slots, hdr, note.users)
 	e := pagecache.Entry{
 		Value: cp, Size: size,
 		Listing: k.kind == cacheIndex || k.kind == cacheForum,
@@ -432,6 +459,27 @@ func (s *site) renderGuest(parent context.Context, k cacheKey) (pagecache.Result
 	return pagecache.Result{Entry: e, Store: rec.status == http.StatusOK}, nil
 }
 
+// entryOverhead is the memory of an entry besides its body and the sizes that
+// entrySize counts: the list element, the map entry, the item, the Entry and
+// the cachedPage, with the header map. With it, the count of 353 topic pages
+// of a test board was 103% of the growth of the Go heap after a GC.
+const entryOverhead = 1536
+
+// entrySize returns the bytes that an entry counts against the limit: the body,
+// the slice headers of its parts, the header values, the users, and the key
+// twice (the map and the item hold it).
+func entrySize(k cacheKey, body []byte, parts [][]byte, slots []int, hdr http.Header, users []int64) int64 {
+	size := int64(len(body)) + int64(cap(body)-len(body)) + int64(len(parts))*24 + int64(len(slots))*8 +
+		int64(len(users))*8 + 2*int64(len(k.String())) + entryOverhead
+	for name, vs := range hdr {
+		size += int64(len(name)) + 16
+		for _, v := range vs {
+			size += int64(len(v)) + 16
+		}
+	}
+	return size
+}
+
 // serveCached writes the cached answer cp to the request r of the guest id,
 // with the slots filled in for this request. A page of status 200 carries an
 // ETag, and a request whose If-None-Match holds it gets 304.
@@ -440,6 +488,7 @@ func (s *site) serveCached(w http.ResponseWriter, r *http.Request, id identity, 
 	for name, vs := range cp.header {
 		h[name] = append([]string(nil), vs...)
 	}
+	held := r.URL.Query().Get("held") == "1"
 	token := ""
 	if cp.hasCSRF() {
 		secret := id.guestSecret
@@ -457,7 +506,7 @@ func (s *site) serveCached(w http.ResponseWriter, r *http.Request, id identity, 
 	if cp.status == http.StatusOK {
 		// The tag covers the page and the token. The build line is left out: it
 		// holds only the time of the request, which a kept copy may show old.
-		sum := sha256.Sum256([]byte(cp.hash + "\x00" + token))
+		sum := sha256.Sum256([]byte(cp.hash + "\x00" + token + "\x00" + strconv.FormatBool(held)))
 		etag := `W/"` + hex.EncodeToString(sum[:12]) + `"`
 		h.Set("ETag", etag)
 		if etagMatch(r.Header.Get("If-None-Match"), etag) {
@@ -474,6 +523,10 @@ func (s *site) serveCached(w http.ResponseWriter, r *http.Request, id identity, 
 			body.WriteString(template.HTMLEscapeString(token))
 		case slotFooter:
 			body.WriteString(template.HTMLEscapeString(footerLine(r.Context(), cp.status, false)))
+		case slotHeld:
+			if held {
+				body.WriteString(s.heldNote)
+			}
 		}
 		body.Write(cp.parts[i+1])
 	}
@@ -539,24 +592,69 @@ func (s *site) changedUser(id int64) {
 	s.guest.wake()
 }
 
-// changedPost drops the pages that a change to post id reaches: its topic, the
-// listings, and the pages that show its author (whose post count may change).
-// When the post cannot be found, it drops every page.
-func (s *site) changedPost(ctx context.Context, id int64) {
+// lateCommitDelay is the wait before the second drop of a write that returned
+// an error. Such a write may still commit (a timeout during the COMMIT), after
+// the first drop, and a render between the two would keep the old page. The
+// tests shorten it.
+var lateCommitDelay = 2 * time.Second
+
+// afterWrite runs drop after a board write that returned err, when the write
+// may have changed the board ([wrote]). When err is not nil, it runs drop once
+// more after lateCommitDelay.
+func (s *site) afterWrite(err error, drop func()) {
+	if s.guest == nil || !wrote(err) {
+		return
+	}
+	drop()
+	if err != nil {
+		time.AfterFunc(lateCommitDelay, drop)
+	}
+}
+
+// postScope is what a change to one post reaches: its topic, and its author,
+// whose post count shows on every page with one of their posts.
+type postScope struct {
+	topic, author int64
+	found         bool
+}
+
+// postScopeOf reads the scope of post id, before the write that changes it.
+// With no cache it reads nothing.
+func (s *site) postScopeOf(ctx context.Context, id int64) postScope {
+	if s.guest == nil {
+		return postScope{}
+	}
+	topic, author, _, err := board.PostRefs(ctx, s.pool, id)
+	if err != nil {
+		if !errors.Is(err, board.ErrNotFound) {
+			slog.Warn("guest page cache: find the topic of a post", "post", id, "err", err)
+		}
+		return postScope{}
+	}
+	return postScope{topic: topic, author: author, found: true}
+}
+
+// changedScope drops the pages that sc reaches: its topic, the listings, and
+// the pages of its author. A scope that was not found drops every page.
+func (s *site) changedScope(sc postScope) {
 	if s.guest == nil {
 		return
 	}
-	topic, author, err := board.PostRefs(context.WithoutCancel(ctx), s.pool, id)
-	if err != nil {
-		if !errors.Is(err, board.ErrNotFound) {
-			slog.Warn("guest page cache: find the topic of a changed post; dropping every page", "post", id, "err", err)
-		}
+	if !sc.found {
 		s.changedAll()
 		return
 	}
-	s.guest.Pages.DropTopic(topic)
-	s.guest.Pages.DropUser(author)
+	s.guest.Pages.DropTopic(sc.topic)
+	s.guest.Pages.DropUser(sc.author)
 	s.guest.wake()
+}
+
+// heldPost reports whether post id waits for approval. Such a post changes
+// nothing that a guest sees: not the topic, not the counts. A failed read says
+// false, so the caller drops.
+func (s *site) heldPost(ctx context.Context, id int64) bool {
+	_, _, visibility, err := board.PostRefs(ctx, s.pool, id)
+	return err == nil && visibility == "unapproved"
 }
 
 // wrote reports whether a board write that returned err may have changed the
@@ -611,6 +709,10 @@ const (
 	// lists.
 	warmBatch = 100
 )
+
+// beforeGuestRender, when set, runs before each render for the cache with its
+// key. A test makes it panic.
+var beforeGuestRender func(key string)
 
 // onWarm, when set, sees the key of each page that the start-up render stores.
 // A test sets it.
@@ -680,11 +782,13 @@ func (e *epochWatch) check(ctx context.Context) {
 	if e.known && v == e.last {
 		return
 	}
-	if e.known {
-		slog.Info("guest page cache: another process changed the board; emptying the cache")
-	}
 	e.g.Pages.DropAll()
-	e.g.wake()
+	if e.known {
+		// The first read comes before the first pass, which renders what it
+		// needs: no second pass.
+		slog.Info("guest page cache: another process changed the board; emptying the cache")
+		e.g.wake()
+	}
 	e.last, e.known = v, true
 }
 
@@ -717,16 +821,26 @@ func (g *GuestCache) warmLoop(ctx context.Context, s *site) {
 // rendered again. It renders one page at a time, and waits while the pool is
 // busy, so the pages of the visitors keep their connections.
 func (g *GuestCache) warmPass(ctx context.Context, s *site) {
+	g.warmMu.Lock()
+	defer g.warmMu.Unlock()
 	g.warmPasses.Add(1)
 	g.warmRunning.Store(true)
 	defer g.warmRunning.Store(false)
+	if gen := g.Pages.Gen(); g.skip == nil || gen != g.skipGen {
+		g.skip, g.skipGen = map[string]bool{}, gen
+	}
+	scheme := s.defaultScheme()
 	var largest int64
 	// render renders k when it is missing and returns its page count; ok is false
 	// when the pass must end.
 	render := func(k cacheKey) (pages int, ok bool) {
+		k.scheme = scheme
 		key := k.String()
 		if e, hit := g.Pages.Peek(key); hit {
 			return e.Value.(*cachedPage).pages, true
+		}
+		if g.skip[key] {
+			return 0, true
 		}
 		for {
 			st := g.Pages.Stats()
@@ -736,7 +850,14 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 			if !waitPool(ctx, s.pool) {
 				return 0, false
 			}
+			gen := g.Pages.Gen()
 			cp, _, err := s.guestPage(ctx, ctx, k)
+			if errors.Is(err, pagecache.ErrPanic) {
+				// The cache logged the panic. The page is skipped until a drop;
+				// the pass goes on.
+				g.skip[key] = true
+				return 0, true
+			}
 			if err != nil {
 				return 0, false
 			}
@@ -756,6 +877,8 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 				if onWarm != nil {
 					onWarm(key)
 				}
+			} else if cp.status != http.StatusOK && gen == g.Pages.Gen() {
+				g.skip[key] = true
 			}
 			return cp.pages, true
 		}
@@ -763,9 +886,7 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 	if _, ok := render(cacheKey{kind: cacheIndex}); !ok {
 		return
 	}
-	lctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	forums, err := board.ForumIDs(db.WithPoolWait(lctx, s.opt.PoolWait), s.pool)
-	cancel()
+	forums, readable, err := guestForums(ctx, s)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("guest page cache: start-up render: list the forums", "err", err)
@@ -783,7 +904,7 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 			return
 		}
 		lctx, cancel := context.WithTimeout(ctx, requestTimeout)
-		topics, err := board.TopicsByActivity(db.WithPoolWait(lctx, s.opt.PoolWait), s.pool, after, warmBatch)
+		topics, err := board.TopicsByActivity(db.WithPoolWait(lctx, s.opt.PoolWait), s.pool, readable, after, warmBatch)
 		cancel()
 		if err != nil {
 			if ctx.Err() == nil {
@@ -807,6 +928,31 @@ func (g *GuestCache) warmPass(ctx context.Context, s *site) {
 		}
 		after = topics[len(topics)-1]
 	}
+}
+
+// guestForums returns the forums that have pages, and those whose topics a
+// guest may read.
+func guestForums(ctx context.Context, s *site) (forums, readable []int64, err error) {
+	lctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	lctx = db.WithPoolWait(lctx, s.opt.PoolWait)
+	if forums, err = board.ForumIDs(lctx, s.pool); err != nil {
+		return nil, nil, err
+	}
+	set, err := board.LoadSettings(lctx, s.pool)
+	if err != nil {
+		return nil, nil, err
+	}
+	guest, err := board.Guest(lctx, s.pool, set)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, id := range forums {
+		if guest.Perms.Has("forum.read", id) {
+			readable = append(readable, id)
+		}
+	}
+	return forums, readable, nil
 }
 
 // poolBusy reports whether the pool has no connection to spare for the

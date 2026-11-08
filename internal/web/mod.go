@@ -45,10 +45,9 @@ func (s *site) postAction(verb string, write postWrite) http.HandlerFunc {
 		if s.actionFailed(w, r, p, err, verb) {
 			return
 		}
+		scope := s.postScopeOf(ctx, id)
 		err = write(ctx, s.pool, p.Viewer, id, s.opt.Now())
-		if wrote(err) {
-			s.changedPost(ctx, id)
-		}
+		s.afterWrite(err, func() { s.changedScope(scope) })
 		if s.actionFailed(w, r, p, err, verb) {
 			return
 		}
@@ -89,9 +88,7 @@ func (s *site) topicLock(locked bool) http.HandlerFunc {
 			return
 		}
 		err = board.SetTopicLock(r.Context(), s.pool, p.Viewer, id, locked, s.opt.Now())
-		if wrote(err) {
-			s.changedTopic(id)
-		}
+		s.afterWrite(err, func() { s.changedTopic(id) })
 		if s.actionFailed(w, r, p, err, verb) {
 			return
 		}
@@ -140,9 +137,7 @@ func (s *site) topicKind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = board.SetTopicKind(r.Context(), s.pool, p.Viewer, id, r.PostForm.Get("kind"), s.opt.Now())
-	if wrote(err) {
-		s.changedTopic(id)
-	}
+	s.afterWrite(err, func() { s.changedTopic(id) })
 	if errors.Is(err, board.ErrBadKind) {
 		s.fail(w, r, http.StatusBadRequest, "Bad request", "The topic type is not valid.")
 		return

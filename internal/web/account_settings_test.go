@@ -1385,7 +1385,7 @@ func TestAccountZoneHint(t *testing.T) {
 type sessionLookups struct{ n atomic.Int64 }
 
 func (c *sessionLookups) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(d.SQL, "from sessions s join users u") {
+	if strings.Contains(d.SQL, "from sessions s left join users u") {
 		c.n.Add(1)
 	}
 	return ctx

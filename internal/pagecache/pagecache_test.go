@@ -249,3 +249,29 @@ func TestRenderErrorIsShared(t *testing.T) {
 		t.Error("a failed render was stored")
 	}
 }
+
+func TestRenderPanicIsAnError(t *testing.T) {
+	c := New(1<<20, nil)
+	started := make(chan struct{})
+	waited := make(chan error)
+	go func() {
+		<-started
+		_, _, err := c.Do(context.Background(), "k", func() (Result, error) { return Result{}, nil })
+		waited <- err
+	}()
+	_, _, err := c.Do(context.Background(), "k", func() (Result, error) {
+		close(started)
+		time.Sleep(50 * time.Millisecond) // the waiter joins the flight
+		panic("boom")
+	})
+	if !errors.Is(err, ErrPanic) {
+		t.Errorf("the caller of a render that panicked got %v", err)
+	}
+	if err := <-waited; !errors.Is(err, ErrPanic) {
+		t.Errorf("the waiter got %v", err)
+	}
+	// The cache still works.
+	if _, _, err := c.Do(context.Background(), "k", func() (Result, error) { return Result{Entry: Entry{Size: 1}, Store: true}, nil }); err != nil {
+		t.Errorf("a render after a panic: %v", err)
+	}
+}

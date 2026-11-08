@@ -158,7 +158,7 @@ func TestGuestCacheDeadSessionGetsTheGuestPage(t *testing.T) {
 }
 
 func TestGuestCacheQueryVariantsShareAKey(t *testing.T) {
-	h, _, g := cachedSite(t, richBoard(), Options{})
+	h, pool, g := cachedSite(t, richBoard(), Options{})
 	builds := layoutBuilds.Load()
 	var first string
 	for _, target := range []string{"/t/5", "/t/5?page=1", "/t/5?utm_source=x&page=1", "/t/5?foo=bar", "/t/5?q=" + strings.Repeat("z", 100)} {
@@ -179,19 +179,44 @@ func TestGuestCacheQueryVariantsShareAKey(t *testing.T) {
 	if n := layoutBuilds.Load() - builds; n != 1 {
 		t.Errorf("the variants built %d pages, want 1", n)
 	}
+	// The board default, asked for by name, shares the key of no scheme. The
+	// note of a held post is a slot, not a key.
+	get(t, h, "/t/5?scheme=slate")
+	getAs(t, h, "/t/5", []*http.Cookie{{Name: schemeCookie, Value: "slate"}})
+	held := bodyOf(t, get(t, h, "/t/5?held=1"))
+	if !strings.Contains(held, "It waits for a moderator") {
+		t.Error("?held=1 does not show the note")
+	}
+	if strings.Contains(bodyOf(t, get(t, h, "/t/5")), "It waits for a moderator") {
+		t.Error("the note shows without ?held=1")
+	}
+	if n := layoutBuilds.Load() - builds; n != 1 {
+		t.Errorf("the default scheme and the held note built %d pages, want 1", n)
+	}
 	if st := g.Pages.Stats(); st.Entries != 1 {
 		t.Errorf("%d entries, want 1", st.Entries)
 	}
-	// The scheme and the note of a held post are part of the key.
+	// Another scheme is part of the key.
 	if body := bodyOf(t, get(t, h, "/t/5?scheme=slate-deep")); !strings.Contains(body, `data-scheme="slate-deep"`) {
 		t.Error("the scheme preview is lost")
 	}
 	if body := bodyOf(t, getAs(t, h, "/t/5", []*http.Cookie{{Name: schemeCookie, Value: "slate-light"}})); !strings.Contains(body, `data-scheme="slate-light"`) {
 		t.Error("the scheme cookie is lost")
 	}
-	get(t, h, "/t/5?held=1")
-	if st := g.Pages.Stats(); st.Entries != 4 {
-		t.Errorf("%d entries after the scheme and held variants, want 4", st.Entries)
+	if st := g.Pages.Stats(); st.Entries != 3 {
+		t.Errorf("%d entries after two other schemes, want 3", st.Entries)
+	}
+	// The held note matches the live page.
+	live, err := New(t.Context(), pool, Options{LoginFloor: time.Millisecond, Signin: testSchedule()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The live page sends the guest back to the address with ?held=1; the
+	// cached one to the canonical address.
+	lb := bodyOf(t, get(t, live, "/f/2?held=1"))
+	lb = strings.NewReplacer("?held=1", "", "%3Fheld%3D1", "").Replace(lb)
+	if sameShape(lb) != sameShape(bodyOf(t, get(t, h, "/f/2?held=1"))) {
+		t.Error("the cached forum page with ?held=1 differs from the live one")
 	}
 	// A bad page number is not a key: the live handler answers it.
 	if rec := get(t, h, "/t/5?page=x"); rec.Code != http.StatusBadRequest {
@@ -309,14 +334,14 @@ func TestGuestCacheIndexEndsAtMidnight(t *testing.T) {
 	now := time.Date(2026, 3, 14, 23, 30, 0, 0, loc)
 	h, _, g := cachedSite(t, richBoard(), Options{Now: func() time.Time { return now }})
 	get(t, h, "/")
-	e, ok := g.Pages.Peek(cacheKey{kind: cacheIndex}.String())
+	e, ok := g.Pages.Peek(cacheKey{scheme: "slate", kind: cacheIndex}.String())
 	if !ok {
 		t.Fatal("the index is not cached")
 	}
 	if want := time.Date(2026, 3, 15, 0, 0, 0, 0, loc); !e.Expires.Equal(want) {
 		t.Errorf("the index ends at %s, want %s", e.Expires, want)
 	}
-	if e, _ := g.Pages.Peek(cacheKey{kind: cacheTopic, id: 5, page: 1}.String()); !e.Expires.IsZero() {
+	if e, _ := g.Pages.Peek(cacheKey{scheme: "slate", kind: cacheTopic, id: 5, page: 1}.String()); !e.Expires.IsZero() {
 		t.Error("a topic page has an end")
 	}
 }

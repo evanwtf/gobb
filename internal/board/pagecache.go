@@ -70,18 +70,20 @@ type TopicByActivity struct {
 	LastAt time.Time
 }
 
-// TopicsByActivity returns up to limit approved topics that are not moved
-// stubs, newest activity first, that come after the topic after in that order.
-// A zero after starts at the newest. The caller checks the rights by rendering
-// the page as a guest.
-func TopicsByActivity(ctx context.Context, q db.Querier, after TopicByActivity, limit int) ([]TopicByActivity, error) {
+// TopicsByActivity returns up to limit approved topics of the forums in forums
+// that are not moved stubs, newest activity first, that come after the topic
+// after in that order. A zero after starts at the newest. The caller passes the
+// forums that a guest may read, and renders each page as a guest, which checks
+// the rights again.
+func TopicsByActivity(ctx context.Context, q db.Querier, forums []int64, after TopicByActivity, limit int) ([]TopicByActivity, error) {
 	start := after.ID == 0
 	rows, err := q.Query(ctx, `
 select id, last_post_at from topics
  where visibility = 'approved' and moved_to_topic_id is null
+   and forum_id = any($5::bigint[])
    and ($1::bool or (last_post_at, id) < ($2::timestamptz, $3::bigint))
  order by last_post_at desc, id desc
- limit $4`, start, after.LastAt, after.ID, limit)
+ limit $4`, start, after.LastAt, after.ID, limit, forums)
 	if err != nil {
 		return nil, fmt.Errorf("board: list the topics by activity: %w", err)
 	}
@@ -96,20 +98,20 @@ select id, last_post_at from topics
 	return out, nil
 }
 
-// PostRefs returns the topic of post id and its author (0 for a guest's post),
-// with no check of rights: the cache needs to know which pages a write changed.
-// A post that does not exist gives [ErrNotFound].
-func PostRefs(ctx context.Context, q db.Querier, id int64) (topicID, authorID int64, err error) {
+// PostRefs returns the topic of post id, its author (0 for a guest's post) and
+// its visibility, with no check of rights: the cache needs to know which pages
+// a write changes. A post that does not exist gives [ErrNotFound].
+func PostRefs(ctx context.Context, q db.Querier, id int64) (topicID, authorID int64, visibility string, err error) {
 	var author *int64
-	err = q.QueryRow(ctx, `select topic_id, author_id from posts where id = $1`, id).Scan(&topicID, &author)
+	err = q.QueryRow(ctx, `select topic_id, author_id, visibility from posts where id = $1`, id).Scan(&topicID, &author, &visibility)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, 0, ErrNotFound
+		return 0, 0, "", ErrNotFound
 	}
 	if err != nil {
-		return 0, 0, fmt.Errorf("board: find the topic of post %d: %w", id, err)
+		return 0, 0, "", fmt.Errorf("board: find the topic of post %d: %w", id, err)
 	}
 	if author != nil {
 		authorID = *author
 	}
-	return topicID, authorID, nil
+	return topicID, authorID, visibility, nil
 }

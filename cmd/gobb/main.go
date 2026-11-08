@@ -239,7 +239,9 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 	if err != nil {
 		return err
 	}
-	gate := gateFor(memlimit.Apply())
+	mem := memlimit.Apply()
+	gate := gateFor(mem)
+	cfg.Load.PageCacheBytes = capPageCache(cfg.Load.PageCacheBytes, mem.Limit)
 	setupCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var interrupted atomic.Bool
@@ -485,6 +487,27 @@ func gateFor(m memlimit.Result) *login.Gate {
 	budget := login.BudgetKiB(m.Limit)
 	slog.Info("memory limit", "limit_bytes", m.Limit, "source", m.Source, "gate_budget_kib", budget)
 	return login.NewGate(budget)
+}
+
+// maxPageCacheNoLimit is the most memory of the guest page cache when the
+// process has no memory limit.
+const maxPageCacheNoLimit = 64 << 20
+
+// capPageCache returns the memory of the guest page cache: want
+// (GOBB_PAGE_CACHE_MIB), at most a quarter of the Go memory limit limit, or at
+// most 64 MiB when there is no limit. The rest of the memory is for the
+// requests, the password checks and the runtime. A cut is logged.
+func capPageCache(want, limit int64) int64 {
+	most := int64(maxPageCacheNoLimit)
+	if limit > 0 {
+		most = limit / 4
+	}
+	if want > most {
+		slog.Warn("GOBB_PAGE_CACHE_MIB is more than the memory allows; using less",
+			"want_mib", want>>20, "using_mib", most>>20, "memory_limit_bytes", limit)
+		return most
+	}
+	return want
 }
 
 // flushTimeout bounds the last flush of the batched writes at shutdown. It fits

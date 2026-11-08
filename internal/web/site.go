@@ -206,7 +206,10 @@ type site struct {
 	cacheHandlers map[cacheKind]http.HandlerFunc
 	// slotTokens stand for the per-request parts of a page that the cache
 	// renders ([newSlotTokens]).
-	slotTokens [2]string
+	slotTokens [slotCount]string
+	// heldNote is the note of a held post, which fills the held slot of a cached
+	// forum or topic page for a ?held=1 request.
+	heldNote string
 	// writes collects the small writes of page views, or is nil.
 	writes *batch.Writer
 }
@@ -297,6 +300,13 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	s.assetVersion = assetVersion()
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
+	}
+	if s.guest != nil {
+		var note bytes.Buffer
+		if err := s.pages["forum.html"].ExecuteTemplate(&note, "heldnote", true); err != nil {
+			return nil, fmt.Errorf("web: build the held note: %w", err)
+		}
+		s.heldNote = note.String()
 	}
 	tab, err := legacy.Load(ctx, pool)
 	if err != nil {

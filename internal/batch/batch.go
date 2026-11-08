@@ -37,7 +37,7 @@ type Writer struct {
 	mu     sync.Mutex
 	views  map[int64]int64
 	visits map[int64][]time.Time
-	addrs  map[addrKey]time.Time
+	addrs  map[addrKey]addrSeen
 
 	flushes, failures atomic.Uint64
 	// flushing makes two flushes run one after the other, so the writes of one
@@ -47,12 +47,23 @@ type Writer struct {
 
 type addrKey struct {
 	user int64
-	ip   netip.Addr
+	// rng is the IPv4 address, or the /64 of an IPv6 address
+	// ([board.AddressRange]): trust is per /64, so the addresses of one /64
+	// make one write.
+	rng netip.Prefix
+}
+
+// addrSeen is the newest address of a range and the time it was used. The
+// address itself goes to user_ips, as a sign-in writes it: the Spammer action
+// bans each address of the member.
+type addrSeen struct {
+	ip netip.Addr
+	at time.Time
 }
 
 // New returns an empty writer.
 func New() *Writer {
-	return &Writer{views: map[int64]int64{}, visits: map[int64][]time.Time{}, addrs: map[addrKey]time.Time{}}
+	return &Writer{views: map[int64]int64{}, visits: map[int64][]time.Time{}, addrs: map[addrKey]addrSeen{}}
 }
 
 // View adds one view to topic id.
@@ -91,14 +102,15 @@ func (w *Writer) LastVisit(user int64) (time.Time, bool) {
 // address stands for a client whose address could not be read, and is never
 // recorded.
 func (w *Writer) Address(user int64, ip netip.Addr, at time.Time) {
-	ip = ip.Unmap().WithZone("")
-	if !ip.IsValid() || ip.IsUnspecified() {
+	rng, ok := board.AddressRange(ip)
+	if !ok {
 		return
 	}
-	k := addrKey{user: user, ip: ip}
+	k := addrKey{user: user, rng: rng}
+	ip = ip.Unmap().WithZone("")
 	w.mu.Lock()
-	if at.After(w.addrs[k]) {
-		w.addrs[k] = at
+	if at.After(w.addrs[k].at) {
+		w.addrs[k] = addrSeen{ip: ip, at: at}
 	}
 	w.mu.Unlock()
 }
@@ -121,17 +133,17 @@ func (w *Writer) Stats() Stats {
 }
 
 // take empties the writer and returns what it held.
-func (w *Writer) take() (map[int64]int64, map[int64][]time.Time, map[addrKey]time.Time) {
+func (w *Writer) take() (map[int64]int64, map[int64][]time.Time, map[addrKey]addrSeen) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	v, t, a := w.views, w.visits, w.addrs
-	w.views, w.visits, w.addrs = map[int64]int64{}, map[int64][]time.Time{}, map[addrKey]time.Time{}
+	w.views, w.visits, w.addrs = map[int64]int64{}, map[int64][]time.Time{}, map[addrKey]addrSeen{}
 	return v, t, a
 }
 
 // putBack returns the writes of a failed flush to the writer, ahead of the ones
 // that came since, so that the next flush tries them again.
-func (w *Writer) putBack(views map[int64]int64, visits map[int64][]time.Time, addrs map[addrKey]time.Time) {
+func (w *Writer) putBack(views map[int64]int64, visits map[int64][]time.Time, addrs map[addrKey]addrSeen) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for id, n := range views {
@@ -140,9 +152,9 @@ func (w *Writer) putBack(views map[int64]int64, visits map[int64][]time.Time, ad
 	for u, ts := range visits {
 		w.visits[u] = append(ts, w.visits[u]...)
 	}
-	for k, at := range addrs {
-		if at.After(w.addrs[k]) {
-			w.addrs[k] = at
+	for k, seen := range addrs {
+		if seen.at.After(w.addrs[k].at) {
+			w.addrs[k] = seen
 		}
 	}
 }
@@ -158,13 +170,15 @@ func (w *Writer) Flush(ctx context.Context, pool *pgxpool.Pool) error {
 		return nil
 	}
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := writeViews(ctx, tx, views); err != nil {
-			return err
-		}
 		if err := writeVisits(ctx, tx, visits); err != nil {
 			return err
 		}
-		return writeAddresses(ctx, tx, addrs)
+		if err := writeAddresses(ctx, tx, addrs); err != nil {
+			return err
+		}
+		// The views come last: their topic row locks, which a reply also
+		// takes, are then held only until the COMMIT.
+		return writeViews(ctx, tx, views)
 	})
 	if err != nil {
 		w.putBack(views, visits, addrs)
@@ -208,9 +222,10 @@ func writeVisits(ctx context.Context, tx pgx.Tx, visits map[int64][]time.Time) e
 	return nil
 }
 
-// writeAddresses records the addresses of signed-in visits with the rule of
-// board.RecordAddress: a member who is banned or not active by now gets no row.
-func writeAddresses(ctx context.Context, tx pgx.Tx, addrs map[addrKey]time.Time) error {
+// writeAddresses records the addresses of signed-in visits in one statement,
+// with the rule of board.RecordAddresses: a member who is banned or not active
+// by now gets no row.
+func writeAddresses(ctx context.Context, tx pgx.Tx, addrs map[addrKey]addrSeen) error {
 	keys := make([]addrKey, 0, len(addrs))
 	for k := range addrs {
 		keys = append(keys, k)
@@ -219,14 +234,15 @@ func writeAddresses(ctx context.Context, tx pgx.Tx, addrs map[addrKey]time.Time)
 		if keys[i].user != keys[j].user {
 			return keys[i].user < keys[j].user
 		}
-		return keys[i].ip.Less(keys[j].ip)
+		return keys[i].rng.Addr().Less(keys[j].rng.Addr())
 	})
-	for _, k := range keys {
-		if err := board.RecordAddress(ctx, tx, k.user, k.ip, addrs[k]); err != nil {
-			return err
-		}
+	users := make([]int64, len(keys))
+	ips := make([]netip.Addr, len(keys))
+	ats := make([]time.Time, len(keys))
+	for i, k := range keys {
+		users[i], ips[i], ats[i] = k.user, addrs[k].ip, addrs[k].at
 	}
-	return nil
+	return board.RecordAddresses(ctx, tx, users, ips, ats)
 }
 
 // Run flushes the writer every interval until ctx ends. It does not flush at the

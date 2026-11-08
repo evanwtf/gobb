@@ -89,6 +89,11 @@ func (s *site) identify(w http.ResponseWriter, r *http.Request) (identity, error
 	}
 	sess, err := session.Lookup(r.Context(), s.pool, c.Value, s.opt.Now())
 	switch {
+	case errors.Is(err, session.ErrUnknown):
+		// No row: a made-up or deleted token. Only the cookie goes; a forged
+		// cookie costs one SELECT and no DELETE.
+		s.setCookie(w, s.cookie(sessionCookie, "", -1))
+		id.ended = true
 	case errors.Is(err, session.ErrNone):
 		s.dropSession(w, r, c.Value)
 		id.ended = true

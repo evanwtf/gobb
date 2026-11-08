@@ -157,3 +157,36 @@ func TestRunFlushesOnTheTickAndTheLastFlushAfterIt(t *testing.T) {
 		t.Errorf("views after the last flush = %d, want %d", got, before+2)
 	}
 }
+
+// Trust is per /64: the addresses of one IPv6 /64 make one write, of the
+// newest address.
+func TestFlushMasksIPv6To64(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	w := batch.New()
+	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	w.Address(3, netip.MustParseAddr("2001:db8:1:2::5"), at)
+	w.Address(3, netip.MustParseAddr("2001:db8:1:2:aaaa::9"), at.Add(time.Minute))
+	w.Address(3, netip.MustParseAddr("2001:db8:1:3::5"), at)
+	if st := w.Stats(); st.Pending != 2 {
+		t.Errorf("pending = %d, want 2 (two /64s)", st.Pending)
+	}
+	if err := w.Flush(t.Context(), pool); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := pool.Query(t.Context(), `select ip::text from user_ips where user_id = 3 and family(ip) = 6 order by ip`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	if want := []string{"2001:db8:1:2:aaaa::9/128", "2001:db8:1:3::5/128"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("user_ips = %v, want %v", got, want)
+	}
+}
