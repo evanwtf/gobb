@@ -24,6 +24,7 @@ import (
 
 	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/acldb"
+	"github.com/evanwtf/gobb/internal/batch"
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
@@ -141,12 +142,23 @@ func importBundle(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	bumpPageEpoch(ctx, slog.Default(), pool)
 	for _, name := range slices.Concat(bundle.Files, bundle.OptionalFiles, []string{"files"}) {
 		if _, err := fmt.Fprintf(stdout, "%-16s %d\n", name, counts[name]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// bumpPageEpoch tells a running server that this command changed the board:
+// the server empties its guest page cache when it next reads the epoch (every
+// few seconds). The write is done already, so a failure here does not fail the
+// command; it says what to do.
+func bumpPageEpoch(ctx context.Context, log *slog.Logger, q db.Querier) {
+	if err := board.BumpPageEpoch(ctx, q); err != nil {
+		log.Warn("the change is saved, but a running server may show old guest pages until it restarts", "err", err)
+	}
 }
 
 // perms runs a permissions subcommand. The only one is "export".
@@ -256,7 +268,8 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 	}()
 	var waker mailWaker
 	defense := login.NewDefense(defenseConfig(cfg.Signin))
-	pool, h, err := setup(setupCtx, cfg, gate, defense, waker.wake)
+	sv, err := setup(setupCtx, cfg, gate, defense, waker.wake)
+	pool, h := sv.pool, sv.handler
 	close(done)
 	<-exited
 	if interrupted.Load() {
@@ -277,7 +290,7 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 	slog.Info("listening", "addr", ln.Addr().String(), "base_path", cfg.BasePath)
 	// The metrics listener starts with the server, and stops before the pool
 	// closes: some of its gauges read the pool.
-	registerServeMetrics(pool, gate)
+	registerServeMetrics(pool, gate, sv.guest, sv.writes)
 	stopMetrics, _, err := startMetrics(cfg.MetricsListen)
 	if err != nil {
 		_ = ln.Close()
@@ -309,6 +322,22 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 			}
 		}
 	}()
+	// The batched writes flush on a timer, and the guest page cache renders and
+	// watches the epoch, until the cleanup stops. The last flush comes after the
+	// server has stopped, so the writes of the last requests are in it.
+	workers := make(chan struct{})
+	go func() {
+		defer close(workers)
+		cacheDone := make(chan struct{})
+		go func() {
+			defer close(cacheDone)
+			if sv.guest != nil {
+				sv.guest.Run(cleanCtx)
+			}
+		}()
+		sv.writes.Run(cleanCtx, pool, cfg.Load.FlushEvery)
+		<-cacheDone
+	}()
 	// The email worker stops with the server, before the pool closes. The web layer
 	// wakes it through waker, with a send that never blocks. The server does not
 	// serve before this point, so no request finds the worker missing.
@@ -324,6 +353,8 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		stopClean()
 		<-cleaned
 		<-refreshed
+		<-workers
+		finalFlush(sv.writes, pool)
 		pool.Close()
 	}
 	return serveUntil(ctx, newHTTPServer(h), ln, closePool, sigs, exit)
@@ -456,17 +487,45 @@ func gateFor(m memlimit.Result) *login.Gate {
 	return login.NewGate(budget)
 }
 
+// flushTimeout bounds the last flush of the batched writes at shutdown. It fits
+// in the shutdown window with the other steps of closePool.
+const flushTimeout = 5 * time.Second
+
+// finalFlush writes what the batched writes still hold, before the pool closes.
+func finalFlush(w *batch.Writer, pool *pgxpool.Pool) {
+	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+	defer cancel()
+	if err := w.Flush(ctx, pool); err != nil {
+		slog.Error("batched writes: the last flush failed; these view counts and visit times are lost", "err", err)
+		return
+	}
+	slog.Info("batched writes: flushed at shutdown")
+}
+
+// served is what setup builds: the pool, the handler, the batched writes and
+// the guest page cache (nil when it is off).
+type served struct {
+	pool    *pgxpool.Pool
+	handler http.Handler
+	writes  *batch.Writer
+	guest   *web.GuestCache
+}
+
 // setup opens the pool, applies the migrations and builds the handler, with
 // gate as the memory gate of the password checks. On an error it closes the
-// pool and returns it as nil.
-func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *login.Defense, wake func()) (*pgxpool.Pool, http.Handler, error) {
+// pool and returns a zero served.
+func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *login.Defense, wake func()) (served, error) {
 	pool, err := db.OpenSized(ctx, cfg.DSN, cfg.Load.DBMaxConns)
 	if err != nil {
-		return nil, nil, err
+		return served{}, err
 	}
 	if err := applyMigrations(ctx, pool); err != nil {
 		pool.Close()
-		return nil, nil, err
+		return served{}, err
+	}
+	sv := served{pool: pool, writes: batch.New()}
+	if cfg.Load.PageCacheBytes > 0 {
+		sv.guest = web.NewGuestCache(cfg.Load.PageCacheBytes, cfg.Load.PageCacheWarm)
 	}
 	opt := web.Options{
 		BasePath:       cfg.BasePath,
@@ -482,6 +541,9 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *lo
 
 		Signin:  scheduleConfig(cfg.Signin),
 		Defense: defense,
+
+		GuestCache: sv.guest,
+		Writes:     sv.writes,
 	}
 	slog.Info("sign-in schedule", "free_failures", cfg.Signin.FreeFailures, "waits", durations(cfg.Signin.Waits),
 		"last_wait", cfg.Signin.LastWait.String(), "reset_after", cfg.Signin.ResetAfter.String(),
@@ -490,7 +552,9 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *lo
 		"defensive_quiet", cfg.Signin.DefensiveQuiet.String(), "defensive_gap", cfg.Signin.DefensiveGap.String(),
 		"table_keys", cfg.Signin.TableKeys)
 	slog.Info("load limits", "db_max_conns", cfg.Load.DBMaxConns, "db_pool_wait", cfg.Load.DBPoolWait.String(),
-		"search_per_second", cfg.Load.SearchPerSecond, "search_max_running", cfg.Load.SearchMaxRunning)
+		"search_per_second", cfg.Load.SearchPerSecond, "search_max_running", cfg.Load.SearchMaxRunning,
+		"page_cache_mib", cfg.Load.PageCacheBytes>>20, "page_cache_warm", cfg.Load.PageCacheWarm,
+		"write_flush_interval", cfg.Load.FlushEvery.String())
 	// With no email settings, Mail stays nil and the reset pages are off.
 	if cfg.Mail != nil {
 		sender := mail.NewSMTP(*cfg.Mail)
@@ -500,9 +564,10 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *lo
 	h, err := web.New(ctx, pool, opt)
 	if err != nil {
 		pool.Close()
-		return nil, nil, err
+		return served{}, err
 	}
-	return pool, h, nil
+	sv.handler = h
+	return sv, nil
 }
 
 // scheduleConfig returns the sign-in schedule of the settings s.

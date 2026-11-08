@@ -566,6 +566,9 @@ func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Signature = text
 	err = board.SetSignature(r.Context(), s.pool, p.Viewer, text, s.opt.Now())
+	if wrote(err) {
+		s.changedUser(p.Viewer.UserID)
+	}
 	var in *board.InputError
 	switch {
 	case err == nil:

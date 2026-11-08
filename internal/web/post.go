@@ -389,6 +389,20 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 			return
 		}
 		postID, err := s.save(ctx, kind, p, id, d, reason)
+		if wrote(err) {
+			switch kind {
+			case kindTopic:
+				s.changedListings()
+				s.changedUser(p.Viewer.UserID)
+			case kindReply:
+				s.changedTopic(id)
+				s.changedUser(p.Viewer.UserID)
+			default:
+				// An edit can send the post back to the queue, which changes the
+				// post count of its author.
+				s.changedPost(ctx, id)
+			}
+		}
 		if err != nil {
 			s.writeFailed(w, r, p, fd, kind, err)
 			return
@@ -619,7 +633,11 @@ func (s *site) deletePost(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, "confirm.html", p)
 		return
 	}
-	if s.deleteFailed(w, r, p, board.DeletePost(ctx, s.pool, p.Viewer, id, s.opt.Now())) {
+	err = board.DeletePost(ctx, s.pool, p.Viewer, id, s.opt.Now())
+	if wrote(err) {
+		s.changedPost(ctx, id)
+	}
+	if s.deleteFailed(w, r, p, err) {
 		return
 	}
 	// The delete is done. Whatever happens next, the answer is a 303.

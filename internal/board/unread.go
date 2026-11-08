@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -159,6 +160,49 @@ func CountView(ctx context.Context, q db.Querier, topicID int64) error {
 	_, err := q.Exec(ctx, `update topics set view_count = view_count + 1 where id = $1`, topicID)
 	if err != nil {
 		return fmt.Errorf("board: count view of topic %d: %w", topicID, err)
+	}
+	return nil
+}
+
+// AddViews adds ns[i] views to topic ids[i], in one statement. The batched
+// writes of the server call it ([batch.Writer]); ids should be sorted, so two
+// writers never wait on each other's rows.
+func AddViews(ctx context.Context, q db.Querier, ids, ns []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+update topics t set view_count = t.view_count + v.n
+  from unnest($1::bigint[], $2::bigint[]) as v(id, n)
+ where t.id = v.id`, ids, ns)
+	if err != nil {
+		return fmt.Errorf("board: add views: %w", err)
+	}
+	return nil
+}
+
+// RecordAddress records that member userID used address ip at time at, in
+// user_ips: the member's trusted addresses (spec 10). Only a member who is
+// active and not banned at that time gets a row: a ban removes the member's
+// addresses, and a visit from before the ban, written after it, must not bring
+// one back. The unspecified address stands for a client whose address could not
+// be read, and is never recorded.
+func RecordAddress(ctx context.Context, q db.Querier, userID int64, ip netip.Addr, at time.Time) error {
+	ip = ip.Unmap().WithZone("")
+	if !ip.IsValid() || ip.IsUnspecified() {
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+insert into user_ips (user_id, ip, last_seen_at)
+select u.id, $2::inet, $3::timestamptz
+  from users u
+ where u.id = $1 and u.state = 'active'
+   and not exists (select 1 from bans b
+                    where b.kind = 'user' and b.user_id = u.id and (b.ends_at is null or b.ends_at > $3::timestamptz))
+on conflict (user_id, ip) do update set last_seen_at = greatest(user_ips.last_seen_at, excluded.last_seen_at)`,
+		userID, ip.String(), at)
+	if err != nil {
+		return fmt.Errorf("board: record an address of user %d: %w", userID, err)
 	}
 	return nil
 }

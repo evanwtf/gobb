@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/evanwtf/gobb/internal/batch"
 	"github.com/evanwtf/gobb/internal/board"
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/legacy"
@@ -111,6 +112,13 @@ type Options struct {
 	// Defense is Defensive Mode. Nil means a new one with the defaults. The
 	// caller that passes one refreshes it on a timer ([login.Defense.Refresh]).
 	Defense *login.Defense
+	// GuestCache is the guest page cache. Nil turns it off: every page is
+	// rendered for its request. One cache serves one site.
+	GuestCache *GuestCache
+	// Writes collects the view counts, the activity times of members and the
+	// addresses of their visits, for a flush on a timer ([batch.Writer.Run]).
+	// Nil writes each one at once, in the request.
+	Writes *batch.Writer
 }
 
 // The defaults of Options.PoolWait, SearchPerSecond and SearchMaxRunning.
@@ -192,6 +200,15 @@ type site struct {
 	sitemaps sitemapCache
 	// searches holds the limits of search ([site.searchGate]).
 	searches searchLimits
+	// guest is the guest page cache, or nil. cacheHandlers are the handlers
+	// whose pages it keeps, by kind ([site.cached]).
+	guest         *GuestCache
+	cacheHandlers map[cacheKind]http.HandlerFunc
+	// slotTokens stand for the per-request parts of a page that the cache
+	// renders ([newSlotTokens]).
+	slotTokens [2]string
+	// writes collects the small writes of page views, or is nil.
+	writes *batch.Writer
 }
 
 // frame is what an error page needs of the board: the settings, for the board
@@ -252,6 +269,18 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if s.opt.RefuseSearch == nil {
 		s.opt.RefuseSearch = s.refuseGuestSearch
 	}
+	s.writes = opt.Writes
+	if opt.GuestCache != nil {
+		if !opt.GuestCache.site.CompareAndSwap(nil, s) {
+			return nil, errors.New("web: a GuestCache serves one site")
+		}
+		s.guest = opt.GuestCache
+		s.cacheHandlers = map[cacheKind]http.HandlerFunc{}
+		var err error
+		if s.slotTokens, err = newSlotTokens(); err != nil {
+			return nil, err
+		}
+	}
 	s.base = normalizeBase(opt.BasePath)
 	var err error
 	if s.publicOrigin, err = publicOrigin(opt.PublicURL, s.base, true); err != nil {
@@ -300,9 +329,9 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	}
 
 	inner := newRoutes()
-	inner.HandleFunc("GET /{$}", s.index)
-	inner.HandleFunc("GET /f/{id}", s.forum)
-	inner.HandleFunc("GET /t/{id}", s.topic)
+	inner.HandleFunc("GET /{$}", s.cached(cacheIndex, s.index))
+	inner.HandleFunc("GET /f/{id}", s.cached(cacheForum, s.forum))
+	inner.HandleFunc("GET /t/{id}", s.cached(cacheTopic, s.topic))
 	inner.HandleFunc("GET /t/{id}/new", s.topicNew)
 	inner.HandleFunc("GET /new", s.newPage)
 	inner.HandleFunc("GET /f/{id}/post", s.postForm(kindTopic))
@@ -325,7 +354,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /u/{id}", s.profile)
 	inner.HandleFunc("GET /members", s.members)
 	inner.HandleFunc("GET /team", s.team)
-	inner.HandleFunc("GET /pages/{slug}", s.staticPage)
+	inner.HandleFunc("GET /pages/{slug}", s.cached(cacheStatic, s.staticPage))
 	inner.HandleFunc("GET /account", s.account)
 	inner.HandleFunc("GET /messages", s.messageList(true))
 	inner.HandleFunc("GET /messages/sent", s.messageList(false))
@@ -670,7 +699,8 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 	if id.token != "" {
 		// A top-level navigation counts as activity and may start a new visit.
 		// Any other request, such as the load of an image, writes nothing here.
-		if isNavigation(r) {
+		navigated := isNavigation(r)
+		if navigated && s.writes == nil {
 			if err := board.RecordVisit(ctx, s.pool, id.sess.UserID, s.opt.Now()); err != nil {
 				slog.Warn("cannot record a visit", "err", err)
 			}
@@ -686,6 +716,9 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 			return nil, err
 		default:
 			s.touch(w, r, id.sess)
+			if navigated {
+				s.recordVisit(r, &v)
+			}
 		}
 	}
 	if id.token == "" {
@@ -840,7 +873,12 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 		s.renderFailed(w, status)
 		return
 	}
-	if p.Controls {
+	note := noteFrom(p.ctx)
+	if p.Controls && note != nil {
+		// A render for the guest page cache: the token is a slot, which each
+		// request fills in with its own ([site.serveCached]).
+		p.CSRF = s.slotTokens[slotCSRF]
+	} else if p.Controls {
 		secret := p.csrfSecret
 		if secret == "" {
 			// A guest with no secret yet gets one with the first page that has a form.
@@ -874,6 +912,9 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	// statement of the page, and the time stops here, about one template run
 	// (a millisecond) before the page is written.
 	p.Footer = footerLine(p.ctx, status, p.Viewer.Perms.IsAdmin())
+	if note != nil {
+		p.Footer = s.slotTokens[slotFooter]
+	}
 	var buf bytes.Buffer
 	layoutBuilds.Add(1)
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {

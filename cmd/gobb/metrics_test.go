@@ -47,12 +47,13 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := login.NewGate(1 << 17)
-	pool, h, err := setup(t.Context(), cfg, gate, login.NewDefense(login.DefaultDefense()), func() {})
+	sv, err := setup(t.Context(), cfg, gate, login.NewDefense(login.DefaultDefense()), func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
+	pool, h := sv.pool, sv.handler
 	t.Cleanup(pool.Close)
-	registerServeMetrics(pool, gate)
+	registerServeMetrics(pool, gate, sv.guest, sv.writes)
 	before := metrics.HTTPRequests.Value("/{$}", "GET", "2xx")
 	for _, path := range []string{"/", "/t/999999"} {
 		rec := httptest.NewRecorder()

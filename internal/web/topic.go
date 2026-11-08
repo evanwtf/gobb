@@ -99,6 +99,21 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	if n := noteFrom(ctx); n != nil {
+		// The page shows the card of each author: a change to one drops it.
+		n.pages = tp.Pages
+		for _, post := range tp.Posts {
+			if post.Author.ID != 0 {
+				n.users = append(n.users, post.Author.ID)
+			}
+			if post.Card != nil {
+				n.users = append(n.users, post.Card.ID)
+			}
+			if post.EditedBy != nil && post.EditedBy.ID != 0 {
+				n.users = append(n.users, post.EditedBy.ID)
+			}
+		}
+	}
 	// A top-level navigation counts a view and marks the page read, but only once
 	// the page is built: a page that fails writes nothing. The page shows the view
 	// that it counts.

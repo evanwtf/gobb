@@ -116,6 +116,11 @@ func TestImportCommand(t *testing.T) {
 	if code := run(ctx, []string{"import", dir}); code != 0 {
 		t.Fatalf("import exit = %d, want 0", code)
 	}
+	// The import tells a running server to empty its guest page cache.
+	first := epoch(t, pool)
+	if first == 0 {
+		t.Error("the import did not bump the page cache epoch")
+	}
 	lines := strings.Split(strings.TrimRight(got.String(), "\n"), "\n")
 	if want := len(bundle.Files) + len(bundle.OptionalFiles) + 1; len(lines) != want {
 		t.Fatalf("import printed %d lines, want %d:\n%s", len(lines), want, got.String())
@@ -147,6 +152,9 @@ func TestImportCommand(t *testing.T) {
 	}
 	if code := run(ctx, []string{"import", "--replace", dir}); code != 0 {
 		t.Errorf("import --replace exit = %d, want 0", code)
+	}
+	if epoch(t, pool) == first {
+		t.Error("import --replace did not bump the page cache epoch")
 	}
 	// Message 2 of the small board answers message 1 by its subject, with no
 	// link. It starts its own conversation unless --thread-messages is given.

@@ -67,9 +67,7 @@ func isOwnNavigation(r *http.Request) bool {
 // built (see [site.renderThen]). A failure is logged; the page still shows.
 func (s *site) countView(r *http.Request, v board.Viewer, tp *board.TopicPage) {
 	ctx := r.Context()
-	if err := board.CountView(ctx, s.pool, tp.Topic.ID); err != nil {
-		slog.Warn("cannot count a view", "topic", tp.Topic.ID, "err", err)
-	}
+	s.addView(ctx, tp.Topic.ID)
 	if v.UserID == 0 || len(tp.Posts) == 0 || !isOwnNavigation(r) {
 		return
 	}

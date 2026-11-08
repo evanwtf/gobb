@@ -96,6 +96,7 @@ func execBan(ctx context.Context, log *slog.Logger, sub string, id int64) error 
 	if err != nil {
 		return err
 	}
+	bumpPageEpoch(ctx, log, pool)
 	log.Info("ban lifted", "ban", id, "kind", kind, "target", target)
 	return nil
 }

@@ -356,6 +356,14 @@ func (s *site) setAbout(w http.ResponseWriter, r *http.Request) {
 	}
 	if hasBirthday && birthdayErr == nil {
 		birthdayErr = board.SetBirthday(r.Context(), s.pool, p.Viewer, b, s.opt.Now().UTC())
+		if wrote(birthdayErr) {
+			// The index lists today's birthdays.
+			s.changedListings()
+		}
+	}
+	if hasText && wrote(textErr) {
+		// The profile is not cached; a card on a post may show these fields.
+		s.changedUser(p.Viewer.UserID)
 	}
 	s.settingResult(w, r, p, []error{textErr, birthdayErr}, "", "about", action, echo, func(d *accountData, in *board.InputError) {
 		switch in.Field {
@@ -414,6 +422,9 @@ func (s *site) removeAvatar(w http.ResponseWriter, r *http.Request) {
 	// The write does not follow a cancelled request: a row and a file that
 	// disagree are worse than a write that finishes after the client left.
 	old, err := board.RemoveAvatar(context.WithoutCancel(r.Context()), s.pool, p.Viewer)
+	if wrote(err) {
+		s.changedUser(p.Viewer.UserID)
+	}
 	if err == nil {
 		s.deleteAvatarFile(p.Viewer.UserID, old)
 	}
@@ -498,6 +509,9 @@ func (s *site) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 	// The write does not follow a cancelled request (see removeAvatar).
 	old, err := board.SetAvatar(context.WithoutCancel(r.Context()), s.pool, p.Viewer, name)
+	if wrote(err) {
+		s.changedUser(p.Viewer.UserID)
+	}
 	if err != nil {
 		s.deleteAvatarFile(p.Viewer.UserID, name)
 		s.settingResult(w, r, p, []error{err}, "avatar", "", action, nil,
@@ -592,5 +606,8 @@ func (s *site) saveSignature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := board.SetSignature(r.Context(), s.pool, p.Viewer, r.PostForm.Get("signature"), s.opt.Now())
+	if wrote(err) {
+		s.changedUser(p.Viewer.UserID)
+	}
 	saveAnswer(w, r, err, "signature")
 }

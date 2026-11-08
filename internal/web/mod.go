@@ -45,7 +45,11 @@ func (s *site) postAction(verb string, write postWrite) http.HandlerFunc {
 		if s.actionFailed(w, r, p, err, verb) {
 			return
 		}
-		if s.actionFailed(w, r, p, write(ctx, s.pool, p.Viewer, id, s.opt.Now()), verb) {
+		err = write(ctx, s.pool, p.Viewer, id, s.opt.Now())
+		if wrote(err) {
+			s.changedPost(ctx, id)
+		}
+		if s.actionFailed(w, r, p, err, verb) {
 			return
 		}
 		// The write is done. Whatever happens next, the answer is a 303: to the post
@@ -84,7 +88,11 @@ func (s *site) topicLock(locked bool) http.HandlerFunc {
 			s.serverError(w, r, err)
 			return
 		}
-		if s.actionFailed(w, r, p, board.SetTopicLock(r.Context(), s.pool, p.Viewer, id, locked, s.opt.Now()), verb) {
+		err = board.SetTopicLock(r.Context(), s.pool, p.Viewer, id, locked, s.opt.Now())
+		if wrote(err) {
+			s.changedTopic(id)
+		}
+		if s.actionFailed(w, r, p, err, verb) {
 			return
 		}
 		http.Redirect(w, r, s.path("t", strconv.FormatInt(id, 10)), http.StatusSeeOther)
@@ -132,6 +140,9 @@ func (s *site) topicKind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = board.SetTopicKind(r.Context(), s.pool, p.Viewer, id, r.PostForm.Get("kind"), s.opt.Now())
+	if wrote(err) {
+		s.changedTopic(id)
+	}
 	if errors.Is(err, board.ErrBadKind) {
 		s.fail(w, r, http.StatusBadRequest, "Bad request", "The topic type is not valid.")
 		return
