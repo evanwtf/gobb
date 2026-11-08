@@ -112,8 +112,9 @@ type Load struct {
 	// DBMaxConns is the most database connections that the pool opens, from
 	// GOBB_DB_MAX_CONNS. It replaces any pool_max_conns in GOBB_DSN.
 	DBMaxConns int
-	// DBPoolWait is the longest time that a request waits for a free
-	// connection before it gets 503, from GOBB_DB_POOL_WAIT.
+	// DBPoolWait is the longest time that a request waits for free
+	// connections, in total over the request, before it gets 503, from
+	// GOBB_DB_POOL_WAIT.
 	DBPoolWait time.Duration
 	// SearchPerSecond is the most searches that the whole board runs in any
 	// second, from GOBB_SEARCH_PER_SECOND.
@@ -130,18 +131,22 @@ type Load struct {
 	// FlushEvery is the time between two flushes of the batched writes (view
 	// counts, activity times, member addresses), from GOBB_WRITE_FLUSH_INTERVAL.
 	FlushEvery time.Duration
-	// SigninGateWait is the longest time that a password check waits for room
-	// in the memory gate before the sign-in gets 503, from
-	// GOBB_SIGNIN_GATE_WAIT. Avatar and icon uploads wait for the same gate
-	// with the same limit.
+	// SigninGateWait is how long after the start of the request a password
+	// POST may still wait for room in the memory gate, from
+	// GOBB_SIGNIN_GATE_WAIT; past it the sign-in gets 503. Despite the name,
+	// avatar and icon uploads also wait at most this long for the same gate.
 	SigninGateWait time.Duration
-	// MaxInFlight is the most requests that the server handles at one time,
-	// from GOBB_MAX_IN_FLIGHT. A request past it gets 503 at once.
+	// MaxInFlight is the most requests under way at one time, from
+	// GOBB_MAX_IN_FLIGHT. A request past it gets 503 at once. Outside it: GET
+	// /healthz, GET and HEAD of /favicon.ico and the known static files, guest
+	// pages served from the page cache, and the password POSTs, which have
+	// MaxSigninInFlight.
 	MaxInFlight int
 	// MaxSigninInFlight is the most password POSTs (sign-in, password and
-	// email change, reset link) under way at one time, from
-	// GOBB_MAX_SIGNIN_IN_FLIGHT. They have their own slots, outside
-	// MaxInFlight, and get 503 at once past this limit.
+	// email change, admin confirm, reset link) under way at one time, from
+	// GOBB_MAX_SIGNIN_IN_FLIGHT. A password POST takes its slot, outside
+	// MaxInFlight, once its body is read, and gets 503 at once when none is
+	// free.
 	MaxSigninInFlight int
 }
 
