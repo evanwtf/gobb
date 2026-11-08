@@ -159,7 +159,9 @@ type Service struct {
 	//
 	// New sets it to [DefaultFloor]. [Service.LoadFloor] sets it at start to
 	// max(DefaultFloor, 2 × K × T), rounded up to a whole 50 ms: T is the
-	// slowest single wrong-password check on this host, and K is the most
+	// slowest wrong-password check on this host (the lowest of
+	// [floorSamples] timings of each cost shape, the highest over the shapes),
+	// and K is the most
 	// accounts that share one email address, so the most checks that one sign-in
 	// runs. The floor hides the hash time while the host runs a check within 2×
 	// of its start-up time. Heavier CPU load can still show the time. A test may
@@ -561,6 +563,13 @@ func (s *Service) LoadCharge(ctx context.Context) error {
 // floorStep is the unit that LoadFloor rounds the floor up to.
 const floorStep = 50 * time.Millisecond
 
+// floorSamples is how many times LoadFloor times each cost shape. It keeps
+// the lowest time of each shape, so a start on a busy host does not raise the
+// floor until the next restart. The floor then hides the hash time only while
+// the host runs a check within 2× of that lowest time. Two checks at once on
+// one CPU already take about 2×, so a busy host can pass the floor.
+const floorSamples = 5
+
 // probePassword is the wrong password that LoadFloor checks. It is no one's.
 // It is 4,096 bytes long, the longest that Verify reads, and its legacy form
 // has the same length: a chain check grows with the length of the password,
@@ -571,10 +580,13 @@ var probePassword = strings.Repeat("gobb-floor-probe", 4096/len("gobb-floor-prob
 // max(DefaultFloor, 2 × K × T), rounded up to a whole 50 ms.
 //   - K is the most accounts that share one email_clean, or 1 when none share:
 //     the most checks that one sign-in runs.
-//   - T is the slowest single wrong-password check. One streaming query reads
-//     the stored hashes, and [password.CostShape] sorts them by format and cost
-//     parameters. LoadFloor times one check against one hash of each shape,
-//     and of the dummy check (the shape of a new gobb hash too).
+//   - T is the slowest wrong-password check. One streaming query reads the
+//     stored hashes, and [password.CostShape] sorts them by format and cost
+//     parameters. LoadFloor times [floorSamples] checks against one hash of
+//     each shape, and of the dummy check (the shape of a new gobb hash too).
+//     It times the shapes in rounds, one check of each shape per round, so
+//     the samples of each shape spread over the whole step. It keeps the
+//     lowest time of each shape, and T is the highest of those.
 //
 // Each check runs with a wrong password of 4,096 bytes, the longest that
 // Verify reads, and holds the gate with the charge of a check of that hash
@@ -582,9 +594,12 @@ var probePassword = strings.Repeat("gobb-floor-probe", 4096/len("gobb-floor-prob
 // garbage collection, so the memory of the checks (and of the dummy hash) does
 // not sit under the first sign-ins.
 //
-// It logs one INFO line with the floor in ms, T in ms and K, with no name and
-// no hash. Call it once, after [Service.LoadCharge] and before the service
-// serves.
+// Before each check, LoadFloor returns the error of a done ctx, so a stop
+// signal during start ends the step.
+//
+// It logs one INFO line with the floor in ms, T in ms, K, the number of
+// shapes and the samples per shape, with no name and no hash. Call it once,
+// after [Service.LoadCharge] and before the service serves.
 func (s *Service) LoadFloor(ctx context.Context) error {
 	var k int64
 	err := s.q.QueryRow(ctx, `select coalesce(max(n), 1) from (
@@ -617,22 +632,42 @@ select count(*) as n from users where email_clean <> '' group by email_clean) sh
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("login: read the stored hashes: %w", err)
 	}
-	var slowest time.Duration
+	// One check under load reads high. The lowest of the samples of a shape is
+	// the cost of the check itself on this host. Each round times every shape
+	// once, so a busy spell at start touches one sample of each shape, not all
+	// the samples of one shape.
+	order := make([]sample, 0, len(shapes))
 	for _, sm := range shapes {
-		release, err := s.acquire(ctx, s.chargeKiB(sm.scheme, sm.stored))
-		if err != nil {
-			return fmt.Errorf("login: time a password check: %w", err)
+		order = append(order, sm)
+	}
+	lowest := make([]time.Duration, len(order))
+	for round := range floorSamples {
+		for i, sm := range order {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("login: time a password check: %w", err)
+			}
+			release, err := s.acquire(ctx, s.chargeKiB(sm.scheme, sm.stored))
+			if err != nil {
+				return fmt.Errorf("login: time a password check: %w", err)
+			}
+			took := s.timeOne(sm.stored, sm.scheme)
+			release()
+			if round == 0 || took < lowest[i] {
+				lowest[i] = took
+			}
 		}
-		took := s.timeOne(sm.stored, sm.scheme)
-		release()
-		slowest = max(slowest, took)
+	}
+	var slowest time.Duration
+	for _, l := range lowest {
+		slowest = max(slowest, l)
 	}
 	runtime.GC()
 	floor := max(DefaultFloor, 2*time.Duration(k)*slowest)
 	floor = (floor + floorStep - 1) / floorStep * floorStep
 	s.Floor = floor
 	slog.Info("login: sign-in floor", "floor_ms", floor.Milliseconds(),
-		"t_ms", slowest.Round(time.Millisecond).Milliseconds(), "k", k, "shapes", len(shapes))
+		"t_ms", slowest.Round(time.Millisecond).Milliseconds(), "k", k,
+		"shapes", len(shapes), "samples", floorSamples)
 	return nil
 }
 

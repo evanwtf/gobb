@@ -567,19 +567,24 @@ the operator:
   start of the sign-in, moved forward by the time that it waits for the memory gate.
   So a wait for the gate adds the same delay to every name, and the floor still
   hides the lookup and the hash after it. The server sets the floor at start:
-  2 × K × T, but at least 400 ms, rounded up to a whole 50 ms. T is the slowest
-  single password check, which the server times once for each kind and cost of
-  stored hash, with a wrong password of 4,096 bytes (the longest that a check reads;
+  2 × K × T, but at least 400 ms, rounded up to a whole 50 ms. A hash shape is the
+  format of a stored hash and its cost parameters. T is the time of a password
+  check for the slowest hash shape. The server times five checks of each hash
+  shape, in rounds of one check per hash shape, and keeps the lowest time of each.
+  Each check uses a wrong password of 4,096 bytes (the longest that a check reads;
   a chain check takes longer for a longer password). K is the most accounts that
   share one email address, because a sign-in by that address checks each of them.
-  The start-up log line `login: sign-in floor` gives the floor, T and K. The floor
-  hides the time of the hash while the host runs a check within twice its start-up
-  time. Heavier CPU load can still show the time.
+  The start-up log line `login: sign-in floor` gives `floor_ms` (the floor),
+  `t_ms` (T), `k` (K), `shapes` (the number of hash shapes) and `samples` (the
+  checks per hash shape). The floor hides the time of the hash while the host runs
+  a check within twice that lowest time. Two checks at once on one CPU already take
+  about twice as long, so heavier CPU load can still show the time. If `floor_ms`
+  is high after a start on a busy host, restart the server when the host is quiet.
 - A sign-in holds the memory gate once, for all of its checks. So a busy server
   answers alike for a shared email address, a unique one and an unknown name.
 - Password checks share a memory gate of 128 MiB, or less under a low memory limit
   (see "Memory"). Every check holds the same share,
-  whatever the kind of hash, so neither the wait nor the answer tells a stranger
+  whatever the hash shape, so neither the wait nor the answer tells a stranger
   which names have accounts or which accounts have old hashes. The share follows the
   most costly stored hash, which the server reads at start. With no hash above the
   cost of a new gobb hash (19 MiB), six checks run at once. On a board with imported
@@ -605,8 +610,8 @@ start-up log line `memory limit` gives the limit in bytes, its source (`GOMEMLIM
 back only after a garbage collection. A sign-in that holds the gate for several
 checks (a shared email address) also collects before each check after the first. So
 the memory of a finished check is free before the next check starts. At start, gobb
-also times one check of each kind of stored hash, inside the gate, and then frees the
-memory of those checks.
+also times five checks of each hash shape, one at a time inside the gate, and then
+frees the memory of those checks.
 
 Compose runs gobb under a cap of 256 MiB with no swap. `GOBB_MEM_LIMIT` in `.env`
 changes it. Under that cap the Go limit is 179 MiB and the gate is 128 MiB, so two
