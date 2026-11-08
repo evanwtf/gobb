@@ -51,8 +51,21 @@ func timing(slowShape string, slow, fast time.Duration, shapes *[]string) func(s
 	}
 }
 
+// fives returns each shape of shapes floorSamples times, sorted: the shapes
+// that LoadFloor times.
+func fives(shapes ...string) []string {
+	var out []string
+	for _, sh := range shapes {
+		for range floorSamples {
+			out = append(out, sh)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // The floor at start is max(DefaultFloor, 2 × K × T), rounded up to a whole
-// 50 ms. T is the slowest single check over the cost shapes of the stored hashes
+// 50 ms. T is the slowest check over the cost shapes of the stored hashes
 // and the dummy check. K is the most accounts that share one email address.
 func TestLoadFloor(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
@@ -71,11 +84,11 @@ func TestLoadFloor(t *testing.T) {
 		shapes     []string
 	}{
 		{"one shape at 300 ms and three accounts on one email", heavy, 3, shapeHeavy, 300 * ms, 10 * ms,
-			1800 * ms, []string{shapeDummy, shapeHeavy, shapeBcrypt}},
+			1800 * ms, fives(shapeDummy, shapeHeavy, shapeBcrypt)},
 		{"every shape fast and no shared email", heavy, 1, shapeHeavy, 10 * ms, 10 * ms,
 			DefaultFloor, nil},
 		{"no gobb hash stored: the dummy check is still a shape", light, 1, "", 0, 10 * ms,
-			DefaultFloor, []string{shapeDummy, shapeBcrypt, shapeChain}},
+			DefaultFloor, fives(shapeDummy, shapeBcrypt, shapeChain)},
 		{"the dummy check is the slowest", light, 1, shapeDummy, 260 * ms, 10 * ms, 550 * ms, nil},
 		{"K = 1", heavy, 1, shapeHeavy, 250 * ms, 10 * ms, 500 * ms, nil},
 		{"K = 2", heavy, 2, shapeHeavy, 250 * ms, 10 * ms, 1000 * ms, nil},
@@ -97,15 +110,73 @@ func TestLoadFloor(t *testing.T) {
 			if c.shapes != nil {
 				slices.Sort(shapes)
 				if !slices.Equal(shapes, c.shapes) {
-					t.Errorf("timed shapes = %q, want %q (each once)", shapes, c.shapes)
+					t.Errorf("timed shapes = %q, want %q (each %d times)", shapes, c.shapes, floorSamples)
 				}
 			}
 		})
 	}
 }
 
-// The start-up step logs one INFO line: the floor in ms, T in ms and K. It
-// logs no name and no hash.
+// LoadFloor times each shape floorSamples times and keeps the lowest time of
+// each shape. T is the slowest of those lowest times. So one slow sample (a
+// busy host at start) does not move the floor.
+func TestLoadFloorKeepsTheLowestSample(t *testing.T) {
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	gobb := strings.Replace(argonAt(19456), "t=4,p=2", "t=2,p=1", 1)
+	setHashes(t, pool, [4][2]string{{"gobb", gobb}, {"legacy", bcryptHash}, {"legacy", argonAt(65536)}, {"legacy", ""}})
+	ms := time.Millisecond
+	for _, c := range []struct {
+		name    string
+		shared  int
+		samples map[string][]time.Duration
+		want    time.Duration
+	}{
+		{"one outlier of 900 ms in the slowest shape", 3, map[string][]time.Duration{
+			shapeDummy:  {20 * ms, 20 * ms, 20 * ms, 20 * ms, 20 * ms},
+			shapeBcrypt: {5 * ms, 5 * ms, 5 * ms, 5 * ms, 5 * ms},
+			shapeHeavy:  {900 * ms, 310 * ms, 300 * ms, 320 * ms, 305 * ms},
+		}, 1800 * ms}, // 2 × 3 × 300 ms
+		{"an outlier in a fast shape does not make it the slowest", 1, map[string][]time.Duration{
+			shapeDummy:  {20 * ms, 20 * ms, 20 * ms, 20 * ms, 20 * ms},
+			shapeBcrypt: {5 * ms, 5 * ms, 5 * ms, 5 * ms, 2000 * ms},
+			shapeHeavy:  {260 * ms, 280 * ms, 270 * ms, 290 * ms, 275 * ms},
+		}, 550 * ms}, // 2 × 1 × 260 ms = 520, rounded up to 550
+		{"the lowest sample comes last", 2, map[string][]time.Duration{
+			shapeDummy:  {20 * ms, 20 * ms, 20 * ms, 20 * ms, 20 * ms},
+			shapeBcrypt: {5 * ms, 5 * ms, 5 * ms, 5 * ms, 5 * ms},
+			shapeHeavy:  {917 * ms, 408 * ms, 600 * ms, 500 * ms, 385 * ms},
+		}, 1550 * ms}, // 2 × 2 × 385 ms = 1540, rounded up to 1550
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			shareEmails(t, pool, c.shared)
+			s := NewWith(pool, Options{Gate: NewGate(DefaultBudgetKiB)})
+			next := map[string]int{}
+			s.timeVerify = func(stored, scheme string) time.Duration {
+				shape := password.CostShape(scheme, stored)
+				i := next[shape]
+				next[shape]++
+				if i >= len(c.samples[shape]) {
+					t.Fatalf("shape %q timed more than %d times", shape, len(c.samples[shape]))
+				}
+				return c.samples[shape][i]
+			}
+			if err := s.LoadFloor(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if s.Floor != c.want {
+				t.Errorf("floor = %v, want %v", s.Floor, c.want)
+			}
+			for shape := range c.samples {
+				if next[shape] != floorSamples {
+					t.Errorf("shape %q timed %d times, want %d", shape, next[shape], floorSamples)
+				}
+			}
+		})
+	}
+}
+
+// The start-up step logs one INFO line: the floor in ms, T in ms, K, the number
+// of shapes and the samples per shape. It logs no name and no hash.
 func TestLoadFloorLogs(t *testing.T) {
 	pool, _ := boardtest.Load(t, bundletest.Small())
 	setHashes(t, pool, [4][2]string{{"gobb", argonAt(19456)}, {"legacy", bcryptHash}, {"legacy", argonAt(65536)}, {"legacy", ""}})
@@ -123,8 +194,8 @@ func TestLoadFloorLogs(t *testing.T) {
 	out := buf.String()
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") ||
-		!strings.Contains(lines[0], "floor_ms=1800 t_ms=300 k=3") {
-		t.Errorf("log = %q, want one INFO line with floor_ms=1800 t_ms=300 k=3", out)
+		!strings.Contains(lines[0], "floor_ms=1800 t_ms=300 k=3 shapes=4 samples=5") {
+		t.Errorf("log = %q, want one INFO line with floor_ms=1800 t_ms=300 k=3 shapes=4 samples=5", out)
 	}
 	for _, secret := range []string{"alice", "bob", "carol", "dave", "example.com", "$argon2id$", "$2y$", "m=65536"} {
 		if strings.Contains(out, secret) {
@@ -159,8 +230,9 @@ func TestLoadFloorProbeIsLong(t *testing.T) {
 	}
 }
 
-// Each timing check at start holds the gate, with the charge of a check of
-// that hash (chargeKiB), and gives it back before the next one. Each release
+// Each timing check at start (floorSamples per shape) holds the gate, with the
+// charge of a check of that hash (chargeKiB), and gives it back before the
+// next one. Each release
 // collects. After the last release, the step runs one more garbage collection,
 // so the memory of the checks (and of the dummy hash) does not sit under the
 // first sign-ins. The test counts the forced collections of the step: one per
@@ -189,9 +261,9 @@ func TestLoadFloorHoldsTheGate(t *testing.T) {
 	}
 	after := forcedGCs()
 	// Three shapes: the dummy check (alice's hash shares it), bcrypt and argon2id.
-	want := []uint64{65536, 65536, 65536}
+	want := slices.Repeat([]uint64{65536}, 3*floorSamples)
 	if !slices.Equal(holds, want) {
-		t.Errorf("gate holds = %v, want %v (one per timed shape, at the charge)", holds, want)
+		t.Errorf("gate holds = %v, want %v (one per timed check, at the charge)", holds, want)
 	}
 	if !slices.Equal(held, want) {
 		t.Errorf("the gate held %v KiB while each check ran, want %v", held, want)

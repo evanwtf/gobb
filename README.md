@@ -605,8 +605,8 @@ start-up log line `memory limit` gives the limit in bytes, its source (`GOMEMLIM
 back only after a garbage collection. A sign-in that holds the gate for several
 checks (a shared email address) also collects before each check after the first. So
 the memory of a finished check is free before the next check starts. At start, gobb
-also times one check of each kind of stored hash, inside the gate, and then frees the
-memory of those checks.
+also times five checks of each kind of stored hash, one at a time inside the gate,
+and then frees the memory of those checks.
 
 Compose runs gobb under a cap of 256 MiB with no swap. `GOBB_MEM_LIMIT` in `.env`
 changes it. Under that cap the Go limit is 179 MiB and the gate is 128 MiB, so two
