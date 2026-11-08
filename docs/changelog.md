@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.1 (2026-11-08)
+
+- **The header image keeps its shape.** Its height is fixed and its width
+  follows, so a 350x117 image shows at 132x44. In 0.9.0 the flex box stretched it
+  to the width of the box: 662x44 on a wide screen. The fixed height also keeps
+  the header still while the image loads. An image that is too wide is
+  letterboxed. The preview on the settings page is not affected.
+- **Every row of a list on a phone** has the compact layout: forums, topics and
+  messages. In 0.9.0 only the first row of each list had it. The others took the
+  cell padding of the wide layout, which pushed the counts apart and made the rows
+  taller. An index row is now 57px, not 86-104px; a message row 57px, not 86px. The
+  accent bar, the reply count and the author name take their phone sizes again.
+- **The last post of a forum on a phone** stays on one line. A long title ends in
+  an ellipsis, and the author and the age stay in view.
+
 ## 0.9.0 (2026-11-01)
 
 ### Compact pages, mobile first (evanwtf/gobb#52)
