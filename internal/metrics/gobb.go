@@ -60,6 +60,10 @@ var (
 	// connection ran out (GOBB_DB_POOL_WAIT).
 	PoolWaitTimeouts = Default.CounterVec("gobb_db_pool_wait_timeouts_total",
 		"Requests whose wait for a database connection ran out.")
+	// InFlightRefusals counts the requests refused because the most requests
+	// that may run at one time were running (GOBB_MAX_IN_FLIGHT).
+	InFlightRefusals = Default.CounterVec("gobb_in_flight_refusals_total",
+		"Requests refused with 503 because GOBB_MAX_IN_FLIGHT requests were under way.")
 	// SearchBusy counts the searches refused because the most searches that
 	// may run at one time were running.
 	SearchBusy = Default.CounterVec("gobb_search_busy_total",

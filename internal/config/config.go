@@ -135,6 +135,9 @@ type Load struct {
 	// GOBB_SIGNIN_GATE_WAIT. Avatar and icon uploads wait for the same gate
 	// with the same limit.
 	SigninGateWait time.Duration
+	// MaxInFlight is the most requests that the server handles at one time,
+	// from GOBB_MAX_IN_FLIGHT. A request past it gets 503 at once.
+	MaxInFlight int
 }
 
 // The defaults and the bounds of the load settings. A request has 10 s for its
@@ -160,6 +163,10 @@ const (
 	DefaultSigninGateWait = time.Second
 	minSigninGateWait     = 100 * time.Millisecond
 	maxSigninGateWait     = 10 * time.Second
+	// DefaultMaxInFlight keeps the memory of the requests under way inside the
+	// 256 MiB cap of Compose. The README ("Load limits") gives the measurement.
+	DefaultMaxInFlight = 256
+	maxMaxInFlight     = 100000
 )
 
 const (
@@ -359,6 +366,9 @@ func loadFromEnv(getenv func(string) string) (Load, error) {
 		l.FlushEvery = d
 	}
 	if l.SigninGateWait, err = durationSetting("GOBB_SIGNIN_GATE_WAIT", get("GOBB_SIGNIN_GATE_WAIT"), DefaultSigninGateWait, minSigninGateWait, maxSigninGateWait); err != nil {
+		return Load{}, err
+	}
+	if l.MaxInFlight, err = intSetting("GOBB_MAX_IN_FLIGHT", get("GOBB_MAX_IN_FLIGHT"), DefaultMaxInFlight, 1, maxMaxInFlight); err != nil {
 		return Load{}, err
 	}
 	return l, nil

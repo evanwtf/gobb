@@ -305,6 +305,7 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_PAGE_CACHE_WARM` | `true` or `false`. Render the guest pages into the cache at start, and again after a change drops them. | `true` |
 | `GOBB_WRITE_FLUSH_INTERVAL` | The time between two writes of the batched view counts, visit times and member addresses, from `1s` to `10m` (see "Batched writes"). | `30s` |
 | `GOBB_SIGNIN_GATE_WAIT` | The longest time that a sign-in waits for room in the memory gate of the password checks, from `100ms` to `10s`. A longer wait gets 503. Avatar and icon uploads wait for the same gate with the same limit (see "Load limits"). | `1s` |
+| `GOBB_MAX_IN_FLIGHT` | The most requests that the server handles at one time, from 1 to 100,000. A request past it gets 503 at once (see "Load limits"). | `256` |
 | `GOBB_SIGNIN_FREE_FAILURES` | How many failed sign-ins of an address or a name leave no wait after them, from 0 to 100 (see "Sign-in limits"). | `2` |
 | `GOBB_SIGNIN_WAITS` | The waits after the failures that follow the free ones, in order: 1 to 20 durations from `1s` to `24h`, separated by commas. | `15s,15s,60s,60s,60s` |
 | `GOBB_SIGNIN_LAST_WAIT` | The wait after every later failure, from `1s` to `24h`. | `900s` |
@@ -693,10 +694,25 @@ then gets quick refusals, and the server stays up.
   Only a request with search words or an author counts; the bare search form does
   not. `gobb_rate_limited_total{limit="search"}` and `gobb_search_busy_total`
   count the refusals.
+- The pool wait shows only when queries are slow: a large board, a cold disk, or
+  a long search. On the small example board each query takes about a millisecond,
+  and the load test of CI runs out of CPU before any request waits 1 s for a
+  connection. So that test sees no 503 from the pool, and does not try to force one.
 - A sign-in that finds the memory gate of the password checks full (see "Memory")
   waits at most `GOBB_SIGNIN_GATE_WAIT` (1 s unless set) for room, then gets 503
   with `Retry-After: 5`. `gobb_signin_attempts_total{result="busy"}` counts these.
   Avatar and icon uploads wait for the same gate with the same limit.
+- The server handles at most `GOBB_MAX_IN_FLIGHT` requests at one time (256
+  unless set). A request past the limit gets 503 with `Retry-After: 2` at once, on
+  the busy page from memory; it does not wait in a queue. `/healthz`,
+  `/favicon.ico` and the static files skip the limit: they are served from memory,
+  and the busy page links the stylesheet. `gobb_in_flight_refusals_total` counts
+  the refusals.
+  The limit bounds the work under way, not the open connections: each open
+  connection costs about 27 KB whether its request runs or not. Under the 256 MiB
+  cap, 4,096 connections at once peaked at 199 MiB of the cgroup, with no OOM kill
+  (before the limit, the same load killed gobb). A limit from 64 to 512 changes
+  that peak by less than 10 MiB.
 - The start-up log line `load limits` gives these values, and the three of the
   page cache and the batched writes below.
 
@@ -895,6 +911,7 @@ curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
 | `gobb_db_pool_acquires_total`, `_empty_acquires_total`, `_canceled_acquires_total`, `_acquire_seconds_total`, `_new_conns_total` | counters | none |
 | `gobb_db_pool_wait_timeouts_total` | counter: requests whose wait for a connection ran out (`GOBB_DB_POOL_WAIT`) | none |
 | `gobb_search_busy_total` | counter: searches refused because `GOBB_SEARCH_MAX_RUNNING` searches were running | none |
+| `gobb_in_flight_refusals_total` | counter: requests refused because `GOBB_MAX_IN_FLIGHT` requests were under way | none |
 | `gobb_page_cache_hits_total`, `_misses_total` | counters: guest page requests served from the cache, and those that waited for a render | none |
 | `gobb_page_cache_evictions_total` | counter: pages dropped to stay under `GOBB_PAGE_CACHE_MIB` | none |
 | `gobb_page_cache_drops_total` | counter: drops of pages after a change to the board | none |

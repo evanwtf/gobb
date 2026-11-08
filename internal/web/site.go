@@ -112,6 +112,10 @@ type Options struct {
 	// Defense is Defensive Mode. Nil means a new one with the defaults. The
 	// caller that passes one refreshes it on a timer ([login.Defense.Refresh]).
 	Defense *login.Defense
+	// MaxInFlight is the most requests that the server handles at one time.
+	// A request past it gets 503 at once ([site.limitInFlight]). Zero means
+	// [DefaultMaxInFlight]; a negative value turns the limit off.
+	MaxInFlight int
 	// GuestCache is the guest page cache. Nil turns it off: every page is
 	// rendered for its request. One cache serves one site.
 	GuestCache *GuestCache
@@ -173,6 +177,9 @@ type site struct {
 	// one holds up to a megabyte of body in memory before the decode takes its
 	// share of the gate. A test makes it smaller.
 	uploadSlots chan struct{}
+	// inFlight is the semaphore of the requests under way, or nil for no
+	// limit ([site.limitInFlight]).
+	inFlight chan struct{}
 	// uploading holds the IDs of the members who have an avatar upload in flight:
 	// a member has one at a time.
 	uploading sync.Map
@@ -259,6 +266,12 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
 	if opt.LoginFloor != 0 {
 		s.login.Floor = opt.LoginFloor
+	}
+	switch {
+	case opt.MaxInFlight == 0:
+		s.inFlight = make(chan struct{}, DefaultMaxInFlight)
+	case opt.MaxInFlight > 0:
+		s.inFlight = make(chan struct{}, opt.MaxInFlight)
 	}
 	if opt.LoginGateWait != 0 {
 		s.login.GateWait = opt.LoginGateWait
@@ -430,7 +443,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		onNew(s)
 	}
 	metrics.SigninFloor.Set(s.login.Floor.Seconds())
-	return metered(timed(secure(s.guard(root)))), nil
+	return metered(timed(secure(s.limitInFlight(s.guard(root))))), nil
 }
 
 // routes is a ServeMux that remembers the patterns registered on it, so a test
