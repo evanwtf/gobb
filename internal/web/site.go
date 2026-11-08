@@ -249,6 +249,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.Handle("POST /p/{id}/approve", s.protect(maxPostBody, s.postAction("approve this post", board.ApprovePost)))
 	inner.Handle("POST /t/{id}/lock", s.protect(maxPostBody, s.topicLock(true)))
 	inner.Handle("POST /t/{id}/unlock", s.protect(maxPostBody, s.topicLock(false)))
+	inner.Handle("POST /t/{id}/type", s.protect(maxPostBody, s.topicKind))
 	inner.Handle("POST /read", s.protect(maxPostBody, s.markAllRead))
 	inner.Handle("POST /f/{id}/read", s.protect(maxPostBody, s.markForumRead))
 	inner.HandleFunc("GET /p/{id}", s.post)

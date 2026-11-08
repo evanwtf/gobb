@@ -123,8 +123,8 @@ func TestSettingValues(t *testing.T) {
 }
 
 func TestRegistry(t *testing.T) {
-	if len(Options) != 48 {
-		t.Fatalf("got %d options, want 48", len(Options))
+	if len(Options) != 49 {
+		t.Fatalf("got %d options, want 49", len(Options))
 	}
 	count := map[Scope]int{}
 	seen := map[string]bool{}
@@ -144,8 +144,11 @@ func TestRegistry(t *testing.T) {
 			t.Errorf("Lookup(%q) = %v, %v", o.Name, got, ok)
 		}
 	}
-	if count[Forum] != 23 || count[Moderator] != 6 || count[Board] != 19 {
-		t.Errorf("scope counts %v, want forum 23, moderator 6, board 19", count)
+	if count[Forum] != 23 || count[Moderator] != 7 || count[Board] != 19 {
+		t.Errorf("scope counts %v, want forum 23, moderator 7, board 19", count)
+	}
+	if o, ok := Lookup("mod.pin"); !ok || o.Scope != Moderator {
+		t.Errorf("mod.pin must be a Moderator option, got %v, %v", o, ok)
 	}
 	if o, ok := Lookup("admin"); !ok || o.Scope != Board {
 		t.Errorf("admin must be a Board option, got %v, %v", o, ok)

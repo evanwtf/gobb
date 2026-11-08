@@ -231,8 +231,27 @@ The public repo tests the importer with hand-written bundles only.
 | Scope | Options |
 |---|---|
 | Forum | `forum.list` (see it listed), `forum.read`, `forum.search`, `topic.start`, `topic.reply`, `topic.sticky`, `topic.announce`, `topic.global`, `topic.lock_own`, `topic.watch`, `post.edit_own`, `post.delete_own`, `post.markdown`, `post.smilies`, `post.images`, `post.signatures`, `post.no_approval`, `post.counts` (counts toward the member's post count), `attach.upload`, `attach.download`, `poll.start`, `poll.vote`, `poll.change_vote` |
-| Moderator | `mod.edit`, `mod.delete`, `mod.approve`, `mod.lock`, `mod.move`, `mod.view_ip` |
+| Moderator | `mod.edit`, `mod.delete`, `mod.approve`, `mod.lock`, `mod.pin`, `mod.move`, `mod.view_ip` |
 | Board | `mod.ban`, `pm.send`, `pm.read`, `pm.send_many`, `pm.markdown`, `pm.smilies`, `pm.images`, `pm.edit`, `pm.delete`, `account.signature`, `account.avatar`, `account.profile`, `account.email`, `account.password`, `account.attach`, `account.download`, `account.search`, `account.view_profiles`, `admin` |
+
+**Topic types.** A topic is normal, sticky, an announcement or global.
+
+- `topic.sticky` and `topic.announce` are posting rights. They let a member start a
+  sticky topic or an announcement in that forum. They do not let the member change
+  the type of a topic later.
+- `mod.pin` lets a moderator start a sticky topic or an announcement, and change a
+  topic of that forum to normal, sticky or an announcement.
+- Global is for an admin only. Only an admin starts a global topic, and only an admin
+  changes a topic to or from global. `topic.global` is reserved and unused: gobb does
+  not read it.
+- The `admin` right replaces `mod.pin` only for a change to or from global. For any
+  other change, an admin needs `mod.pin` like everyone else, as `mod.lock` has no
+  admin bypass. An admin with `mod.pin` NEVER cannot make those changes.
+- A moved-topic marker has no type to give. An admin may set it to normal, to unpin
+  a marker from an import. Every other change to a marker is refused.
+- The migration and the importer give `mod.pin` wherever `mod.lock` is set, with the
+  same holder, scope and value. The importer does this only for a bundle that names
+  `mod.pin` nowhere.
 
 An upload needs both `account.attach` and the forum's `attach.upload`. A download needs
 both `account.download` and `attach.download`. Search needs `account.search`, and shows
@@ -455,6 +474,10 @@ time window that has no approved posts.
 
 **In place, on any post** (for those with the rights): delete (soft; restorable), edit,
 move topic, lock topic, approve.
+
+**Set the type** of a topic, on the topic page, in the row of Lock: normal, sticky or
+an announcement with `mod.pin` in the forum; to or from global with `admin` (section
+9.1). Each change writes a log row.
 
 **Spammer action** on a user: ban the account, its email and its last IPs, and delete
 all its posts and PMs. One click with a confirm. **(owner:** "deleting posts, banning

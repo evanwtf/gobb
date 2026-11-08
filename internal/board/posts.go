@@ -102,6 +102,10 @@ type TopicPage struct {
 	// CanLock and CanUnlock say which topic action v is offered: the rule of
 	// [SetTopicLock] for the change to the other state. At most one is true.
 	CanLock, CanUnlock bool
+	// Kinds are the types that v may give the topic, with its type now among
+	// them, by the rule of [SetTopicKind]: the page offers them in a select. It
+	// is nil when v may not change the type.
+	Kinds []string
 }
 
 // TopicView returns page number page (from 1) of topic topicID as v sees it.
@@ -184,6 +188,7 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 	if out.Buttons, err = pageButtons(ctx, q, v, out, out.CanReply); err != nil {
 		return TopicPage{}, err
 	}
+	out.Kinds = kindChoices(v, topicRef{id: out.Topic.ID, forumID: out.Forum.ID, kind: out.Topic.Kind})
 	if err := lockOffers(ctx, q, v, &out); err != nil {
 		return TopicPage{}, err
 	}

@@ -289,6 +289,7 @@ var bodyCaps = []struct {
 	{"/p/{id}/approve", "/p/1/approve", 4 << 10},
 	{"/t/{id}/lock", "/t/1/lock", 4 << 10},
 	{"/t/{id}/unlock", "/t/1/unlock", 4 << 10},
+	{"/t/{id}/type", "/t/1/type", 4 << 10},
 	{"/account/password", "/account/password", maxAccountBody},
 	{"/account/email", "/account/email", maxAccountBody},
 	{"/account/signature", "/account/signature", maxPostingBody},

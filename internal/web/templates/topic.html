@@ -27,6 +27,18 @@
     <button type="submit" class="button-quiet">Unlock</button>
   </form>
   {{- end}}
+  {{- with .Data.Kinds}}
+  <form class="mark-form kind-form" method="post" action="{{$.Data.KindHref}}">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label for="topic-kind">Topic type</label>
+    <select id="topic-kind" name="kind">
+      {{- range .}}
+      <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+      {{- end}}
+    </select>
+    <button type="submit" class="button-quiet">Set</button>
+  </form>
+  {{- end}}
   {{template "pager" pagerAt .Data.Pager "Pages, top"}}
 </div>
 

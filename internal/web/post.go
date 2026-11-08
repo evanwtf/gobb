@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -44,6 +45,10 @@ type postFormData struct {
 	ShowTitle  bool
 	ShowName   bool
 	ShowReason bool
+	// Kinds are the options of the "Topic type" select of a new topic, with the
+	// sent type (or Normal) selected. It is nil for a viewer who may give no type
+	// but normal, and for a reply and an edit.
+	Kinds []kindOption
 	// Title, GuestName, Reason and Source hold what the member sent, byte for byte.
 	Title, GuestName, Reason, Source string
 	Err                              fieldErrors
@@ -182,6 +187,7 @@ func (s *site) formFrame(ctx context.Context, r *http.Request, p *page, kind pos
 			return fd, nil, err
 		}
 		fd.Context = "in " + forum.Name
+		fd.Kinds = kindOptions(board.NewTopicKinds(v, id), "normal")
 		fd.Crumbs = append(s.crumbsFor(crumbs), crumb{Label: forum.Name, Href: s.path("f", idText)})
 	case kindReply:
 		rights, hard = splitErr(board.CanReply(ctx, s.pool, v, id))
@@ -323,6 +329,9 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		form := r.PostForm
 		d := board.Draft{Title: form.Get("title"), Source: form.Get("body"), GuestName: form.Get("guest_name"), IP: s.clientIP(r)}
+		if kind == kindTopic {
+			d.Kind = form.Get("kind")
+		}
 		reason := form.Get("reason")
 		id, ok := pathID(r, "id")
 		if !ok {
@@ -346,6 +355,12 @@ func (s *site) postSubmit(kind postKind) http.HandlerFunc {
 			fd.Title = d.Title
 		}
 		fd.Source, fd.GuestName, fd.Reason = d.Source, d.GuestName, reason
+		// The select keeps the type that the member sent, when it is one offered.
+		if slices.ContainsFunc(fd.Kinds, func(o kindOption) bool { return o.Value == d.Kind }) {
+			for i := range fd.Kinds {
+				fd.Kinds[i].Selected = fd.Kinds[i].Value == d.Kind
+			}
+		}
 		if !postOK {
 			s.tooFast(w, r, p, fd, rights, hard, postWait, msgPostingTooFast)
 			return

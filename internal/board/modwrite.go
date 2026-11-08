@@ -2,7 +2,10 @@ package board
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -246,5 +249,144 @@ func SetTopicLock(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int
 			action = "topic.lock"
 		}
 		return logMod(ctx, tx, v, action, "topic", t.id, "{}", now)
+	})
+}
+
+// ErrBadKind is the error of [SetTopicKind] for a kind that is not one of
+// [TopicKinds].
+var ErrBadKind = errors.New("board: not a topic kind")
+
+// TopicKinds are the types of a topic, in the order a form offers them. A
+// sticky topic leads the topic list of its forum. An announcement is pinned
+// above the list of its forum, and a global topic above the list of every forum
+// (see ForumView).
+var TopicKinds = []string{"normal", "sticky", "announce", "global"}
+
+// mayChangeKind is the rule of [SetTopicKind]: may v change topic t from its
+// type to kind? Both types must be in [TopicKinds].
+//
+//   - A guest never changes a type.
+//   - A change to or from global needs the admin right, and nothing else. A
+//     global topic shows in every forum, so only an admin sets or clears it.
+//   - Any other change needs mod.pin in the forum of the topic. The admin right
+//     does not replace it: an admin with mod.pin Never cannot make the change.
+//   - A moved-topic marker has no type to give. An admin may set it to normal
+//     only, so that an imported marker that is pinned can be unpinned.
+func mayChangeKind(v Viewer, t topicRef, kind string) bool {
+	if v.UserID == 0 {
+		return false
+	}
+	if t.moved {
+		return kind == "normal" && v.Perms.IsAdmin()
+	}
+	if t.kind == "global" || kind == "global" {
+		return v.Perms.IsAdmin()
+	}
+	return v.Perms.Has("mod.pin", t.forumID)
+}
+
+// kindChoices returns the types that v may give topic t, and its type now, in
+// the order of [TopicKinds]. It is nil when v may change the type to nothing
+// else.
+func kindChoices(v Viewer, t topicRef) []string {
+	var out []string
+	changes := false
+	for _, k := range TopicKinds {
+		switch {
+		case k == t.kind:
+			out = append(out, k)
+		case mayChangeKind(v, t, k):
+			out = append(out, k)
+			changes = true
+		}
+	}
+	if !changes {
+		return nil
+	}
+	return out
+}
+
+// NewTopicKinds returns the types that v may give a new topic in forum
+// forumID, in the order of [TopicKinds]:
+//
+//   - normal, always;
+//   - sticky, with topic.sticky or mod.pin in the forum;
+//   - announce, with topic.announce or mod.pin in the forum;
+//   - global, with the admin right.
+//
+// It is nil when v may give no type but normal, and for a guest. topic.global is
+// not read: global is for an admin only.
+func NewTopicKinds(v Viewer, forumID int64) []string {
+	if v.UserID == 0 {
+		return nil
+	}
+	pin := v.Perms.Has("mod.pin", forumID)
+	out := []string{"normal"}
+	if pin || v.Perms.Has("topic.sticky", forumID) {
+		out = append(out, "sticky")
+	}
+	if pin || v.Perms.Has("topic.announce", forumID) {
+		out = append(out, "announce")
+	}
+	if v.Perms.IsAdmin() {
+		out = append(out, "global")
+	}
+	if len(out) == 1 {
+		return nil
+	}
+	return out
+}
+
+// kindDetails is the mod_log details of a change of type.
+func kindDetails(from, to string) string {
+	data, err := json.Marshal(map[string]string{"from": from, "to": to})
+	if err != nil {
+		// A map of strings always encodes.
+		panic("board: encode log details: " + err.Error())
+	}
+	return string(data)
+}
+
+// SetTopicKind sets the type of topic topicID to kind, one of [TopicKinds]. The
+// rule is [mayChangeKind].
+//
+//   - A topic that v cannot see is [ErrNotFound].
+//   - A viewer who may change the type of the topic to nothing gets
+//     [ErrForbidden], whatever kind holds. Then a kind that is not a type gives
+//     [ErrBadKind], and a type that v may not give gives [ErrForbidden].
+//   - A topic that has the type already is left alone, with no log row.
+//   - A change writes one mod_log row, action topic.kind, with the old and the
+//     new type in its details.
+//
+// The type moves the topic between the lists of the forum page: the regular list
+// (normal and sticky), the announcements of its forum, and the global topics. The
+// topic stays in its forum, so the counters of the topic and the forum do not
+// change. now is the time of the log row.
+func SetTopicKind(ctx context.Context, pool *pgxpool.Pool, v Viewer, topicID int64, kind string, now time.Time) error {
+	return inTx(ctx, pool, func(tx pgx.Tx) error {
+		sc, err := newScope(ctx, tx, v)
+		if err != nil {
+			return err
+		}
+		t, err := lockTopic(ctx, tx, sc, topicID)
+		if err != nil {
+			return err
+		}
+		if kindChoices(v, t) == nil {
+			return ErrForbidden
+		}
+		if !slices.Contains(TopicKinds, kind) {
+			return ErrBadKind
+		}
+		if t.kind == kind {
+			return nil
+		}
+		if !mayChangeKind(v, t, kind) {
+			return ErrForbidden
+		}
+		if _, err := tx.Exec(ctx, `update topics set kind = $2 where id = $1`, t.id, kind); err != nil {
+			return fmt.Errorf("board: set the type of topic %d: %w", t.id, err)
+		}
+		return logMod(ctx, tx, v, "topic.kind", "topic", t.id, kindDetails(t.kind, kind), now)
 	})
 }

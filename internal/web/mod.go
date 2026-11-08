@@ -91,6 +91,57 @@ func (s *site) topicLock(locked bool) http.HandlerFunc {
 	}
 }
 
+// kindLabels are the words that the "Topic type" select shows for each type.
+var kindLabels = map[string]string{
+	"normal":   "Normal",
+	"sticky":   "Sticky",
+	"announce": "Announcement",
+	"global":   "Global",
+}
+
+// kindOption is one option of a "Topic type" select.
+type kindOption struct {
+	Value, Label string
+	Selected     bool
+}
+
+// kindOptions builds the options of a "Topic type" select from the types that the
+// board allows, with selected marked. It is nil when kinds is empty.
+func kindOptions(kinds []string, selected string) []kindOption {
+	var out []kindOption
+	for _, k := range kinds {
+		out = append(out, kindOption{Value: k, Label: kindLabels[k], Selected: k == selected})
+	}
+	return out
+}
+
+// topicKind serves POST /t/{id}/type: it sets the type of the topic to the
+// value of the field "kind", and answers 303 to the topic. The board checks the
+// topic and the rights first: a missing or hidden topic answers 404, and a
+// viewer who may not change the type answers 403. Then a value that is not a
+// type answers 400. A refusal changes nothing.
+func (s *site) topicKind(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		s.notFound(w, r)
+		return
+	}
+	p, err := s.begin(w, r, "", "index")
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	err = board.SetTopicKind(r.Context(), s.pool, p.Viewer, id, r.PostForm.Get("kind"), s.opt.Now())
+	if errors.Is(err, board.ErrBadKind) {
+		s.fail(w, r, http.StatusBadRequest, "Bad request", "The topic type is not valid.")
+		return
+	}
+	if s.actionFailed(w, r, p, err, "change the type of this topic") {
+		return
+	}
+	http.Redirect(w, r, s.path("t", strconv.FormatInt(id, 10)), http.StatusSeeOther)
+}
+
 // actionFailed answers the error of a moderator step and reports whether it did:
 // 404 for what the viewer may not see, 403 for what the viewer may not do, 500
 // (503 for a timeout) for a failure of the database.

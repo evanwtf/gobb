@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +82,11 @@ type Draft struct {
 	Source string
 	// GuestName is the name of a guest. A member's write ignores it.
 	GuestName string
+	// Kind is the type of a new topic: "normal", "sticky", "announce" or
+	// "global". "" means normal. [NewTopic] applies it only when the writer may
+	// give that type in the forum ([NewTopicKinds]), and ignores it otherwise. A
+	// reply and an edit ignore it.
+	Kind string
 	// IP is the address of the writer. It is stored with every new post, and a new
 	// post without it is an error. For a guest it also keeps duplicates apart and
 	// enforces address bans.
@@ -396,7 +402,9 @@ func inetArg(ip netip.Addr) any {
 type topicRef struct {
 	id, forumID, authorID int64 // authorID is 0 for a guest
 	visibility            string
-	locked, moved         bool
+	// kind is "normal", "sticky", "announce" or "global".
+	kind          string
+	locked, moved bool
 	// before is the state the topic had before it was deleted: "approved",
 	// "unapproved", or "" when it is not deleted or no state was kept.
 	before string
@@ -421,11 +429,11 @@ func readTopic(ctx context.Context, q db.Querier, sc scope, id int64, lock bool)
 		forUpdate = "\n   for no key update of t"
 	}
 	err := q.QueryRow(ctx, `
-select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.locked, t.moved_to_topic_id,
+select t.forum_id, coalesce(t.author_id, 0), t.visibility, t.kind, t.locked, t.moved_to_topic_id,
        coalesce(t.visibility_before_delete, '')
   from topics t
  where t.id = $5 and `+visible("t", 1)+forUpdate, append(sc.args(), id)...).
-		Scan(&t.forumID, &t.authorID, &t.visibility, &t.locked, &moved, &t.before)
+		Scan(&t.forumID, &t.authorID, &t.visibility, &t.kind, &t.locked, &moved, &t.before)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return topicRef{}, ErrNotFound
 	}
@@ -674,6 +682,10 @@ func visibilityFor(v Viewer, forumID int64) string {
 //   - It must be a forum, not a category or a link; v needs topic.start in it;
 //     and the forum must be unlocked, or v needs mod.lock. Else [ErrForbidden].
 //   - A held topic (v lacks post.no_approval) is held as a whole.
+//   - The topic is normal, or of d.Kind when v may give that type in the forum
+//     ([NewTopicKinds]). A type that v may not give is ignored, not refused: the
+//     form never offers it, so only a forged request sends it. A topic that
+//     starts with a type other than normal writes a topic.kind row to mod_log.
 //   - A topic with the same author, forum, title and text from the last 60
 //     seconds is the same topic sent twice: the write returns its first post.
 //
@@ -723,11 +735,15 @@ func NewTopic(ctx context.Context, pool *pgxpool.Pool, v Viewer, forumID int64, 
 			return err
 		}
 		vis := visibilityFor(v, forumID)
+		topicKind := "normal"
+		if d.Kind != "" && slices.Contains(NewTopicKinds(v, forumID), d.Kind) {
+			topicKind = d.Kind
+		}
 		var topicID int64
 		err = tx.QueryRow(ctx, `
 insert into topics (forum_id, title, author_id, author_name, created_at, last_post_at, kind, locked, visibility)
-values ($1, $2, $3, $4, $5, $5, 'normal', false, $6) returning id`,
-			forumID, title, nullID(au.id), au.name, now, vis).Scan(&topicID)
+values ($1, $2, $3, $4, $5, $5, $7, false, $6) returning id`,
+			forumID, title, nullID(au.id), au.name, now, vis, topicKind).Scan(&topicID)
 		if err != nil {
 			return fmt.Errorf("board: insert topic: %w", err)
 		}
@@ -736,7 +752,13 @@ values ($1, $2, $3, $4, $5, $5, 'normal', false, $6) returning id`,
 		if postID, err = insertPost(ctx, tx, p); err != nil {
 			return err
 		}
-		return afterNewPost(ctx, tx, v, p)
+		if err := afterNewPost(ctx, tx, v, p); err != nil {
+			return err
+		}
+		if topicKind != "normal" {
+			return logMod(ctx, tx, v, "topic.kind", "topic", topicID, kindDetails("normal", topicKind), now)
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, err
