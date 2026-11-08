@@ -8,6 +8,23 @@
 <meta name="robots" content="noindex">
 {{- end}}
 <title>{{if .Title}}{{.Title}} - {{end}}{{.Settings.BoardName}}</title>
+{{- if .Canonical}}
+<link rel="canonical" href="{{.Canonical}}">
+{{- end}}
+{{- with .Meta}}
+{{- if .Description}}
+<meta name="description" content="{{.Description}}">
+{{- end}}
+<meta property="og:title" content="{{.Title}}">
+{{- if .Description}}
+<meta property="og:description" content="{{.Description}}">
+{{- end}}
+{{- if .URL}}
+<meta property="og:url" content="{{.URL}}">
+{{- end}}
+<meta property="og:type" content="{{.Type}}">
+<meta property="og:site_name" content="{{.SiteName}}">
+{{- end}}
 <link rel="icon" type="image/svg+xml" href="{{.Icon}}">
 <link rel="stylesheet" href="{{.CSS}}">
 <script src="{{.JS}}" defer></script>

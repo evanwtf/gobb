@@ -440,7 +440,7 @@ func TestLegacyCollisionWarns(t *testing.T) {
 	b.LegacyFiles = append(b.LegacyFiles, bundle.LegacyFile{Prefix: "files/smilies/", Dir: "smilies"})
 	pool, dataDir := boardtest.Load(t, b)
 	logs := captureLogs(t)
-	if _, err := New(context.Background(), pool, Options{DataDir: dataDir}); err != nil {
+	if _, err := New(context.Background(), pool, Options{DataDir: dataDir, PublicURL: "https://board.example.org/"}); err != nil {
 		t.Fatal(err)
 	}
 	var warns []string
@@ -462,7 +462,8 @@ func TestLegacyCollisionWarns(t *testing.T) {
 	// comes from the load.
 	pool2, dir2 := boardtest.Load(t, bundletest.Small())
 	logs = captureLogs(t)
-	if _, err := New(context.Background(), pool2, Options{DataDir: dir2}); err != nil {
+	// A public URL, so that the warning of a site without one stays out.
+	if _, err := New(context.Background(), pool2, Options{DataDir: dir2, PublicURL: "https://board.example.org/"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, l := range logs.lines() {
@@ -539,6 +540,7 @@ func TestLegacyUnreachableWarns(t *testing.T) {
 		legacyRoute("old/a/../y.cgi", "home", nil, nil, 0),
 		legacyRoute("healthz", "home", nil, nil, 0),
 		legacyRoute("favicon.ico", "home", nil, nil, 0),
+		legacyRoute("robots.txt", "home", nil, nil, 0),
 		legacyRoute("old/z/", "home", nil, nil, 0),
 		legacyRoute("healthz/", "home", nil, nil, 0),
 	)
@@ -549,7 +551,9 @@ func TestLegacyUnreachableWarns(t *testing.T) {
 	warned := func(base string) []string {
 		pool, dataDir := boardtest.Load(t, b)
 		logs := captureLogs(t)
-		if _, err := New(context.Background(), pool, Options{DataDir: dataDir, BasePath: base}); err != nil {
+		// A public URL, so that the warning of a site without one stays out.
+		opt := Options{DataDir: dataDir, BasePath: base, PublicURL: "https://board.example.org" + base}
+		if _, err := New(context.Background(), pool, opt); err != nil {
 			t.Fatal(err)
 		}
 		var out []string
@@ -560,10 +564,10 @@ func TestLegacyUnreachableWarns(t *testing.T) {
 		}
 		return out
 	}
-	// At the root, the root mux owns /healthz and /favicon.ico, and the guard
+	// At the root, the root mux owns /healthz, /favicon.ico and /robots.txt, and the guard
 	// refuses the three unclean paths and the unclean prefix.
 	got := warned("/")
-	for _, want := range []string{"path=old//x.cgi", "path=old/./y.cgi", "path=old/a/../y.cgi", "path=healthz ", "path=favicon.ico ", "prefix=old//img/"} {
+	for _, want := range []string{"path=old//x.cgi", "path=old/./y.cgi", "path=old/a/../y.cgi", "path=healthz ", "path=favicon.ico ", "path=robots.txt ", "prefix=old//img/"} {
 		n := 0
 		for _, l := range got {
 			if strings.Contains(l+" ", want) {
@@ -574,17 +578,17 @@ func TestLegacyUnreachableWarns(t *testing.T) {
 			t.Errorf("%d warnings for %q, want 1:\n%s", n, want, strings.Join(got, "\n"))
 		}
 	}
-	if len(got) != 6 {
-		t.Errorf("%d warnings at base /, want 6:\n%s", len(got), strings.Join(got, "\n"))
+	if len(got) != 7 {
+		t.Errorf("%d warnings at base /, want 7:\n%s", len(got), strings.Join(got, "\n"))
 	}
-	// Under a base path, /healthz and /favicon.ico are at the host root and do
+	// Under a base path, /healthz, /favicon.ico and /robots.txt are at the host root and do
 	// not hide a route.
 	got = warned("/forum/")
 	if len(got) != 4 {
 		t.Errorf("%d warnings at base /forum/, want 4:\n%s", len(got), strings.Join(got, "\n"))
 	}
 	for _, l := range got {
-		if strings.Contains(l+" ", "path=healthz ") || strings.Contains(l+" ", "path=favicon.ico ") {
+		if strings.Contains(l+" ", "path=healthz ") || strings.Contains(l+" ", "path=favicon.ico ") || strings.Contains(l+" ", "path=robots.txt ") {
 			t.Errorf("a host-root route warned under a base path: %s", l)
 		}
 	}

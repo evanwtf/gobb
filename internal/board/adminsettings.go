@@ -32,6 +32,7 @@ const (
 	msgNameLong    = "Use at most 100 characters."
 	msgDescLong    = "Use at most 500 characters."
 	msgSchemeFault = "Pick one of the color schemes."
+	msgAICrawlers  = "Pick one of the three crawler policies."
 )
 
 // The keys of the table settings, as the details of a mod_log row names them.
@@ -41,19 +42,23 @@ const (
 	keyTimezone    = "timezone"
 	keyScheme      = "default_color_scheme"
 	keyHeader      = "header_image"
+	keyAICrawlers  = "ai_crawlers"
 )
 
 // SettingsChange is the board settings form: the new value of each setting that
 // the form holds.
 type SettingsChange struct {
 	Name, Description, Timezone, Scheme string
+	// AICrawlers is the policy of robots.txt for the AI crawlers: one of
+	// [AICrawlerPolicies].
+	AICrawlers string
 }
 
 // UpdateSettings stores the values of c as the board name, the board
-// description, the board's time zone and the default color scheme. It runs for
-// an admin v through [AdminWrite] and returns the names of the keys that
-// changed, in this order: board_name, board_description, timezone,
-// default_color_scheme. The mod_log row is {action "settings.update", target
+// description, the board's time zone, the default color scheme and the AI
+// crawler policy. It runs for an admin v through [AdminWrite] and returns the
+// names of the keys that changed, in this order: board_name, board_description,
+// timezone, default_color_scheme, ai_crawlers. The mod_log row is {action "settings.update", target
 // type "settings", target ID 0} with those names as details.keys.
 //
 //   - Name and description are trimmed. The name has 1 to [MaxBoardName]
@@ -63,9 +68,10 @@ type SettingsChange struct {
 //   - The time zone is in [tz.Zones]. The zone that the board already has is also
 //     accepted, so that a board with an odd imported zone can save its name.
 //   - The scheme is one of [Schemes].
+//   - The AI crawler policy is one of [AICrawlerPolicies].
 //
 // Every field that fails gives an [*InputError] on its name ("name",
-// "description", "timezone" or "scheme"). One field comes back as it is, and
+// "description", "timezone", "scheme" or "aicrawlers"). One field comes back as it is, and
 // several as [errors.Join] of them in that order. A save that changes nothing
 // gives [ErrNoChange], writes no row and changes nothing. A viewer who is not an
 // admin gets [ErrForbidden].
@@ -88,11 +94,17 @@ func UpdateSettings(ctx context.Context, pool *pgxpool.Pool, v Viewer, c Setting
 			{keyDescription, cur.BoardDescription, c.Description},
 			{keyTimezone, cur.Timezone, c.Timezone},
 			{keyScheme, cur.DefaultScheme, c.Scheme},
+			{keyAICrawlers, cur.AICrawlers, c.AICrawlers},
 		} {
 			if f.old == f.new {
 				continue
 			}
-			if err := storeSetting(ctx, tx, f.key, f.new); err != nil {
+			store := storeSetting
+			if f.key == keyAICrawlers {
+				// A board that never saved the policy has no row for it.
+				store = upsertSetting
+			}
+			if err := store(ctx, tx, f.key, f.new); err != nil {
 				return Change{}, err
 			}
 			changed = append(changed, f.key)
@@ -138,6 +150,9 @@ func checkSettings(c SettingsChange, cur Settings) error {
 	if !ValidScheme(c.Scheme) {
 		errs = append(errs, inputError("scheme", msgSchemeFault))
 	}
+	if !ValidAICrawlers(c.AICrawlers) {
+		errs = append(errs, inputError("aicrawlers", msgAICrawlers))
+	}
 	if len(errs) == 1 {
 		return errs[0]
 	}
@@ -166,6 +181,21 @@ func storeSetting(ctx context.Context, tx pgx.Tx, key string, value any) error {
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("board: setting %q is missing", key)
+	}
+	return nil
+}
+
+// upsertSetting stores value as the value of key, and adds the row when the key
+// has none.
+func upsertSetting(ctx context.Context, tx pgx.Tx, key string, value any) error {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("board: encode setting %s: %w", key, err)
+	}
+	_, err = tx.Exec(ctx, `insert into settings (key, value) values ($1, $2::jsonb)
+on conflict (key) do update set value = excluded.value`, key, string(b))
+	if err != nil {
+		return fmt.Errorf("board: store setting %s: %w", key, err)
 	}
 	return nil
 }

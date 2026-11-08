@@ -114,6 +114,8 @@ func (s *site) forum(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Title = fp.Forum.Name
+	p.description = excerpt(fp.Forum.Description, descriptionLimit)
+	p.canonicalPath = pageHref(s.path("f", strconv.FormatInt(id, 10)), fp.Page)
 	p.Data = forumData{
 		Forum:      fp.Forum,
 		Crumbs:     s.crumbsFor(fp.Crumbs),

@@ -37,7 +37,7 @@ func loadSettings(t *testing.T, pool *pgxpool.Pool) board.Settings {
 
 // current is the settings form with the values the small board has now.
 func current(s board.Settings) board.SettingsChange {
-	return board.SettingsChange{Name: s.BoardName, Description: s.BoardDescription, Timezone: s.Timezone, Scheme: s.DefaultScheme}
+	return board.SettingsChange{Name: s.BoardName, Description: s.BoardDescription, Timezone: s.Timezone, Scheme: s.DefaultScheme, AICrawlers: s.AICrawlers}
 }
 
 func TestUpdateSettings(t *testing.T) {
@@ -70,14 +70,14 @@ func TestUpdateSettings(t *testing.T) {
 	}
 
 	// All four, in order. The description may be empty.
-	keys, err = board.UpdateSettings(ctx, pool, alice, board.SettingsChange{Name: "Second", Description: "A line.", Timezone: "Asia/Tokyo", Scheme: "slate-light"}, t0)
+	keys, err = board.UpdateSettings(ctx, pool, alice, board.SettingsChange{Name: "Second", Description: "A line.", Timezone: "Asia/Tokyo", Scheme: "slate-light", AICrawlers: "all"}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"board_name", "board_description", "timezone", "default_color_scheme"}; !slices.Equal(keys, want) {
 		t.Errorf("keys = %v, want %v", keys, want)
 	}
-	if _, err := board.UpdateSettings(ctx, pool, alice, board.SettingsChange{Name: "Second", Timezone: "Asia/Tokyo", Scheme: "slate-light"}, t0); err != nil {
+	if _, err := board.UpdateSettings(ctx, pool, alice, board.SettingsChange{Name: "Second", Timezone: "Asia/Tokyo", Scheme: "slate-light", AICrawlers: "all"}, t0); err != nil {
 		t.Fatal(err)
 	}
 	if s := loadSettings(t, pool); s.BoardDescription != "" {
@@ -97,7 +97,7 @@ func TestUpdateSettingsNoChange(t *testing.T) {
 	rows := logCount(t, pool)
 	c := current(loadSettings(t, pool))
 	// The same values, and the same values with spaces around the text.
-	for _, in := range []board.SettingsChange{c, {Name: " " + c.Name + " ", Description: c.Description, Timezone: c.Timezone, Scheme: c.Scheme}} {
+	for _, in := range []board.SettingsChange{c, {Name: " " + c.Name + " ", Description: c.Description, Timezone: c.Timezone, Scheme: c.Scheme, AICrawlers: c.AICrawlers}} {
 		keys, err := board.UpdateSettings(ctx, pool, alice, in, t0)
 		if !errors.Is(err, board.ErrNoChange) || keys != nil {
 			t.Errorf("same values: %v, %v; want ErrNoChange", keys, err)
@@ -137,6 +137,9 @@ func TestUpdateSettingsRefuses(t *testing.T) {
 		{"empty zone", func(c *board.SettingsChange) { c.Timezone = "" }, "timezone", "Pick a time zone from the list."},
 		{"unknown scheme", func(c *board.SettingsChange) { c.Scheme = "neon" }, "scheme", "Pick one of the color schemes."},
 		{"empty scheme", func(c *board.SettingsChange) { c.Scheme = "" }, "scheme", "Pick one of the color schemes."},
+		{"unknown crawler policy", func(c *board.SettingsChange) { c.AICrawlers = "neon" }, "aicrawlers", "Pick one of the three crawler policies."},
+		{"empty crawler policy", func(c *board.SettingsChange) { c.AICrawlers = "" }, "aicrawlers", "Pick one of the three crawler policies."},
+		{"crawler policy in capitals", func(c *board.SettingsChange) { c.AICrawlers = "ALL" }, "aicrawlers", "Pick one of the three crawler policies."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,7 +161,7 @@ func TestUpdateSettingsRefuses(t *testing.T) {
 	}
 
 	// Several faults come back together, so the form shows each one.
-	_, err := board.UpdateSettings(ctx, pool, alice, board.SettingsChange{Name: "", Description: strings.Repeat("d", 501), Timezone: "x", Scheme: "y"}, t0)
+	_, err := board.UpdateSettings(ctx, pool, alice, board.SettingsChange{Name: "", Description: strings.Repeat("d", 501), Timezone: "x", Scheme: "y", AICrawlers: "z"}, t0)
 	var fields []string
 	for _, e := range joined(err) {
 		var in *board.InputError
@@ -167,7 +170,7 @@ func TestUpdateSettingsRefuses(t *testing.T) {
 		}
 		fields = append(fields, in.Field)
 	}
-	if want := []string{"name", "description", "timezone", "scheme"}; !slices.Equal(fields, want) {
+	if want := []string{"name", "description", "timezone", "scheme", "aicrawlers"}; !slices.Equal(fields, want) {
 		t.Errorf("fields = %v, want %v", fields, want)
 	}
 	if loadSettings(t, pool) != before || logCount(t, pool) != rows {
@@ -343,5 +346,43 @@ func TestUpdateSettingsConcurrent(t *testing.T) {
 	}
 	if n := loadSettings(t, pool).BoardName; !strings.HasPrefix(n, "Name x") {
 		t.Errorf("name = %q", n)
+	}
+}
+
+// The AI crawler policy defaults to "all" on a board that never saved it. A save
+// adds the row, a second save changes it, and each one names the key.
+func TestUpdateSettingsAICrawlers(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	alice := viewerFor(t, pool, 1)
+	before := loadSettings(t, pool)
+	if before.AICrawlers != board.AICrawlersAll {
+		t.Fatalf("default policy = %q, want %q", before.AICrawlers, board.AICrawlersAll)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `select count(*) from settings where key = 'ai_crawlers'`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the import wrote an ai_crawlers row (%d, %v)", rows, err)
+	}
+	for _, policy := range []string{board.AICrawlersSearch, board.AICrawlersNone, board.AICrawlersAll} {
+		c := current(loadSettings(t, pool))
+		c.AICrawlers = policy
+		keys, err := board.UpdateSettings(ctx, pool, alice, c, t0)
+		if err != nil || !slices.Equal(keys, []string{"ai_crawlers"}) {
+			t.Fatalf("save %s: %v %v", policy, keys, err)
+		}
+		if got := loadSettings(t, pool).AICrawlers; got != policy {
+			t.Errorf("policy = %q, want %q", got, policy)
+		}
+	}
+	_, _, _, _, details := lastSettingsLog(t, pool)
+	if details != `{"via": "web", "keys": ["ai_crawlers"]}` {
+		t.Errorf("log details = %s", details)
+	}
+	// A stored value that gobb does not know reads as the default.
+	if _, err := pool.Exec(ctx, `update settings set value = '"later"' where key = 'ai_crawlers'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadSettings(t, pool).AICrawlers; got != board.AICrawlersAll {
+		t.Errorf("unknown stored policy reads as %q, want %q", got, board.AICrawlersAll)
 	}
 }

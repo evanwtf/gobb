@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.13.0 (2026-11-08)
+
+- **Search engines and AI crawlers can index the public board** (#3).
+  - `/robots.txt` keeps every crawler out of search results, names the sitemap, and
+    applies a new AI crawler setting on the admin settings page: all (the default),
+    search and answers only, or none.
+  - `/sitemap.xml` lists every page a guest can open, each with `lastmod`, and
+    becomes a sitemap index past 50,000 URLs. It is cached for 15 minutes, and one
+    request at a time rebuilds it.
+  - Each indexable page has one canonical link, taken from the page served. Guest
+    pages get a meta description and Open Graph tags. The member list is now
+    `noindex`.
+- **Set `GOBB_PUBLIC_URL`.** It is the board's public address, and it now works
+  without email. Without it, pages carry no canonical link or `og:url`, the sitemap
+  and robots.txt take the host from the request, and the server logs a warning at
+  start.
+
 ## 0.12.0 (2026-11-08)
 
 - **Imported private messages join their conversations** (#35, the last part of

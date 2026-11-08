@@ -768,7 +768,7 @@ var tokenRows = []tokenRow{
 	{"/admin/forums/2/reorder", "alice", url.Values{"dir": {"down"}}, `insert into forums (parent_id, kind, name, position) values (1, 'forum', 'Second', 9)`},
 	{"/admin/forums/2/lock", "alice", url.Values{}, ""},
 	{"/admin/forums/2/unlock", "alice", url.Values{}, `update forums set locked = true where id = 2`},
-	{"/admin/settings", "alice", url.Values{"board_name": {"No token"}, "board_description": {""}, "timezone": {"Asia/Tokyo"}, "scheme": {"slate-deep"}}, ""},
+	{"/admin/settings", "alice", url.Values{"board_name": {"No token"}, "board_description": {""}, "timezone": {"Asia/Tokyo"}, "scheme": {"slate-deep"}, "ai_crawlers": {"all"}}, ""},
 	{"/admin/settings/header", "alice", url.Values{}, ""},
 	{"/admin/settings/header/remove", "alice", url.Values{}, ""},
 	{"/admin/settings/mail-test", "alice", url.Values{}, ""},

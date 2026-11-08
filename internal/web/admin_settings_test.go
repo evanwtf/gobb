@@ -85,7 +85,7 @@ func newSettingsEnv(t *testing.T, opt Options) *settingsEnv {
 func (e *settingsEnv) form(t *testing.T) url.Values {
 	t.Helper()
 	s := e.stored(t)
-	return url.Values{"board_name": {s.BoardName}, "board_description": {s.BoardDescription}, "timezone": {s.Timezone}, "scheme": {s.DefaultScheme}}
+	return url.Values{"board_name": {s.BoardName}, "board_description": {s.BoardDescription}, "timezone": {s.Timezone}, "scheme": {s.DefaultScheme}, "ai_crawlers": {s.AICrawlers}}
 }
 
 // withFields returns f with the given fields replaced.

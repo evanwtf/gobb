@@ -143,6 +143,7 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 	d.Pager = newPager(s.path("t", strconv.FormatInt(id, 10)), tp.Page, tp.Pages)
 	p.Title = tp.Topic.Title
 	p.Data = d
+	s.describeTopic(r, p, tp)
 	// Only a navigation has bookkeeping to write. Any other request (an image
 	// load, a prefetch) gets nil, so the page is built once and not twice.
 	var after func()
@@ -150,6 +151,30 @@ func (s *site) topic(w http.ResponseWriter, r *http.Request) {
 		after = func() { s.countView(r, p.Viewer, &tp) }
 	}
 	s.renderThen(w, http.StatusOK, "topic.html", p, after)
+}
+
+// describeTopic sets the meta description of a topic page for a guest: an
+// excerpt of the first post that the guest sees. Page 1 holds that post; a later
+// page reads it. A topic that is not approved gets no description at all.
+func (s *site) describeTopic(r *http.Request, p *page, tp board.TopicPage) {
+	p.ogType = "article"
+	p.canonicalPath = pageHref(s.path("t", strconv.FormatInt(tp.Topic.ID, 10)), tp.Page)
+	if p.Viewer.UserID != 0 {
+		return
+	}
+	if tp.Topic.Visibility != "approved" {
+		p.private = true
+		return
+	}
+	var first *markup.Node
+	if tp.Page == 1 && len(tp.Posts) > 0 {
+		first = tp.Posts[0].Tree
+	} else if tree, err := board.FirstPost(r.Context(), s.pool, p.Viewer, tp.Topic.ID); err == nil {
+		first = tree
+	}
+	if first != nil {
+		p.description = excerpt(treeText(first), descriptionLimit)
+	}
 }
 
 // newPollView adds the share of each option, as a whole percent of the total.
