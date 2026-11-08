@@ -60,8 +60,11 @@ func newInFlightLimits(opt Options) inFlightLimits {
 //
 // The slot is given back in a deferred call, so a handler that panics frees it
 // too.
+//
+// A guest page in the page cache skips the limits too ([site.serveGuestHit]):
+// it costs no render and no database, and it is what most visitors ask for.
 func (s *site) limitInFlight(next http.Handler) http.Handler {
-	return limitInFlight(s.inFlight, s.base, s.refuseInFlight, next)
+	return limitInFlight(s.inFlight, s.base, s.refuseInFlight, s.serveGuestHit, next)
 }
 
 // refuseInFlight answers a request past an in-flight limit: 503 with
@@ -94,9 +97,10 @@ func isPasswordPost(r *http.Request, base string) bool {
 }
 
 // limitInFlight is [site.limitInFlight] with its parts: the limits (nil
-// semaphores for none), the base path of the site and the answer to a refused
-// request.
-func limitInFlight(l inFlightLimits, base string, refuse func(http.ResponseWriter), next http.Handler) http.Handler {
+// semaphores for none), the base path of the site, the answer to a refused
+// request, and bypass, which may answer a request before the limits and then
+// returns true. bypass may be nil.
+func limitInFlight(l inFlightLimits, base string, refuse func(http.ResponseWriter), bypass func(http.ResponseWriter, *http.Request) bool, next http.Handler) http.Handler {
 	if l.all == nil {
 		return next
 	}
@@ -105,6 +109,9 @@ func limitInFlight(l inFlightLimits, base string, refuse func(http.ResponseWrite
 		p := r.URL.Path
 		if p == "/healthz" || p == "/favicon.ico" || strings.HasPrefix(p, static) {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if bypass != nil && bypass(w, r) {
 			return
 		}
 		slots, name := l.all, "all"

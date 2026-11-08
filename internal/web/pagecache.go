@@ -992,3 +992,82 @@ func nextMidnight(now time.Time, loc *time.Location) time.Time {
 	t := now.In(loc)
 	return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, loc)
 }
+
+// serveGuestHit serves a guest page from the cache before the in-flight
+// limits, and reports whether it did. It serves only a GET or HEAD with no
+// session cookie (a session, even a forged or dead one, needs a database
+// lookup), on a clean path of a cached route (the index, a forum, a topic or a
+// static page), whose canonical key ([site.keyFor]) is in the cache. It looks
+// the key up with [pagecache.Cache.Lookup], never Do, so it never renders and
+// never waits. It fills the slots and answers If-None-Match as the cached
+// route does ([site.serveCached]), and counts the hit in
+// gobb_page_cache_hits_total. The security headers come from [secure], which
+// wraps both paths.
+//
+// It needs the batched writes: the view of a topic then goes to memory. With
+// no batched writes a view writes the database, so it serves nothing.
+func (s *site) serveGuestHit(w http.ResponseWriter, r *http.Request) bool {
+	if s.guest == nil || s.writes == nil || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return false
+	}
+	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
+		return false
+	}
+	if !isCleanPath(r.URL.Path) {
+		return false
+	}
+	rest, ok := strings.CutPrefix(r.URL.Path, s.base)
+	if !ok {
+		return false
+	}
+	var (
+		kind      cacheKind
+		route     string
+		name, val string
+	)
+	if rest == "" {
+		kind, route = cacheIndex, "/{$}"
+	} else {
+		seg, v, ok := strings.Cut(rest, "/")
+		if !ok || v == "" || strings.Contains(v, "/") {
+			return false
+		}
+		switch seg {
+		case "f":
+			kind, route, name = cacheForum, "/f/{id}", "id"
+		case "t":
+			kind, route, name = cacheTopic, "/t/{id}", "id"
+		case "pages":
+			kind, route, name = cacheStatic, "/pages/{slug}", "slug"
+		default:
+			return false
+		}
+		val = v
+	}
+	r2 := new(http.Request)
+	*r2 = *r
+	if name != "" {
+		r2.SetPathValue(name, val)
+	}
+	k, ok := s.keyFor(kind, r2)
+	if !ok {
+		return false
+	}
+	e, ok := s.guest.Pages.Lookup(k.String())
+	if !ok {
+		return false
+	}
+	cp := e.Value.(*cachedPage)
+	if rec, ok := r.Context().Value(routeKey{}).(*routeRec); ok {
+		rec.route = route
+	}
+	var id identity
+	if c, err := r.Cookie(csrfCookie); err == nil && len(c.Value) <= 128 {
+		id.guestSecret = c.Value
+	}
+	s.serveCached(w, r2, id, cp)
+	if kind == cacheTopic && cp.status == http.StatusOK && isNavigation(r) {
+		s.addView(r.Context(), k.id)
+	}
+	return true
+}

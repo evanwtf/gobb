@@ -709,6 +709,13 @@ then gets quick refusals, and the server stays up.
   `/favicon.ico` and the static files skip the limit: they are served from memory,
   and the busy page links the stylesheet. `gobb_in_flight_refusals_total{limit="all"}`
   counts the refusals.
+- A guest page that the page cache holds skips the limit too: a GET or HEAD with
+  no session cookie, whose page is in the cache, is served from memory before the
+  limit, with no render and no database (the view of a topic goes to the batched
+  writes). A miss, any request with a session cookie (even a forged or ended one,
+  which needs a lookup), and any other method take a slot. These hits count in
+  `gobb_page_cache_hits_total` with the others. Without it, requests that wait for
+  a database connection held every slot under load, and cached pages got 503.
 - The password POSTs have slots of their own: `POST /login`, `/account/password`,
   `/account/email` (both check the current password) and `/reset/{token}` (it
   hashes the new password). At most `GOBB_MAX_SIGNIN_IN_FLIGHT` of them run at one
@@ -921,7 +928,7 @@ curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
 | `gobb_db_pool_wait_timeouts_total` | counter: requests whose wait for a connection ran out (`GOBB_DB_POOL_WAIT`) | none |
 | `gobb_search_busy_total` | counter: searches refused because `GOBB_SEARCH_MAX_RUNNING` searches were running | none |
 | `gobb_in_flight_refusals_total` | counter: requests refused because their in-flight limit was full | `limit`: `all` (`GOBB_MAX_IN_FLIGHT`), `signin` (`GOBB_MAX_SIGNIN_IN_FLIGHT`) |
-| `gobb_page_cache_hits_total`, `_misses_total` | counters: guest page requests served from the cache, and those that waited for a render | none |
+| `gobb_page_cache_hits_total`, `_misses_total` | counters: guest page requests served from the cache (including those served before the in-flight limit), and those that waited for a render | none |
 | `gobb_page_cache_evictions_total` | counter: pages dropped to stay under `GOBB_PAGE_CACHE_MIB` | none |
 | `gobb_page_cache_drops_total` | counter: drops of pages after a change to the board | none |
 | `gobb_page_cache_bytes`, `_entries`, `_limit_bytes` | gauges: the size of the cache, its pages, and its limit | none |

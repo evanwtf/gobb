@@ -73,7 +73,7 @@ func TestInFlightLimitRefusesAtOnce(t *testing.T) {
 // A handler that panics gives its slot back.
 func TestInFlightSlotFreedAfterPanic(t *testing.T) {
 	l := inFlightLimits{all: make(chan struct{}, 1), signin: make(chan struct{}, 1)}
-	h := limitInFlight(l, "/", refuse503, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	h := limitInFlight(l, "/", refuse503, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	}))
 	for i := range 4 {
@@ -102,7 +102,7 @@ func TestInFlightLimitHoldsUnderConcurrency(t *testing.T) {
 	slots := make(chan struct{}, 3)
 	release := make(chan struct{})
 	entered := make(chan struct{}, 10)
-	h := limitInFlight(inFlightLimits{all: slots, signin: make(chan struct{}, 1)}, "/", refuse503, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := limitInFlight(inFlightLimits{all: slots, signin: make(chan struct{}, 1)}, "/", refuse503, nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		entered <- struct{}{}
 		<-release
 	}))
@@ -149,7 +149,7 @@ func TestInFlightLimitHoldsUnderConcurrency(t *testing.T) {
 func TestSigninFloodLeavesPagesAdmitted(t *testing.T) {
 	l := inFlightLimits{all: make(chan struct{}, 4), signin: make(chan struct{}, 2)}
 	release := make(chan struct{})
-	h := limitInFlight(l, "/", refuse503, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := limitInFlight(l, "/", refuse503, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			<-release // a sign-in that waits out its floor
 		}
