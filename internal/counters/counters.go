@@ -8,7 +8,7 @@
 // proves that the one-row forms give what [All] gives.
 //
 // A caller that runs the one-row forms in a transaction must first lock the
-// topic or the forum row with select ... for update. The statement reads the
+// topic or the forum row with select ... for no key update. The statement reads the
 // posts and topics with the snapshot of its own start. After the lock, a later
 // statement sees every change that the earlier lock holder committed.
 package counters
