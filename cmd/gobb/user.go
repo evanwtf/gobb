@@ -140,7 +140,7 @@ func execUser(ctx context.Context, log *slog.Logger, sub, name, reason string) e
 		if err != nil {
 			return err
 		}
-		log.Info("member banned; their sessions are ended")
+		log.Info("member banned; their sessions are ended and their trusted addresses are removed")
 	case "unban":
 		err := board.UnbanUser(ctx, pool, id, now)
 		if errors.Is(err, board.ErrNotBanned) {

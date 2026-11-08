@@ -53,7 +53,7 @@ sh scripts/check-public.sh                                               # the p
 ./gobb import [--replace] [--thread-messages] <bundle>                   # load a bundle (directory or .tar.gz) into an empty database; --replace empties the database first; --thread-messages joins unlinked replies by people and subject
 ./gobb perms export > perms.jsonl                                        # write the effective permissions as JSON Lines
 ./gobb user reset-password <name>                                        # new random password, printed once on stdout; ends the member's sessions
-./gobb user ban <name> [-reason TEXT]                                    # ban a member (no end date) and end the sessions
+./gobb user ban <name> [-reason TEXT]                                    # ban a member (no end date), end the sessions and remove the trusted addresses
 ./gobb user unban <name>                                                 # remove the member's bans that have not ended
 ./gobb user activate <name>                                              # make an inactive account active; bans stay
 ./gobb user deactivate <name>                                            # make the account inactive and end the sessions
