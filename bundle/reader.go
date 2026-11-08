@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 )
 
@@ -20,6 +21,8 @@ type Reader struct {
 	dir      string
 	manifest Manifest
 	settings Settings
+	// present holds the optional data files that the bundle holds.
+	present map[string]bool
 }
 
 // Open opens the bundle in dir. It reads and checks manifest.json and
@@ -27,7 +30,9 @@ type Reader struct {
 // older version gets the version message, not a layout error. Open refuses a top-level entry that is not in the layout, a
 // missing manifest, settings file or data file, an unknown or
 // missing key in the two JSON files, and a wrong format or version. It refuses
-// a counts object that lacks a data file or names an extra one.
+// a counts object that lacks a data file or names an extra one. An optional data
+// file ([OptionalFiles]) may be absent; the counts name it exactly when the
+// bundle holds it.
 //
 // Open does not read the data files. [Each] reads one.
 func Open(dir string) (*Reader, error) {
@@ -48,6 +53,9 @@ func Open(dir string) (*Reader, error) {
 	}
 	want := map[string]bool{"manifest.json": false, "settings.json": false, "files": true}
 	for _, f := range Files {
+		want[f+".jsonl"] = false
+	}
+	for _, f := range OptionalFiles {
 		want[f+".jsonl"] = false
 	}
 	seen := map[string]bool{}
@@ -74,13 +82,23 @@ func Open(dir string) (*Reader, error) {
 		}
 	}
 
-	r := &Reader{dir: dir}
+	r := &Reader{dir: dir, present: map[string]bool{}}
 	if r.manifest, err = readJSON[Manifest](dir, "manifest.json"); err != nil {
 		return nil, err
 	}
 	if errs := r.manifest.check(); len(errs) > 0 {
 		errs[0].File = "manifest.json"
 		return nil, errs[0]
+	}
+	for _, f := range OptionalFiles {
+		_, counted := r.manifest.Counts[f]
+		switch held := seen[f+".jsonl"]; {
+		case held && !counted:
+			return nil, &Error{File: "manifest.json", Field: "counts", Msg: fmt.Sprintf("has no key %q, and the bundle holds %s.jsonl", f, f)}
+		case !held && counted:
+			return nil, &Error{File: f + ".jsonl", Msg: "is missing, and manifest.json counts it"}
+		}
+		r.present[f] = seen[f+".jsonl"]
 	}
 	if r.settings, err = readJSON[Settings](dir, "settings.json"); err != nil {
 		return nil, err
@@ -156,6 +174,15 @@ func readJSON[T any](dir, name string) (T, error) {
 	return v, nil
 }
 
+// Has reports whether the bundle holds the optional data file name (without
+// ".jsonl"). It is true for every name in [Files].
+func (r *Reader) Has(name string) bool {
+	if slices.Contains(Files, name) {
+		return true
+	}
+	return r.present[name]
+}
+
 // Dir returns the directory of the bundle.
 func (r *Reader) Dir() string { return r.dir }
 
@@ -192,11 +219,15 @@ func (r *Reader) Settings() Settings {
 //
 // Each fills File, Line and Field in the *[Error] it returns. When the file
 // ends, Each compares the line count with the manifest. When fn returns an
-// error, Each stops and returns that error unchanged.
+// error, Each stops and returns that error unchanged. An optional data file
+// that the bundle does not hold has no rows: Each calls fn for none.
 func Each[T Row](r *Reader, fn func(line int, row T) error) error {
 	name, err := rowFile[T]()
 	if err != nil {
 		return err
+	}
+	if !r.Has(name) {
+		return nil
 	}
 	file := name + ".jsonl"
 	f, err := os.Open(filepath.Join(r.dir, file))

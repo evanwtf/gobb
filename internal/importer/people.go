@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -420,4 +422,30 @@ select 'group', g.group_id, coalesce(gr.name, ''), g.forum_id
 				"holder", h.kind, "id", h.id, "name", h.name, "forum_id", h.forum)
 		}
 	}, nil
+}
+
+// loadMemberAddresses loads member_addresses.jsonl into user_ips, the trusted
+// addresses of the members (spec 10). Each address is last seen at the time of
+// the import, whatever its age on the source system, so gobb keeps it for
+// GOBB_ADDRESS_KEEP_DAYS (one year by default) from the import. (owner) An
+// IPv4-mapped address is stored as its IPv4 address. A ban removes the
+// addresses of a member, so the rows of a member whose user ban has not ended
+// at the import are not loaded; the count is of the rows loaded.
+func loadMemberAddresses(ctx context.Context, tx pgx.Tx, r *source) (int, error) {
+	n := 0
+	err := bundle.Each(r.Reader, func(line int, a bundle.MemberAddress) error {
+		ip := netip.MustParseAddr(a.IP).Unmap()
+		tag, err := tx.Exec(ctx, `
+insert into user_ips (user_id, ip, last_seen_at)
+select $1, $2, $3
+ where not exists (select 1 from bans b
+                    where b.kind = 'user' and b.user_id = $1 and (b.ends_at is null or b.ends_at > $3))`,
+			a.UserID, ip, r.importedAt)
+		if err != nil {
+			return rowErr("member_addresses", line, "user_id "+strconv.FormatInt(a.UserID, 10), "insert", err)
+		}
+		n += int(tag.RowsAffected())
+		return nil
+	})
+	return n, err
 }

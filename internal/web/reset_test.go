@@ -1067,3 +1067,38 @@ func TestNewRefusesMailWithoutLimits(t *testing.T) {
 		}
 	}
 }
+
+// A completed reset clears the sign-in counts of the member's username and
+// email address: a member whom a stranger holds in a wait gets back in through
+// a reset, at once.
+func TestResetClearsTheNameWaits(t *testing.T) {
+	def := login.DefaultSchedule()
+	e := newResetEnv(t, Options{Signin: &def})
+	cookies, csrf := csrfFor(t, e.h)
+	try := func(name, pw, from string) int {
+		return proxied(t, e.h, "/login", from, cookies, url.Values{"name": {name}, "password": {pw}, "csrf": {csrf}}).Code
+	}
+	for _, name := range []string{"alice", "alice@example.com"} {
+		for i := range 3 {
+			if code := try(name, "wrong", "2001:db8:"+strconv.Itoa(0x50+i)+"::1"); code != http.StatusOK {
+				t.Fatalf("failure %d at %s = %d", i+1, name, code)
+			}
+		}
+		if code := try(name, testPassword, "2001:db8:60::1"); code != http.StatusTooManyRequests {
+			t.Fatalf("%s after three failures = %d, want 429", name, code)
+		}
+	}
+	c := e.guest(t, "2001:db8:9::1")
+	token := c.requestLink("alice")
+	page := c.send(http.MethodGet, "/reset/"+token, nil, nil)
+	c.cookies = jar(c.cookies, page)
+	c.token = formToken(t, bodyOf(t, page))
+	if rec := c.post("/reset/"+token, url.Values{"password": {resetPassword}, "again": {resetPassword}}, nil); rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST reset = %d\n%s", rec.Code, bodyOf(t, rec))
+	}
+	for i, name := range []string{"alice", "alice@example.com"} {
+		if code := try(name, resetPassword, "2001:db8:"+strconv.Itoa(0x61+i)+"::1"); code != http.StatusSeeOther {
+			t.Errorf("%s with the new password after the reset = %d, want 303", name, code)
+		}
+	}
+}

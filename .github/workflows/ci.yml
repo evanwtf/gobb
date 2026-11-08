@@ -375,7 +375,10 @@ jobs:
           port=$(docker compose port gobb 8080)
           cid=$(docker compose ps -q gobb)
           status=0
-          sh scripts/login-burst.sh "http://$port" 40 20 bob carol || status=$?
+          # Two free failures per name (GOBB_SIGNIN_FREE_FAILURES): 40 tries over
+          # 20 names, two each, so every try runs a password check and none waits.
+          # A missing name runs the same check as a real one.
+          sh scripts/login-burst.sh "http://$port" 40 20 $(seq -f 'burst%g' 1 20) || status=$?
           state=$(docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}}' "$cid")
           echo "restarts and OOM kill: $state"
           docker stats --no-stream --format 'docker stats now: {{.MemUsage}} ({{.MemPerc}})' "$cid"

@@ -50,8 +50,13 @@ func csrfFor(t *testing.T, h http.Handler) ([]*http.Cookie, string) {
 	return jar(nil, page), m[1]
 }
 
+// The owner's schedule on /login: three failures from one address pass, and
+// the fourth try waits 15 s.
 func TestLoginHTTPLimits(t *testing.T) {
-	h, _ := siteAndPool(t, bundletest.Small(), proxyOptions())
+	opt := proxyOptions()
+	def := login.DefaultSchedule()
+	opt.Signin = &def
+	h, _ := siteAndPool(t, bundletest.Small(), opt)
 	cookies, token := csrfFor(t, h)
 
 	// A 1 MiB body answers 413, in the layout, before the csrf check.
@@ -66,7 +71,7 @@ func TestLoginHTTPLimits(t *testing.T) {
 	form := func(pw string) url.Values {
 		return url.Values{"name": {"alice"}, "password": {pw}, "csrf": {token}}
 	}
-	for i := range 10 {
+	for i := range 3 {
 		rec := proxied(t, h, "/login", "2001:db8::5", cookies, form("wrong"))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("failure %d = %d, want 200", i+1, rec.Code)
@@ -74,16 +79,15 @@ func TestLoginHTTPLimits(t *testing.T) {
 	}
 	limited := proxied(t, h, "/login", "2001:db8::5", cookies, form(testPassword))
 	if limited.Code != http.StatusTooManyRequests {
-		t.Fatalf("11th try = %d, want 429", limited.Code)
+		t.Fatalf("4th try = %d, want 429", limited.Code)
 	}
-	secs, err := strconv.Atoi(limited.Header().Get("Retry-After"))
-	if err != nil || secs < 1 || secs > 15*60 {
-		t.Errorf("Retry-After = %q (%v), want 1 to 900 seconds", limited.Header().Get("Retry-After"), err)
+	if got := limited.Header().Get("Retry-After"); got != "15" {
+		t.Errorf("Retry-After = %q, want 15", got)
 	}
 	body := bodyOf(t, limited)
 	// The same layout as /login, the message, and the form still there.
 	for _, want := range []string{
-		"Try again in 15 minutes.", "Too many sign-in attempts.",
+		"Try again in 15 seconds.", "Too many sign-in attempts.",
 		`action="/login"`, `name="name"`, `name="password"`, `name="csrf"`, `value="alice"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -96,9 +100,14 @@ func TestLoginHTTPLimits(t *testing.T) {
 	if limited.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("Cache-Control = %q", limited.Header().Get("Cache-Control"))
 	}
-	// Another address signs in at once.
-	if ok := proxied(t, h, "/login", "2001:db8:0:6::1", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
-		t.Errorf("another address = %d, want 303", ok.Code)
+	// The three failures count against the name too: alice waits 15 s from
+	// another address. Another name from another address signs in at once.
+	if rec := proxied(t, h, "/login", "2001:db8:0:6::1", cookies, form(testPassword)); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("alice from another address = %d, want 429", rec.Code)
+	}
+	bob := url.Values{"name": {"bob"}, "password": {testPassword}, "csrf": {token}}
+	if ok := proxied(t, h, "/login", "2001:db8:0:6::1", cookies, bob); ok.Code != http.StatusSeeOther {
+		t.Errorf("bob from another address = %d, want 303", ok.Code)
 	}
 }
 
@@ -121,19 +130,21 @@ func TestLoginLimitsOnPeerAddress(t *testing.T) {
 	_ = cookies
 }
 
-// The limit is the name's, and a success clears it: here the name limit is
-// reached from many addresses, and the right password works after the wait.
+// The wait of a name holds across addresses, and the right password works
+// after it.
 func TestLoginNameLimitHTTP(t *testing.T) {
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	clock := now
 	opt := proxyOptions()
 	opt.Now = func() time.Time { return clock }
+	def := login.DefaultSchedule()
+	opt.Signin = &def
 	h, _ := siteAndPool(t, bundletest.Small(), opt)
 	cookies, token := csrfFor(t, h)
 	form := func(pw string) url.Values {
 		return url.Values{"name": {"bob"}, "password": {pw}, "csrf": {token}}
 	}
-	for i := range 20 {
+	for i := range 3 {
 		addr := "2001:db8:" + strconv.Itoa(0x100+i) + "::1" // one /64 each
 		if rec := proxied(t, h, "/login", addr, cookies, form("wrong")); rec.Code != http.StatusOK {
 			t.Fatalf("failure %d = %d", i+1, rec.Code)
@@ -141,13 +152,12 @@ func TestLoginNameLimitHTTP(t *testing.T) {
 	}
 	rec := proxied(t, h, "/login", "2001:db8:900::1", cookies, form(testPassword))
 	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("21st = %d, want 429", rec.Code)
+		t.Fatalf("4th = %d, want 429", rec.Code)
 	}
-	if body := bodyOf(t, rec); !strings.Contains(body, "Try again in 60 minutes.") {
+	if body := bodyOf(t, rec); !strings.Contains(body, "Try again in 15 seconds.") {
 		t.Errorf("the page does not state the wait:\n%s", body)
 	}
-	// After the wait, the right password works.
-	clock = clock.Add(61 * time.Minute)
+	clock = clock.Add(15 * time.Second)
 	if ok := proxied(t, h, "/login", "2001:db8:900::1", cookies, form(testPassword)); ok.Code != http.StatusSeeOther {
 		t.Errorf("after the wait = %d, want 303", ok.Code)
 	}
@@ -170,6 +180,22 @@ func TestLimitedMinutes(t *testing.T) {
 	} {
 		if got := waitText(tc.d); got != tc.want {
 			t.Errorf("waitText(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "1 second"},
+		{time.Second, "1 second"},
+		{1500 * time.Millisecond, "2 seconds"},
+		{15 * time.Second, "15 seconds"},
+		{2 * time.Minute, "120 seconds"},
+		{2*time.Minute + time.Second, "3 minutes"},
+		{900 * time.Second, "15 minutes"},
+	} {
+		if got := signinWaitText(tc.d); got != tc.want {
+			t.Errorf("signinWaitText(%v) = %q, want %q", tc.d, got, tc.want)
 		}
 	}
 	if secs := retrySeconds(0); secs != 1 {

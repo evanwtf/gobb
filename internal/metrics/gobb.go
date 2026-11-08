@@ -64,6 +64,19 @@ var (
 	// may run at one time were running.
 	SearchBusy = Default.CounterVec("gobb_search_busy_total",
 		"Searches refused because the most searches that may run at one time were running.")
+	// SigninRefusals counts the sign-in tries that the sign-in schedule refused
+	// before any password check, by reason: address (the wait of the address),
+	// name (the wait of the name) and defensive (the rules of Defensive Mode
+	// for an untrusted address).
+	SigninRefusals = Default.CounterVec("gobb_signin_refusals_total",
+		"Sign-in tries refused by the sign-in schedule before any password check, by reason.", "reason")
+	// SigninScheduleEvictions counts the counts that a full table of the
+	// sign-in schedule dropped to make room, by table: address or name.
+	SigninScheduleEvictions = Default.CounterVec("gobb_signin_schedule_evictions_total",
+		"Counts that a full table of the sign-in schedule dropped to make room, by table.", "table")
+	// DefensiveMode is 1 while Defensive Mode is on, and 0 while it is off.
+	DefensiveMode = Default.Gauge("gobb_defensive_mode",
+		"1 while Defensive Mode is on, 0 while it is off.")
 	// SigninFloor is the least time that a failed sign-in takes.
 	SigninFloor = Default.Gauge("gobb_signin_floor_seconds",
 		"The least time that a failed sign-in takes.")
@@ -72,6 +85,12 @@ var (
 func init() {
 	for _, r := range []string{"ok", "wrong", "ambiguous", "limited", "banned", "inactive", "busy", "error"} {
 		SigninAttempts.Init(r)
+	}
+	for _, r := range []string{"address", "name", "defensive"} {
+		SigninRefusals.Init(r)
+	}
+	for _, t := range []string{"address", "name"} {
+		SigninScheduleEvictions.Init(t)
 	}
 	for _, r := range []string{"sent", "failed", "dropped"} {
 		Emails.Init(r)

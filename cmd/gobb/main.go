@@ -106,7 +106,8 @@ func migrate(ctx context.Context, _ []string) error {
 
 // importBundle loads a bundle into the database and the data directory. It
 // applies the pending migrations first. On success it prints the number of rows
-// it loaded from each data file, in bundle.Files order, then the number of files.
+// it loaded from each data file, in bundle.Files order, then for each optional
+// data file (0 when the bundle does not hold it), then the number of files.
 func importBundle(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -140,8 +141,8 @@ func importBundle(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range append(slices.Clone(bundle.Files), "files") {
-		if _, err := fmt.Fprintf(stdout, "%-14s %d\n", name, counts[name]); err != nil {
+	for _, name := range slices.Concat(bundle.Files, bundle.OptionalFiles, []string{"files"}) {
+		if _, err := fmt.Fprintf(stdout, "%-16s %d\n", name, counts[name]); err != nil {
 			return err
 		}
 	}
@@ -254,7 +255,8 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		}
 	}()
 	var waker mailWaker
-	pool, h, err := setup(setupCtx, cfg, gate, waker.wake)
+	defense := login.NewDefense(defenseConfig(cfg.Signin))
+	pool, h, err := setup(setupCtx, cfg, gate, defense, waker.wake)
 	close(done)
 	<-exited
 	if interrupted.Load() {
@@ -289,7 +291,23 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		defer close(cleaned)
 		ticker := time.NewTicker(cleanupEvery)
 		defer ticker.Stop()
-		cleanupLoop(cleanCtx, ticker.C, func(c context.Context) { cleanup(c, pool, time.Now) })
+		cleanupLoop(cleanCtx, ticker.C, func(c context.Context) { cleanup(c, pool, time.Now, cfg.Signin.AddressKeep) })
+	}()
+	// Defensive Mode turns off on a timer too, so its "off" line comes on time
+	// when no sign-in arrives. It stops with the cleanup.
+	refreshed := make(chan struct{})
+	go func() {
+		defer close(refreshed)
+		ticker := time.NewTicker(defenseRefreshEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cleanCtx.Done():
+				return
+			case <-ticker.C:
+				defense.Refresh(time.Now())
+			}
+		}
 	}()
 	// The email worker stops with the server, before the pool closes. The web layer
 	// wakes it through waker, with a send that never blocks. The server does not
@@ -305,6 +323,7 @@ func serveWith(ctx context.Context, sigs <-chan os.Signal, exit func(int)) error
 		stopMail()
 		stopClean()
 		<-cleaned
+		<-refreshed
 		pool.Close()
 	}
 	return serveUntil(ctx, newHTTPServer(h), ln, closePool, sigs, exit)
@@ -367,6 +386,10 @@ const metricsStopTimeout = 2 * time.Second
 // cleanupEvery is the time between two runs of the session cleanup.
 const cleanupEvery = time.Hour
 
+// defenseRefreshEvery is the time between two checks of whether Defensive Mode
+// may turn off.
+const defenseRefreshEvery = 10 * time.Second
+
 // cleanupLoop calls run once at once, then once for each value on tick, until
 // ctx ends. A run that has started finishes; none starts after ctx ends.
 func cleanupLoop(ctx context.Context, tick <-chan time.Time, run func(context.Context)) {
@@ -386,8 +409,11 @@ func cleanupLoop(ctx context.Context, tick <-chan time.Time, run func(context.Co
 // cleanup deletes the expired sessions, the old user_ips rows, the old email rows
 // and the expired reset links. It logs one count line for each step. A failure
 // is logged and does not stop the server or the later steps.
-func cleanup(ctx context.Context, q db.Querier, now func() time.Time) {
-	sessions, ips, err := session.Cleanup(ctx, q, now())
+//
+// keep is how long a member's address stays in user_ips after its last use
+// (GOBB_ADDRESS_KEEP_DAYS); zero or less is the default of one year.
+func cleanup(ctx context.Context, q db.Querier, now func() time.Time, keep time.Duration) {
+	sessions, ips, err := session.Cleanup(ctx, q, now(), keep)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Error("session cleanup failed", "err", err)
@@ -433,7 +459,7 @@ func gateFor(m memlimit.Result) *login.Gate {
 // setup opens the pool, applies the migrations and builds the handler, with
 // gate as the memory gate of the password checks. On an error it closes the
 // pool and returns it as nil.
-func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()) (*pgxpool.Pool, http.Handler, error) {
+func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *login.Defense, wake func()) (*pgxpool.Pool, http.Handler, error) {
 	pool, err := db.OpenSized(ctx, cfg.DSN, cfg.Load.DBMaxConns)
 	if err != nil {
 		return nil, nil, err
@@ -453,7 +479,16 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()
 		PoolWait:         cfg.Load.DBPoolWait,
 		SearchPerSecond:  cfg.Load.SearchPerSecond,
 		SearchMaxRunning: cfg.Load.SearchMaxRunning,
+
+		Signin:  scheduleConfig(cfg.Signin),
+		Defense: defense,
 	}
+	slog.Info("sign-in schedule", "free_failures", cfg.Signin.FreeFailures, "waits", durations(cfg.Signin.Waits),
+		"last_wait", cfg.Signin.LastWait.String(), "reset_after", cfg.Signin.ResetAfter.String(),
+		"address_keep_days", int(cfg.Signin.AddressKeep/(24*time.Hour)),
+		"defensive_failures", cfg.Signin.DefensiveFailures, "defensive_window", cfg.Signin.DefensiveWindow.String(),
+		"defensive_quiet", cfg.Signin.DefensiveQuiet.String(), "defensive_gap", cfg.Signin.DefensiveGap.String(),
+		"table_keys", cfg.Signin.TableKeys)
 	slog.Info("load limits", "db_max_conns", cfg.Load.DBMaxConns, "db_pool_wait", cfg.Load.DBPoolWait.String(),
 		"search_per_second", cfg.Load.SearchPerSecond, "search_max_running", cfg.Load.SearchMaxRunning)
 	// With no email settings, Mail stays nil and the reset pages are off.
@@ -468,6 +503,26 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()
 		return nil, nil, err
 	}
 	return pool, h, nil
+}
+
+// scheduleConfig returns the sign-in schedule of the settings s.
+func scheduleConfig(s config.Signin) *login.ScheduleConfig {
+	return &login.ScheduleConfig{FreeFailures: s.FreeFailures, Waits: s.Waits, LastWait: s.LastWait,
+		ResetAfter: s.ResetAfter, MaxKeys: s.TableKeys}
+}
+
+// defenseConfig returns the settings of Defensive Mode of the settings s.
+func defenseConfig(s config.Signin) login.DefenseConfig {
+	return login.DefenseConfig{Failures: s.DefensiveFailures, Window: s.DefensiveWindow, Quiet: s.DefensiveQuiet, Gap: s.DefensiveGap}
+}
+
+// durations returns ds as one text, such as "15s,15s,1m0s", for a log line.
+func durations(ds []time.Duration) string {
+	parts := make([]string, len(ds))
+	for i, d := range ds {
+		parts[i] = d.String()
+	}
+	return strings.Join(parts, ",")
 }
 
 // serveUntil serves srv on ln until ctx ends, a signal arrives on sigs, or the

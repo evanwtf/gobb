@@ -15,6 +15,7 @@ import (
 	"github.com/evanwtf/gobb/internal/bundletest"
 	"github.com/evanwtf/gobb/internal/config"
 	"github.com/evanwtf/gobb/internal/db"
+	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/metrics"
 )
 
@@ -25,6 +26,9 @@ func loadSite(t *testing.T, b *bundletest.Board, opt Options) (*site, http.Handl
 	opt.DataDir = dataDir
 	if opt.LoginFloor == 0 {
 		opt.LoginFloor = time.Millisecond
+	}
+	if opt.Signin == nil {
+		opt.Signin = testSchedule()
 	}
 	var s *site
 	onNew = func(got *site) { s = got }
@@ -341,5 +345,43 @@ func TestRefuseSearchHook(t *testing.T) {
 	refuse = false
 	if rec := get(t, h, "/search?q=example"); rec.Code != http.StatusOK {
 		t.Errorf("search after the hook lets it pass = %d, want 200", rec.Code)
+	}
+}
+
+// While Defensive Mode is on, a guest cannot search: the answer is the page of
+// a search over the limit. A made-up session cookie gets past the first check,
+// which reads no database, and the check after the session lookup refuses it.
+// A member searches, and the bare form stays open to guests.
+func TestDefensiveModeRefusesGuestSearch(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	clock := now
+	defense := login.NewDefense(login.DefaultDefense())
+	_, h, pool := loadSite(t, searchSiteBoard(), Options{Now: func() time.Time { return clock }, Defense: defense})
+	member := signIn(t, h, "alice", testPassword)
+
+	if rec := get(t, h, "/search?q=example"); rec.Code != http.StatusOK {
+		t.Fatalf("guest search with Defensive Mode off = %d, want 200", rec.Code)
+	}
+	for range login.DefaultDefenseFailures + 1 {
+		defense.Record(now)
+	}
+	before := pool.Stat().AcquireCount()
+	checkSearchOff(t, get(t, h, "/search?q=example"), "60")
+	if got := pool.Stat().AcquireCount(); got != before {
+		t.Errorf("the guest search with no cookie took %d connections, want none", got-before)
+	}
+	forged := []*http.Cookie{{Name: "gobb_session", Value: "made-up-token"}}
+	checkSearchOff(t, getAs(t, h, "/search?q=example", forged), "60")
+	checkSearchOff(t, getAs(t, h, "/search?author=alice", forged), "60")
+	if rec := getAs(t, h, "/search?q=example", member); rec.Code != http.StatusOK {
+		t.Errorf("member search in Defensive Mode = %d, want 200", rec.Code)
+	}
+	if rec := get(t, h, "/search"); rec.Code != http.StatusOK {
+		t.Errorf("the bare search form for a guest = %d, want 200", rec.Code)
+	}
+	// Ten quiet minutes after the rate falls, guests search again.
+	clock = now.Add(time.Minute + 10*time.Minute)
+	if rec := get(t, h, "/search?q=example"); rec.Code != http.StatusOK {
+		t.Errorf("guest search after Defensive Mode = %d, want 200", rec.Code)
 	}
 }

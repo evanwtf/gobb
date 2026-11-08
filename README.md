@@ -301,6 +301,16 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_DB_POOL_WAIT` | The longest time that a request waits for a free database connection, as a duration from `10ms` to `5s`. | `1s` |
 | `GOBB_SEARCH_PER_SECOND` | The most searches that the whole board runs in any second, from 1 to 1,000. | `5` |
 | `GOBB_SEARCH_MAX_RUNNING` | The most searches that run at one time, from 1 to `GOBB_DB_MAX_CONNS` − 1, so searches never hold the whole pool (a pool of one allows 1). | `2` (`1` when `GOBB_DB_MAX_CONNS` is 1 or 2) |
+| `GOBB_SIGNIN_FREE_FAILURES` | How many failed sign-ins of an address or a name leave no wait after them, from 0 to 100 (see "Sign-in limits"). | `2` |
+| `GOBB_SIGNIN_WAITS` | The waits after the failures that follow the free ones, in order: 1 to 20 durations from `1s` to `24h`, separated by commas. | `15s,15s,60s,60s,60s` |
+| `GOBB_SIGNIN_LAST_WAIT` | The wait after every later failure, from `1s` to `24h`. | `900s` |
+| `GOBB_SIGNIN_RESET_AFTER` | The time with no failure that clears a count, from `1m` to `720h`, and at least the longest wait. | `24h` |
+| `GOBB_ADDRESS_KEEP_DAYS` | How many days gobb keeps a member's address after the last sign-in from it, from 1 to 3,650. An imported address counts from the import. | `365` |
+| `GOBB_DEFENSIVE_FAILURES` | Defensive Mode turns on above this many failed sign-ins of the whole board in `GOBB_DEFENSIVE_WINDOW`, from 1 to 10,000. | `100` |
+| `GOBB_DEFENSIVE_WINDOW` | The window of that count, from `1s` to `1h`. | `60s` |
+| `GOBB_DEFENSIVE_QUIET` | How long the rate stays at or below the trigger before Defensive Mode turns off, from `1s` to `24h`. | `10m` |
+| `GOBB_SIGNIN_TABLE_KEYS` | The most counts in each of the two tables of the sign-in schedule (addresses and names), from 1,000 to 1,000,000. A full table is about 145 bytes per entry. | `50000` |
+| `GOBB_DEFENSIVE_GAP` | The least time between two tries of an untrusted address while Defensive Mode is on, from `0s` (none) to `1h`. | `5s` |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
 | `GOBB_METRICS_PORT` | Compose only, with `compose.metrics.yaml`: the host port of the metrics listener, on 127.0.0.1. | `9187` |
@@ -567,22 +577,61 @@ curl -sS -o /dev/null -D - "$BASE/old/thread.cgi?view=full&id=1"
 
 ### Sign-in limits
 
-Failed sign-ins are limited. One client address may fail 10 times in 15 minutes (a
-client on IPv6 counts as its whole /64), and one typed name may fail 20 times in an
-hour. Past a limit, the sign-in page answers 429 and says how long to wait. Notes for
-the operator:
+Failed sign-ins follow a schedule. gobb keeps one count of failures for each client
+address (a client on IPv6 counts as its whole /64) and one for each typed name. The
+first two failures of a count are free. After that, the next try must wait 15 s,
+15 s, 60 s, 60 s and 60 s, then 900 s before every later try. A try made before its
+wait ends gets 429 with `Retry-After` and "Too many sign-in attempts. Try again in N
+seconds." on the sign-in page. It runs no password check, and the count does not
+advance. The wait it reports is the larger of the waits of the address and of the
+name.
 
-- The name limit counts the name as typed, after cleaning. A username and an email
-  address for one account are two names, so that account has two budgets.
-- A name that is over its limit still works from an address that the account has used
-  before. The address limit still applies there.
-- The counts live in memory. A restart sets them to zero.
+For example, with the defaults: a stranger who guesses at one name from one address
+makes three tries at once, all wrong. The fourth try waits 15 s, the fifth 15 s more,
+then 60 s three times, then 900 s each time. With `GOBB_SIGNIN_FREE_FAILURES=1`, the
+third try waits 15 s instead.
+
+Notes for the operator:
+
+- A good sign-in clears the count of the name. It does not clear the count of the
+  address, so one account of one's own cannot reset an address that guesses at other
+  names. A count clears after 24 hours with no failure (`GOBB_SIGNIN_RESET_AFTER`,
+  which must be at least the longest wait). A completed password reset clears the
+  counts of the member's username and email address, so a member whom a stranger
+  holds in a wait can get back in through a reset.
+- The name count counts the name as typed, after cleaning. A username and an email
+  address for one account are two names, so that account has two counts.
+- A member's *trusted addresses* are the addresses that the member signed in from,
+  kept for one year after the last sign-in from each (`GOBB_ADDRESS_KEEP_DAYS`). An
+  address is trusted only while its member is active and not banned. A ban and the
+  Spammer action remove the member's addresses. A failure from one of the member's
+  trusted addresses does not count against the name, and the wait of the name does
+  not hold there. The count of the address still applies. At a locked name, one
+  database query decides whether the address is trusted, and costs the same whether
+  or not the name has an account. The answer stays in memory while the wait lasts,
+  so later refused tries cost no database work.
+- **Defensive Mode** turns on when the whole board counts more than 100 failed
+  sign-ins in 60 s (`GOBB_DEFENSIVE_FAILURES`, `GOBB_DEFENSIVE_WINDOW`). It turns
+  off 10 minutes after the rate last stood above that (`GOBB_DEFENSIVE_QUIET`),
+  however many failures still trickle in below it. While it is on,
+  an address that is no member's trusted address has no free failure, and waits at
+  least 5 s between two tries (`GOBB_DEFENSIVE_GAP`); a trusted address keeps the
+  normal schedule. Guests cannot search: they get the page of a search over the
+  limit, with `Retry-After: 60`. gobb writes one WARN line `defensive mode on` and one
+  INFO line `defensive mode off`, with counts and no address.
+- The counts and Defensive Mode live in memory. A restart sets them to zero. Each of
+  the two tables of counts (addresses, names) holds at most 50,000 entries
+  (`GOBB_SIGNIN_TABLE_KEYS`), about 7 MiB when full. A full table first drops the
+  counts that hold nothing; when that frees less than an eighth, it evicts down to
+  seven eighths full: first the counts not in a wait, then the counts with the
+  fewest failures, then the oldest. So a spray of new names does not flush a count
+  that holds a wait. `gobb_signin_schedule_evictions_total` counts the evictions.
 - Behind a reverse proxy, `GOBB_TRUSTED_PROXIES` must name the proxy. Without it,
-  every visitor has the address of the proxy and shares one budget of 10 failures.
-  The same mistake turns off the name limit for everyone: every member's known
-  address is then the address of the proxy.
+  every visitor has the address of the proxy and shares one count. The same mistake
+  makes the proxy's address a trusted address for every member who signs in.
+- The start-up log line `sign-in schedule` gives the values of the settings.
 - A failed sign-in takes at least the floor, even when the client closes its end of
-  the connection early. This holds for every failure after the limits pass: a wrong
+  the connection early. This holds for every failure after the schedule lets the try in: a wrong
   password, a busy server, an inactive account and a ban. The floor counts from the
   start of the sign-in, moved forward by the time that it waits for the memory gate.
   So a wait for the gate adds the same delay to every name, and the floor still
@@ -706,7 +755,10 @@ curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
 | `gobb_http_requests_total` | counter | `route`, `method`, `code` |
 | `gobb_http_request_duration_seconds` | histogram, 5 ms to 10 s | `route` |
 | `gobb_signin_attempts_total` | counter | `result`: `ok`, `wrong`, `ambiguous`, `limited`, `banned`, `inactive`, `busy`, `error` |
-| `gobb_rate_limited_total` | counter | `limit`: the name of each limit, such as `signin_address` or `reset_account` |
+| `gobb_signin_refusals_total` | counter: tries that the sign-in schedule refused before any password check | `reason`: `address`, `name`, `defensive` |
+| `gobb_signin_schedule_evictions_total` | counter: counts that a full table of the sign-in schedule dropped | `table`: `address`, `name` |
+| `gobb_defensive_mode` | gauge: 1 while Defensive Mode is on, 0 while it is off | none |
+| `gobb_rate_limited_total` | counter | `limit`: the name of each limit, such as `search` or `reset_account` |
 | `gobb_rate_limit_allowed_total` | counter | `limit` |
 | `gobb_rate_limit_fill_ratio` | histogram, buckets 0.25, 0.5, 0.75, 0.9, 1 | `limit` |
 | `gobb_rate_limit_refunds_total` | counter | `limit` |
@@ -730,20 +782,19 @@ curl -fsS http://127.0.0.1:9187/metrics | grep '^gobb_'
 A label holds a fixed value only. `route` is the pattern that answered, without its
 method (`/t/{id}`), and never the path. `none` is a request that no pattern took.
 `method` is `GET`, `HEAD`, `POST` or `other`. `code` is the status class, `2xx` to
-`5xx`. `gobb_rate_limited_total` counts each request that a limit refused. A sign-in
-at a locked name from an address that the account has used is no refusal.
+`5xx`. `gobb_rate_limited_total` counts each request that a limit refused. The sign-in
+schedule is not one of these limits: `gobb_signin_refusals_total` counts its refusals.
+A sign-in at a locked name from one of the member's trusted addresses is no refusal.
 
 The other `gobb_rate_limit_` metrics show how full each limit gets, in the same `limit`
-label (17 names, never a key). `gobb_rate_limit_allowed_total` counts the events that a
+label (15 names, never a key). `gobb_rate_limit_allowed_total` counts the events that a
 limit recorded. `gobb_rate_limit_fill_ratio` has one observation for each of them: the
 events of that key in the window after it, over the limit, so `1` is a key at the limit.
 `gobb_rate_limit_refunds_total` counts the events that a refund gave back. A refund
 lowers neither of the two above, so the net events recorded are allowed minus refunds,
-and the histogram is the fill at the time of the check, refunded or not. Sign-in takes
-its event before the password check and gives it back after a good password, so
-`gobb_rate_limit_allowed_total{limit="signin_address"}` counts every attempt that the
-limit let in, and its refunds count the good ones. `gobb_rate_limit_evictions_total`
-counts the keys, with events in the window, that a full table dropped to make room;
+and the histogram is the fill at the time of the check, refunded or not.
+`gobb_rate_limit_evictions_total` counts the keys, with events in the window, that a
+full table dropped to make room;
 those keys start again at zero. A value above 0 means the table is too small for the
 traffic. A key with no event in the window is dropped with no count. The gauges
 `gobb_rate_limit_keys` (keys held, live or not), `gobb_rate_limit_keys_full` (keys at
@@ -751,10 +802,7 @@ the limit now) and `gobb_rate_limit_fullest_ratio` (the highest fill of any key 
 come from one scan of the keys of each limit at each scrape, so they agree. The scan
 holds the lock of the limit while it reads at most the keys of the table. The share of
 refusals is `gobb_rate_limited_total` over the sum of that and
-`gobb_rate_limit_allowed_total`. That share leaves out one case: when the name limit of
-`signin_name` is full and the request comes from an address that the account has used,
-the check fails and the request passes. It counts as neither allowed nor refused.
-The queue and session gauges each run one query
+`gobb_rate_limit_allowed_total`. The queue and session gauges each run one query
 at most every 15 s; a failed query leaves the gauge out of the scrape and logs one
 WARN line. CI runs `promtool check metrics` on a scrape.
 

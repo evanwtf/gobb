@@ -356,8 +356,13 @@ func (m Manifest) check() []*Error {
 			v.add("counts."+f, "is %d; it must be 0 or more", n)
 		}
 	}
+	for _, f := range OptionalFiles {
+		if n, ok := m.Counts[f]; ok && n < 0 {
+			v.add("counts."+f, "is %d; it must be 0 or more", n)
+		}
+	}
 	for _, k := range sortedKeys(m.Counts) {
-		if !slices.Contains(Files, k) {
+		if !slices.Contains(Files, k) && !slices.Contains(OptionalFiles, k) {
 			v.add("counts", "has the unknown key %q", clip(k))
 		}
 	}
@@ -897,4 +902,14 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+func (a MemberAddress) check() []*Error {
+	var v vet
+	v.id("user_id", a.UserID)
+	v.ip("ip", &a.IP)
+	if addr, err := netip.ParseAddr(a.IP); err == nil && addr.Unmap().IsUnspecified() {
+		v.add("ip", "is the unspecified address")
+	}
+	return v.errs
 }

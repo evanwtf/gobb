@@ -8,8 +8,9 @@
 # for each group to end. The names take turns. Each try comes from its own
 # address in X-Forwarded-For (2001:db8:N::1, one /64 each), so the limit per
 # address refuses none of them. The server must trust the peer as a proxy
-# (GOBB_TRUSTED_PROXIES); .github/compose.ci.yaml does that. The limit per name
-# allows 20 failures in an hour, so send at most 20 tries for each name.
+# (GOBB_TRUSTED_PROXIES); .github/compose.ci.yaml does that. The schedule per
+# name has two free failures (GOBB_SIGNIN_FREE_FAILURES), then a wait, so send at
+# most two tries for each name. A name with no account runs the same check.
 #
 # A wrong password answers 200 with the sign-in page. Prints one line for each
 # group and a total. Exits 1 when any try gets another status (429, 503, a

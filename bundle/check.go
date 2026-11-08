@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,7 +79,11 @@ var errFull = errors.New("bundle: error limit reached")
 //     route names a static page; a user route may name a gone user;
 //   - every file that a row names exists under files/ with the stated size and
 //     SHA-256, rows that name one path agree, and every file under files/ is
-//     named by a row.
+//     named by a row;
+//   - a row of member_addresses.jsonl names a user, the pair of the user and
+//     the address is unique (an IPv4-mapped address is its IPv4 address), and
+//     the address is a public unicast address ([MemberAddressAllowed]); one
+//     error gives the number of rows that are not.
 //
 // Nothing references a gone user, except a user route with a fixed target.
 //
@@ -102,6 +107,7 @@ func Check(r *Reader) error {
 		members:    pairSet{},
 		topicMarks: pairSet{}, forumMarks: pairSet{},
 		smileys: keySet{}, routes: keySet{}, prefixes: keySet{}, pages: keySet{},
+		addresses: keySet{},
 	}
 	if h := r.settings.HeaderImage; h != nil {
 		w.nameFile("settings.json", 0, "header_image", *h)
@@ -135,6 +141,8 @@ func Check(r *Reader) error {
 	scan(w, w.legacyFile)
 	scan(w, w.staticPage)
 	w.endPages()
+	scan(w, w.memberAddress)
+	w.endMemberAddresses()
 	w.checkFiles()
 
 	if w.fatal != nil {
@@ -144,14 +152,14 @@ func Check(r *Reader) error {
 		return nil
 	}
 	order := map[string]int{"settings.json": 0}
-	for i, f := range Files {
+	for i, f := range slices.Concat(Files, OptionalFiles) {
 		order[f+".jsonl"] = i + 1
 	}
 	rank := func(file string) int {
 		if n, ok := order[file]; ok {
 			return n
 		}
-		return len(Files) + 1
+		return len(Files) + len(OptionalFiles) + 1
 	}
 	slices.SortStableFunc(w.errs, func(a, b *Error) int {
 		return cmp.Or(cmp.Compare(rank(a.File), rank(b.File)), cmp.Compare(a.Line, b.Line))
@@ -263,6 +271,8 @@ type whole struct {
 
 	members, topicMarks, forumMarks  pairSet
 	smileys, routes, prefixes, pages keySet
+	addresses                        keySet // user ID and address of member_addresses
+	notGlobal, notGlobalLine         int    // member addresses that are not public, and the first line
 
 	grantForums []lineRef // forum IDs that grants name, checked after forums
 	pageRoutes  []slugRef // slugs that page routes name, checked after static_pages
@@ -857,6 +867,69 @@ func (w *whole) route(line int, r LegacyRoute) {
 
 func (w *whole) legacyFile(line int, f LegacyFile) {
 	w.uniqueKey("legacy_files.jsonl", line, "prefix", "prefix "+strconv.Quote(f.Prefix), w.prefixes, f.Prefix)
+}
+
+func (w *whole) memberAddress(line int, a MemberAddress) {
+	const file = "member_addresses.jsonl"
+	w.ref(file, line, "user_id", w.users, a.UserID, "users.jsonl")
+	// The address as gobb stores it: an IPv4-mapped address is the IPv4
+	// address, so "::ffff:192.0.2.1" and "192.0.2.1" are one row.
+	addr := netip.MustParseAddr(a.IP).Unmap()
+	key := strconv.FormatInt(a.UserID, 10) + " " + addr.String()
+	w.uniqueKey(file, line, "ip", fmt.Sprintf("the pair (user_id %d, ip %s)", a.UserID, addr), w.addresses, key)
+	if !MemberAddressAllowed(addr) {
+		if w.notGlobal == 0 {
+			w.notGlobalLine = line
+		}
+		w.notGlobal++
+	}
+}
+
+// endMemberAddresses reports, in one error, the rows whose address is not a
+// public unicast address.
+func (w *whole) endMemberAddresses() {
+	if w.notGlobal > 0 {
+		w.bad("member_addresses.jsonl", 0, "ip",
+			"%d rows hold an address that is not a public unicast address (loopback, private, link-local, multicast, shared (RFC 6598) or documentation); the first is on line %d",
+			w.notGlobal, w.notGlobalLine)
+	}
+}
+
+// MemberAddressAllowed reports whether a member address may come in through a
+// bundle. It is [PublicUnicast]. A test that writes addresses from the
+// documentation ranges replaces it, and puts it back when it ends; nothing else
+// sets it.
+var MemberAddressAllowed = PublicUnicast
+
+// The ranges that [PublicUnicast] refuses beyond the checks of net/netip.
+var (
+	// sharedRange is the shared address space of RFC 6598, a /10 that starts
+	// at 100.64 in its first two bytes.
+	sharedRange = netip.PrefixFrom(netip.AddrFrom4([4]byte{100, 64, 0, 0}), 10)
+	docRanges   = []netip.Prefix{
+		netip.MustParsePrefix("192.0.2.0/24"),
+		netip.MustParsePrefix("198.51.100.0/24"),
+		netip.MustParsePrefix("203.0.113.0/24"),
+		netip.MustParsePrefix("2001:db8::/32"),
+	}
+)
+
+// PublicUnicast reports whether a is an address that a member's client can
+// have on the internet: a global unicast address that is not private (RFC 1918,
+// fc00::/7), not shared (RFC 6598) and not in a documentation range. It
+// refuses loopback, link-local, multicast and the unspecified address too. An
+// IPv4-mapped address is checked as its IPv4 address.
+func PublicUnicast(a netip.Addr) bool {
+	a = a.Unmap()
+	if !a.IsGlobalUnicast() || a.IsPrivate() || sharedRange.Contains(a) {
+		return false
+	}
+	for _, p := range docRanges {
+		if p.Contains(a) {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *whole) staticPage(line int, p StaticPage) {

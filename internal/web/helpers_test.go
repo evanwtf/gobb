@@ -14,6 +14,7 @@ import (
 	"github.com/evanwtf/gobb/bundle"
 	"github.com/evanwtf/gobb/internal/boardtest"
 	"github.com/evanwtf/gobb/internal/bundletest"
+	"github.com/evanwtf/gobb/internal/login"
 )
 
 // newTestSite imports b into a test database and returns the handler of a site
@@ -27,6 +28,9 @@ func newTestSite(t *testing.T, b *bundletest.Board, opt Options) (http.Handler, 
 	if opt.LoginFloor == 0 {
 		opt.LoginFloor = time.Millisecond
 	}
+	if opt.Signin == nil {
+		opt.Signin = testSchedule()
+	}
 	if opt.SearchPerSecond == 0 {
 		opt.SearchPerSecond = 1000
 	}
@@ -35,6 +39,14 @@ func newTestSite(t *testing.T, b *bundletest.Board, opt Options) (http.Handler, 
 		t.Fatalf("web.New: %v", err)
 	}
 	return h, dataDir
+}
+
+// testSchedule is the sign-in schedule of a test site that sets none: ten
+// failures of an address or a name pass, and the next try waits 15 minutes. Many
+// tests sign in or fail a few times from one address; the owner's schedule would
+// hold them after three. A test of the schedule sets Options.Signin itself.
+func testSchedule() *login.ScheduleConfig {
+	return &login.ScheduleConfig{FreeFailures: 9, LastWait: 15 * time.Minute}
 }
 
 // smallSite is a site on bundletest.Small with the default options.

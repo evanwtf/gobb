@@ -22,6 +22,12 @@ func ref(dir string) FileRef {
 func body() Body { return Body{Source: "Hello", Markdown: true, Smilies: true, Autolink: true} }
 
 // fullRows returns one row per data file with every pointer set.
+// optionalRows returns one row of each optional data file, in OptionalFiles
+// order, with every field set.
+func optionalRows() []Row {
+	return []Row{MemberAddress{UserID: 1, IP: "192.0.2.10"}}
+}
+
 func fullRows() []Row {
 	return []Row{
 		Rank{ID: 1, Title: "Regular", MinPosts: 10, Special: true, Image: ptr(ref("ranks"))},

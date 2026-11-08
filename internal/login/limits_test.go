@@ -18,7 +18,6 @@ import (
 	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/password"
-	"github.com/evanwtf/gobb/internal/ratelimit"
 )
 
 // fakeVerify counts the calls and the most that ran together. It matches the
@@ -44,24 +43,29 @@ func (f *fakeVerify) verify(raw, _, _ string) (bool, bool) {
 	return raw == "right", false
 }
 
-// limitedService returns a service with a fake Verify, a floor of zero, and
-// limits of ipLimit failures per address and nameLimit per name.
-func limitedService(t *testing.T, ipLimit, nameLimit int, gate *login.Gate) (*login.Service, *fakeVerify, *pgxpool.Pool) {
+// lockAfter returns a schedule that lets a count take n failures and then
+// waits 15 minutes before every later try.
+func lockAfter(n int) *login.Schedule {
+	return login.NewSchedule(login.ScheduleConfig{FreeFailures: n - 1, LastWait: 15 * time.Minute})
+}
+
+// limitedService returns a service with a fake Verify, a floor of zero, and a
+// schedule that locks a count after n failures (lockAfter).
+func limitedService(t *testing.T, n int, gate *login.Gate) (*login.Service, *fakeVerify, *pgxpool.Pool) {
 	t.Helper()
 	_, pool := newService(t)
 	f := &fakeVerify{}
-	svc := login.NewWith(pool, login.Options{
-		IPLimit:   ratelimit.New(ipLimit, 15*time.Minute, 10000),
-		NameLimit: ratelimit.New(nameLimit, time.Hour, 10000),
-		Gate:      gate,
-		Verify:    f.verify,
-	})
+	svc := login.NewWith(pool, login.Options{Schedule: lockAfter(n), Gate: gate, Verify: f.verify})
 	svc.Floor = 0
 	return svc, f, pool
 }
 
+// addr returns the i-th address of 198.51.100.0/24 and 203.0.113.0/24.
 func addr(i int) netip.Addr {
-	return netip.MustParseAddr(fmt.Sprintf("10.0.%d.%d", i/250, i%250+1))
+	if i < 250 {
+		return netip.AddrFrom4([4]byte{198, 51, 100, byte(i + 1)})
+	}
+	return netip.AddrFrom4([4]byte{203, 0, 113, byte(i - 249)})
 }
 
 // argonHash returns an argon2id hash string that asks for memory KiB. The fake
@@ -70,6 +74,607 @@ func argonHash(memory int) string {
 	enc := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=19$m=%d,t=1,p=1$%s$%s", memory,
 		enc.EncodeToString([]byte("0123456789abcdef")), enc.EncodeToString(make([]byte, 32)))
+}
+
+func isLimited(err error) (*login.LimitedError, bool) {
+	var l *login.LimitedError
+	ok := errors.As(err, &l)
+	return l, ok
+}
+
+// The address count holds every name, and a refused try runs no password check
+// and changes no count.
+func TestCheckLimits(t *testing.T) {
+	svc, f, _ := limitedService(t, 10, nil)
+	ctx := t.Context()
+	bad := netip.MustParseAddr("192.0.2.9")
+
+	for i := range 10 {
+		if _, err := svc.Check(ctx, fmt.Sprintf("guess%d", i), "wrong", bad, now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("try %d: %v, want ErrWrong", i+1, err)
+		}
+	}
+	calls := f.calls.Load()
+	limited, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", bad, now); return err }())
+	if !ok {
+		t.Fatal("11th try is not limited")
+	}
+	if limited.RetryAfter != 15*time.Minute || limited.Reason != login.ReasonAddress {
+		t.Errorf("RetryAfter, Reason = %v, %q; want 15m, address", limited.RetryAfter, limited.Reason)
+	}
+	if f.calls.Load() != calls {
+		t.Error("Verify ran for a limited try")
+	}
+	// A limited try does not extend the wait.
+	_, err := svc.Check(ctx, "alice", "right", bad, now.Add(time.Minute))
+	if again, ok := isLimited(err); !ok || again.RetryAfter != 14*time.Minute {
+		t.Errorf("a later limited try: %v, want a wait of 14m", err)
+	}
+	// alice from another address works: her name has no failure.
+	if id, err := svc.Check(ctx, "alice", "right", addr(1), now); err != nil || id != 1 {
+		t.Errorf("alice from another address = %d, %v", id, err)
+	}
+	// After the wait the first address works too.
+	if id, err := svc.Check(ctx, "alice", "right", bad, now.Add(15*time.Minute)); err != nil || id != 1 {
+		t.Errorf("alice after the wait = %d, %v", id, err)
+	}
+}
+
+// The name count holds across addresses. Another name is not affected.
+func TestCheckNameLimit(t *testing.T) {
+	svc, _, _ := limitedService(t, 5, nil)
+	ctx := t.Context()
+	for i := range 5 {
+		if _, err := svc.Check(ctx, "Alice", "wrong", addr(i), now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("try %d: %v", i+1, err)
+		}
+	}
+	// " alice " cleans to the same key as "Alice".
+	_, err := svc.Check(ctx, " alice ", "right", addr(50), now)
+	if l, ok := isLimited(err); !ok || l.Reason != login.ReasonName || l.RetryAfter != 15*time.Minute {
+		t.Fatalf("after 5 failures = %v, want a name wait of 15m", err)
+	}
+	if id, err := svc.Check(ctx, "bob", "right", addr(50), now); err != nil || id != 2 {
+		t.Errorf("bob = %d, %v", id, err)
+	}
+	if id, err := svc.Check(ctx, "alice", "right", addr(50), now.Add(15*time.Minute)); err != nil || id != 1 {
+		t.Errorf("alice after the wait = %d, %v", id, err)
+	}
+}
+
+// A name with no account is limited like one with an account, and it costs one
+// check.
+func TestCheckUnknownName(t *testing.T) {
+	svc, f, _ := limitedService(t, 3, nil)
+	ctx := t.Context()
+	if _, err := svc.Check(ctx, "nobody", "wrong", addr(0), now); !errors.Is(err, login.ErrWrong) {
+		t.Fatal(err)
+	}
+	if got := f.calls.Load(); got != 1 {
+		t.Errorf("Verify ran %d times for an unknown name, want 1", got)
+	}
+	for i := 1; i < 3; i++ {
+		_, _ = svc.Check(ctx, "NOBODY", "wrong", addr(i), now)
+	}
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "nobody", "wrong", addr(9), now); return err }()); !ok {
+		t.Error("unknown name after 3 failures is not limited")
+	}
+	// The wait answers before any hash.
+	calls := f.calls.Load()
+	_, _ = svc.Check(ctx, "alice", "wrong", addr(9), now)
+	_, _ = svc.Check(ctx, "nobody", "wrong", addr(10), now)
+	if got := f.calls.Load(); got != calls+1 {
+		t.Errorf("Verify ran %d more times, want 1 (alice only)", got-calls)
+	}
+}
+
+// A name that is not valid, or too long, also costs one check, and counts for the
+// address.
+func TestCheckInvalidNameCountsForAddress(t *testing.T) {
+	svc, f, _ := limitedService(t, 2, nil)
+	ctx := t.Context()
+	for _, name := range []string{"\xff", string(make([]byte, 600))} {
+		if _, err := svc.Check(ctx, name, "wrong", ip, now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("name %q: %v", name, err)
+		}
+	}
+	if got := f.calls.Load(); got != 2 {
+		t.Errorf("Verify ran %d times for two bad names, want 2", got)
+	}
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", ip, now); return err }()); !ok {
+		t.Error("after two failures from one address the try is not limited")
+	}
+}
+
+// A wrong password waits for the floor after it lets go of the gate, so one slow
+// failure does not hold the next sign-in.
+func TestFloorDoesNotHoldGate(t *testing.T) {
+	_, pool := newService(t)
+	f := &fakeVerify{}
+	svc := login.NewWith(pool, login.Options{
+		Schedule: login.NewSchedule(login.DefaultSchedule()),
+		// One check of a new gobb hash at a time.
+		Gate:   login.NewGate(1024),
+		Verify: f.verify,
+	})
+	svc.Floor = 300 * time.Millisecond
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = svc.Check(t.Context(), "nobody", "wrong", addr(i), now)
+		}()
+	}
+	wg.Wait()
+	// Held through the floor, the two would take 600 ms.
+	if took := time.Since(start); took >= 550*time.Millisecond {
+		t.Errorf("two failures took %v: the floor held the gate", took)
+	}
+}
+
+// A limited try answers at once. It does not wait for the floor.
+func TestLimitedDoesNotWait(t *testing.T) {
+	svc, _, _ := limitedService(t, 1, nil)
+	_, _ = svc.Check(t.Context(), "alice", "wrong", ip, now) // no floor yet
+	svc.Floor = time.Minute
+	start := time.Now()
+	if _, ok := isLimited(func() error { _, err := svc.Check(t.Context(), "alice", "right", ip, now); return err }()); !ok {
+		t.Fatal("the try is not limited")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("a limited try took %v", took)
+	}
+}
+
+// A full gate answers ErrBusy after the floor, and without a count against the
+// address.
+func TestCheckBusy(t *testing.T) {
+	gate := login.NewGate(1024)
+	svc, f, _ := limitedService(t, 1, gate)
+	svc.GateWait = 50 * time.Millisecond
+	svc.Floor = 200 * time.Millisecond
+	hold, err := gate.Acquire(t.Context(), 1024, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := svc.Check(t.Context(), "alice", "right", ip, now); !errors.Is(err, login.ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if took := time.Since(start); took < svc.Floor || took > 5*time.Second {
+		t.Errorf("ErrBusy took %v, want the floor %v", took, svc.Floor)
+	}
+	if f.calls.Load() != 0 {
+		t.Error("Verify ran on a full gate")
+	}
+	hold()
+	// The busy try did not count: this address locks after 1 failure.
+	if id, err := svc.Check(t.Context(), "alice", "right", ip, now); err != nil || id != 1 {
+		t.Errorf("after the gate freed = %d, %v", id, err)
+	}
+}
+
+// flood sends n wrong guesses at once and returns how many were limited.
+func flood(t *testing.T, svc *login.Service, n int, name string, from func(i int) netip.Addr) (limited int64) {
+	t.Helper()
+	var wg sync.WaitGroup
+	var lim atomic.Int64
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.Check(t.Context(), name, "wrong", from(i), now)
+			if _, ok := isLimited(err); ok {
+				lim.Add(1)
+			} else if !errors.Is(err, login.ErrWrong) {
+				t.Errorf("Check %d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+	return lim.Load()
+}
+
+// Parallel guesses cannot pass a wait that the first of them would start: each
+// try holds a pending failure under one lock before the hash.
+func TestParallelGuessesFromOneIP(t *testing.T) {
+	svc, f, _ := limitedService(t, 10, nil)
+	f.sleep = 20 * time.Millisecond
+	limited := flood(t, svc, 50, "alice", func(int) netip.Addr { return ip })
+	if got := f.calls.Load(); got > 10 {
+		t.Errorf("Verify ran %d times for 50 parallel guesses, want at most 10", got)
+	}
+	if limited < 40 {
+		t.Errorf("%d tries were limited, want at least 40", limited)
+	}
+}
+
+func TestParallelGuessesAtOneName(t *testing.T) {
+	svc, f, _ := limitedService(t, 20, nil)
+	f.sleep = 20 * time.Millisecond
+	limited := flood(t, svc, 50, "alice", func(i int) netip.Addr { return addr(i) })
+	if got := f.calls.Load(); got > 20 {
+		t.Errorf("Verify ran %d times for 50 parallel guesses at one name, want at most 20", got)
+	}
+	if limited < 30 {
+		t.Errorf("%d tries were limited, want at least 30", limited)
+	}
+}
+
+// An IPv6 client holds a /64, so its addresses share one count. An IPv4-mapped
+// address is the IPv4 address.
+func TestIPv6KeyedBy64(t *testing.T) {
+	svc, _, _ := limitedService(t, 3, nil)
+	ctx := t.Context()
+	for i := range 3 {
+		a := netip.MustParseAddr(fmt.Sprintf("2001:db8:1:2::%x", i+1))
+		if _, err := svc.Check(ctx, fmt.Sprintf("guess%d", i), "wrong", a, now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("try %d: %v", i+1, err)
+		}
+	}
+	same := netip.MustParseAddr("2001:db8:1:2:ffff:ffff:ffff:ffff")
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", same, now); return err }()); !ok {
+		t.Error("another address of the same /64 is not limited")
+	}
+	other := netip.MustParseAddr("2001:db8:1:3::1")
+	if id, err := svc.Check(ctx, "alice", "right", other, now); err != nil || id != 1 {
+		t.Errorf("an address of another /64 = %d, %v", id, err)
+	}
+	// IPv4 stays per address; a mapped address is the IPv4 address.
+	for i := range 3 {
+		_, _ = svc.Check(ctx, fmt.Sprintf("other%d", i), "wrong", netip.MustParseAddr("::ffff:192.0.2.7"), now)
+	}
+	if _, ok := isLimited(func() error {
+		_, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("192.0.2.7"), now)
+		return err
+	}()); !ok {
+		t.Error("the plain form of a mapped address is not limited")
+	}
+	if id, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("192.0.2.8"), now); err != nil || id != 1 {
+		t.Errorf("the next IPv4 address = %d, %v", id, err)
+	}
+}
+
+// A try that did not fail the password gives its pending try back.
+func TestRefunds(t *testing.T) {
+	ctx := t.Context()
+	t.Run("inactive", func(t *testing.T) {
+		svc, _, pool := limitedService(t, 1, nil)
+		exec(t, pool, `update users set password_hash = (select password_hash from users where id = 1), password_scheme = 'gobb' where id = 4`)
+		for range 3 {
+			if _, err := svc.Check(ctx, "dave", "right", ip, now); !errors.Is(err, login.ErrInactive) {
+				t.Fatalf("err = %v, want ErrInactive each time", err)
+			}
+		}
+	})
+	t.Run("banned", func(t *testing.T) {
+		svc, _, _ := limitedService(t, 1, nil)
+		var banned *login.BannedError
+		for range 3 {
+			if _, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("10.99.1.2"), now); !errors.As(err, &banned) {
+				t.Fatalf("err = %v, want a ban each time", err)
+			}
+		}
+	})
+	t.Run("database error", func(t *testing.T) {
+		svc, _, _ := limitedService(t, 1, nil)
+		dead, cancel := context.WithCancel(ctx)
+		cancel()
+		for range 3 {
+			if _, err := svc.Check(dead, "alice", "right", ip, now); err == nil {
+				t.Fatal("no error with a dead context")
+			}
+		}
+		if id, err := svc.Check(ctx, "alice", "right", ip, now); err != nil || id != 1 {
+			t.Errorf("after the errors = %d, %v", id, err)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		svc, _, _ := limitedService(t, 1, nil)
+		for range 3 {
+			if id, err := svc.Check(ctx, "alice", "right", ip, now); err != nil || id != 1 {
+				t.Fatalf("good sign-in = %d, %v", id, err)
+			}
+		}
+	})
+}
+
+// A name whose wait holds can still be used from one of the member's trusted
+// addresses. The address count still applies there. A stranger gets the same
+// 429 whether or not the account exists.
+func TestKnownAddressSkipsNameLimit(t *testing.T) {
+	svc, f, pool := limitedService(t, 3, nil)
+	ctx := t.Context()
+	home := netip.MustParseAddr("192.0.2.55")
+	homeV6 := netip.MustParseAddr("2001:db8:aa:bb::1")
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, $1, $3), (1, $2, $3)`, home, homeV6, now)
+
+	for i := range 3 {
+		if _, err := svc.Check(ctx, "alice", "wrong", addr(i), now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("try %d: %v", i, err)
+		}
+	}
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", addr(20), now); return err }()); !ok {
+		t.Fatal("a stranger's address is not limited")
+	}
+	// The name is locked for a stranger. A wrong password at home is still wrong,
+	// and counts against the address.
+	if _, err := svc.Check(ctx, "alice", "wrong", home, now); !errors.Is(err, login.ErrWrong) {
+		t.Errorf("wrong password from home: %v, want ErrWrong", err)
+	}
+	// The right password at home signs in, and clears the name.
+	if id, err := svc.Check(ctx, "alice", "right", home, now); err != nil || id != 1 {
+		t.Fatalf("home with the right password = %d, %v", id, err)
+	}
+	if id, err := svc.Check(ctx, "alice", "right", addr(21), now); err != nil || id != 1 {
+		t.Errorf("a stranger after the name was cleared = %d, %v", id, err)
+	}
+
+	// Lock the name again. Another address of the home /64 counts as home.
+	for i := range 3 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(30+i), now)
+	}
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", addr(40), now); return err }()); !ok {
+		t.Fatal("the name is not locked again")
+	}
+	near := netip.MustParseAddr("2001:db8:aa:bb::77")
+	if id, err := svc.Check(ctx, "alice", "right", near, now); err != nil || id != 1 {
+		t.Errorf("an address in the home /64 = %d, %v", id, err)
+	}
+
+	// An unknown name is locked the same way for everyone, and a trusted address
+	// of someone else does not help.
+	for i := range 3 {
+		_, _ = svc.Check(ctx, "nobody", "wrong", addr(50+i), now)
+	}
+	before := f.calls.Load()
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "nobody", "right", home, now); return err }()); !ok {
+		t.Error("an unknown name from alice's home is not limited")
+	}
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "nobody", "right", addr(60), now); return err }()); !ok {
+		t.Error("an unknown name from a stranger is not limited")
+	}
+	if f.calls.Load() != before {
+		t.Error("Verify ran for a limited unknown name")
+	}
+}
+
+// A failure from one of the member's trusted addresses does not count against
+// the name, so the member's own typos at home never lock the name for others.
+func TestTrustedFailureSparesTheName(t *testing.T) {
+	svc, _, pool := limitedService(t, 3, nil)
+	ctx := t.Context()
+	home := netip.MustParseAddr("192.0.2.55")
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, $1, $2)`, home, now)
+	// Two failures at home, then two from strangers: the name has two.
+	for range 2 {
+		_, _ = svc.Check(ctx, "alice", "wrong", home, now)
+	}
+	for i := range 2 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
+	}
+	if id, err := svc.Check(ctx, "alice", "right", addr(10), now); err != nil || id != 1 {
+		t.Errorf("a third address after 2 home and 2 stranger failures = %d, %v (home failures counted)", id, err)
+	}
+}
+
+// A banned member's addresses are no longer trusted: the name's wait holds there.
+func TestBannedMembersAddressesAreNotTrusted(t *testing.T) {
+	svc, _, pool := limitedService(t, 2, nil)
+	ctx := t.Context()
+	home := netip.MustParseAddr("192.0.2.55")
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (2, $1, $2)`, home, now)
+	for i := range 2 {
+		_, _ = svc.Check(ctx, "bob", "wrong", addr(i), now)
+	}
+	if _, err := svc.Check(ctx, "bob", "wrong", home, now); !errors.Is(err, login.ErrWrong) {
+		t.Fatalf("bob from home while in good standing = %v, want ErrWrong", err)
+	}
+	exec(t, pool, `insert into bans (kind, user_id, reason, reason_shown, created_at) values ('user', 2, '', '', $1)`, now)
+	_, err := svc.Check(ctx, "bob", "right", netip.MustParseAddr("192.0.2.55"), now)
+	if l, ok := isLimited(err); !ok || l.Reason != login.ReasonName {
+		t.Errorf("bob from home after a ban = %v, want the name's wait", err)
+	}
+}
+
+// The address count holds at a trusted address too.
+func TestKnownAddressStillHasIPLimit(t *testing.T) {
+	svc, _, pool := limitedService(t, 2, nil)
+	ctx := t.Context()
+	home := netip.MustParseAddr("192.0.2.55")
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, $1, $2)`, home, now)
+	for range 2 {
+		if _, err := svc.Check(ctx, "alice", "wrong", home, now); !errors.Is(err, login.ErrWrong) {
+			t.Fatalf("from home: %v", err)
+		}
+	}
+	if l, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", home, now); return err }()); !ok || l.Reason != login.ReasonAddress {
+		t.Error("the third try from home is not held by the address")
+	}
+}
+
+// A try that the name's wait refuses changes no count: the address can still
+// sign in to another name at once.
+func TestNameRefusalChangesNoCount(t *testing.T) {
+	svc, f, _ := limitedService(t, 3, nil)
+	ctx := t.Context()
+	for i := range 3 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
+	}
+	spender := netip.MustParseAddr("192.0.2.88")
+	for i := range 20 {
+		if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", spender, now); return err }()); !ok {
+			t.Fatalf("try %d at the locked name is not limited", i+1)
+		}
+	}
+	calls := f.calls.Load()
+	if id, err := svc.Check(ctx, "bob", "right", spender, now); err != nil || id != 2 {
+		t.Errorf("another name from the same address = %d, %v", id, err)
+	}
+	if f.calls.Load() != calls+1 {
+		t.Error("the sign-in of bob did not check the password once")
+	}
+}
+
+// A try that the address refuses adds no count for its name, not even for a
+// moment.
+func TestAddressRefusalTouchesNoName(t *testing.T) {
+	_, pool := newService(t)
+	f := &fakeVerify{}
+	sched := lockAfter(1)
+	svc := login.NewWith(pool, login.Options{Schedule: sched, Verify: f.verify})
+	svc.Floor = 0
+	ctx := t.Context()
+	spent := netip.MustParseAddr("192.0.2.88")
+	if _, err := svc.Check(ctx, "nobody", "wrong", spent, now); !errors.Is(err, login.ErrWrong) {
+		t.Fatal(err)
+	}
+	addrs, names := sched.Keys()
+	if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "carol", "right", spent, now); return err }()); !ok {
+		t.Fatal("the spent address is not limited")
+	}
+	if a, n := sched.Keys(); a != addrs || n != names {
+		t.Errorf("keys after a refused try = %d, %d; want %d, %d", a, n, addrs, names)
+	}
+}
+
+// An address that cannot be read is never a trusted address.
+func TestUnspecifiedAddressIsNeverKnown(t *testing.T) {
+	svc, _, pool := limitedService(t, 2, nil)
+	ctx := t.Context()
+	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, '0.0.0.0', $1), (1, '::', $1)`, now)
+	for i := range 2 {
+		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
+	}
+	for _, a := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified(), netip.MustParseAddr("::ffff:0.0.0.0")} {
+		if _, ok := isLimited(func() error { _, err := svc.Check(ctx, "alice", "right", a, now); return err }()); !ok {
+			t.Errorf("from %v: not limited", a)
+		}
+	}
+}
+
+// querySpy counts the queries that mention user_ips.
+type querySpy struct {
+	db.Querier
+	userIPs atomic.Int64
+}
+
+func (q *querySpy) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "user_ips") {
+		q.userIPs.Add(1)
+	}
+	return q.Querier.QueryRow(ctx, sql, args...)
+}
+
+// Outside Defensive Mode, a trust query runs only when the wait of the name
+// would refuse the try, or after a failure at a valid name. A failure runs it
+// whether or not the name has an account.
+func TestKnownAddressQueryOnlyWhenNeeded(t *testing.T) {
+	_, pool := newService(t)
+	spy := &querySpy{Querier: pool}
+	f := &fakeVerify{}
+	svc := login.NewWith(spy, login.Options{Schedule: lockAfter(2), Verify: f.verify})
+	svc.Floor = 0
+	ctx := t.Context()
+	if id, err := svc.Check(ctx, "alice", "right", addr(1), now); err != nil || id != 1 {
+		t.Fatal(id, err)
+	}
+	_, _ = svc.Check(ctx, "\xff", "wrong", addr(3), now)
+	if n := spy.userIPs.Load(); n != 0 {
+		t.Errorf("the user_ips query ran %d times for a success and an invalid name", n)
+	}
+	for i, name := range []string{"nobody", "alice", "alice@example.com"} {
+		spy.userIPs.Store(0)
+		_, _ = svc.Check(ctx, name, "wrong", addr(40+i), now.Add(time.Hour))
+		if n := spy.userIPs.Load(); n != 1 {
+			t.Errorf("a failure at %q ran the user_ips query %d times, want 1", name, n)
+		}
+	}
+	_, _ = svc.Check(ctx, "alice", "wrong", addr(5), now)
+	spy.userIPs.Store(0)
+	_, _ = svc.Check(ctx, "alice", "right", addr(20), now)
+	if n := spy.userIPs.Load(); n != 1 {
+		t.Errorf("the user_ips query ran %d times for one try held by the name, want 1", n)
+	}
+}
+
+// Every failure that follows a reservation takes the floor: an inactive account, a
+// ban, and a lookup that fails. A good password does not.
+func TestCheckFloorHoldsOnEveryFailure(t *testing.T) {
+	svc, _, pool := limitedService(t, 100, nil)
+	svc.Floor = 300 * time.Millisecond
+	exec(t, pool, `update users set password_hash = (select password_hash from users where id = 1), password_scheme = 'gobb' where id = 4`)
+	dead, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, c := range []struct {
+		name string
+		ctx  context.Context
+		user string
+		from netip.Addr
+		want func(error) bool
+	}{
+		{"inactive", t.Context(), "dave", ip, func(err error) bool { return errors.Is(err, login.ErrInactive) }},
+		{"banned", t.Context(), "alice", netip.MustParseAddr("10.99.1.2"), func(err error) bool {
+			var b *login.BannedError
+			return errors.As(err, &b)
+		}},
+		{"lookup cancelled", dead, "alice", ip, func(err error) bool { return errors.Is(err, context.Canceled) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			start := time.Now()
+			_, err := svc.Check(c.ctx, c.user, "right", c.from, now)
+			if !c.want(err) {
+				t.Fatalf("err = %v", err)
+			}
+			if took := time.Since(start); took < svc.Floor {
+				t.Errorf("answered after %v, before the floor %v", took, svc.Floor)
+			}
+		})
+	}
+	start := time.Now()
+	if id, err := svc.Check(t.Context(), "alice", "right", ip, now); err != nil || id != 1 {
+		t.Fatalf("good sign-in = %d, %v", id, err)
+	}
+	if took := time.Since(start); took >= svc.Floor {
+		t.Errorf("a good password took %v, want no wait", took)
+	}
+}
+
+// A finish step that says the account changed makes the sign-in a wrong
+// password: ErrWrong, it counts, and the floor applies. Any other error from the
+// step is passed on and gives the pending tries back.
+func TestCheckWithStaleIsWrong(t *testing.T) {
+	svc, _, _ := limitedService(t, 3, nil)
+	svc.Floor = 80 * time.Millisecond
+	stale := func(context.Context, int64, int64) error { return login.ErrStale }
+	start := time.Now()
+	_, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, stale)
+	if !errors.Is(err, login.ErrWrong) || errors.Is(err, login.ErrStale) {
+		t.Fatalf("stale = %v, want ErrWrong", err)
+	}
+	if took := time.Since(start); took < 80*time.Millisecond {
+		t.Errorf("a stale sign-in took %v, under the floor", took)
+	}
+	for range 2 {
+		if _, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, stale); !errors.Is(err, login.ErrWrong) {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := isLimited(func() error { _, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, nil); return err }()); !ok {
+		t.Error("after three stale tries the try is not limited")
+	}
+
+	// A database error in the step is not a wrong password, and does not count.
+	svc2, _, _ := limitedService(t, 1, nil)
+	boom := errors.New("boom")
+	if _, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, func(context.Context, int64, int64) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("step error = %v", err)
+	}
+	if id, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, nil); err != nil || id != 1 {
+		t.Errorf("after a step error = %d, %v", id, err)
+	}
 }
 
 // Twenty sign-ins at once on a 128 MiB gate, against a hash that asks for
@@ -82,10 +687,8 @@ func TestLoginMemoryBudget(t *testing.T) {
 	exec(t, pool, `update users set password_hash = $1, password_scheme = 'gobb' where id = 1`, argonHash(65536))
 	f := &fakeVerify{sleep: 20 * time.Millisecond}
 	svc := login.NewWith(pool, login.Options{
-		IPLimit:   ratelimit.New(10, 15*time.Minute, 10000),
-		NameLimit: ratelimit.New(20, time.Hour, 10000),
-		Gate:      login.NewGate(131072),
-		Verify:    f.verify,
+		Gate:   login.NewGate(131072),
+		Verify: f.verify,
 	})
 	svc.Floor = 0
 
@@ -117,438 +720,6 @@ func TestLoginMemoryBudget(t *testing.T) {
 	}
 	if peak := f.peak.Load(); peak > 2 || peak < 1 {
 		t.Errorf("peak of Verify at once = %d, want 1 or 2 (128 MiB / 64 MiB)", peak)
-	}
-}
-
-func TestCheckLimits(t *testing.T) {
-	svc, f, _ := limitedService(t, 10, 20, nil)
-	ctx := t.Context()
-	bad := netip.MustParseAddr("10.0.0.9")
-
-	for i := range 10 {
-		if _, err := svc.Check(ctx, "alice", "wrong", bad, now); !errors.Is(err, login.ErrWrong) {
-			t.Fatalf("try %d: %v, want ErrWrong", i+1, err)
-		}
-	}
-	calls := f.calls.Load()
-	_, err := svc.Check(ctx, "alice", "right", bad, now)
-	var limited *login.LimitedError
-	if !errors.As(err, &limited) {
-		t.Fatalf("11th try = %v, want *LimitedError", err)
-	}
-	if limited.RetryAfter <= 0 || limited.RetryAfter > 15*time.Minute {
-		t.Errorf("RetryAfter = %v, want in (0, 15m]", limited.RetryAfter)
-	}
-	if f.calls.Load() != calls {
-		t.Error("Verify ran for a limited try")
-	}
-	// A limited try does not extend the wait.
-	_, err = svc.Check(ctx, "alice", "right", bad, now.Add(time.Minute))
-	var again *login.LimitedError
-	if !errors.As(err, &again) || again.RetryAfter >= limited.RetryAfter {
-		t.Errorf("a later limited try: %v (first wait %v)", err, limited.RetryAfter)
-	}
-
-	// The same name from another address still works: 10 of its 20 failures.
-	if id, err := svc.Check(ctx, "alice", "right", addr(1), now); err != nil || id != 1 {
-		t.Errorf("alice from another address = %d, %v", id, err)
-	}
-	// After the window the first address works too.
-	if id, err := svc.Check(ctx, "alice", "right", bad, now.Add(16*time.Minute)); err != nil || id != 1 {
-		t.Errorf("alice after the wait = %d, %v", id, err)
-	}
-}
-
-// The name limit holds across addresses, and a success clears the name.
-func TestCheckNameLimit(t *testing.T) {
-	svc, _, _ := limitedService(t, 10, 20, nil)
-	ctx := t.Context()
-	for i := range 20 {
-		if _, err := svc.Check(ctx, "Alice", "wrong", addr(i), now); !errors.Is(err, login.ErrWrong) {
-			t.Fatalf("try %d: %v", i+1, err)
-		}
-	}
-	// "alice" cleans to the same key as "Alice".
-	_, err := svc.Check(ctx, " alice ", "right", addr(50), now)
-	var limited *login.LimitedError
-	if !errors.As(err, &limited) {
-		t.Fatalf("21st failure's successor = %v, want *LimitedError", err)
-	}
-	if limited.RetryAfter <= 30*time.Minute || limited.RetryAfter > time.Hour {
-		t.Errorf("RetryAfter = %v, want the hour window's wait", limited.RetryAfter)
-	}
-	// Another name is not affected.
-	if id, err := svc.Check(ctx, "bob", "right", addr(50), now); err != nil || id != 2 {
-		t.Errorf("bob = %d, %v", id, err)
-	}
-	// After the window the name works.
-	if id, err := svc.Check(ctx, "alice", "right", addr(50), now.Add(61*time.Minute)); err != nil || id != 1 {
-		t.Errorf("alice after the window = %d, %v", id, err)
-	}
-}
-
-func TestCheckSuccessResetsName(t *testing.T) {
-	svc, _, _ := limitedService(t, 100, 3, nil)
-	ctx := t.Context()
-	for round := range 3 {
-		for i := range 2 {
-			if _, err := svc.Check(ctx, "alice", "wrong", addr(round*10+i), now); !errors.Is(err, login.ErrWrong) {
-				t.Fatalf("round %d try %d: %v", round, i, err)
-			}
-		}
-		if id, err := svc.Check(ctx, "alice", "right", addr(round*10+9), now); err != nil || id != 1 {
-			t.Fatalf("round %d: right password = %d, %v (the success should clear the name)", round, id, err)
-		}
-	}
-}
-
-// A name with no account is limited like one with an account, and it costs one
-// check.
-func TestCheckUnknownName(t *testing.T) {
-	svc, f, _ := limitedService(t, 100, 3, nil)
-	ctx := t.Context()
-	if _, err := svc.Check(ctx, "nobody", "wrong", ip, now); !errors.Is(err, login.ErrWrong) {
-		t.Fatal(err)
-	}
-	if got := f.calls.Load(); got != 1 {
-		t.Errorf("Verify ran %d times for an unknown name, want 1", got)
-	}
-	for i := 1; i < 3; i++ {
-		_, _ = svc.Check(ctx, "NOBODY", "wrong", addr(i), now)
-	}
-	_, err := svc.Check(ctx, "nobody", "wrong", addr(9), now)
-	var limited *login.LimitedError
-	if !errors.As(err, &limited) {
-		t.Errorf("unknown name after 3 failures = %v, want *LimitedError", err)
-	}
-	// The limit answers before any lookup or hash.
-	calls := f.calls.Load()
-	_, _ = svc.Check(ctx, "alice", "wrong", addr(9), now)
-	_, _ = svc.Check(ctx, "nobody", "wrong", addr(10), now)
-	if got := f.calls.Load(); got != calls+1 {
-		t.Errorf("Verify ran %d more times, want 1 (alice only)", got-calls)
-	}
-}
-
-// A name that is not valid, or too long, also costs one check, and counts for the
-// address.
-func TestCheckInvalidNameCountsForAddress(t *testing.T) {
-	svc, f, _ := limitedService(t, 2, 100, nil)
-	ctx := t.Context()
-	for _, name := range []string{"\xff", string(make([]byte, 600))} {
-		if _, err := svc.Check(ctx, name, "wrong", ip, now); !errors.Is(err, login.ErrWrong) {
-			t.Fatalf("name %q: %v", name, err)
-		}
-	}
-	if got := f.calls.Load(); got != 2 {
-		t.Errorf("Verify ran %d times for two bad names, want 2", got)
-	}
-	var limited *login.LimitedError
-	if _, err := svc.Check(ctx, "alice", "right", ip, now); !errors.As(err, &limited) {
-		t.Errorf("after two failures from one address: %v, want *LimitedError", err)
-	}
-}
-
-// A wrong password waits for the floor after it lets go of the gate, so one slow
-// failure does not hold the next sign-in.
-func TestFloorDoesNotHoldGate(t *testing.T) {
-	_, pool := newService(t)
-	f := &fakeVerify{}
-	svc := login.NewWith(pool, login.Options{
-		IPLimit:   ratelimit.New(10, 15*time.Minute, 100),
-		NameLimit: ratelimit.New(20, time.Hour, 100),
-		// One check of a new gobb hash at a time.
-		Gate:   login.NewGate(1024),
-		Verify: f.verify,
-	})
-	svc.Floor = 300 * time.Millisecond
-	start := time.Now()
-	var wg sync.WaitGroup
-	for i := range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _ = svc.Check(t.Context(), "nobody", "wrong", addr(i), now)
-		}()
-	}
-	wg.Wait()
-	// Held through the floor, the two would take 600 ms.
-	if took := time.Since(start); took >= 550*time.Millisecond {
-		t.Errorf("two failures took %v: the floor held the gate", took)
-	}
-}
-
-// A limited try answers at once. It does not wait for the floor.
-func TestLimitedDoesNotWait(t *testing.T) {
-	svc, _, _ := limitedService(t, 1, 100, nil)
-	_, _ = svc.Check(t.Context(), "alice", "wrong", ip, now) // no floor yet
-	svc.Floor = time.Minute
-	start := time.Now()
-	var limited *login.LimitedError
-	if _, err := svc.Check(t.Context(), "alice", "right", ip, now); !errors.As(err, &limited) {
-		t.Fatalf("err = %v, want *LimitedError", err)
-	}
-	if took := time.Since(start); took > time.Second {
-		t.Errorf("a limited try took %v", took)
-	}
-}
-
-// A full gate answers ErrBusy after the floor, and without a count against the
-// address.
-func TestCheckBusy(t *testing.T) {
-	gate := login.NewGate(1024)
-	svc, f, _ := limitedService(t, 1, 100, gate)
-	svc.GateWait = 50 * time.Millisecond
-	svc.Floor = 200 * time.Millisecond
-	hold, err := gate.Acquire(t.Context(), 1024, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	if _, err := svc.Check(t.Context(), "alice", "right", ip, now); !errors.Is(err, login.ErrBusy) {
-		t.Fatalf("err = %v, want ErrBusy", err)
-	}
-	if took := time.Since(start); took < svc.Floor || took > 5*time.Second {
-		t.Errorf("ErrBusy took %v, want the floor %v", took, svc.Floor)
-	}
-	if f.calls.Load() != 0 {
-		t.Error("Verify ran on a full gate")
-	}
-	hold()
-	// The busy try did not count: this address has a limit of 1 failure.
-	if id, err := svc.Check(t.Context(), "alice", "right", ip, now); err != nil || id != 1 {
-		t.Errorf("after the gate freed = %d, %v", id, err)
-	}
-}
-
-// flood sends n wrong guesses at once and returns how many were limited.
-func flood(t *testing.T, svc *login.Service, n int, name string, from func(i int) netip.Addr) (limited int64) {
-	t.Helper()
-	var wg sync.WaitGroup
-	var lim atomic.Int64
-	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := svc.Check(t.Context(), name, "wrong", from(i), now)
-			var l *login.LimitedError
-			if errors.As(err, &l) {
-				lim.Add(1)
-			} else if !errors.Is(err, login.ErrWrong) {
-				t.Errorf("Check %d: %v", i, err)
-			}
-		}()
-	}
-	wg.Wait()
-	return lim.Load()
-}
-
-// Parallel guesses cannot pass a limit that the first of them has not reached:
-// the limit is taken under one lock before the hash.
-func TestParallelGuessesFromOneIP(t *testing.T) {
-	svc, f, _ := limitedService(t, 10, 1000, nil)
-	f.sleep = 20 * time.Millisecond
-	limited := flood(t, svc, 50, "alice", func(int) netip.Addr { return ip })
-	if got := f.calls.Load(); got > 10 {
-		t.Errorf("Verify ran %d times for 50 parallel guesses, want at most 10", got)
-	}
-	if limited < 40 {
-		t.Errorf("%d tries were limited, want at least 40", limited)
-	}
-}
-
-func TestParallelGuessesAtOneName(t *testing.T) {
-	svc, f, _ := limitedService(t, 1000, 20, nil)
-	f.sleep = 20 * time.Millisecond
-	limited := flood(t, svc, 50, "alice", func(i int) netip.Addr { return addr(i) })
-	if got := f.calls.Load(); got > 20 {
-		t.Errorf("Verify ran %d times for 50 parallel guesses at one name, want at most 20", got)
-	}
-	if limited < 30 {
-		t.Errorf("%d tries were limited, want at least 30", limited)
-	}
-}
-
-// An IPv6 client holds a /64, so its addresses share one budget. An IPv4-mapped
-// address is the IPv4 address.
-func TestIPv6KeyedBy64(t *testing.T) {
-	svc, _, _ := limitedService(t, 3, 1000, nil)
-	ctx := t.Context()
-	for i := range 3 {
-		a := netip.MustParseAddr(fmt.Sprintf("2001:db8:1:2::%x", i+1))
-		if _, err := svc.Check(ctx, "alice", "wrong", a, now); !errors.Is(err, login.ErrWrong) {
-			t.Fatalf("try %d: %v", i+1, err)
-		}
-	}
-	var limited *login.LimitedError
-	same := netip.MustParseAddr("2001:db8:1:2:ffff:ffff:ffff:ffff")
-	if _, err := svc.Check(ctx, "alice", "right", same, now); !errors.As(err, &limited) {
-		t.Errorf("another address of the same /64: %v, want *LimitedError", err)
-	}
-	other := netip.MustParseAddr("2001:db8:1:3::1")
-	if id, err := svc.Check(ctx, "alice", "right", other, now); err != nil || id != 1 {
-		t.Errorf("an address of another /64 = %d, %v", id, err)
-	}
-	// IPv4 stays per address; a mapped address is the IPv4 address.
-	for range 3 {
-		_, _ = svc.Check(ctx, "alice", "wrong", netip.MustParseAddr("::ffff:10.7.7.7"), now)
-	}
-	if _, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("10.7.7.7"), now); !errors.As(err, &limited) {
-		t.Errorf("plain form of a mapped address: %v, want *LimitedError", err)
-	}
-	if id, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("10.7.7.8"), now); err != nil || id != 1 {
-		t.Errorf("the next IPv4 address = %d, %v", id, err)
-	}
-}
-
-// When both limits are over, the longer wait is the answer.
-func TestLongerWaitWins(t *testing.T) {
-	svc, _, _ := limitedService(t, 2, 2, nil)
-	ctx := t.Context()
-	// The name has 2 failures at now, from other addresses; the address has 2
-	// failures at now+10m, so its window ends at now+25m and the name's at now+60m.
-	for i := range 2 {
-		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
-	}
-	later := now.Add(10 * time.Minute)
-	for range 2 {
-		_, _ = svc.Check(ctx, "nobody", "wrong", ip, later)
-	}
-	var limited *login.LimitedError
-	_, err := svc.Check(ctx, "alice", "right", ip, later)
-	if !errors.As(err, &limited) {
-		t.Fatalf("err = %v", err)
-	}
-	if want := 50 * time.Minute; limited.RetryAfter != want {
-		t.Errorf("RetryAfter = %v, want %v (the name's wait, not the address's 15m)", limited.RetryAfter, want)
-	}
-	// With the name free again, only the address's wait remains.
-	_, err = svc.Check(ctx, "bob", "right", ip, later)
-	if !errors.As(err, &limited) || limited.RetryAfter != 15*time.Minute {
-		t.Errorf("address only: %v, want 15m", err)
-	}
-}
-
-// A try that did not fail the password gives its reservation back.
-func TestRefunds(t *testing.T) {
-	ctx := t.Context()
-	t.Run("inactive", func(t *testing.T) {
-		svc, _, pool := limitedService(t, 1, 1, nil)
-		exec(t, pool, `update users set password_hash = (select password_hash from users where id = 1), password_scheme = 'gobb' where id = 4`)
-		for range 3 {
-			if _, err := svc.Check(ctx, "dave", "right", ip, now); !errors.Is(err, login.ErrInactive) {
-				t.Fatalf("err = %v, want ErrInactive each time", err)
-			}
-		}
-	})
-	t.Run("banned", func(t *testing.T) {
-		svc, _, _ := limitedService(t, 1, 1, nil)
-		var banned *login.BannedError
-		for range 3 {
-			if _, err := svc.Check(ctx, "alice", "right", netip.MustParseAddr("10.99.1.2"), now); !errors.As(err, &banned) {
-				t.Fatalf("err = %v, want a ban each time", err)
-			}
-		}
-	})
-	t.Run("database error", func(t *testing.T) {
-		svc, _, _ := limitedService(t, 1, 1, nil)
-		dead, cancel := context.WithCancel(ctx)
-		cancel()
-		for range 3 {
-			if _, err := svc.Check(dead, "alice", "right", ip, now); err == nil {
-				t.Fatal("no error with a dead context")
-			}
-		}
-		if id, err := svc.Check(ctx, "alice", "right", ip, now); err != nil || id != 1 {
-			t.Errorf("after the errors = %d, %v", id, err)
-		}
-	})
-	t.Run("success", func(t *testing.T) {
-		svc, _, _ := limitedService(t, 1, 1, nil)
-		for range 3 {
-			if id, err := svc.Check(ctx, "alice", "right", ip, now); err != nil || id != 1 {
-				t.Fatalf("good sign-in = %d, %v", id, err)
-			}
-		}
-	})
-}
-
-// A name that the limit holds can still be used from an address that the account
-// has used before. The address limit still applies there. A stranger gets the same
-// 429 whether or not the account exists.
-func TestKnownAddressSkipsNameLimit(t *testing.T) {
-	svc, f, pool := limitedService(t, 5, 3, nil)
-	ctx := t.Context()
-	home := netip.MustParseAddr("10.5.5.5")
-	homeV6 := netip.MustParseAddr("2001:db8:aa:bb::1")
-	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, $1, $3), (1, $2, $3)`, home, homeV6, now)
-
-	for i := range 3 {
-		if _, err := svc.Check(ctx, "alice", "wrong", addr(i), now); !errors.Is(err, login.ErrWrong) {
-			t.Fatalf("try %d: %v", i, err)
-		}
-	}
-	var limited *login.LimitedError
-	if _, err := svc.Check(ctx, "alice", "right", addr(20), now); !errors.As(err, &limited) {
-		t.Fatalf("a stranger's address: %v, want *LimitedError", err)
-	}
-	// The name is locked for a stranger. A wrong password at home is still wrong,
-	// and counts against the address.
-	if _, err := svc.Check(ctx, "alice", "wrong", home, now); !errors.Is(err, login.ErrWrong) {
-		t.Errorf("wrong password from home: %v, want ErrWrong", err)
-	}
-	// The right password at home signs in, and clears the name.
-	if id, err := svc.Check(ctx, "alice", "right", home, now); err != nil || id != 1 {
-		t.Fatalf("home with the right password = %d, %v", id, err)
-	}
-	if id, err := svc.Check(ctx, "alice", "right", addr(21), now); err != nil || id != 1 {
-		t.Errorf("a stranger after the name was cleared = %d, %v", id, err)
-	}
-
-	// Lock the name again. Another address of the home /64 counts as home.
-	for i := range 3 {
-		_, _ = svc.Check(ctx, "alice", "wrong", addr(30+i), now)
-	}
-	if _, err := svc.Check(ctx, "alice", "right", addr(40), now); !errors.As(err, &limited) {
-		t.Fatalf("locked again: %v", err)
-	}
-	near := netip.MustParseAddr("2001:db8:aa:bb::77")
-	if id, err := svc.Check(ctx, "alice", "right", near, now); err != nil || id != 1 {
-		t.Errorf("an address in the home /64 = %d, %v", id, err)
-	}
-
-	// An unknown name is locked the same way for everyone, and a known address of
-	// someone else does not help.
-	for i := range 3 {
-		_, _ = svc.Check(ctx, "nobody", "wrong", addr(50+i), now)
-	}
-	before := f.calls.Load()
-	if _, err := svc.Check(ctx, "nobody", "right", home, now); !errors.As(err, &limited) {
-		t.Errorf("unknown name from alice's home: %v, want *LimitedError", err)
-	}
-	if _, err := svc.Check(ctx, "nobody", "right", addr(60), now); !errors.As(err, &limited) {
-		t.Errorf("unknown name from a stranger: %v, want *LimitedError", err)
-	}
-	if f.calls.Load() != before {
-		t.Error("Verify ran for a limited unknown name")
-	}
-}
-
-// The address limit holds at a known address too.
-func TestKnownAddressStillHasIPLimit(t *testing.T) {
-	svc, _, pool := limitedService(t, 2, 1, nil)
-	ctx := t.Context()
-	home := netip.MustParseAddr("10.5.5.5")
-	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, $1, $2)`, home, now)
-	_, _ = svc.Check(ctx, "alice", "wrong", addr(1), now) // the name limit is 1
-	for range 2 {
-		if _, err := svc.Check(ctx, "alice", "wrong", home, now); !errors.Is(err, login.ErrWrong) {
-			t.Fatalf("from home: %v", err)
-		}
-	}
-	var limited *login.LimitedError
-	if _, err := svc.Check(ctx, "alice", "right", home, now); !errors.As(err, &limited) {
-		t.Errorf("third try from home: %v, want *LimitedError", err)
 	}
 }
 
@@ -597,138 +768,6 @@ func TestRehashUsesGate(t *testing.T) {
 	}
 	if err := pool.QueryRow(t.Context(), `select password_scheme from users where id = 2`).Scan(&scheme); err != nil || scheme != "gobb" {
 		t.Errorf("scheme = %q (%v) after the gate freed, want gobb", scheme, err)
-	}
-}
-
-// A try that the name limit refuses keeps its address event: one address cannot
-// send unlimited lookups at a locked name.
-func TestNameRefusalSpendsAddressBudget(t *testing.T) {
-	svc, f, _ := limitedService(t, 10, 3, nil)
-	ctx := t.Context()
-	for i := range 3 {
-		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
-	}
-	var limited *login.LimitedError
-	spender := netip.MustParseAddr("10.8.8.8")
-	for i := range 10 {
-		if _, err := svc.Check(ctx, "alice", "right", spender, now); !errors.As(err, &limited) {
-			t.Fatalf("try %d at the locked name: %v, want *LimitedError", i+1, err)
-		}
-	}
-	// The 11th try is over the limit of the address, for any name.
-	if _, err := svc.Check(ctx, "alice", "right", spender, now); !errors.As(err, &limited) {
-		t.Fatalf("11th try: %v", err)
-	}
-	calls := f.calls.Load()
-	if _, err := svc.Check(ctx, "bob", "right", spender, now); !errors.As(err, &limited) {
-		t.Errorf("another name from the same address: %v, want *LimitedError (the address is spent)", err)
-	}
-	if f.calls.Load() != calls {
-		t.Error("Verify ran for an address over its limit")
-	}
-	// Another address is not affected.
-	if id, err := svc.Check(ctx, "bob", "right", addr(100), now); err != nil || id != 2 {
-		t.Errorf("bob from another address = %d, %v", id, err)
-	}
-}
-
-// A try that the address limit refuses takes nothing from the name limit, not
-// even for a moment. A name event that was taken and given back would still have
-// pushed another key out of a full limiter.
-func TestAddressRefusalTouchesNoName(t *testing.T) {
-	_, pool := newService(t)
-	f := &fakeVerify{}
-	names := ratelimit.New(3, time.Hour, 3)
-	svc := login.NewWith(pool, login.Options{
-		IPLimit:   ratelimit.New(1, 15*time.Minute, 100),
-		NameLimit: names,
-		Verify:    f.verify,
-	})
-	svc.Floor = 0
-	ctx := t.Context()
-	for i := range 3 {
-		names.Add("alice", now.Add(time.Duration(i)*time.Second))
-	}
-	names.Add("bob", now)
-	spent := netip.MustParseAddr("10.8.8.8")
-	if _, err := svc.Check(ctx, "nobody", "wrong", spent, now); !errors.Is(err, login.ErrWrong) {
-		t.Fatal(err)
-	}
-	// "carol" is a new key in a full limiter. A refused try must not add it.
-	var limited *login.LimitedError
-	if _, err := svc.Check(ctx, "carol", "right", spent, now); !errors.As(err, &limited) {
-		t.Fatalf("err = %v, want *LimitedError", err)
-	}
-	// The limiter is full (alice, bob, nobody). A refused try that took an event
-	// for "carol" would have pushed one of them out.
-	if !names.Has("alice") || !names.Has("bob") || !names.Has("nobody") || names.Has("carol") {
-		t.Errorf("name keys after a refused try: alice=%t bob=%t nobody=%t carol=%t; want true, true, true, false",
-			names.Has("alice"), names.Has("bob"), names.Has("nobody"), names.Has("carol"))
-	}
-	// The wait of a full name still counts: alice is over, from the same address.
-	_, err := svc.Check(ctx, "alice", "right", spent, now.Add(time.Minute))
-	if !errors.As(err, &limited) || limited.RetryAfter < 30*time.Minute {
-		t.Errorf("both over: %v, want the name's wait of about an hour", err)
-	}
-}
-
-// An address that cannot be read is never a known address, and a sign-in from it
-// is not stored in user_ips.
-func TestUnspecifiedAddressIsNeverKnown(t *testing.T) {
-	svc, _, pool := limitedService(t, 100, 2, nil)
-	ctx := t.Context()
-	exec(t, pool, `insert into user_ips (user_id, ip, last_seen_at) values (1, '0.0.0.0', $1), (1, '::', $1)`, now)
-	for i := range 2 {
-		_, _ = svc.Check(ctx, "alice", "wrong", addr(i), now)
-	}
-	var limited *login.LimitedError
-	for _, a := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified(), netip.MustParseAddr("::ffff:0.0.0.0")} {
-		if _, err := svc.Check(ctx, "alice", "right", a, now); !errors.As(err, &limited) {
-			t.Errorf("from %v: %v, want *LimitedError", a, err)
-		}
-	}
-}
-
-// querySpy counts the queries that mention user_ips.
-type querySpy struct {
-	db.Querier
-	userIPs atomic.Int64
-}
-
-func (q *querySpy) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if strings.Contains(sql, "user_ips") {
-		q.userIPs.Add(1)
-	}
-	return q.Querier.QueryRow(ctx, sql, args...)
-}
-
-// The user_ips query runs only when the name limit is over.
-func TestKnownAddressQueryOnlyWhenNameLimited(t *testing.T) {
-	_, pool := newService(t)
-	spy := &querySpy{Querier: pool}
-	f := &fakeVerify{}
-	svc := login.NewWith(spy, login.Options{
-		IPLimit:   ratelimit.New(100, 15*time.Minute, 100),
-		NameLimit: ratelimit.New(2, time.Hour, 100),
-		Verify:    f.verify,
-	})
-	svc.Floor = 0
-	ctx := t.Context()
-	_, _ = svc.Check(ctx, "alice", "wrong", addr(1), now)
-	if id, err := svc.Check(ctx, "alice", "right", addr(1), now); err != nil || id != 1 {
-		t.Fatal(id, err)
-	}
-	_, _ = svc.Check(ctx, "nobody", "wrong", addr(1), now)
-	_, _ = svc.Check(ctx, "\xff", "wrong", addr(1), now)
-	if n := spy.userIPs.Load(); n != 0 {
-		t.Errorf("the user_ips query ran %d times with no name over its limit", n)
-	}
-	for i := range 2 {
-		_, _ = svc.Check(ctx, "alice", "wrong", addr(10+i), now)
-	}
-	_, _ = svc.Check(ctx, "alice", "right", addr(20), now)
-	if n := spy.userIPs.Load(); n != 1 {
-		t.Errorf("the user_ips query ran %d times for one name-limited try, want 1", n)
 	}
 }
 
@@ -834,48 +873,6 @@ func TestCheckFloorHoldsOnGateCancel(t *testing.T) {
 	}
 }
 
-// Every failure that follows a reservation takes the floor: an inactive account, a
-// ban, and a lookup that fails. A good password does not.
-func TestCheckFloorHoldsOnEveryFailure(t *testing.T) {
-	svc, _, pool := limitedService(t, 100, 100, nil)
-	svc.Floor = 300 * time.Millisecond
-	exec(t, pool, `update users set password_hash = (select password_hash from users where id = 1), password_scheme = 'gobb' where id = 4`)
-	dead, cancel := context.WithCancel(t.Context())
-	cancel()
-	for _, c := range []struct {
-		name string
-		ctx  context.Context
-		user string
-		from netip.Addr
-		want func(error) bool
-	}{
-		{"inactive", t.Context(), "dave", ip, func(err error) bool { return errors.Is(err, login.ErrInactive) }},
-		{"banned", t.Context(), "alice", netip.MustParseAddr("10.99.1.2"), func(err error) bool {
-			var b *login.BannedError
-			return errors.As(err, &b)
-		}},
-		{"lookup cancelled", dead, "alice", ip, func(err error) bool { return errors.Is(err, context.Canceled) }},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			start := time.Now()
-			_, err := svc.Check(c.ctx, c.user, "right", c.from, now)
-			if !c.want(err) {
-				t.Fatalf("err = %v", err)
-			}
-			if took := time.Since(start); took < svc.Floor {
-				t.Errorf("answered after %v, before the floor %v", took, svc.Floor)
-			}
-		})
-	}
-	start := time.Now()
-	if id, err := svc.Check(t.Context(), "alice", "right", ip, now); err != nil || id != 1 {
-		t.Fatalf("good sign-in = %d, %v", id, err)
-	}
-	if took := time.Since(start); took >= svc.Floor {
-		t.Errorf("a good password took %v, want no wait", took)
-	}
-}
-
 // CheckWith hands the finish step the ID and the password epoch that the check
 // read. A rehash of a legacy hash (bob's) leaves the epoch, so the step sees the
 // epoch that is stored now, and that is the one a conditional insert compares.
@@ -909,42 +906,5 @@ func TestCheckWithPassesTheVerifiedEpoch(t *testing.T) {
 	// A plain Check still works.
 	if id, err := svc.Check(t.Context(), "carol", pw, ip, now); err != nil || id != 3 {
 		t.Errorf("Check = %d, %v", id, err)
-	}
-}
-
-// A finish step that says the account changed makes the sign-in a wrong
-// password: ErrWrong, the two limit events stay, and the floor applies. Any
-// other error from the step is passed on and gives the events back.
-func TestCheckWithStaleIsWrong(t *testing.T) {
-	svc, _, _ := limitedService(t, 3, 100, nil)
-	svc.Floor = 80 * time.Millisecond
-	stale := func(context.Context, int64, int64) error { return login.ErrStale }
-	start := time.Now()
-	_, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, stale)
-	if !errors.Is(err, login.ErrWrong) || errors.Is(err, login.ErrStale) {
-		t.Fatalf("stale = %v, want ErrWrong", err)
-	}
-	if took := time.Since(start); took < 80*time.Millisecond {
-		t.Errorf("a stale sign-in took %v, under the floor", took)
-	}
-	// It counts: two more stale tries fill the address limit of 3.
-	for range 2 {
-		if _, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, stale); !errors.Is(err, login.ErrWrong) {
-			t.Fatal(err)
-		}
-	}
-	var limited *login.LimitedError
-	if _, err := svc.CheckWith(t.Context(), "alice", "right", ip, now, nil); !errors.As(err, &limited) {
-		t.Errorf("after three stale tries = %v, want *LimitedError", err)
-	}
-
-	// A database error in the step is not a wrong password, and takes no event.
-	svc2, _, _ := limitedService(t, 1, 100, nil)
-	boom := errors.New("boom")
-	if _, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, func(context.Context, int64, int64) error { return boom }); !errors.Is(err, boom) {
-		t.Fatalf("step error = %v", err)
-	}
-	if id, err := svc2.CheckWith(t.Context(), "alice", "right", ip, now, nil); err != nil || id != 1 {
-		t.Errorf("after a step error the event should be back: %d, %v", id, err)
 	}
 }

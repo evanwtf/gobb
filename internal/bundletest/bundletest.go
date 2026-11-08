@@ -52,6 +52,9 @@ type Board struct {
 	LegacyRoutes []bundle.LegacyRoute
 	LegacyFiles  []bundle.LegacyFile
 	StaticPages  []bundle.StaticPage
+	// MemberAddresses fills the optional member_addresses.jsonl. With none,
+	// [Write] leaves the file out.
+	MemberAddresses []bundle.MemberAddress
 
 	// Files maps a path under files/ to the content of the file. [Write] writes
 	// each entry, whether or not a row names it.
@@ -98,6 +101,7 @@ func Write(t testing.TB, b *Board) string {
 	addAll(t, w, b.LegacyRoutes)
 	addAll(t, w, b.LegacyFiles)
 	addAll(t, w, b.StaticPages)
+	addAll(t, w, b.MemberAddresses)
 
 	scratch := t.TempDir()
 	paths := make([]string, 0, len(b.Files))

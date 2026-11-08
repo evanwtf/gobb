@@ -74,8 +74,10 @@ func TestMigrationModPinCopiesModLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(applied, []string{db.ModPinMigration}) {
-		t.Fatalf("applied %v, want only %s", applied, db.ModPinMigration)
+	// Later migrations apply after 0017; the checks below read only what 0017
+	// wrote.
+	if len(applied) == 0 || applied[0] != db.ModPinMigration {
+		t.Fatalf("applied %v, want %s first", applied, db.ModPinMigration)
 	}
 
 	rows := func(q string) []string {

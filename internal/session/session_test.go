@@ -226,18 +226,19 @@ func TestCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Rows of user_ips at 91 days, 89 days, and just past 90 days.
+	// Rows of user_ips at 366 days, 364 days, and just past one year: the
+	// default keep.
 	for ip, age := range map[string]time.Duration{
-		"10.1.0.1": 91 * 24 * time.Hour,
-		"10.1.0.2": 89 * 24 * time.Hour,
-		"10.1.0.3": 90*24*time.Hour + time.Second,
+		"10.1.0.1": 366 * 24 * time.Hour,
+		"10.1.0.2": 364 * 24 * time.Hour,
+		"10.1.0.3": 365*24*time.Hour + time.Second,
 	} {
 		if _, err := pool.Exec(ctx, `update user_ips set last_seen_at = $2 where host(ip) = $1`, ip, now.Add(-age)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	sessions, ips, err := session.Cleanup(ctx, pool, now)
+	sessions, ips, err := session.Cleanup(ctx, pool, now, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +276,7 @@ func TestCleanup(t *testing.T) {
 	}
 
 	// A second run finds nothing.
-	if s, i, err := session.Cleanup(ctx, pool, now); err != nil || s != 0 || i != 0 {
+	if s, i, err := session.Cleanup(ctx, pool, now, 0); err != nil || s != 0 || i != 0 {
 		t.Errorf("second Cleanup = %d, %d, %v; want 0, 0, nil", s, i, err)
 	}
 }
