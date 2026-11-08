@@ -17,10 +17,11 @@ import (
 // [WithPoolWait].
 var ErrPoolWait = errors.New("db: no free connection within the wait limit")
 
-// poolWait is the limit on the connection waits of one request, and whether
-// one of them ran out.
+// poolWait is the budget of the connection waits of one request: the time that
+// they spent together, and whether one of them ran out.
 type poolWait struct {
 	limit    time.Duration
+	spent    atomic.Int64 // nanoseconds
 	timedOut atomic.Bool
 }
 
@@ -29,12 +30,17 @@ type poolWaitKey struct{}
 // acquireCancelKey holds the cancel function of the context of one wait.
 type acquireCancelKey struct{}
 
-// WithPoolWait returns a context in which each wait for a pool connection ends
-// after limit. The limit covers the wait only: a statement that has its
-// connection runs under ctx, with the deadline of ctx. After one wait runs out,
-// every later wait under the context fails at once, so a request that found
-// the pool full does not wait again for its error page. A limit of zero or less
-// returns ctx as it is.
+// acquireStartKey holds the time that one wait began.
+type acquireStartKey struct{}
+
+// WithPoolWait returns a context in which the waits for a pool connection end
+// after limit in total: each wait gets what the earlier waits under the context
+// left of the limit. So a page that takes several connections in turn still
+// waits at most limit, and its 503 comes within it. The limit covers the waits
+// only: a statement that has its connection runs under ctx, with the deadline
+// of ctx. After one wait runs out, every later wait under the context fails at
+// once, so a request that found the pool full does not wait again for its
+// error page. A limit of zero or less returns ctx as it is.
 func WithPoolWait(ctx context.Context, limit time.Duration) context.Context {
 	if limit <= 0 {
 		return ctx
@@ -62,9 +68,9 @@ type Tracer struct{ CountTracer }
 
 var _ pgxpool.AcquireTracer = Tracer{}
 
-// TraceAcquireStart gives the wait a deadline of the limit of ctx. A context
-// whose wait already ran out gets a context that is already canceled, so the
-// wait fails at once.
+// TraceAcquireStart gives the wait a deadline of what is left of the budget of
+// ctx. A context whose wait already ran out, or whose budget is spent, gets a
+// context that is already canceled, so the wait fails at once.
 func (Tracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
 	w, _ := ctx.Value(poolWaitKey{}).(*poolWait)
 	if w == nil {
@@ -72,14 +78,16 @@ func (Tracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.
 	}
 	var c context.Context
 	var cancel context.CancelFunc
-	if w.timedOut.Load() {
+	left := w.limit - time.Duration(w.spent.Load())
+	if w.timedOut.Load() || left <= 0 {
 		var cancelCause context.CancelCauseFunc
 		c, cancelCause = context.WithCancelCause(ctx)
 		cancelCause(ErrPoolWait)
 		cancel = func() {}
 	} else {
-		c, cancel = context.WithTimeoutCause(ctx, w.limit, ErrPoolWait)
+		c, cancel = context.WithTimeoutCause(ctx, left, ErrPoolWait)
 	}
+	c = context.WithValue(c, acquireStartKey{}, time.Now())
 	return context.WithValue(c, acquireCancelKey{}, cancel)
 }
 
@@ -94,6 +102,9 @@ func (Tracer) TraceAcquireEnd(ctx context.Context, _ *pgxpool.Pool, d pgxpool.Tr
 	}
 	defer cancel()
 	w, _ := ctx.Value(poolWaitKey{}).(*poolWait)
+	if start, ok := ctx.Value(acquireStartKey{}).(time.Time); ok && w != nil {
+		w.spent.Add(int64(time.Since(start)))
+	}
 	if w != nil && d.Err != nil && errors.Is(context.Cause(ctx), ErrPoolWait) && w.timedOut.CompareAndSwap(false, true) {
 		metrics.PoolWaitTimeouts.Inc()
 		poolWaitLog.note(time.Now())
