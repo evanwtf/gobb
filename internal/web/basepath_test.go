@@ -11,12 +11,20 @@ import (
 // sitePathAttr finds the value of every href, src and action attribute.
 var sitePathAttr = regexp.MustCompile(`\b(?:href|src|action)="([^"]*)"`)
 
+// testOrigin is the origin of a test request: httptest.NewRequest names the host
+// example.com, and a test site has no PublicURL and no Secure cookies.
+const testOrigin = "http://example.com"
+
 // checkBasePath fails the test for any href, src or action in body that is not
-// a site path under base, an https or mailto URL, or an anchor.
+// a site path under base, an https or mailto URL, or an anchor. The canonical
+// link is absolute: it passes when it is the test origin and a path under base.
 func checkBasePath(t *testing.T, where, body, base string) {
 	t.Helper()
 	for _, m := range sitePathAttr.FindAllStringSubmatch(body, -1) {
 		v := m[1]
+		if rest, ok := strings.CutPrefix(v, testOrigin); ok && strings.HasPrefix(rest, base) {
+			continue
+		}
 		switch {
 		case strings.HasPrefix(v, base), strings.HasPrefix(v, "https:"),
 			strings.HasPrefix(v, "mailto:"), strings.HasPrefix(v, "#"):

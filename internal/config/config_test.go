@@ -240,11 +240,6 @@ func TestMailFromEnv(t *testing.T) {
 			wantErr: "GOBB_MAIL_FROM",
 		},
 		{
-			name:    "the public URL without a host",
-			env:     map[string]string{"GOBB_DSN": "x", "GOBB_PUBLIC_URL": "https://board.example.org/"},
-			wantErr: "GOBB_PUBLIC_URL",
-		},
-		{
 			name:    "a user without a host",
 			env:     map[string]string{"GOBB_DSN": "x", "GOBB_SMTP_USER": "u"},
 			wantErr: "GOBB_SMTP_USER",
@@ -517,5 +512,40 @@ func TestMailConfigRedacts(t *testing.T) {
 	}
 	if !strings.Contains(c.Mail.String(), "[unset]") {
 		t.Errorf("String() = %s, want [unset]", c.Mail.String())
+	}
+}
+
+// GOBB_PUBLIC_URL works without email: the sitemap, robots.txt and the canonical
+// links need it too. It follows the same checks as with email.
+func TestFromEnvPublicURL(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     map[string]string
+		want    string
+		wantErr string
+	}{
+		{name: "unset", env: map[string]string{"GOBB_DSN": "x"}, want: ""},
+		{name: "without email", env: map[string]string{"GOBB_DSN": "x", "GOBB_PUBLIC_URL": "https://board.example.org"}, want: "https://board.example.org/"},
+		{name: "with a base path", env: map[string]string{"GOBB_DSN": "x", "GOBB_BASE_PATH": "/forum", "GOBB_PUBLIC_URL": "https://board.example.org/forum"}, want: "https://board.example.org/forum/"},
+		{name: "path not the base path", env: map[string]string{"GOBB_DSN": "x", "GOBB_BASE_PATH": "/forum/", "GOBB_PUBLIC_URL": "https://board.example.org/"}, wantErr: "GOBB_PUBLIC_URL"},
+		{name: "http with secure cookies", env: map[string]string{"GOBB_DSN": "x", "GOBB_PUBLIC_URL": "http://board.example.org/"}, wantErr: "GOBB_PUBLIC_URL"},
+		{name: "a query", env: map[string]string{"GOBB_DSN": "x", "GOBB_PUBLIC_URL": "https://board.example.org/?a=1"}, wantErr: "GOBB_PUBLIC_URL"},
+		{name: "with email", env: mailEnv(nil), want: "https://board.example.org/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := config.FromEnv(env(tc.env))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one that names %s", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.PublicURL != tc.want {
+				t.Errorf("PublicURL = %q, want %q", c.PublicURL, tc.want)
+			}
+		})
 	}
 }

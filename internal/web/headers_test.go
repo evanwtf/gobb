@@ -555,10 +555,13 @@ func TestNoindex(t *testing.T) {
 		}
 	}
 	cookies := signIn(t, h, "alice", testPassword)
-	if body := bodyOf(t, getAs(t, h, "/new", cookies)); !strings.Contains(body, meta) {
-		t.Error("/new lacks the robots meta")
+	// The member list is a thin page, like search: it carries the meta too.
+	for _, p := range []string{"/new", "/members", "/members?sort=posts"} {
+		if body := bodyOf(t, getAs(t, h, p, cookies)); !strings.Contains(body, meta) {
+			t.Errorf("%s lacks the robots meta", p)
+		}
 	}
-	for _, p := range []string{"/t/1", "/", "/f/2", "/members", "/team", "/u/1"} {
+	for _, p := range []string{"/t/1", "/", "/f/2", "/team", "/u/1"} {
 		if body := bodyOf(t, getAs(t, h, p, cookies)); strings.Contains(body, meta) {
 			t.Errorf("%s has the robots meta", p)
 		}

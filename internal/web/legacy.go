@@ -288,7 +288,7 @@ func (s *site) warnHidden(mux *http.ServeMux) {
 		switch {
 		case !isCleanPath("/" + rt.Path):
 			slog.Warn("legacy route has a path that is not clean and never applies", "path", rt.Path, "kind", rt.Kind)
-		case (rt.Path == "healthz" || rt.Path == "favicon.ico") && s.base == "/":
+		case (rt.Path == "healthz" || rt.Path == "favicon.ico" || rt.Path == "robots.txt") && s.base == "/":
 			slog.Warn("legacy route is hidden by a route at the host root and never applies", "path", rt.Path, "kind", rt.Kind)
 		default:
 			if pat := owner(rt.Path); pat != "" {

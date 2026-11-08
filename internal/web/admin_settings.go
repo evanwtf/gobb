@@ -66,7 +66,30 @@ func (s *site) mailTestOn() bool { return s.opt.Mail != nil && s.opt.Mail.Sender
 // settingsErrors are the messages of the settings page: one for each field, and
 // the text beside the header image and the email test.
 type settingsErrors struct {
-	Name, Description, Zone, Scheme, Header, Mail string
+	Name, Description, Zone, Scheme, AICrawlers, Header, Mail string
+}
+
+// aiCrawlerChoice is one button of the AI crawler policy.
+type aiCrawlerChoice struct {
+	Value, Label, Hint string
+	Current            bool
+}
+
+// aiCrawlerLabels words each AI crawler policy for the settings page.
+var aiCrawlerLabels = map[string][2]string{
+	board.AICrawlersAll:    {"All crawlers", "Every crawler may read the pages that guests see, AI training included."},
+	board.AICrawlersSearch: {"Search and answers only", "AI search and answer tools may read them. The crawlers that collect text to train AI models may not. This also turns off Gemini grounding, which shares its control with Gemini training."},
+	board.AICrawlersNone:   {"No AI crawlers", "Blocks the AI crawlers that gobb names; some fetchers that act for a user may ignore robots.txt. Web search engines still read the pages that guests see."},
+}
+
+// aiCrawlerChoices returns the AI crawler policies, with current marked.
+func aiCrawlerChoices(current string) []aiCrawlerChoice {
+	out := make([]aiCrawlerChoice, 0, len(board.AICrawlerPolicies))
+	for _, v := range board.AICrawlerPolicies {
+		l := aiCrawlerLabels[v]
+		out = append(out, aiCrawlerChoice{Value: v, Label: l[0], Hint: l[1], Current: v == current})
+	}
+	return out
 }
 
 // adminSettingsData is the data of admin-settings.html.
@@ -85,6 +108,9 @@ type adminSettingsData struct {
 	Zones  []string
 	// Schemes are the choices of the color scheme, with the selected one marked.
 	Schemes []schemeChoice
+	// AICrawlers are the choices of the AI crawler policy of robots.txt, with the
+	// selected one marked.
+	AICrawlers []aiCrawlerChoice
 	// MaxName and MaxDescription are the longest values, in characters.
 	MaxName, MaxDescription int
 	// HasHeader is true when the board has a header image. The page shows it from
@@ -147,6 +173,7 @@ func (s *site) settingsData(p *page) adminSettingsData {
 		d.EmailNotifications = "Off"
 	}
 	d.Schemes = schemeChoices(d.Scheme)
+	d.AICrawlers = aiCrawlerChoices(set.AICrawlers)
 	return d
 }
 
@@ -170,6 +197,9 @@ func echoSettings(d *adminSettingsData, form url.Values) {
 	if scheme := form.Get("scheme"); board.ValidScheme(scheme) {
 		d.Scheme = scheme
 		d.Schemes = schemeChoices(scheme)
+	}
+	if policy := form.Get("ai_crawlers"); board.ValidAICrawlers(policy) {
+		d.AICrawlers = aiCrawlerChoices(policy)
 	}
 }
 
@@ -250,7 +280,7 @@ func inputErrors(err error) []*board.InputError {
 	return out
 }
 
-// adminSettingsSave serves POST /admin/settings: the four fields of the main
+// adminSettingsSave serves POST /admin/settings: the five fields of the main
 // form. A refusal of the checks gives the page again with 400, the message beside
 // each field that failed, and the values that the admin sent; nothing changes. A
 // save that changes nothing, and a save that changes something, answer 303.
@@ -266,7 +296,7 @@ func (s *site) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 	form := r.PostForm
 	c := board.SettingsChange{Name: form.Get("board_name"), Description: form.Get("board_description"),
-		Timezone: form.Get("timezone"), Scheme: form.Get("scheme")}
+		Timezone: form.Get("timezone"), Scheme: form.Get("scheme"), AICrawlers: form.Get("ai_crawlers")}
 	ctx := context.WithoutCancel(r.Context())
 	_, err = board.UpdateSettings(ctx, s.pool, p.Viewer, c, s.opt.Now())
 	switch {
@@ -290,6 +320,8 @@ func (s *site) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 				d.Err.Zone = in.Message
 			case "scheme":
 				d.Err.Scheme = in.Message
+			case "aicrawlers":
+				d.Err.AICrawlers = in.Message
 			}
 		}
 		s.renderSettings(w, http.StatusBadRequest, p, d)

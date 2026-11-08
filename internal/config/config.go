@@ -35,6 +35,11 @@ type Config struct {
 	// MetricsListen is the address of the metrics listener, which serves only
 	// GET /metrics. Empty, the default, means no metrics listener.
 	MetricsListen string
+	// PublicURL is the address of the board, from GOBB_PUBLIC_URL: absolute, and
+	// ending with the base path. The links in email, the sitemap, robots.txt and
+	// the canonical links use it. Empty means unset: the pages then take the host
+	// of each request.
+	PublicURL string
 }
 
 const (
@@ -82,6 +87,11 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	c.Mail, err = mailFromEnv(getenv, c.BasePath, c.CookieSecure)
 	if err != nil {
 		return Config{}, err
+	}
+	if raw := strings.TrimSpace(getenv("GOBB_PUBLIC_URL")); raw != "" {
+		if c.PublicURL, err = publicURL(raw, c.BasePath, c.CookieSecure); err != nil {
+			return Config{}, err
+		}
 	}
 
 	if c.MetricsListen = strings.TrimSpace(getenv("GOBB_METRICS_LISTEN")); c.MetricsListen != "" {
@@ -209,9 +219,10 @@ func (m Mail) LogValue() slog.Value {
 }
 
 // mailVars lists the variables that only make sense with GOBB_SMTP_HOST.
+// GOBB_PUBLIC_URL is not one of them: the pages use it too.
 var mailVars = []string{
 	"GOBB_SMTP_PORT", "GOBB_SMTP_TLS", "GOBB_SMTP_USER", "GOBB_SMTP_PASSWORD",
-	"GOBB_MAIL_FROM", "GOBB_PUBLIC_URL", "GOBB_MAIL_PER_HOUR", "GOBB_MAIL_PER_DAY",
+	"GOBB_MAIL_FROM", "GOBB_MAIL_PER_HOUR", "GOBB_MAIL_PER_DAY",
 }
 
 // MailFromEnv reads only the email settings, with GOBB_BASE_PATH and

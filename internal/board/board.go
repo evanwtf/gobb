@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 	// The timezone database is compiled in, so that a zone name loads in the
 	// static image, which has no zoneinfo files.
@@ -67,12 +68,41 @@ type Settings struct {
 	// HeaderImage is a path under the data directory, such as
 	// "header/banner.png". It is empty when the board has no header image.
 	HeaderImage string
+	// AICrawlers is the policy of robots.txt for the AI crawlers: one of
+	// [AICrawlerPolicies]. A board with no stored value has [AICrawlersAll].
+	AICrawlers string
+}
+
+// The values of the setting ai_crawlers. Each names which AI crawlers robots.txt
+// lets read the pages that a guest can see.
+const (
+	// AICrawlersAll lets every crawler read, AI training included.
+	AICrawlersAll = "all"
+	// AICrawlersSearch blocks the crawlers that collect text to train AI models,
+	// and lets the crawlers of AI search and answers read.
+	AICrawlersSearch = "search-and-answers"
+	// AICrawlersNone blocks every known AI crawler.
+	AICrawlersNone = "none"
+)
+
+// AICrawlerPolicies lists the values of the setting ai_crawlers, the default
+// first.
+var AICrawlerPolicies = []string{AICrawlersAll, AICrawlersSearch, AICrawlersNone}
+
+// ValidAICrawlers reports whether v is one of [AICrawlerPolicies].
+func ValidAICrawlers(v string) bool {
+	for _, p := range AICrawlerPolicies {
+		if p == v {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadSettings reads the seven setting keys. A missing key is an error that
 // names it.
 func LoadSettings(ctx context.Context, q db.Querier) (Settings, error) {
-	rows, err := q.Query(ctx, `select key, value from settings where key = any($1)`, settingKeys)
+	rows, err := q.Query(ctx, `select key, value from settings where key = any($1)`, append(slices.Clone(settingKeys), optionalKeys...))
 	if err != nil {
 		return Settings{}, fmt.Errorf("board: load settings: %w", err)
 	}
@@ -92,7 +122,7 @@ func LoadSettings(ctx context.Context, q db.Querier) (Settings, error) {
 		return Settings{}, fmt.Errorf("board: load settings: %w", err)
 	}
 
-	if len(raw) == 0 {
+	if !slices.ContainsFunc(settingKeys, func(k string) bool { _, ok := raw[k]; return ok }) {
 		return Settings{}, ErrNoSettings
 	}
 	var s Settings
@@ -120,14 +150,30 @@ func LoadSettings(ctx context.Context, q db.Querier) (Settings, error) {
 	if header != nil {
 		s.HeaderImage = *header
 	}
+	// ai_crawlers is optional: an import writes only the keys of the bundle, and
+	// a board that never saved the setting has the default.
+	s.AICrawlers = AICrawlersAll
+	if v, ok := raw[keyAICrawlers]; ok {
+		var policy string
+		if err := json.Unmarshal(v, &policy); err != nil {
+			return Settings{}, fmt.Errorf("board: setting %q: %w", keyAICrawlers, err)
+		}
+		if ValidAICrawlers(policy) {
+			s.AICrawlers = policy
+		}
+	}
 	return s, nil
 }
 
-// settingKeys are the keys that [LoadSettings] reads.
+// settingKeys are the keys that [LoadSettings] needs. It also reads the optional
+// keys of optionalKeys.
 var settingKeys = []string{
 	"board_name", "board_description", "timezone", "default_color_scheme",
 	"registration", "email_notifications", "header_image",
 }
+
+// optionalKeys are the keys that [LoadSettings] reads when they exist.
+var optionalKeys = []string{keyAICrawlers}
 
 // Viewer is the person who looks at a page: a guest or a member.
 type Viewer struct {

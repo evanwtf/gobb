@@ -207,6 +207,10 @@ select t.id, t.forum_id, t.title, t.kind, t.visibility, t.locked,
 	return out, nil
 }
 
+// postOrder is the order of the posts of a topic, which sets its pages. The
+// sitemap pages a topic with it too.
+const postOrder = ` order by p.created_at, p.id`
+
 // readPosts reads one page of the posts that sc lets the viewer see, in order.
 func readPosts(ctx context.Context, q db.Querier, sc scope, topicID int64, page int, showIP bool) ([]Post, error) {
 	rows, err := q.Query(ctx, `
@@ -217,8 +221,7 @@ select p.id, coalesce(p.author_id, 0), coalesce(u.username, p.author_name), p.cr
   from posts p
   left join users u on u.id = p.author_id
   left join users eu on eu.id = p.edited_by
- where p.topic_id = $5 and `+visible("p", 1)+`
- order by p.created_at, p.id
+ where p.topic_id = $5 and `+visible("p", 1)+postOrder+`
  limit $6 offset $7`, append(sc.args(), topicID, postsPerPage, (page-1)*postsPerPage, showIP)...)
 	if err != nil {
 		return nil, fmt.Errorf("board: read posts: %w", err)

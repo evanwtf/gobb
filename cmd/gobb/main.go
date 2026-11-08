@@ -448,6 +448,7 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()
 		TrustedProxies: cfg.TrustedProxies,
 		CookieSecure:   cfg.CookieSecure,
 		LoginGate:      gate,
+		PublicURL:      cfg.PublicURL,
 	}
 	// With no email settings, Mail stays nil and the reset pages are off.
 	if cfg.Mail != nil {

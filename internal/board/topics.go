@@ -195,9 +195,14 @@ func ForumView(ctx context.Context, q db.Querier, v Viewer, forumID int64, page 
 var markerVisible = `(t.moved_to_topic_id is null or exists (
   select 1 from topics m where m.id = t.moved_to_topic_id and ` + visible("m", 1) + `))`
 
-// regularTopics selects the topics of forum $5 that the page lists in pages. An
-// announcement or a global topic is pinned instead.
-var regularTopics = `t.forum_id = $5 and t.kind in ('normal', 'sticky') and ` + visible("t", 1) + ` and ` + markerVisible
+// listedTopics selects the topics that the pages of a forum list, in every
+// forum: moved-topic markers included. An announcement or a global topic is
+// pinned instead. The four scope arguments are $1 to $4. The sitemap counts
+// the pages of each forum with it.
+var listedTopics = `t.kind in ('normal', 'sticky') and ` + visible("t", 1) + ` and ` + markerVisible
+
+// regularTopics selects the topics of forum $5 that the page lists in pages.
+var regularTopics = `t.forum_id = $5 and ` + listedTopics
 
 // globalTopics selects the global topics of every forum that the viewer may
 // read. It has no forum argument. The partial index topics_global_idx serves it.

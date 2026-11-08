@@ -60,6 +60,14 @@
       {{- if .Err.Scheme}}<p class="field-error" id="board-scheme-error" role="alert">{{.Err.Scheme}}</p>{{end}}
       <p class="hint">Guests, and members who picked none, see this scheme.</p>
     </fieldset>
+    <fieldset class="field"><legend>AI crawlers</legend>
+      {{- range .AICrawlers}}
+      <p class="field-check"><input type="radio" name="ai_crawlers" id="ai-crawlers-{{.Value}}" value="{{.Value}}"{{if .Current}} checked{{end}} aria-describedby="ai-crawlers-{{.Value}}-hint{{if $.Data.Err.AICrawlers}} ai-crawlers-error{{end}}"{{if $.Data.Err.AICrawlers}} aria-invalid="true"{{end}}> <label for="ai-crawlers-{{.Value}}">{{.Label}}</label></p>
+      <p class="hint" id="ai-crawlers-{{.Value}}-hint">{{.Hint}}</p>
+      {{- end}}
+      {{- if .Err.AICrawlers}}<p class="field-error" id="ai-crawlers-error" role="alert">{{.Err.AICrawlers}}</p>{{end}}
+      <p class="hint">robots.txt tells the AI crawlers what they may read. Pages that only members see stay closed to every crawler.</p>
+    </fieldset>
     <div class="form-actions"><button class="button button-inline" type="submit">Save settings</button></div>
   </form>
 </section>

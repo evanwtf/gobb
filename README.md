@@ -272,6 +272,15 @@ or 503 page that the server built at start. A `Range` header that no byte of a f
 answers 416 in the same layout, and so does a path under the base path that spells a
 letter of the base path as a percent escape (404). Only `/healthz` answers in plain text.
 
+For crawlers, `/robots.txt` answers at the host root, whatever the base path, and the
+sitemap at `sitemap.xml` under the base path. Both show the guest's view: the sitemap
+lists the index, each forum and topic page that a guest can open, and nothing that only
+members see. `robots.txt` keeps every crawler out of the search pages and names the
+sitemap. The admin settings page picks which AI crawlers it lets in: all (the default),
+search and answers only, or none. The sitemap is built at most once in 15 minutes.
+Set `GOBB_PUBLIC_URL`: the canonical links need it, and it makes the addresses in both
+files name the public host.
+
 The server reads these variables. Docker Compose reads the last one:
 
 | Variable | Meaning | Default |
@@ -282,7 +291,8 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_BASE_PATH` | URL path prefix, such as `/forum/`. | `/` |
 | `GOBB_TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies to trust. | `127.0.0.1/32,::1/128` |
 | `GOBB_COOKIE_SECURE` | `true` or `false`. Mark the cookies Secure. | `true` |
-| `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS`, `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM`, `GOBB_PUBLIC_URL`, `GOBB_MAIL_PER_HOUR`, `GOBB_MAIL_PER_DAY` | Email settings (see "Email"). | email off |
+| `GOBB_PUBLIC_URL` | The address of the board, such as `https://board.example.org/forum/`. The links in email, `/robots.txt`, the sitemap and the canonical links of the pages use it. The rules are in "Email". Unset, the pages have no canonical link, the sitemap and `robots.txt` take the host of each request, and the server logs a warning at start. | unset |
+| `GOBB_SMTP_HOST`, `GOBB_SMTP_PORT`, `GOBB_SMTP_TLS`, `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD`, `GOBB_MAIL_FROM`, `GOBB_MAIL_PER_HOUR`, `GOBB_MAIL_PER_DAY` | Email settings (see "Email"). | email off |
 | `GOBB_METRICS_LISTEN` | Address of the metrics listener, such as `127.0.0.1:9187` (see "Metrics"). | off |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
@@ -379,12 +389,12 @@ Docker Compose passes all of them through from `.env`.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `GOBB_SMTP_HOST` | The SMTP server. Turns email on. With no host, any other variable in this table is an error. | unset |
+| `GOBB_SMTP_HOST` | The SMTP server. Turns email on. With no host, any other variable in this table but `GOBB_PUBLIC_URL` is an error. | unset |
 | `GOBB_SMTP_PORT` | The port, 1 to 65535. | `587` for `starttls`, `465` for `implicit` |
 | `GOBB_SMTP_TLS` | `starttls` or `implicit`. There is no plain mode. | `starttls` |
 | `GOBB_SMTP_USER`, `GOBB_SMTP_PASSWORD` | Both or neither. gobb signs in with AUTH PLAIN, and only after TLS runs. | unset |
 | `GOBB_MAIL_FROM` | The sender: one plain address, with no display name. Required with a host. | none |
-| `GOBB_PUBLIC_URL` | The address of the board, for links in email. It starts with `https://`, names a host, holds no user information, query or fragment, and its path equals `GOBB_BASE_PATH`. It starts with `http://` only when `GOBB_COOKIE_SECURE=false`. gobb stores it with a trailing `/`. Required with a host. | none |
+| `GOBB_PUBLIC_URL` | The address of the board, for links in email and for the crawler pages. It starts with `https://`, names a host, holds no user information, query or fragment, and its path equals `GOBB_BASE_PATH`. It starts with `http://` only when `GOBB_COOKIE_SECURE=false`. gobb stores it with a trailing `/`. Required with a host; allowed without one. | none |
 | `GOBB_MAIL_PER_HOUR`, `GOBB_MAIL_PER_DAY` | The most reset emails the whole board sends in any hour and in any 24 hours, from 1 to 100,000. The hourly limit must not be more than the daily one. To change them, edit `.env` and run `docker compose up -d`. | `10`, `20` |
 
 gobb talks to the server over TLS only. With `starttls`, it sends no AUTH and no

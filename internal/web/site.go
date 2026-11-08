@@ -83,6 +83,11 @@ type Options struct {
 	// AdminWrites is the count of POSTs to the admin area that each admin may
 	// make in ten minutes. Zero means the default (120). A test sets it low.
 	AdminWrites int
+	// PublicURL is the address of the site: absolute, with the base path as its
+	// path. The sitemap, robots.txt and the canonical links take their scheme and
+	// host from it. Empty means the PublicURL of Mail, and with no Mail, the
+	// host of each request.
+	PublicURL string
 }
 
 // site holds what the handlers share: the pool, the options and the parsed
@@ -150,6 +155,11 @@ type site struct {
 	mailTests *ratelimit.Limiter
 	// passes holds the sessions whose admin confirmed the password lately.
 	passes adminPasses
+	// publicOrigin is the scheme and host of the site from the options, or empty
+	// to take them from each request ([site.origin]).
+	publicOrigin string
+	// sitemaps caches the sitemap ([site.sitemapFor]).
+	sitemaps sitemapCache
 }
 
 // frame is what an error page needs of the board: the settings, for the board
@@ -198,6 +208,18 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		s.opt.Now = time.Now
 	}
 	s.base = normalizeBase(opt.BasePath)
+	var err error
+	if s.publicOrigin, err = publicOrigin(opt.PublicURL, s.base, true); err != nil {
+		return nil, err
+	}
+	if s.publicOrigin == "" && opt.Mail != nil {
+		if s.publicOrigin, err = publicOrigin(opt.Mail.PublicURL, s.base, false); err != nil {
+			return nil, err
+		}
+	}
+	if s.publicOrigin == "" {
+		slog.Warn("no public URL is set (GOBB_PUBLIC_URL): the pages have no canonical link, and the sitemap and robots.txt take the host of each request")
+	}
 	s.assetVersion = assetVersion()
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
@@ -268,6 +290,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.Handle("POST /messages/{id}/delete", s.protect(maxPostBody, s.messageDelete))
 	inner.HandleFunc("GET /search", s.search)
 	inner.HandleFunc("GET /queue", s.queuePage)
+	inner.HandleFunc("GET /sitemap.xml", s.sitemap)
+	inner.HandleFunc("GET /sitemaps/{name}", s.sitemapPart)
 	if opt.Mail != nil {
 		// The reset pages exist only when email is on. The token is in the path
 		// of the last two, so their answers carry Referrer-Policy: no-referrer.
@@ -305,6 +329,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	root := newRoutes()
 	root.Handle("/healthz", Health(pool))
 	root.HandleFunc("GET /favicon.ico", s.favicon)
+	// A crawler reads robots.txt at the host root only, whatever the base path.
+	root.HandleFunc("GET /robots.txt", s.robots)
 	if s.base == "/" {
 		root.Handle("/", inner)
 	} else {
@@ -496,6 +522,26 @@ type page struct {
 	// Footer is the build line at the end of the footer. render sets it from
 	// the status; footerLine says what it holds.
 	Footer string
+	// Canonical is the absolute address of the page for the canonical link, or
+	// empty for none. render sets it from canonicalPath and the public URL of the
+	// site, for a page of status 200 and
+	// no robots meta.
+	Canonical string
+	// Meta holds the meta description and the Open Graph tags, or nil for none.
+	// render sets it on a page that Canonical has, for a guest only: a crawler
+	// and a link preview are guests, and a page that only a member sees must
+	// not describe itself.
+	Meta *pageMeta
+	// canonicalPath is the site path of the page, with no query. begin sets it
+	// from the clean path of the request. A handler whose page has a number
+	// (a forum, a topic) sets it from the ID and the page that it served.
+	canonicalPath string
+	// description is the meta description that the handler picks, and ogType
+	// the Open Graph type. Empty means the board description and "website".
+	description, ogType string
+	// private marks a page that a guest must not have described, such as a
+	// held topic that a guest moderator sees. render then sets no Meta.
+	private bool
 }
 
 // addRendered adds what the embeds of a rendered tree need to the page: the
@@ -600,6 +646,7 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 	if id.token == "" && nav != "login" {
 		p.LoginHref = s.loginHref(ret)
 	}
+	p.canonicalPath = s.path(r.URL.Path)
 	if settings.HeaderImage != "" {
 		p.HeaderSrc = s.path("files", settings.HeaderImage)
 	}
@@ -731,6 +778,7 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	}
 	s.addPageLinks(p)
 	p.Noindex = p.Noindex || noindexPages[name]
+	s.addMeta(p, status)
 	if after != nil {
 		// Build the page once to see that it builds, then write the bookkeeping,
 		// then build it again: the nav count comes after the write, so the page
@@ -765,6 +813,34 @@ func (s *site) renderThen(w http.ResponseWriter, status int, name string, p *pag
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
+}
+
+// addMeta sets the canonical link of a page that search engines may index, and
+// for a guest the description and the Open Graph tags. The canonical link and
+// og:url need the public URL of the site: an address built from the Host
+// header of a request would let the request choose it.
+func (s *site) addMeta(p *page, status int) {
+	p.Canonical, p.Meta = "", nil
+	if status != http.StatusOK || p.Noindex || p.canonicalPath == "" {
+		return
+	}
+	if s.publicOrigin != "" {
+		p.Canonical = s.publicOrigin + p.canonicalPath
+	}
+	if p.Viewer.UserID != 0 || p.private {
+		return
+	}
+	m := &pageMeta{Title: p.Title, Description: p.description, Type: p.ogType, URL: p.Canonical, SiteName: p.Settings.BoardName}
+	if m.Title == "" {
+		m.Title = p.Settings.BoardName
+	}
+	if m.Description == "" {
+		m.Description = excerpt(p.Settings.BoardDescription, descriptionLimit)
+	}
+	if m.Type == "" {
+		m.Type = "website"
+	}
+	p.Meta = m
 }
 
 // errorData is the data of error.html.
