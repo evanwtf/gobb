@@ -586,7 +586,7 @@ const (
 //   - frameSandbox is the sandbox of the Reddit, Spotify and SoundCloud
 //     frames. For Reddit it is the sandbox that Reddit's widgets.js sets, plus
 //     allow-popups-to-escape-sandbox.
-//   - videoSandbox, for the YouTube, Vimeo and TikTok players, adds
+//   - videoSandbox, for the YouTube and TikTok players, adds
 //     allow-presentation, so a reader can cast the video (the Presentation
 //     API). Full screen is not a sandbox flag: allowfullscreen and
 //     allow="fullscreen" give it.
@@ -594,8 +594,13 @@ const (
 // The provider docs name no sandbox. In a browser check (issue #64), every
 // frame loaded with these flags, and YouTube, TikTok, Spotify and SoundCloud
 // played. Without allow-same-origin, YouTube, TikTok and SoundCloud stayed
-// blank and Spotify did not play. The Vimeo player loaded but refused to play
-// in the headless browser of the check, with or without a sandbox.
+// blank and Spotify did not play.
+//
+// The Vimeo frame has no sandbox. Its player loaded but refused to play in the
+// headless browser of the check, with or without a sandbox, so the check could
+// not show that the sandbox keeps it working. A sandbox that breaks every
+// Vimeo embed costs more than it protects. Add videoSandbox to the Vimeo row
+// once a headed browser shows the player plays with it.
 const (
 	frameSandbox = "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
 	videoSandbox = frameSandbox + " allow-presentation"
@@ -642,8 +647,9 @@ type embedOut struct {
 // embedHTML returns the embed table row for a canonical ID. It returns an empty
 // row when the ID has the wrong shape for the tag.
 //
-// Every iframe has loading="lazy", a title and a sandbox: [videoSandbox] for a
-// video player, [frameSandbox] for the others.
+// Every iframe has loading="lazy" and a title. Every iframe but Vimeo's has a
+// sandbox: [videoSandbox] for a video player, [frameSandbox] for the others.
+// See [frameSandbox] for why the Vimeo frame has none.
 //
 // The table has no row for the tags tweet, instagram and threads. Their embeds
 // load a provider script into the page of the board, so [scriptedEmbed] sends
@@ -663,7 +669,7 @@ func embedHTML(tag, id string) embedOut {
 		// shows src="https://player.vimeo.com/video/{id}" with allowfullscreen.
 		return embedOut{html: openTag("iframe", "class", "embed vimeo", "src", originVimeo+"/video/"+pathEsc(id),
 			"title", "Vimeo video", "loading", "lazy", "allow", "fullscreen; picture-in-picture",
-			"allowfullscreen", bare, "sandbox", videoSandbox) + closeTag("iframe"),
+			"allowfullscreen", bare) + closeTag("iframe"),
 			frame: originVimeo}
 	case "reddit":
 		// Reddit's embed code is a blockquote that holds a link to the post and

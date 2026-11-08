@@ -94,7 +94,7 @@ func TestRenderTable(t *testing.T) {
 		{"youtube", renderEmbed("youtube", "M7lc1UVf-VE"),
 			`<iframe class="embed youtube" src="https://www.youtube-nocookie.com/embed/M7lc1UVf-VE" title="YouTube video" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation"></iframe>`},
 		{"vimeo", renderEmbed("vimeo", "76979871"),
-			`<iframe class="embed vimeo" src="https://player.vimeo.com/video/76979871" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation"></iframe>`},
+			`<iframe class="embed vimeo" src="https://player.vimeo.com/video/76979871" title="Vimeo video" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe>`},
 		{"tweet", renderEmbed("tweet", "20"),
 			`<div class="embed-link"><a href="https://x.com/i/status/20" rel="nofollow ugc noopener">https://x.com/i/status/20</a></div>`},
 		{"instagram", renderEmbed("instagram", "CxYz_12-ab"),
@@ -125,6 +125,11 @@ func TestRenderTable(t *testing.T) {
 	}
 }
 
+// unsandboxed lists the embed frames that carry no sandbox. Vimeo is the one
+// exception: its player could not be shown to play under the sandbox (issue
+// #64). Delete its entry when the Vimeo row gets videoSandbox.
+var unsandboxed = map[string]bool{"vimeo": true}
+
 func TestRenderEmbedsAlwaysLazyAndTitled(t *testing.T) {
 	ids := map[string]string{
 		"youtube": "M7lc1UVf-VE", "vimeo": "76979871", "tiktok": "6718335390845095173",
@@ -137,8 +142,14 @@ func TestRenderEmbedsAlwaysLazyAndTitled(t *testing.T) {
 		if !strings.Contains(out, ` loading="lazy"`) || !strings.Contains(out, ` title="`) {
 			t.Errorf("%s: iframe lacks loading or title: %s", name, out)
 		}
-		// Every frame is sandboxed. A video player may also present (cast);
-		// no frame gets more.
+		// Every frame is sandboxed, except the frames in unsandboxed. A video
+		// player may also present (cast); no frame gets more.
+		if unsandboxed[tag] {
+			if strings.Contains(out, "sandbox") {
+				t.Errorf("%s: want no sandbox: %s", name, out)
+			}
+			continue
+		}
 		want := ` sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"`
 		switch tag {
 		case "youtube", "vimeo", "tiktok":
