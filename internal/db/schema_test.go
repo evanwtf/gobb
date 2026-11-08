@@ -25,7 +25,7 @@ var schemaTables = []string{
 	"legacy_routes", "legacy_files",
 	"sessions", "user_ips", "settings", "mod_log",
 	"email_queue", "email_tokens", "static_pages", "password_resets",
-	"mod_undo",
+	"mod_undo", "page_cache_epoch",
 }
 
 // TestSchemaTables compares the base tables in the schema with schemaTables.
@@ -428,14 +428,16 @@ func TestForumPositionDefaultsToZero(t *testing.T) {
 }
 
 // TestDataTables checks that DataTables lists the schema tables, sorted, and
-// leaves out the migration runner's own table.
+// leaves out the migration runner's own table and page_cache_epoch, which holds
+// no forum data: an import must not refuse a database because a command left a
+// mark there.
 func TestDataTables(t *testing.T) {
 	pool := dbtest.New(t)
 	got, err := db.DataTables(context.Background(), pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := slices.Clone(schemaTables)
+	want := slices.DeleteFunc(slices.Clone(schemaTables), func(n string) bool { return n == "page_cache_epoch" })
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("DataTables = %v, want %v", got, want)
