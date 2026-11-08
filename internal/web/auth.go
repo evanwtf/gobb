@@ -201,8 +201,12 @@ func (s *site) safeNext(raw string) string {
 }
 
 // returnPath returns the site path of r with its query, less the ?scheme=
-// preview. A form on the page sends it back as next.
+// preview. A form on the page sends it back as next. A path below /reset holds a
+// reset token, so it returns /reset: the token must not appear on the page.
 func (s *site) returnPath(r *http.Request) string {
+	if strings.HasPrefix(r.URL.Path, "/reset/") {
+		return s.path("reset")
+	}
 	p := strings.TrimSuffix(s.base, "/") + r.URL.EscapedPath()
 	q := r.URL.Query()
 	q.Del("scheme")

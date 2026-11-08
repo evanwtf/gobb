@@ -945,6 +945,25 @@ func TestResetCSRF(t *testing.T) {
 	}
 }
 
+// TestResetRefusedHidesToken: a refused POST to /reset/<token> draws the 403
+// page, and the forms on that page return to /reset, not to the token path.
+func TestResetRefusedHidesToken(t *testing.T) {
+	e := newResetEnv(t, Options{})
+	c := e.guest(t, "2001:db8:13::1")
+	token := c.requestLink("alice")
+	rec := c.send(http.MethodPost, "/reset/"+token, url.Values{"password": {resetPassword}, "again": {resetPassword}}, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /reset/token with no csrf = %d, want 403", rec.Code)
+	}
+	body := bodyOf(t, rec)
+	if strings.Contains(body, token) {
+		t.Errorf("the 403 page holds the token:\n%s", body)
+	}
+	if !strings.Contains(body, `name="next" value="/reset"`) {
+		t.Errorf("the 403 page does not return to /reset:\n%s", body)
+	}
+}
+
 // logCapture sends the default slog logger to a buffer until the test ends.
 type logCapture struct {
 	mu  sync.Mutex
