@@ -682,12 +682,15 @@ func (s *site) changedScope(sc postScope) {
 	s.guest.wake()
 }
 
-// heldPost reports whether post id waits for approval. Such a post changes
-// nothing that a guest sees: not the topic, not the counts. A failed read says
-// false, so the caller drops.
-func (s *site) heldPost(ctx context.Context, id int64) bool {
-	_, _, visibility, err := board.PostRefs(ctx, s.pool, id)
-	return err == nil && visibility == "unapproved"
+// newPostRefs returns the topic of the new post id, and whether it waits for
+// approval. A held post changes nothing that a guest sees: not the topic, not
+// the counts. A failed read gives topic 0 and held false, so the caller drops.
+func (s *site) newPostRefs(ctx context.Context, id int64) (topic int64, held bool) {
+	t, _, visibility, err := board.PostRefs(ctx, s.pool, id)
+	if err != nil {
+		return 0, false
+	}
+	return t, visibility == "unapproved"
 }
 
 // wrote reports whether a board write that returned err may have changed the
