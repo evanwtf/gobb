@@ -106,7 +106,8 @@ func migrate(ctx context.Context, _ []string) error {
 
 // importBundle loads a bundle into the database and the data directory. It
 // applies the pending migrations first. On success it prints the number of rows
-// it loaded from each data file, in bundle.Files order, then the number of files.
+// it loaded from each data file, in bundle.Files order, then for each optional
+// data file (0 when the bundle does not hold it), then the number of files.
 func importBundle(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -140,8 +141,8 @@ func importBundle(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range append(slices.Clone(bundle.Files), "files") {
-		if _, err := fmt.Fprintf(stdout, "%-14s %d\n", name, counts[name]); err != nil {
+	for _, name := range slices.Concat(bundle.Files, bundle.OptionalFiles, []string{"files"}) {
+		if _, err := fmt.Fprintf(stdout, "%-16s %d\n", name, counts[name]); err != nil {
 			return err
 		}
 	}

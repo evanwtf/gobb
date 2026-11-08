@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,7 +79,9 @@ var errFull = errors.New("bundle: error limit reached")
 //     route names a static page; a user route may name a gone user;
 //   - every file that a row names exists under files/ with the stated size and
 //     SHA-256, rows that name one path agree, and every file under files/ is
-//     named by a row.
+//     named by a row;
+//   - a row of member_addresses.jsonl names a user, and the pair of the user
+//     and the address is unique (an IPv4-mapped address is its IPv4 address).
 //
 // Nothing references a gone user, except a user route with a fixed target.
 //
@@ -102,6 +105,7 @@ func Check(r *Reader) error {
 		members:    pairSet{},
 		topicMarks: pairSet{}, forumMarks: pairSet{},
 		smileys: keySet{}, routes: keySet{}, prefixes: keySet{}, pages: keySet{},
+		addresses: keySet{},
 	}
 	if h := r.settings.HeaderImage; h != nil {
 		w.nameFile("settings.json", 0, "header_image", *h)
@@ -135,6 +139,7 @@ func Check(r *Reader) error {
 	scan(w, w.legacyFile)
 	scan(w, w.staticPage)
 	w.endPages()
+	scan(w, w.memberAddress)
 	w.checkFiles()
 
 	if w.fatal != nil {
@@ -144,14 +149,14 @@ func Check(r *Reader) error {
 		return nil
 	}
 	order := map[string]int{"settings.json": 0}
-	for i, f := range Files {
+	for i, f := range slices.Concat(Files, OptionalFiles) {
 		order[f+".jsonl"] = i + 1
 	}
 	rank := func(file string) int {
 		if n, ok := order[file]; ok {
 			return n
 		}
-		return len(Files) + 1
+		return len(Files) + len(OptionalFiles) + 1
 	}
 	slices.SortStableFunc(w.errs, func(a, b *Error) int {
 		return cmp.Or(cmp.Compare(rank(a.File), rank(b.File)), cmp.Compare(a.Line, b.Line))
@@ -263,6 +268,7 @@ type whole struct {
 
 	members, topicMarks, forumMarks  pairSet
 	smileys, routes, prefixes, pages keySet
+	addresses                        keySet // user ID and address of member_addresses
 
 	grantForums []lineRef // forum IDs that grants name, checked after forums
 	pageRoutes  []slugRef // slugs that page routes name, checked after static_pages
@@ -857,6 +863,16 @@ func (w *whole) route(line int, r LegacyRoute) {
 
 func (w *whole) legacyFile(line int, f LegacyFile) {
 	w.uniqueKey("legacy_files.jsonl", line, "prefix", "prefix "+strconv.Quote(f.Prefix), w.prefixes, f.Prefix)
+}
+
+func (w *whole) memberAddress(line int, a MemberAddress) {
+	const file = "member_addresses.jsonl"
+	w.ref(file, line, "user_id", w.users, a.UserID, "users.jsonl")
+	// The address as gobb stores it: an IPv4-mapped address is the IPv4
+	// address, so "::ffff:192.0.2.1" and "192.0.2.1" are one row.
+	addr := netip.MustParseAddr(a.IP).Unmap()
+	key := strconv.FormatInt(a.UserID, 10) + " " + addr.String()
+	w.uniqueKey(file, line, "ip", fmt.Sprintf("the pair (user_id %d, ip %s)", a.UserID, addr), w.addresses, key)
 }
 
 func (w *whole) staticPage(line int, p StaticPage) {

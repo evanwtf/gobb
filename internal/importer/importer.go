@@ -66,6 +66,9 @@ type source struct {
 	// viewIPRoles are the roles whose Yes for mod.view_ip the roles loader
 	// dropped. load reports them after the commit.
 	viewIPRoles []viewIPRole
+	// importedAt is the time of the import. An imported member address is last
+	// seen at it, so gobb keeps it for GOBB_ADDRESS_KEEP_DAYS from the import.
+	importedAt time.Time
 }
 
 // loader loads one data file inside the import transaction and returns the
@@ -75,7 +78,9 @@ type loader struct {
 	load func(ctx context.Context, tx pgx.Tx, r *source) (int, error)
 }
 
-// loaders lists the loaders in bundle.Files order. Every data file has one.
+// loaders lists the loaders in bundle.Files order, then bundle.OptionalFiles.
+// Every data file has one. The loader of an optional file that the bundle does
+// not hold loads nothing.
 var loaders = []loader{
 	{"ranks", loadRanks},
 	{"users", loadUsers},
@@ -98,6 +103,7 @@ var loaders = []loader{
 	{"legacy_routes", loadLegacyRoutes},
 	{"legacy_files", loadLegacyFiles},
 	{"static_pages", loadStaticPages},
+	{"member_addresses", loadMemberAddresses},
 }
 
 // Run imports the bundle at src into the database of pool. src is a bundle
@@ -181,7 +187,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, src string, opt Options) (coun
 		return nil, err
 	}
 
-	counts, err = load(ctx, conn, tables, &source{Reader: r, smilies: smilies, threadMessages: opt.ThreadMessages}, opt.Replace)
+	counts, err = load(ctx, conn, tables, &source{Reader: r, smilies: smilies, threadMessages: opt.ThreadMessages, importedAt: now()}, opt.Replace)
 	if err != nil {
 		return nil, err
 	}

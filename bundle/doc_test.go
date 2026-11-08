@@ -83,6 +83,9 @@ func docCases() []docCase {
 	for _, r := range fullRows() {
 		out = append(out, docCase{r.DataFile() + ".jsonl", reflect.New(reflect.TypeOf(r)).Interface()})
 	}
+	for _, r := range optionalRows() {
+		out = append(out, docCase{r.DataFile() + ".jsonl", reflect.New(reflect.TypeOf(r)).Interface()})
+	}
 	out = append(out,
 		docCase{"manifest.json", &Manifest{}},
 		docCase{"settings.json", &Settings{}},
@@ -120,10 +123,10 @@ func topFields(t reflect.Type) map[string]bool {
 func TestDocCoversEveryField(t *testing.T) {
 	secs := sections(t)
 	cases := docCases()
-	if len(cases) != len(Files)+2 {
+	if len(cases) != len(Files)+len(OptionalFiles)+2 {
 		t.Fatalf("%d cases", len(cases))
 	}
-	for i, f := range Files {
+	for i, f := range slices.Concat(Files, OptionalFiles) {
 		if cases[i].section != f+".jsonl" {
 			t.Fatalf("case %d is %q, want %q", i, cases[i].section, f+".jsonl")
 		}
@@ -171,8 +174,8 @@ func TestDocHeadingsInLoadOrder(t *testing.T) {
 			got = append(got, strings.TrimSuffix(h, ".jsonl"))
 		}
 	}
-	if !slices.Equal(got, Files) {
-		t.Errorf("data-file sections are %v, want %v", got, Files)
+	if want := slices.Concat(Files, OptionalFiles); !slices.Equal(got, want) {
+		t.Errorf("data-file sections are %v, want %v", got, want)
 	}
 }
 

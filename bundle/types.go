@@ -46,10 +46,17 @@ var Files = []string{
 	"static_pages",
 }
 
+// OptionalFiles lists the data files that a bundle may leave out, in load
+// order, after [Files]. A bundle that holds one names it in the counts of the
+// manifest; a bundle that leaves it out does not.
+var OptionalFiles = []string{
+	"member_addresses",
+}
+
 // Row is one line of a data file. Every data-file type implements it.
 type Row interface {
 	// DataFile returns the name of the file that holds the row, without the
-	// ".jsonl" suffix. The name is in [Files].
+	// ".jsonl" suffix. The name is in [Files] or [OptionalFiles].
 	DataFile() string
 }
 
@@ -407,6 +414,14 @@ type StaticPage struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// MemberAddress is a row of member_addresses.jsonl: an address that a member
+// used on the source system. gobb keeps it as one of the member's trusted
+// addresses, for a time that counts from the import.
+type MemberAddress struct {
+	UserID int64  `json:"user_id"`
+	IP     string `json:"ip"`
+}
+
 // DataFile returns "ranks".
 func (Rank) DataFile() string { return "ranks" }
 
@@ -469,3 +484,6 @@ func (LegacyFile) DataFile() string { return "legacy_files" }
 
 // DataFile returns "static_pages".
 func (StaticPage) DataFile() string { return "static_pages" }
+
+// DataFile returns "member_addresses".
+func (MemberAddress) DataFile() string { return "member_addresses" }

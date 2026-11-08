@@ -39,7 +39,8 @@ type dataFile struct {
 }
 
 // Create starts a bundle in dir. The directory must not exist, or it must be
-// empty. Create makes it, with its parents, and opens all 21 data files. source
+// empty. Create makes it, with its parents, and opens all 21 data files. An
+// optional data file ([OptionalFiles]) appears with its first row. source
 // is the manifest's "source" label. Create refuses settings or a source that
 // fail their checks. When Create fails, it removes what it made.
 func Create(dir, source string, s Settings) (*Writer, error) {
@@ -115,13 +116,25 @@ func Add[T Row](w *Writer, row T) error {
 		return err
 	}
 	d, ok := w.data[name]
-	if !ok {
+	if !ok && !slices.Contains(OptionalFiles, name) {
 		return fmt.Errorf("bundle: %T is not a bundle row", row)
 	}
-	file, ln := name+".jsonl", d.count+1
+	file, ln := name+".jsonl", 1
+	if ok {
+		ln = d.count + 1
+	}
 	if e := firstError(any(row)); e != nil {
 		e.File, e.Line = file, ln
 		return e
+	}
+	if !ok {
+		// An optional data file appears with its first row.
+		f, err := createDataFile(filepath.Join(w.dir, file))
+		if err != nil {
+			return err
+		}
+		d = &dataFile{f: f, w: bufio.NewWriterSize(f, 64<<10)}
+		w.data[name] = d
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -236,8 +249,11 @@ func (w *Writer) Close() error {
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 		Counts:    map[string]int{},
 	}
-	for _, name := range Files {
-		d := w.data[name]
+	for _, name := range slices.Concat(Files, OptionalFiles) {
+		d, ok := w.data[name]
+		if !ok {
+			continue // an optional file with no row
+		}
 		errs = append(errs, d.w.Flush(), d.f.Close())
 		m.Counts[name] = d.count
 	}

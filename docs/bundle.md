@@ -28,6 +28,7 @@ level (an AppleDouble `._` file is an extra entry):
 - `manifest.json`
 - `settings.json`
 - 21 data files, each named `<name>.jsonl`. Each file is present even when it is empty.
+- The optional data file `member_addresses.jsonl`. A bundle may leave it out.
 - `files/`, the directory that holds the files the rows name. It may be absent when no
   row names a file.
 
@@ -58,6 +59,7 @@ The data files, in load order:
 19. `legacy_routes.jsonl`
 20. `legacy_files.jsonl`
 21. `static_pages.jsonl`
+22. `member_addresses.jsonl` (optional)
 
 ## Field rules
 
@@ -177,9 +179,11 @@ attachment.
 | `version` | int | The number `2`. A bundle of version 1 is refused (see "Changes from version 1"). |
 | `created_at` | time | When the converter wrote the bundle. |
 | `source` | label | A short description of the source system. |
-| `counts` | object | Exactly the 21 data-file names as keys (no `.jsonl`). Each value is a count: the number of lines in that file. |
+| `counts` | object | Exactly the 21 data-file names as keys (no `.jsonl`), and the name of each optional data file that the bundle holds. Each value is a count: the number of lines in that file. |
 
-A count that disagrees with its file stops the import.
+A count that disagrees with its file stops the import. A bundle that holds
+`member_addresses.jsonl` has the key `member_addresses` in `counts`; a bundle that
+leaves the file out does not have the key. Either mismatch stops the import.
 
 ```json
 {
@@ -673,6 +677,33 @@ A row maps an old URL prefix of the source system to a gobb directory.
 
 ```json
 {"slug":"about","title":"About","body":{"source":"This is an example board.","markdown":true,"smilies":false,"autolink":true},"updated_at":"2025-06-01T12:00:00Z"}
+```
+
+## member_addresses.jsonl
+
+This file is optional. A row is an address that a member used on the source system.
+gobb keeps it as one of the member's *trusted addresses*: while the board is under a
+flood of failed sign-ins, a sign-in from a trusted address keeps the normal waits, and
+a failed sign-in from it does not count against the member's name. A new board starts
+with no file.
+
+| Field | Type | Rule |
+|---|---|---|
+| `user_id` | id | A row of `users.jsonl`. |
+| `ip` | ip | Not the unspecified address (`0.0.0.0` or `::`). |
+
+The pair (`user_id`, `ip`) is unique. gobb stores an IPv4-mapped address
+(`::ffff:192.0.2.1`) as its IPv4 address, so the two forms of one address are the same
+pair. An IPv6 address stands for its /64.
+
+gobb takes no time from the bundle. The import stores each address as last seen at the
+time of the import, whatever its age on the source system, and keeps it for
+`GOBB_ADDRESS_KEEP_DAYS` (365 days unless set) after the import. The import leaves out
+the addresses of a member whom a user ban holds at the time of the import, because a ban
+removes a member's addresses. `gobb import` prints the number of rows that it stored.
+
+```json
+{"user_id":1,"ip":"192.0.2.10"}
 ```
 
 ## Changes from version 1

@@ -117,7 +117,7 @@ func TestImportCommand(t *testing.T) {
 		t.Fatalf("import exit = %d, want 0", code)
 	}
 	lines := strings.Split(strings.TrimRight(got.String(), "\n"), "\n")
-	if want := len(bundle.Files) + 1; len(lines) != want {
+	if want := len(bundle.Files) + len(bundle.OptionalFiles) + 1; len(lines) != want {
 		t.Fatalf("import printed %d lines, want %d:\n%s", len(lines), want, got.String())
 	}
 	if !regexp.MustCompile(`^posts +6$`).MatchString(lines[9]) {
@@ -127,6 +127,10 @@ func TestImportCommand(t *testing.T) {
 		if !strings.HasPrefix(lines[i], name+" ") {
 			t.Errorf("line %d = %q, want it to start with %q", i+1, lines[i], name)
 		}
+	}
+	// The small board has no member_addresses.jsonl: the line says 0.
+	if got := lines[len(bundle.Files)]; !regexp.MustCompile(`^member_addresses +0$`).MatchString(got) {
+		t.Errorf("line %d = %q, want member_addresses and 0", len(bundle.Files)+1, got)
 	}
 	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "files") {
 		t.Errorf("last line = %q, want it to start with files", last)
