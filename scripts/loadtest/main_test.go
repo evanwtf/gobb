@@ -264,12 +264,18 @@ func TestSlowSuccessPasses(t *testing.T) {
 	)
 	b := &fakeBoard{topic: func(bool) int {
 		once.Do(func() { start = time.Now() })
-		if time.Since(start) < 200*time.Millisecond {
-			time.Sleep(40 * time.Millisecond)
+		if time.Since(start) < 300*time.Millisecond {
+			time.Sleep(250 * time.Millisecond)
 		}
 		return http.StatusOK
 	}}
-	code, out := runAgainst(t, b, func(c *config) { c.refuseBound = 10 * time.Millisecond })
+	// A 200 slower than the bound passes. The bound leaves room for a refusal on
+	// a busy runner, and the slow answers end long before the load does, so the
+	// end of the load cuts none of them off.
+	code, out := runAgainst(t, b, func(c *config) {
+		c.duration = time.Second
+		c.refuseBound = 150 * time.Millisecond
+	})
 	if code != 0 {
 		t.Fatalf("exit %d, want 0:\n%s", code, out)
 	}
