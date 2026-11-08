@@ -7,10 +7,33 @@
 // for it ([Cache.Do]). It drops entries on request: all of them, those of one
 // topic, those that list topics, or those that show a member's posts.
 //
-// Every drop starts a new generation. A render that began before a drop does
-// not store its result, because the result may hold what the drop removed. The
-// requests that waited for that render still get it: they came before the drop
-// finished. A request that comes after the drop starts a new render.
+// Each drop is one step of a counter, the generation ([Cache.Gen]), and the
+// cache keeps a record of the recent drops: their generation and their scope
+// (every page, one topic and the listings, the listings, or one member). This
+// record is the generation of each scope: the generation of a scope is the
+// last drop in the record that reaches it. A render notes the generation when
+// it starts. When it ends, the cache finds the first drop after that start
+// that reaches the page, from what the page depends on: the [Scope] that the
+// caller gave, and the topic, listing and members of the entry. When there is
+// one, the cache does not store the page, because it may hold what the drop
+// removed. A drop of another topic or another member does not stop the store.
+//
+// The members of a topic page are known only once it renders (Entry.Users), so
+// a drop of a member cannot be matched while the render runs. The record
+// solves this: the check at the end reads every drop since the start, the drops
+// of members among them, against the members that the page shows.
+//
+// The requests that waited for a render get its result when they came before
+// the first drop that reaches it: the drop had not happened for them. A request
+// that comes after such a drop does not get the old result. When the drop
+// reaches the scope known at the start, the request starts a new render at
+// once. When it reaches a member, which the cache learns only at the end, the
+// request waits for the render, then asks again.
+//
+// The record holds the last [historySize] drops, so its memory is fixed, however
+// many topics and members the drops name. A render that began before the
+// oldest drop in the record is not stored: the cache cannot tell what came
+// between, and it takes the safe side.
 package pagecache
 
 import (
@@ -20,6 +43,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,6 +70,15 @@ type Entry struct {
 	Expires time.Time
 }
 
+// Scope is what the caller knows of a page before it renders: its topic, or 0,
+// and whether it is a listing. The cache uses it to start a new render, not join
+// the one in progress, when a drop reaches the page. The check before the store
+// also reads the topic, listing and members of the entry that the render gave.
+type Scope struct {
+	Topic   int64
+	Listing bool
+}
+
 // Result is what one render gave: the entry, and whether it may be stored. A
 // page that is not stored (an error page, a redirect) still goes to every
 // request that waited for the render.
@@ -66,12 +99,16 @@ type Cache struct {
 	limit int64
 	now   func() time.Time
 
-	mu      sync.Mutex
-	bytes   int64
-	order   *list.List // front: most recently used; each value is *item
-	items   map[string]*list.Element
+	mu    sync.Mutex
+	bytes int64
+	order *list.List // front: most recently used; each value is *item
+	items map[string]*list.Element
+	// gen counts the drops. history holds the last historySize of them: the
+	// drop of generation g is at history[(g-1)%historySize].
 	gen     uint64
-	flights map[flightKey]*flight
+	history []dropRec
+	// flights holds the render in progress of each key: the last one to start.
+	flights map[string]*flight
 
 	hits, misses, evictions, drops atomic.Uint64
 }
@@ -81,16 +118,67 @@ type item struct {
 	entry Entry
 }
 
-type flightKey struct {
-	key string
-	gen uint64
+// historySize is the number of drops that the cache keeps a record of. A render
+// that began more than historySize drops ago is not stored. A record is 24
+// bytes, so the record of a cache is at most 96 KiB.
+const historySize = 4096
+
+// dropKind names the scope of a drop.
+type dropKind uint8
+
+const (
+	dropAll      dropKind = iota // every page
+	dropTopic                    // the pages of one topic, and every listing
+	dropListings                 // every listing
+	dropUser                     // the pages that show one member
+)
+
+// dropRec is one drop in the record.
+type dropRec struct {
+	gen  uint64
+	kind dropKind
+	id   int64
 }
 
-// flight is one render in progress. done closes when res and err are set.
+// deps is what a page depends on: a drop reaches the page when it reaches one
+// of these.
+type deps struct {
+	// topics are the topic of the scope and the topic of the entry; 0 is none.
+	topics  [2]int64
+	listing bool
+	users   []int64
+}
+
+func depsOf(sc Scope, e Entry) deps {
+	return deps{topics: [2]int64{sc.Topic, e.Topic}, listing: sc.Listing || e.Listing, users: e.Users}
+}
+
+// reaches reports whether the drop r reaches a page that depends on d.
+func (r dropRec) reaches(d deps) bool {
+	switch r.kind {
+	case dropTopic:
+		return d.listing || (r.id != 0 && (d.topics[0] == r.id || d.topics[1] == r.id))
+	case dropListings:
+		return d.listing
+	case dropUser:
+		return slices.Contains(d.users, r.id)
+	}
+	return true
+}
+
+// flight is one render in progress. done closes when res, err and stale are
+// set.
 type flight struct {
 	done chan struct{}
-	res  Result
-	err  error
+	// start is the generation when the render began; scope is the scope that
+	// its caller gave.
+	start uint64
+	scope Scope
+	res   Result
+	err   error
+	// stale is the generation of the first drop after start that reaches the
+	// page, or 0 when there is none.
+	stale uint64
 }
 
 // New returns a cache that holds at most limit bytes of entries. now gives the
@@ -99,10 +187,11 @@ func New(limit int64, now func() time.Time) *Cache {
 	if now == nil {
 		now = time.Now
 	}
-	return &Cache{limit: limit, now: now, order: list.New(), items: map[string]*list.Element{}, flights: map[flightKey]*flight{}}
+	return &Cache{limit: limit, now: now, order: list.New(), items: map[string]*list.Element{}, flights: map[string]*flight{}}
 }
 
-// Gen returns the generation: a number that every drop changes.
+// Gen returns the generation: a number that every drop adds one to. Pass it to
+// [Cache.DroppedSince] later to learn whether a drop since reached a page.
 func (c *Cache) Gen() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -174,46 +263,99 @@ func (c *Cache) Peek(key string) (Entry, bool) {
 
 // Do returns the entry of key. On a hit it returns the stored entry, and hit is
 // true. On a miss it calls render, once for all the requests that miss key at
-// the same time and in the same generation; the others wait for that call and
-// get its result. The result is stored when render says so, when no drop came
-// since the render began, and when the entry fits under the limit.
+// the same time; the others wait for that call and get its result. sc is what
+// the caller knows of the page before it renders ([Scope]). The result is
+// stored when render says so, when no drop since the render began reaches the
+// page, and when the entry fits under the limit.
+//
+// A request never gets a render that began before a drop that reaches the page
+// and came before the request. It starts a new render instead, or, when only
+// the result shows that the drop reaches the page (a member), it asks again.
 //
 // A request whose ctx ends while it waits gets ctx.Err(). The render goes on for
 // the others: render must not depend on the context of one request.
-func (c *Cache) Do(ctx context.Context, key string, render func() (Result, error)) (res Result, hit bool, err error) {
-	c.mu.Lock()
-	if e, ok := c.getLocked(key); ok {
-		c.mu.Unlock()
-		c.hits.Add(1)
-		return Result{Entry: e, Store: true}, true, nil
-	}
-	c.misses.Add(1)
-	fk := flightKey{key: key, gen: c.gen}
-	if f, ok := c.flights[fk]; ok {
-		c.mu.Unlock()
-		select {
-		case <-f.done:
+func (c *Cache) Do(ctx context.Context, key string, sc Scope, render func() (Result, error)) (res Result, hit bool, err error) {
+	for first := true; ; first = false {
+		c.mu.Lock()
+		if e, ok := c.getLocked(key); ok {
+			c.mu.Unlock()
+			if first {
+				c.hits.Add(1)
+			}
+			return Result{Entry: e, Store: true}, true, nil
+		}
+		if first {
+			c.misses.Add(1)
+		}
+		arrived := c.gen
+		// Join the render in progress unless a drop since it began reaches the
+		// scope it was given. A drop of a member cannot be matched yet; the
+		// check after the wait covers it.
+		if f, ok := c.flights[key]; ok && c.firstDropLocked(f.start, depsOf(f.scope, Entry{})) == 0 {
+			c.mu.Unlock()
+			select {
+			case <-f.done:
+			case <-ctx.Done():
+				return Result{}, false, ctx.Err()
+			}
+			if f.err == nil && f.stale != 0 && f.stale <= arrived {
+				// A drop that reaches the page came before this request.
+				continue
+			}
 			return f.res, false, f.err
-		case <-ctx.Done():
-			return Result{}, false, ctx.Err()
+		}
+		f := &flight{done: make(chan struct{}), start: arrived, scope: sc}
+		c.flights[key] = f
+		c.mu.Unlock()
+
+		// The render runs in this goroutine. A panic becomes an error for the
+		// caller and the waiters: a worker that renders in a goroutine of its own
+		// must not end the process, and a request must not leave the waiters
+		// hanging.
+		f.res, f.err = safeRender(key, render)
+		c.mu.Lock()
+		if c.flights[key] == f {
+			delete(c.flights, key)
+		}
+		if f.err == nil {
+			f.stale = c.firstDropLocked(f.start, depsOf(sc, f.res.Entry))
+			if f.res.Store && f.stale == 0 {
+				c.putLocked(key, f.res.Entry)
+			}
+		}
+		c.mu.Unlock()
+		close(f.done)
+		return f.res, false, f.err
+	}
+}
+
+// DroppedSince reports whether a drop after generation gen ([Cache.Gen])
+// reaches a page that depends on what e names: its topic, whether it is a
+// listing, and its members. It reports true when gen is older than the record
+// of drops.
+func (c *Cache) DroppedSince(gen uint64, e Entry) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.firstDropLocked(gen, depsOf(Scope{}, e)) != 0
+}
+
+// firstDropLocked returns the generation of the first drop after generation
+// after that reaches a page that depends on d, or 0 when there is none. When
+// the record no longer holds the drop after after, it returns after+1: the
+// cache cannot tell, so it says that a drop came.
+func (c *Cache) firstDropLocked(after uint64, d deps) uint64 {
+	if after >= c.gen {
+		return 0
+	}
+	if c.gen-after > uint64(len(c.history)) {
+		return after + 1
+	}
+	for g := after + 1; g <= c.gen; g++ {
+		if c.history[(g-1)%historySize].reaches(d) {
+			return g
 		}
 	}
-	f := &flight{done: make(chan struct{})}
-	c.flights[fk] = f
-	c.mu.Unlock()
-
-	// The render runs in this goroutine. A panic becomes an error for the caller
-	// and the waiters: a worker that renders in a goroutine of its own must not
-	// end the process, and a request must not leave the waiters hanging.
-	f.res, f.err = safeRender(key, render)
-	c.mu.Lock()
-	delete(c.flights, fk)
-	if f.err == nil && f.res.Store && c.gen == fk.gen {
-		c.putLocked(key, f.res.Entry)
-	}
-	c.mu.Unlock()
-	close(f.done)
-	return f.res, false, f.err
+	return 0
 }
 
 // ErrPanic is the error of a render that panicked. The panic and its stack are
@@ -263,19 +405,19 @@ func (c *Cache) removeLocked(el *list.Element) {
 // DropAll empties the cache. A change to the rights of the guests, to the board
 // settings, or to anything that this process cannot see the scope of calls it.
 func (c *Cache) DropAll() {
-	c.drop(func(Entry) bool { return true })
+	c.drop(dropRec{kind: dropAll})
 }
 
 // DropTopic drops the pages of topic id and every listing (the index and the
 // forum pages): a change to a topic shows on its own pages and in the lists that
 // name it.
 func (c *Cache) DropTopic(id int64) {
-	c.drop(func(e Entry) bool { return e.Listing || (id != 0 && e.Topic == id) })
+	c.drop(dropRec{kind: dropTopic, id: id})
 }
 
 // DropListings drops every listing: the index and the forum pages.
 func (c *Cache) DropListings() {
-	c.drop(func(e Entry) bool { return e.Listing })
+	c.drop(dropRec{kind: dropListings})
 }
 
 // DropUser drops the pages that show a post of member id.
@@ -283,26 +425,26 @@ func (c *Cache) DropUser(id int64) {
 	if id == 0 {
 		return
 	}
-	c.drop(func(e Entry) bool {
-		for _, u := range e.Users {
-			if u == id {
-				return true
-			}
-		}
-		return false
-	})
+	c.drop(dropRec{kind: dropUser, id: id})
 }
 
-// drop removes the entries for which match is true, and starts a new
-// generation, so that no render that began before stores its result.
-func (c *Cache) drop(match func(Entry) bool) {
+// drop starts a new generation, adds r to the record of drops, and removes the
+// entries that r reaches. A render that began before and whose page r reaches
+// does not store its result ([Cache.Do]).
+func (c *Cache) drop(r dropRec) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.gen++
+	r.gen = c.gen
+	if len(c.history) < historySize {
+		c.history = append(c.history, r)
+	} else {
+		c.history[(r.gen-1)%historySize] = r
+	}
 	c.drops.Add(1)
 	for el := c.order.Front(); el != nil; {
 		next := el.Next()
-		if match(el.Value.(*item).entry) {
+		if r.reaches(depsOf(Scope{}, el.Value.(*item).entry)) {
 			c.removeLocked(el)
 		}
 		el = next

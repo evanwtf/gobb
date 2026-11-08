@@ -12,7 +12,7 @@ import (
 // put renders e under key through Do, as a miss does.
 func put(t *testing.T, c *Cache, key string, e Entry) {
 	t.Helper()
-	if _, _, err := c.Do(context.Background(), key, func() (Result, error) { return Result{Entry: e, Store: true}, nil }); err != nil {
+	if _, _, err := c.Do(context.Background(), key, Scope{}, func() (Result, error) { return Result{Entry: e, Store: true}, nil }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -74,7 +74,7 @@ func TestSingleflightRendersOnce(t *testing.T) {
 	results := make([]any, n)
 	for i := range n {
 		wg.Go(func() {
-			res, _, err := c.Do(context.Background(), "k", func() (Result, error) {
+			res, _, err := c.Do(context.Background(), "k", Scope{}, func() (Result, error) {
 				renders.Add(1)
 				<-release
 				return Result{Entry: Entry{Value: "page", Size: 10}, Store: true}, nil
@@ -97,14 +97,14 @@ func TestSingleflightRendersOnce(t *testing.T) {
 			t.Errorf("request %d got %v", i, v)
 		}
 	}
-	if _, hit, _ := c.Do(context.Background(), "k", func() (Result, error) { t.Fatal("render after the store"); return Result{}, nil }); !hit {
+	if _, hit, _ := c.Do(context.Background(), "k", Scope{}, func() (Result, error) { t.Fatal("render after the store"); return Result{}, nil }); !hit {
 		t.Error("the page was not stored")
 	}
 }
 
 func TestNoStoreGoesToTheWaitersOnly(t *testing.T) {
 	c := New(1<<20, nil)
-	res, _, err := c.Do(context.Background(), "k", func() (Result, error) {
+	res, _, err := c.Do(context.Background(), "k", Scope{}, func() (Result, error) {
 		return Result{Entry: Entry{Value: "404", Size: 10}, Store: false}, nil
 	})
 	if err != nil || res.Entry.Value != "404" {
@@ -120,7 +120,7 @@ func TestDropDuringARenderKeepsItOut(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	done := make(chan Result)
 	go func() {
-		res, _, _ := c.Do(context.Background(), "t1", func() (Result, error) {
+		res, _, _ := c.Do(context.Background(), "t1", Scope{Topic: 1}, func() (Result, error) {
 			close(started)
 			<-release
 			return Result{Entry: Entry{Value: "old", Size: 10, Topic: 1}, Store: true}, nil
@@ -133,7 +133,7 @@ func TestDropDuringARenderKeepsItOut(t *testing.T) {
 	var fresh atomic.Bool
 	got := make(chan Result)
 	go func() {
-		res, _, _ := c.Do(context.Background(), "t1", func() (Result, error) {
+		res, _, _ := c.Do(context.Background(), "t1", Scope{Topic: 1}, func() (Result, error) {
 			fresh.Store(true)
 			return Result{Entry: Entry{Value: "new", Size: 10, Topic: 1}, Store: true}, nil
 		})
@@ -224,7 +224,7 @@ func TestWaiterContextEnds(t *testing.T) {
 	c := New(1<<20, nil)
 	started, release := make(chan struct{}), make(chan struct{})
 	go func() {
-		_, _, _ = c.Do(context.Background(), "k", func() (Result, error) {
+		_, _, _ = c.Do(context.Background(), "k", Scope{}, func() (Result, error) {
 			close(started)
 			<-release
 			return Result{Entry: Entry{Size: 1}, Store: true}, nil
@@ -233,7 +233,7 @@ func TestWaiterContextEnds(t *testing.T) {
 	<-started
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := c.Do(ctx, "k", func() (Result, error) { return Result{}, nil }); !errors.Is(err, context.Canceled) {
+	if _, _, err := c.Do(ctx, "k", Scope{}, func() (Result, error) { return Result{}, nil }); !errors.Is(err, context.Canceled) {
 		t.Errorf("a waiter whose context ended got %v", err)
 	}
 	close(release)
@@ -242,7 +242,7 @@ func TestWaiterContextEnds(t *testing.T) {
 func TestRenderErrorIsShared(t *testing.T) {
 	c := New(1<<20, nil)
 	boom := errors.New("boom")
-	if _, _, err := c.Do(context.Background(), "k", func() (Result, error) { return Result{}, boom }); !errors.Is(err, boom) {
+	if _, _, err := c.Do(context.Background(), "k", Scope{}, func() (Result, error) { return Result{}, boom }); !errors.Is(err, boom) {
 		t.Errorf("Do = %v", err)
 	}
 	if _, ok := c.Peek("k"); ok {
@@ -256,10 +256,10 @@ func TestRenderPanicIsAnError(t *testing.T) {
 	waited := make(chan error)
 	go func() {
 		<-started
-		_, _, err := c.Do(context.Background(), "k", func() (Result, error) { return Result{}, nil })
+		_, _, err := c.Do(context.Background(), "k", Scope{}, func() (Result, error) { return Result{}, nil })
 		waited <- err
 	}()
-	_, _, err := c.Do(context.Background(), "k", func() (Result, error) {
+	_, _, err := c.Do(context.Background(), "k", Scope{}, func() (Result, error) {
 		close(started)
 		time.Sleep(50 * time.Millisecond) // the waiter joins the flight
 		panic("boom")
@@ -271,7 +271,7 @@ func TestRenderPanicIsAnError(t *testing.T) {
 		t.Errorf("the waiter got %v", err)
 	}
 	// The cache still works.
-	if _, _, err := c.Do(context.Background(), "k", func() (Result, error) { return Result{Entry: Entry{Size: 1}, Store: true}, nil }); err != nil {
+	if _, _, err := c.Do(context.Background(), "k", Scope{}, func() (Result, error) { return Result{Entry: Entry{Size: 1}, Store: true}, nil }); err != nil {
 		t.Errorf("a render after a panic: %v", err)
 	}
 }
@@ -286,7 +286,7 @@ func TestLookupCountsHitsOnly(t *testing.T) {
 	if st := c.Stats(); st.Hits != 0 || st.Misses != 0 {
 		t.Fatalf("an empty lookup counted %d hits and %d misses", st.Hits, st.Misses)
 	}
-	if _, _, err := c.Do(context.Background(), "a", func() (Result, error) {
+	if _, _, err := c.Do(context.Background(), "a", Scope{}, func() (Result, error) {
 		return Result{Entry: Entry{Value: 1, Size: 1}, Store: true}, nil
 	}); err != nil {
 		t.Fatal(err)

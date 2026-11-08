@@ -90,7 +90,15 @@ func TestWarmUpSkipsWhatAGuestCannotSee(t *testing.T) {
 	if n := layoutBuilds.Load() - builds; n != 0 {
 		t.Errorf("a second pass with no drop built %d pages, want 0", n)
 	}
-	// A drop starts over: the skipped pages are tried again.
+	// A drop that reaches none of the skipped pages keeps them skipped. Member
+	// 999999 shows on no page.
+	g.Pages.DropUser(999999)
+	builds = layoutBuilds.Load()
+	g.warmPass(t.Context(), g.site.Load())
+	if n := layoutBuilds.Load() - builds; n != 0 {
+		t.Errorf("a pass after a drop that reaches no page built %d pages, want 0", n)
+	}
+	// A drop that reaches them starts over: the skipped pages are tried again.
 	g.Pages.DropAll()
 	builds = layoutBuilds.Load()
 	g.warmPass(t.Context(), g.site.Load())
