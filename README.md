@@ -304,6 +304,7 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_PAGE_CACHE_MIB` | The memory of the guest page cache, in MiB, from 0 to 1,024. `0` turns the cache off. The server uses at most a quarter of the Go memory limit, or 64 MiB with no limit (see "Guest page cache"). | `16` |
 | `GOBB_PAGE_CACHE_WARM` | `true` or `false`. Render the guest pages into the cache at start, and again after a change drops them. | `true` |
 | `GOBB_WRITE_FLUSH_INTERVAL` | The time between two writes of the batched view counts, visit times and member addresses, from `1s` to `10m` (see "Batched writes"). | `30s` |
+| `GOBB_SIGNIN_GATE_WAIT` | The longest time that a sign-in waits for room in the memory gate of the password checks, from `100ms` to `10s`. A longer wait gets 503. Avatar and icon uploads wait for the same gate with the same limit (see "Load limits"). | `1s` |
 | `GOBB_SIGNIN_FREE_FAILURES` | How many failed sign-ins of an address or a name leave no wait after them, from 0 to 100 (see "Sign-in limits"). | `2` |
 | `GOBB_SIGNIN_WAITS` | The waits after the failures that follow the free ones, in order: 1 to 20 durations from `1s` to `24h`, separated by commas. | `15s,15s,60s,60s,60s` |
 | `GOBB_SIGNIN_LAST_WAIT` | The wait after every later failure, from `1s` to `24h`. | `900s` |
@@ -692,6 +693,10 @@ then gets quick refusals, and the server stays up.
   Only a request with search words or an author counts; the bare search form does
   not. `gobb_rate_limited_total{limit="search"}` and `gobb_search_busy_total`
   count the refusals.
+- A sign-in that finds the memory gate of the password checks full (see "Memory")
+  waits at most `GOBB_SIGNIN_GATE_WAIT` (1 s unless set) for room, then gets 503
+  with `Retry-After: 5`. `gobb_signin_attempts_total{result="busy"}` counts these.
+  Avatar and icon uploads wait for the same gate with the same limit.
 - The start-up log line `load limits` gives these values, and the three of the
   page cache and the batched writes below.
 

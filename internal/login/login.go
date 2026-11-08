@@ -92,7 +92,9 @@ const (
 	// together: 128 MiB. [BudgetKiB] gives less under a lower memory limit.
 	DefaultBudgetKiB = 128 * 1024
 	// DefaultGateWait is how long a check waits for the gate before ErrBusy.
-	DefaultGateWait = 5 * time.Second
+	// A refusal must come quickly (spec 10, "Load protection"); a gobb server
+	// takes the wait from GOBB_SIGNIN_GATE_WAIT.
+	DefaultGateWait = time.Second
 )
 
 // gateHeadroomKiB is the memory that the gate leaves to the rest of the server

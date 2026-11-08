@@ -74,7 +74,7 @@ type Options struct {
 	// minutes. Zero means the default (10). A test that sends a lot raises it.
 	MessageSends int
 	// LoginGateWait is how long a password check waits for the gate. Zero means
-	// the default of 5 seconds. Tests set it small.
+	// [login.DefaultGateWait] (1 s). Tests set it small.
 	LoginGateWait time.Duration
 	// Mail turns the password reset by email on. Nil turns it off: the reset
 	// routes answer 404 and the sign-in page has no link to them.

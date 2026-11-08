@@ -130,6 +130,11 @@ type Load struct {
 	// FlushEvery is the time between two flushes of the batched writes (view
 	// counts, activity times, member addresses), from GOBB_WRITE_FLUSH_INTERVAL.
 	FlushEvery time.Duration
+	// SigninGateWait is the longest time that a password check waits for room
+	// in the memory gate before the sign-in gets 503, from
+	// GOBB_SIGNIN_GATE_WAIT. Avatar and icon uploads wait for the same gate
+	// with the same limit.
+	SigninGateWait time.Duration
 }
 
 // The defaults and the bounds of the load settings. A request has 10 s for its
@@ -150,6 +155,11 @@ const (
 	DefaultFlushEvery   = 30 * time.Second
 	minFlushEvery       = time.Second
 	maxFlushEvery       = 10 * time.Minute
+	// A sign-in that finds the gate full waits this long, then gets 503. A
+	// refusal must come quickly (spec 10, "Load protection").
+	DefaultSigninGateWait = time.Second
+	minSigninGateWait     = 100 * time.Millisecond
+	maxSigninGateWait     = 10 * time.Second
 )
 
 const (
@@ -347,6 +357,9 @@ func loadFromEnv(getenv func(string) string) (Load, error) {
 			return Load{}, fmt.Errorf("config: GOBB_WRITE_FLUSH_INTERVAL: must be a duration from %s to %s, such as 30s", minFlushEvery, maxFlushEvery)
 		}
 		l.FlushEvery = d
+	}
+	if l.SigninGateWait, err = durationSetting("GOBB_SIGNIN_GATE_WAIT", get("GOBB_SIGNIN_GATE_WAIT"), DefaultSigninGateWait, minSigninGateWait, maxSigninGateWait); err != nil {
+		return Load{}, err
 	}
 	return l, nil
 }
