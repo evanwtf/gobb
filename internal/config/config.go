@@ -138,6 +138,11 @@ type Load struct {
 	// MaxInFlight is the most requests that the server handles at one time,
 	// from GOBB_MAX_IN_FLIGHT. A request past it gets 503 at once.
 	MaxInFlight int
+	// MaxSigninInFlight is the most password POSTs (sign-in, password and
+	// email change, reset link) under way at one time, from
+	// GOBB_MAX_SIGNIN_IN_FLIGHT. They have their own slots, outside
+	// MaxInFlight, and get 503 at once past this limit.
+	MaxSigninInFlight int
 }
 
 // The defaults and the bounds of the load settings. A request has 10 s for its
@@ -167,6 +172,9 @@ const (
 	// 256 MiB cap of Compose. The README ("Load limits") gives the measurement.
 	DefaultMaxInFlight = 256
 	maxMaxInFlight     = 100000
+	// DefaultMaxSigninInFlight: a wrong password holds its slot for the floor
+	// and the gate wait, so a sign-in flood gets slots of its own.
+	DefaultMaxSigninInFlight = 32
 )
 
 const (
@@ -370,6 +378,13 @@ func loadFromEnv(getenv func(string) string) (Load, error) {
 	}
 	if l.MaxInFlight, err = intSetting("GOBB_MAX_IN_FLIGHT", get("GOBB_MAX_IN_FLIGHT"), DefaultMaxInFlight, 1, maxMaxInFlight); err != nil {
 		return Load{}, err
+	}
+	// With no setting, the default shrinks to fit a smaller main limit.
+	l.MaxSigninInFlight = min(DefaultMaxSigninInFlight, l.MaxInFlight)
+	if v := get("GOBB_MAX_SIGNIN_IN_FLIGHT"); v != "" {
+		if l.MaxSigninInFlight, err = intSetting("GOBB_MAX_SIGNIN_IN_FLIGHT", v, 0, 1, l.MaxInFlight); err != nil {
+			return Load{}, fmt.Errorf("%w (GOBB_MAX_IN_FLIGHT)", err)
+		}
 	}
 	return l, nil
 }

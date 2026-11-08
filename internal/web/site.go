@@ -114,8 +114,12 @@ type Options struct {
 	Defense *login.Defense
 	// MaxInFlight is the most requests that the server handles at one time.
 	// A request past it gets 503 at once ([site.limitInFlight]). Zero means
-	// [DefaultMaxInFlight]; a negative value turns the limit off.
+	// [DefaultMaxInFlight]; a negative value turns both in-flight limits off.
 	MaxInFlight int
+	// MaxSigninInFlight is the most password POSTs ([isPasswordPost]) under way
+	// at one time, on slots of their own that do not count in MaxInFlight.
+	// Zero means [DefaultMaxSigninInFlight]. It is never more than MaxInFlight.
+	MaxSigninInFlight int
 	// GuestCache is the guest page cache. Nil turns it off: every page is
 	// rendered for its request. One cache serves one site.
 	GuestCache *GuestCache
@@ -177,9 +181,9 @@ type site struct {
 	// one holds up to a megabyte of body in memory before the decode takes its
 	// share of the gate. A test makes it smaller.
 	uploadSlots chan struct{}
-	// inFlight is the semaphore of the requests under way, or nil for no
-	// limit ([site.limitInFlight]).
-	inFlight chan struct{}
+	// inFlight holds the semaphores of the requests under way
+	// ([site.limitInFlight]).
+	inFlight inFlightLimits
 	// uploading holds the IDs of the members who have an avatar upload in flight:
 	// a member has one at a time.
 	uploading sync.Map
@@ -267,12 +271,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	if opt.LoginFloor != 0 {
 		s.login.Floor = opt.LoginFloor
 	}
-	switch {
-	case opt.MaxInFlight == 0:
-		s.inFlight = make(chan struct{}, DefaultMaxInFlight)
-	case opt.MaxInFlight > 0:
-		s.inFlight = make(chan struct{}, opt.MaxInFlight)
-	}
+	s.inFlight = newInFlightLimits(opt)
 	if opt.LoginGateWait != 0 {
 		s.login.GateWait = opt.LoginGateWait
 	}
