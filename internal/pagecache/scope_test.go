@@ -38,14 +38,29 @@ func startResult(t *testing.T, c *Cache, key string, sc Scope, res Result) *infl
 		}
 		f.done <- res
 	}()
-	<-started
+	recv(t, started)
 	return f
 }
 
 // finish ends the render and returns what its caller got.
-func (f *inflight) finish() Result {
+func (f *inflight) finish(t *testing.T) Result {
+	t.Helper()
 	close(f.release)
-	return <-f.done
+	return recv(t, f.done)
+}
+
+// recv returns the next value of ch, and fails the test when none comes in
+// five seconds: a broken cache fails the test rather than hangs it.
+func recv[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out")
+	}
+	var zero T
+	return zero
 }
 
 func stored(c *Cache, key string) bool {
@@ -57,7 +72,7 @@ func TestTopicDropKeepsOtherTopicRenders(t *testing.T) {
 	c := New(1<<20, nil)
 	b := startRender(t, c, "tB", Scope{Topic: 2}, Entry{Value: "B", Size: 1, Topic: 2, Users: []int64{7}})
 	c.DropTopic(1)
-	if res := b.finish(); res.Entry.Value != "B" {
+	if res := b.finish(t); res.Entry.Value != "B" {
 		t.Errorf("the render of B gave %v", res.Entry.Value)
 	}
 	if !stored(c, "tB") {
@@ -69,7 +84,7 @@ func TestTopicDropDiscardsItsOwnRender(t *testing.T) {
 	c := New(1<<20, nil)
 	a := startRender(t, c, "tA", Scope{Topic: 1}, Entry{Value: "old", Size: 1, Topic: 1})
 	c.DropTopic(1)
-	if res := a.finish(); res.Entry.Value != "old" {
+	if res := a.finish(t); res.Entry.Value != "old" {
 		t.Errorf("the caller of the render got %v", res.Entry.Value)
 	}
 	if stored(c, "tA") {
@@ -83,7 +98,7 @@ func TestTopicDropDiscardsARenderWithNoScope(t *testing.T) {
 	c := New(1<<20, nil)
 	a := startRender(t, c, "tA", Scope{}, Entry{Size: 1, Topic: 1})
 	c.DropTopic(1)
-	a.finish()
+	a.finish(t)
 	if stored(c, "tA") {
 		t.Error("a render whose entry names topic A was stored after a drop of A")
 	}
@@ -95,9 +110,9 @@ func TestListingsDrop(t *testing.T) {
 	topic := startRender(t, c, "t1", Scope{Topic: 1}, Entry{Size: 1, Topic: 1, Users: []int64{7}})
 	static := startRender(t, c, "p", Scope{}, Entry{Size: 1})
 	c.DropListings()
-	forum.finish()
-	topic.finish()
-	static.finish()
+	forum.finish(t)
+	topic.finish(t)
+	static.finish(t)
 	if stored(c, "f1") {
 		t.Error("a forum page that began before a drop of the listings was stored")
 	}
@@ -107,7 +122,7 @@ func TestListingsDrop(t *testing.T) {
 	// A drop of a topic reaches the listings too.
 	forum = startRender(t, c, "f2", Scope{Listing: true}, Entry{Size: 1, Listing: true})
 	c.DropTopic(9)
-	forum.finish()
+	forum.finish(t)
 	if stored(c, "f2") {
 		t.Error("a forum page that began before a drop of a topic was stored")
 	}
@@ -118,8 +133,8 @@ func TestMemberDrop(t *testing.T) {
 	shows := startRender(t, c, "t1", Scope{Topic: 1}, Entry{Value: "old", Size: 1, Topic: 1, Users: []int64{10, 7}})
 	other := startRender(t, c, "t2", Scope{Topic: 2}, Entry{Size: 1, Topic: 2, Users: []int64{8}})
 	c.DropUser(7)
-	shows.finish()
-	other.finish()
+	shows.finish(t)
+	other.finish(t)
 	if stored(c, "t1") {
 		t.Error("a render that shows member 7 and began before a drop of 7 was stored")
 	}
@@ -154,11 +169,11 @@ func TestMemberDropAndTheWaiters(t *testing.T) {
 	c.DropUser(7)
 	after := waiter()
 	waitFor(t, func() bool { return c.Stats().Misses == 3 })
-	old.finish()
-	if res := <-before; res.Entry.Value != "old" {
+	old.finish(t)
+	if res := recv(t, before); res.Entry.Value != "old" {
 		t.Errorf("a request before the drop got %v, want the render it waited for", res.Entry.Value)
 	}
-	if res := <-after; res.Entry.Value != "new" {
+	if res := recv(t, after); res.Entry.Value != "new" {
 		t.Errorf("a request after the drop got %v, want a new render", res.Entry.Value)
 	}
 	if e, ok := c.Peek("t1"); !ok || e.Value != "new" {
@@ -182,8 +197,8 @@ func TestUnrelatedDropKeepsTheFlight(t *testing.T) {
 		got <- res
 	}()
 	waitFor(t, func() bool { return c.Stats().Misses == 2 })
-	b.finish()
-	if res := <-got; res.Entry.Value != "B" {
+	b.finish(t)
+	if res := recv(t, got); res.Entry.Value != "B" {
 		t.Errorf("the request that joined got %v", res.Entry.Value)
 	}
 	if n := b.renders.Load(); n != 1 {
@@ -200,7 +215,7 @@ func TestDropAllDiscardsEveryRender(t *testing.T) {
 	}
 	c.DropAll()
 	for _, r := range renders {
-		r.finish()
+		r.finish(t)
 	}
 	for _, k := range []string{"t1", "f1", "p"} {
 		if stored(c, k) {
@@ -227,7 +242,7 @@ func TestDropRecordIsBounded(t *testing.T) {
 	// No drop in the record reaches t1, but the render began before the oldest
 	// drop in it, and a drop that the record lost may have: the safe side is no
 	// store.
-	old.finish()
+	old.finish(t)
 	if stored(c, "t1") {
 		t.Error("a render older than the record of drops was stored")
 	}
@@ -292,7 +307,7 @@ func TestDropRecordBoundary(t *testing.T) {
 	for i := range int64(historySize) {
 		c.DropUser(1000 + i)
 	}
-	r.finish()
+	r.finish(t)
 	if !stored(c, "t1") {
 		t.Error("a render followed by historySize drops that do not reach it was not stored")
 	}
@@ -303,7 +318,7 @@ func TestDropRecordBoundary(t *testing.T) {
 	for i := range int64(historySize) {
 		c.DropUser(1000 + i)
 	}
-	r.finish()
+	r.finish(t)
 	if stored(c, "t1") {
 		t.Error("a render reached by a drop that left the record was stored")
 	}
@@ -314,7 +329,7 @@ func TestDropRecordBoundary(t *testing.T) {
 func TestListingRequestAfterADropRendersAtOnce(t *testing.T) {
 	c := New(1<<20, nil)
 	old := startRender(t, c, "f1", Scope{Listing: true}, Entry{Value: "old", Size: 1, Listing: true})
-	defer old.finish()
+	defer old.finish(t)
 	c.DropListings()
 	got := make(chan Result, 1)
 	go func() {
@@ -348,10 +363,10 @@ func TestNoStoreResultIsStaleAfterAnyDrop(t *testing.T) {
 		got <- res
 	}()
 	waitFor(t, func() bool { return c.Stats().Misses == 2 })
-	if res := old.finish(); res.Entry.Value != "404" {
+	if res := old.finish(t); res.Entry.Value != "404" {
 		t.Errorf("the caller of the old render got %v", res.Entry.Value)
 	}
-	if res := <-got; res.Entry.Value != "200" {
+	if res := recv(t, got); res.Entry.Value != "200" {
 		t.Errorf("a request after the drop got %v, want a new render", res.Entry.Value)
 	}
 	// With no drop, the waiters share a result that is not stored.
@@ -364,8 +379,8 @@ func TestNoStoreResultIsStaleAfterAnyDrop(t *testing.T) {
 		got <- res
 	}()
 	waitFor(t, func() bool { return c.Stats().Misses == 4 })
-	old.finish()
-	if res := <-got; res.Entry.Value != "404" {
+	old.finish(t)
+	if res := recv(t, got); res.Entry.Value != "404" {
 		t.Errorf("a waiter with no drop got %v", res.Entry.Value)
 	}
 }
@@ -392,17 +407,17 @@ func TestRetryIsBounded(t *testing.T) {
 		}
 		got <- res
 	}()
-	<-joined // the request waits for f1, which a drop of member 7 reached
+	recv(t, joined) // the request waits for f1, which a drop of member 7 reached
 	// A drop of the topic makes the next request start f2, not join f1.
 	c.DropTopic(1)
 	f2 := startRender(t, c, "t1", sc, Entry{Value: "f2", Size: 1, Topic: 1, Users: []int64{8}})
 	c.DropUser(8)
-	f1.finish()
-	<-joined // the request asks again and joins f2: no drop since f2 began reaches member 7
+	f1.finish(t)
+	recv(t, joined) // the request asks again and joins f2: no drop since f2 began reaches member 7
 	c.DropTopic(1)
 	f3 := startRender(t, c, "t1", sc, Entry{Value: "f3", Size: 1, Topic: 1})
-	defer f3.finish()
-	f2.finish()
+	defer f3.finish(t)
+	f2.finish(t)
 	select {
 	case res := <-got:
 		if res.Entry.Value != "own" || own.Load() != 1 {
