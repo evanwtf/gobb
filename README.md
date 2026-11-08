@@ -210,8 +210,11 @@ does it swap the two: the live `gobb` becomes `gobb_old`, and `gobb_new` becomes
 database keeps its data. The restore does not use `pg_restore --clean`: that option
 drops only the tables that are in the dump, so a table that a newer migration added
 would stay, and the next upgrade would try to create it again. A new database has no
-such table. After the swap, the restore empties the data volume and unpacks the
+such table. After the swap, a second command empties the data volume and unpacks the
 archive.
+
+The load writes a second copy of the database, so the disk needs free space for it.
+`gobb_old` keeps the old copy until you drop it.
 
 Set the folder of the backups first. The line keeps a `BACKUP_DIR` that this shell
 already has, and otherwise uses the folder of the backup section. A new shell does not
@@ -231,21 +234,25 @@ export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p'
 echo "STAMP=$STAMP"
 ```
 
-The second command is one chain, and the first failure stops it. Each step that fails
-prints its own message on stderr, and the chain exits with a non-zero status. The
-`postgres` service must be running. The chain does these steps in order:
+The second command restores the database. It is one chain, and the first failure stops
+it. Each step that fails prints its own message on stderr, and the chain exits with a
+non-zero status. The `postgres` service must be running. The chain does these steps in
+order:
 
 1. It checks the inputs. `STAMP` is not empty, the dump and the archive both exist and
    are not empty, `pg_restore --list` reads the dump, and `tar tzf` reads the archive.
-   No database called `gobb_old` exists (see the end of this section).
+   No database called `gobb_old` exists (see the end of this section), and the gobb
+   container exists, because the files step reads its volume.
 2. It stops gobb, drops any `gobb_new` that an earlier restore left, and creates an
    empty `gobb_new`.
-3. It loads the dump into `gobb_new`. `--exit-on-error` stops at the first error, so a
-   damaged or truncated dump fails here.
-4. It checks that `schema_migrations` and `users` in `gobb_new` both hold rows.
-5. It swaps the databases in one transaction. A rename needs no connections to either
-   database, and gobb is stopped, so nothing holds one.
-6. It empties the data volume and unpacks the archive.
+3. It loads the dump into `gobb_new`. `--exit-on-error` stops at the first SQL error,
+   and a damaged or truncated dump fails either way.
+4. It checks that `schema_migrations` and `users` in `gobb_new` both hold rows, and
+   prints the counts of users, topics and posts in `gobb` and in `gobb_new`. Check
+   that `gobb_new` is the board that you want.
+5. It swaps the databases in one transaction. A rename needs no other sessions on
+   either database. It waits 5 s for them to end, then fails, and the transaction rolls
+   back. gobb is stopped, so normally no session is open.
 
 <!-- block: restore -->
 ```sh
@@ -254,25 +261,37 @@ prints its own message on stderr, and the chain exits with a non-zero status. Th
 { test -s "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" || { echo "no archive for $STAMP in $BACKUP_DIR" >&2; false; }; } && \
 { docker compose exec -T postgres pg_restore --list < "$BACKUP_DIR/gobb-$STAMP.dump" > /dev/null || { echo "pg_restore cannot read the dump for $STAMP" >&2; false; }; } && \
 { tar tzf "$BACKUP_DIR/gobb-data-$STAMP.tar.gz" > /dev/null || { echo "tar cannot read the archive for $STAMP" >&2; false; }; } && \
-{ test "$(docker compose exec -T postgres psql -U gobb -d postgres -tA -c "select count(*) from pg_database where datname = 'gobb_old'")" = 0 || { echo "gobb_old exists from an earlier restore, or psql failed: drop gobb_old first" >&2; false; }; } && \
+{ test "$(docker compose exec -T postgres psql -U gobb -d postgres -tA -c "select count(*) from pg_database where datname = 'gobb_old'")" = 0 || { echo "gobb_old exists, or psql failed. gobb_old is the database from before the last restore: drop it (restore-drop-old) only after the restored board works, or undo that restore (restore-undo)" >&2; false; }; } && \
+{ test -n "$(docker compose ps -aq gobb)" || { echo "no gobb container: run docker compose create gobb first" >&2; false; }; } && \
 docker compose stop gobb && \
-docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database if exists gobb_new with (force)' -c 'create database gobb_new' && \
-{ docker compose exec -T postgres pg_restore -U gobb -d gobb_new --exit-on-error --no-owner < "$BACKUP_DIR/gobb-$STAMP.dump" || { echo "pg_restore failed for $STAMP: the live database is untouched" >&2; false; }; } && \
-{ test "$(docker compose exec -T postgres psql -U gobb -d gobb_new -tA -c 'select (select count(*) from schema_migrations) > 0 and (select count(*) from users) > 0')" = t || { echo "gobb_new for $STAMP has no migrations or no users: the live database is untouched" >&2; false; }; } && \
-{ docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -1 -c 'alter database gobb rename to gobb_old' -c 'alter database gobb_new rename to gobb' || { echo "the swap failed: the live database is untouched" >&2; false; }; } && \
-docker run --rm --volumes-from "$(docker compose ps -aq gobb)" -v "$BACKUP_DIR:/backup:ro" \
+{ docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database if exists gobb_new with (force)' -c 'create database gobb_new' || { echo "cannot create gobb_new: the live database is untouched. gobb is stopped: run restore-cleanup to start it on the live database" >&2; false; }; } && \
+{ docker compose exec -T postgres pg_restore -U gobb -d gobb_new --exit-on-error --no-owner < "$BACKUP_DIR/gobb-$STAMP.dump" || { echo "pg_restore failed for $STAMP: the live database is untouched. gobb is stopped: run restore-cleanup to start it on the live database" >&2; false; }; } && \
+{ test "$(docker compose exec -T postgres psql -U gobb -d gobb_new -tA -c 'select (select count(*) from schema_migrations) > 0 and (select count(*) from users) > 0')" = t || { echo "gobb_new for $STAMP has no migrations or no users: the live database is untouched. gobb is stopped: run restore-cleanup to start it on the live database" >&2; false; }; } && \
+{ for db in gobb gobb_new; do docker compose exec -T postgres psql -U gobb -d "$db" -tA -c "select current_database() || ': ' || (select count(*) from users) || ' users, ' || (select count(*) from topics) || ' topics, ' || (select count(*) from posts) || ' posts'" || echo "$db: no counts"; done; } && \
+{ docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -1 -c 'alter database gobb rename to gobb_old' -c 'alter database gobb_new rename to gobb' || { echo "the swap failed: the live database is untouched. Other sessions may hold gobb or gobb_new: select pid, datname, usename, application_name from pg_stat_activity where datname in ('gobb','gobb_new'). gobb is stopped: run restore-cleanup to start it on the live database" >&2; false; }; }
+```
+
+The third command restores the files. It empties the data volume and unpacks the
+archive. It needs the `STAMP` of the restore. If it fails, the database is restored
+and the files are not: fix the cause and run it again.
+
+<!-- block: restore-files -->
+```sh
+{ test -n "$STAMP" || { echo "STAMP is empty: set it to the stamp of the restore" >&2; false; }; } && \
+{ docker run --rm --volumes-from "$(docker compose ps -aq gobb)" -v "$BACKUP_DIR:/backup:ro" \
   --entrypoint sh postgres:18 \
-  -c 'tar tzf "/backup/gobb-data-$1.tar.gz" > /dev/null && find /var/lib/gobb -mindepth 1 -delete && tar xzf "/backup/gobb-data-$1.tar.gz" -C /var/lib/gobb' sh "$STAMP"
+  -c 'tar tzf "/backup/gobb-data-$1.tar.gz" > /dev/null && find /var/lib/gobb -mindepth 1 -delete && tar xzf "/backup/gobb-data-$1.tar.gz" -C /var/lib/gobb' sh "$STAMP" \
+  || { echo "the database is restored and gobb_old holds the old one, but the files are not restored: re-run restore-files" >&2; false; }; }
 ```
 
 Then set `GOBB_VERSION` back to the version that wrote the backup, and run
 `docker compose up -d --wait`. gobb reads the legacy routes and the stored password
 hashes once at start, so always start it after a restore.
 
-**If the chain fails before the swap**, the live `gobb` database is as it was. Read the
-message and fix the cause. Gobb may be stopped, so drop the partial `gobb_new` and start
-gobb again on the live database, with the `GOBB_VERSION` that you have now. To try
-again, run the chain again: it drops `gobb_new` itself.
+**If the restore fails before the swap**, the live `gobb` database is as it was. Read
+the message and fix the cause. gobb may be stopped, so drop the partial `gobb_new` and
+start gobb again on the live database, with the `GOBB_VERSION` that you have now. To
+try again, run the chain again: it drops `gobb_new` itself.
 
 <!-- block: restore-cleanup -->
 ```sh
@@ -290,13 +309,34 @@ you still want:
 docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database gobb_old'
 ```
 
+**To undo the restore**, put `gobb_old` back. The restored database becomes
+`gobb_failed`. The data volume does not roll back: it keeps the files of the backup.
+Set `GOBB_VERSION` back to the version that you ran before the restore first.
+
+<!-- block: restore-undo -->
+```sh
+docker compose stop gobb && \
+docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -1 -c 'alter database gobb rename to gobb_failed' -c 'alter database gobb_old rename to gobb' && \
+docker compose up -d --wait
+```
+
+When you no longer need the restored copy, drop it:
+
+<!-- block: restore-drop-failed -->
+```sh
+docker compose exec -T postgres psql -U gobb -d postgres -v ON_ERROR_STOP=1 -c 'drop database gobb_failed'
+```
+
 CI runs these commands on every push. It restores a dump over a database that holds an
 extra table, and checks that the table is gone and that the row count of every table is
 the same (`scripts/rowcounts`). It runs the restore with the archive missing, with an
-unreadable dump and with an unreadable archive, and checks that the restore deletes
-nothing and fails. It runs the restore with a truncated dump and with the dump of an
-empty database, and checks that the restore fails before the swap, that the live
-database keeps every row, and that gobb serves its pages again on it.
+unreadable dump, with an unreadable archive, with a `gobb_old` left over and with no
+gobb container, and checks that the restore deletes nothing and fails. It runs the
+restore with a truncated dump, with the dump of an empty database and with the dump of
+a migrated database that holds no board. It checks that the restore fails before the
+swap, that the live database keeps every row, and that gobb serves its pages again on
+it. It undoes a restore and checks that the old database is live again, then drops the
+restored copy and restores again.
 
 ## Run the server
 
