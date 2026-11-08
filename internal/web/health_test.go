@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -102,5 +103,22 @@ func TestHealthURL(t *testing.T) {
 		if _, err := HealthURL(bad); err == nil {
 			t.Errorf("HealthURL(%q): want an error", bad)
 		}
+	}
+}
+
+// One ping serves the checks of the next second: a flood of /healthz, which
+// skips the in-flight limit, reaches the database about once a second.
+func TestHealthPingsAtMostOncePerSecond(t *testing.T) {
+	var pings atomic.Int32
+	h := Health(fakePinger(func(context.Context) error { pings.Add(1); return nil }))
+	for range 50 {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	}
+	if n := pings.Load(); n != 1 {
+		t.Errorf("50 checks pinged %d times, want 1", n)
 	}
 }
