@@ -575,7 +575,7 @@ designer's call):
 | `vimeo` | a Vimeo video | Vimeo's player |
 | `tweet` | a post on X | a plain link **(owner, 2026-10-25:** no third-party script runs in the board's pages) |
 | `instagram` | an Instagram post or reel | a plain link **(owner, 2026-10-25)** |
-| `reddit` | a Reddit post | a plain link: "View post on Reddit" (no script, no frame) |
+| `reddit` | a Reddit post or comment | Reddit's embed frame, with a link to the post or comment below it (issue #5; a frame only, under the owner's 2026-10-25 ruling against third-party scripts) |
 | `tiktok` | a TikTok video | TikTok's player |
 | `threads` | a Threads post | a plain link **(owner, 2026-10-25)** |
 | `spotify` | a Spotify track, album, playlist, episode or show | Spotify's player |

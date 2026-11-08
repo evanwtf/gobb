@@ -43,7 +43,7 @@ var allowed = map[string][]string{
 	"img":        {"src", "alt", "loading", "class"},
 	"span":       {"class", "tabindex"},
 	"div":        {"class"},
-	"iframe":     {"class", "src", "title", "loading", "allow", "allowfullscreen", "referrerpolicy"},
+	"iframe":     {"class", "src", "title", "loading", "allow", "allowfullscreen", "referrerpolicy", "sandbox"},
 }
 
 // fixedValues lists, for each attribute that the renderer always writes as a
@@ -66,8 +66,11 @@ var fixedValues = map[string]map[string][]string{
 	"div": {"class": {"embed-link"}},
 	"pre": {"class": {"code"}},
 	"iframe": {
-		"class": {"embed youtube", "embed vimeo", "embed tiktok", "embed spotify", "embed soundcloud"},
-		"title": {"YouTube video", "Vimeo video", "TikTok video", "Spotify", "SoundCloud"},
+		"class": {
+			"embed youtube", "embed vimeo", "embed reddit", "embed reddit comment",
+			"embed tiktok", "embed spotify", "embed soundcloud",
+		},
+		"title": {"YouTube video", "Vimeo video", "Reddit post", "Reddit comment", "TikTok video", "Spotify", "SoundCloud"},
 		"allow": {
 			"encrypted-media; picture-in-picture; fullscreen",
 			"fullscreen; picture-in-picture",
@@ -77,6 +80,7 @@ var fixedValues = map[string]map[string][]string{
 		"loading":         {"lazy"},
 		"referrerpolicy":  {"strict-origin-when-cross-origin"},
 		"allowfullscreen": {""},
+		"sandbox":         {redditSandbox},
 	},
 }
 
@@ -113,7 +117,7 @@ func Allowed() map[string][]string {
 // embedOrigins are the origins that the embed table loads in frames. It holds
 // each frame origin of embedHTML.
 var embedOrigins = []string{
-	originYouTube, originVimeo, originTikTok, originSpotify, originSoundCloud,
+	originYouTube, originVimeo, originReddit, originTikTok, originSpotify, originSoundCloud,
 }
 
 // EmbedOrigins returns the frame origins of the embed table, sorted. The src of

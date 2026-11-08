@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.0 (2026-11-08)
+
+- **Reddit links embed again** (#5). A Reddit post or comment link alone on its line
+  shows Reddit's embed frame from embed.reddit.com, with a "View post on Reddit" or
+  "View comment on Reddit" link below it. gobb writes the frame itself, sandboxes
+  it, and sizes it from the frame's own resize message, so no Reddit script runs in
+  the board's pages (the 2026-10-25 ruling). Only a page that holds the embed adds
+  `https://embed.reddit.com` to `frame-src`. Comment links are new. redd.it and
+  share links stay plain links, because they need a server lookup. Reddit sets its
+  own cookies in the frame, as the other third-party frames do.
+- **Rollback note:** on an earlier version a Reddit comment link posted after this
+  release does not render (its embed ID has three parts). The stored post is
+  unchanged, and the link returns on 0.15.0 or later.
+
 ## 0.14.0 (2026-11-08)
 
 - **Post addresses leave the topic page** (#31). The topic page no longer reads or

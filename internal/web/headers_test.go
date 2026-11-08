@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -117,6 +118,67 @@ func TestScriptedEmbedsArePlainLinks(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Security-Policy"); got != wantBaseCSP {
 		t.Errorf("CSP = %q\nwant %q", got, wantBaseCSP)
+	}
+}
+
+// A topic page with a Reddit post link and a Reddit comment link, each alone on
+// its line, frames both from embed.reddit.com. The policy adds that one frame
+// origin and no script, connect or style origin (ruling R49). A page with no
+// Reddit embed does not get the origin, and neither does a page whose Reddit link
+// sits only in a signature or inside a sentence.
+func TestCSPRedditOnlyWhereEmbedded(t *testing.T) {
+	const post = "https://www.reddit.com/r/golang/comments/abc123/a_title/"
+	const comment = "https://old.reddit.com/r/golang/comments/abc123/a_title/def456/"
+	h := embedSite(t, func(b *bundletest.Board) {
+		b.Posts[0].Body.Source = "A post:\n\n" + post + "\n"
+		b.Posts[1].Body.Source = "A comment:\n\n" + comment + "\n"
+	})
+	rec := get(t, h, "/t/1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/t/1 = %d", rec.Code)
+	}
+	csp := rec.Header().Get("Content-Security-Policy")
+	if want := strings.Replace(wantBaseCSP, "frame-src 'none'", "frame-src https://embed.reddit.com", 1); csp != want {
+		t.Errorf("CSP = %q\nwant %q", csp, want)
+	}
+	body := bodyOf(t, rec)
+	for _, want := range []string{
+		`<iframe class="embed reddit" src="https://embed.reddit.com/r/golang/comments/abc123/?embed=true"`,
+		`<iframe class="embed reddit comment" src="https://embed.reddit.com/r/golang/comments/abc123/comment/def456/?embed=true&amp;showmedia=false&amp;showmore=false&amp;depth=1"`,
+		`<a href="https://www.reddit.com/r/golang/comments/abc123/" rel="nofollow ugc noopener">View post on Reddit</a>`,
+		`<a href="https://www.reddit.com/r/golang/comments/abc123/comment/def456/" rel="nofollow ugc noopener">View comment on Reddit</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the page lacks %s", want)
+		}
+	}
+	for _, bad := range []string{"<script async", "widgets.js", "<blockquote class="} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the page holds %q", bad)
+		}
+	}
+	// The index holds no post, so it keeps the base policy.
+	if got := get(t, h, "/").Header().Get("Content-Security-Policy"); got != wantBaseCSP {
+		t.Errorf("/ CSP = %q", got)
+	}
+
+	// The same links in a signature, or in a sentence, are plain links: no frame,
+	// and no Reddit origin in the policy.
+	h = embedSite(t, func(b *bundletest.Board) {
+		b.Posts[0].Body.Source = "See " + post + " for more."
+		b.Posts[1].Body.Source = "Nothing to embed."
+		b.Users[0].Signature.Source = comment
+	})
+	rec = get(t, h, "/t/1")
+	if got := rec.Header().Get("Content-Security-Policy"); got != wantBaseCSP {
+		t.Errorf("CSP with Reddit links only in text and signatures = %q\nwant %q", got, wantBaseCSP)
+	}
+	body = bodyOf(t, rec)
+	if strings.Contains(body, "<iframe") || strings.Contains(body, "embed.reddit.com") {
+		t.Error("a Reddit link in a sentence or a signature became a frame")
+	}
+	if !strings.Contains(body, `<a href="https://www.reddit.com/r/golang/comments/abc123/comment/def456/" rel="nofollow ugc noopener">`) {
+		t.Error("the signature lacks the plain link to the comment")
 	}
 }
 
@@ -564,6 +626,30 @@ func TestNoindex(t *testing.T) {
 	for _, p := range []string{"/t/1", "/", "/f/2", "/team", "/u/1"} {
 		if body := bodyOf(t, getAs(t, h, p, cookies)); strings.Contains(body, meta) {
 			t.Errorf("%s has the robots meta", p)
+		}
+	}
+}
+
+// gobb.js sizes a Reddit frame from its resize.embed message. It must accept the
+// message only from Reddit's embed origin and only from the window of a Reddit
+// frame, and it must clamp the height. The listener runs under script-src 'self',
+// so no Reddit script runs in the page (ruling R49).
+func TestScriptRedditResizeIsGuarded(t *testing.T) {
+	src, err := fs.ReadFile(staticFS, "static/gobb.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`var ORIGIN = "https://embed.reddit.com";`,
+		"event.origin !== ORIGIN",
+		`document.querySelectorAll("iframe.embed.reddit")`,
+		"frames[i].contentWindow === event.source",
+		`msg.type !== "resize.embed"`,
+		"Math.min(Math.max(px, MIN_REM * rem), MAX_REM * rem)",
+		"frame.style.height",
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("gobb.js lacks %s", want)
 		}
 	}
 }

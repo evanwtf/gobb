@@ -16,6 +16,7 @@ var embedCases = []struct{ tag, id, href string }{
 	{"tweet", "20", "https://x.com/i/status/20"},
 	{"instagram", "CxYz_12-ab", "https://www.instagram.com/p/CxYz_12-ab/"},
 	{"reddit", "golang/abc123", "https://www.reddit.com/r/golang/comments/abc123/"},
+	{"reddit", "golang/abc123/def456", "https://www.reddit.com/r/golang/comments/abc123/comment/def456/"},
 	{"tiktok", "7123456789012345678", "https://www.tiktok.com/player/v1/7123456789012345678"},
 	{"threads", "zuck/Cx_12", "https://www.threads.com/@zuck/post/Cx_12/"},
 	{"spotify", "track/4uLU6hMCjMI75M1A2tKUQC", "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC"},
@@ -41,7 +42,7 @@ func TestNoEmbedsWritesALink(t *testing.T) {
 			// A post keeps a frame embed. X, Instagram and Threads load a script
 			// into the page, so they are links in a post too (ruling R49).
 			post := markup.Render(tree, markup.RenderContext{})
-			plain := map[string]bool{"reddit": true, "tweet": true, "instagram": true, "threads": true}
+			plain := map[string]bool{"tweet": true, "instagram": true, "threads": true}
 			if len(post.FrameSrc) == 0 && !plain[tc.tag] {
 				t.Errorf("the post lost its embed: %s", post.HTML)
 			}

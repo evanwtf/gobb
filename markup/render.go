@@ -443,9 +443,9 @@ func (r *renderer) smiley(it renderItem) {
 // page of the board: X, Instagram and Threads do. Such an embed always renders as
 // a plain link (ruling R49), because the script runs in the origin of the board,
 // where it can read the page and open other pages of the board. An embed that is
-// only a frame of the provider (YouTube, Vimeo, TikTok, Spotify, SoundCloud) has
-// no script of its own on the board page and stays embedded. The stored tree is
-// unchanged: this is a decision at render time.
+// only a frame of the provider (YouTube, Vimeo, Reddit, TikTok, Spotify,
+// SoundCloud) has no script of its own on the board page and stays embedded. The
+// stored tree is unchanged: this is a decision at render time.
 func scriptedEmbed(tag string) bool {
 	switch tag {
 	case "tweet", "instagram", "threads":
@@ -502,9 +502,7 @@ func embedLink(tag, id string) string {
 	case "instagram":
 		return "https://www.instagram.com/p/" + pathEsc(id) + "/"
 	case "reddit":
-		if sub, post, ok := two(); ok {
-			return "https://www.reddit.com/r/" + pathEsc(sub) + "/comments/" + pathEsc(post) + "/"
-		}
+		return redditLink(id)
 	case "tiktok":
 		return originTikTok + "/player/v1/" + pathEsc(id)
 	case "threads":
@@ -517,6 +515,30 @@ func embedLink(tag, id string) string {
 		}
 	case "soundcloud":
 		return "https://soundcloud.com/" + pathEsc(id)
+	}
+	return ""
+}
+
+// redditPath returns the path of a Reddit post or comment with a canonical ID:
+// "/r/{sub}/comments/{post}/" or "/r/{sub}/comments/{post}/comment/{comment}/".
+// The second result reports a comment. It returns "" when the ID has the wrong
+// shape.
+func redditPath(id string) (string, bool) {
+	segs := strings.Split(id, "/")
+	switch len(segs) {
+	case 2:
+		return "/r/" + pathEsc(segs[0]) + "/comments/" + pathEsc(segs[1]) + "/", false
+	case 3:
+		return "/r/" + pathEsc(segs[0]) + "/comments/" + pathEsc(segs[1]) + "/comment/" + pathEsc(segs[2]) + "/", true
+	}
+	return "", false
+}
+
+// redditLink returns the address of a Reddit post or comment on www.reddit.com,
+// or "" when the ID has the wrong shape.
+func redditLink(id string) string {
+	if p, _ := redditPath(id); p != "" {
+		return "https://www.reddit.com" + p
 	}
 	return ""
 }
@@ -542,14 +564,22 @@ func pathEsc(id string) string {
 }
 
 // Origins of the providers. Each embed in [embedHTML] names the page of the
-// provider's published embed documentation that its entry follows.
+// provider's published embed documentation that its entry follows. The Reddit
+// row is the exception: Reddit's documentation pages refuse automated clients,
+// so it cites Reddit's own embed script, https://embed.reddit.com/widgets.js
+// (Last-Modified 2026-10-19), and the frame pages that the script loads.
 const (
 	originYouTube    = "https://www.youtube-nocookie.com"
 	originVimeo      = "https://player.vimeo.com"
 	originTikTok     = "https://www.tiktok.com"
 	originSpotify    = "https://open.spotify.com"
 	originSoundCloud = "https://w.soundcloud.com"
+	originReddit     = "https://embed.reddit.com"
 )
+
+// redditSandbox is the sandbox of the Reddit frame: the one that Reddit's
+// widgets.js sets, plus allow-popups-to-escape-sandbox.
+const redditSandbox = "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
 
 // The script and connect origins of the embed table. No row of [embedHTML] loads
 // a provider script into the page (see [scriptedEmbed]), so both lists are empty.
@@ -592,9 +622,14 @@ type embedOut struct {
 // embedHTML returns the embed table row for a canonical ID. It returns an empty
 // row when the ID has the wrong shape for the tag.
 //
-// Every iframe has loading="lazy" and a title. None has a sandbox attribute:
-// the providers' players need both scripts and their own origin, and the
-// pair allow-scripts with allow-same-origin removes the sandbox.
+// Every iframe has loading="lazy" and a title. Only the Reddit frame has a
+// sandbox attribute. The players of the other providers need both scripts and
+// their own origin. A sandbox with allow-scripts and allow-same-origin still
+// limits a frame from another origin (no top navigation, no forms, no
+// downloads), but it gives nothing to a frame of the board's own origin, which
+// none of these frames is. The Reddit row uses the sandbox that Reddit's own
+// script sets, plus allow-popups-to-escape-sandbox, so a page that a link in
+// the frame opens is not sandboxed.
 //
 // The table has no row for the tags tweet, instagram and threads. Their embeds
 // load a provider script into the page of the board, so [scriptedEmbed] sends
@@ -617,17 +652,39 @@ func embedHTML(tag, id string) embedOut {
 			"allowfullscreen", bare) + closeTag("iframe"),
 			frame: originVimeo}
 	case "reddit":
-		// A plain link, with no script and no frame. Reddit publishes no embed page
-		// that this project can read (https://www.reddit.com/wiki/embeds answers 403
-		// to a script fetch), and Reddit blocks some clients in its embed frame. A
-		// link needs no origin in the Content-Security-Policy.
-		sub, post, ok := strings.Cut(id, "/")
-		if !ok {
+		// Reddit's embed code is a blockquote that holds a link to the post and
+		// loads https://embed.reddit.com/widgets.js (Last-Modified 2026-10-19).
+		// That script only replaces the blockquote with an iframe whose src is the
+		// same path on embed.reddit.com, with "?embed=true" (and, for a comment,
+		// showmedia=false, showmore=false and depth=1). The pages of that origin
+		// answer with "frame-ancestors *". gobb writes the iframe itself, so no
+		// Reddit script runs in the page (ruling R49). Its frame differs from the
+		// one that the script builds:
+		//   - No ref, ref_source or utm_* parameters: they only track the embed.
+		//   - No embed_host_url: it would send the board's address and the path of
+		//     the page to Reddit.
+		//   - No allow="clipboard-read; clipboard-write": the frame gets no access
+		//     to the clipboard of the reader.
+		//   - No width and no inline style: gobb.css sizes the frame, because the
+		//     policy of the board refuses style attributes. gobb.js applies the
+		//     height that the frame posts as "resize.embed"; without script, the
+		//     frame keeps the height of gobb.css and scrolls inside.
+		// A plain link to the post or comment follows the frame: it stays when
+		// Reddit refuses the frame.
+		p, comment := redditPath(id)
+		if p == "" {
 			return embedOut{}
 		}
-		return embedOut{html: openTag("div", "class", "embed-link") +
-			openTag("a", "href", "https://www.reddit.com/r/"+pathEsc(sub)+"/comments/"+pathEsc(post)+"/",
-				"rel", "nofollow ugc noopener") + "View post on Reddit" + closeTag("a") + closeTag("div")}
+		class, title, query, text := "embed reddit", "Reddit post", "?embed=true", "View post on Reddit"
+		if comment {
+			class, title, text = "embed reddit comment", "Reddit comment", "View comment on Reddit"
+			query += "&showmedia=false&showmore=false&depth=1"
+		}
+		return embedOut{html: openTag("iframe", "class", class, "src", originReddit+p+query, "title", title,
+			"loading", "lazy", "referrerpolicy", "strict-origin-when-cross-origin", "sandbox", redditSandbox) + closeTag("iframe") +
+			openTag("div", "class", "embed-link") + openTag("a", "href", "https://www.reddit.com"+p,
+			"rel", "nofollow ugc noopener") + text + closeTag("a") + closeTag("div"),
+			frame: originReddit}
 	case "tiktok":
 		// https://developers.tiktok.com/doc/embed-player : the player is
 		// www.tiktok.com/player/v1/{post_id}.

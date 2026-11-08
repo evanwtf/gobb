@@ -106,6 +106,7 @@ func FuzzRender(f *testing.F) {
 		"<https://example.com/?a=1&copy=2> [x](https://example.com/&amp;)",
 		"[x](javascript:alert(1)) [y](JaVaScRiPt&colon;x) ![z](data:text/html,<script>)",
 		"https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nhttps://x.com/a/status/1\n\nhttps://open.spotify.com/track/abc",
+		"https://www.reddit.com/r/golang/comments/abc123/a_title/\n\nhttps://old.reddit.com/r/golang/comments/abc123/comment/def456/",
 		"<script>alert(1)</script> <SCRIPT src=x>",
 		strings.Repeat("*_a", 5000),
 		ladderSeed(30000), strings.Repeat("[x]:\n", 3000), strings.Repeat("[x]\n", 4000),
