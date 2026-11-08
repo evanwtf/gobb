@@ -38,6 +38,9 @@ type HeldPost struct {
 	First bool
 	// CanDelete is true when the viewer holds mod.delete in the forum.
 	CanDelete bool
+	// CanViewIP is true when the viewer may open the address page of the post:
+	// the rule of [MayViewIP].
+	CanViewIP bool
 }
 
 // QueuePage is one page of the approval queue, oldest first.
@@ -106,6 +109,7 @@ select p.id, p.topic_id, t.title, p.forum_id, f.name, coalesce(p.author_id, 0), 
 			return QueuePage{}, fmt.Errorf("board: read the queue: %w", err)
 		}
 		h.CanDelete = slices.Contains(sc.del, h.ForumID)
+		h.CanViewIP = MayViewIP(v, h.ForumID)
 		if utf8.RuneCountInString(h.Excerpt) > queueExcerpt {
 			h.Excerpt = string([]rune(h.Excerpt)[:queueExcerpt]) + "…"
 		}

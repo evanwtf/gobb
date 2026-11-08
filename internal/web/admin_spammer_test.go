@@ -141,3 +141,50 @@ func TestQueuePage(t *testing.T) {
 		t.Errorf("the guest's queue = %d", rec.Code)
 	}
 }
+
+// TestQueueIPLink: each held post in the queue links to its address page, under
+// the rule of the topic page. Only a holder of mod.view_ip in the forum of the
+// post sees the link.
+func TestQueueIPLink(t *testing.T) {
+	h, pool := siteWithPool(t, bundletest.Small(), Options{})
+	// Post 3, carol's reply in forum 2, is held. bob approves in forum 2.
+	bob := signIn(t, h, "bob", testPassword)
+	const link = `href="/p/3/ip"`
+	grant := func(forum int64) {
+		t.Helper()
+		if _, err := pool.Exec(t.Context(), `delete from acl_group_grants where option = 'mod.view_ip'`); err != nil {
+			t.Fatal(err)
+		}
+		if forum < 0 {
+			return
+		}
+		if _, err := pool.Exec(t.Context(), `insert into acl_group_grants (group_id, forum_id, option, setting) values (3, $1, 'mod.view_ip', 3)`, forum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queue := func() string {
+		t.Helper()
+		b := bodyOf(t, getAs(t, h, "/queue", bob))
+		if !strings.Contains(b, `action="/p/3/approve"`) {
+			t.Fatal("fixture: post 3 is not in bob's queue")
+		}
+		return b
+	}
+
+	grant(-1)
+	if strings.Contains(queue(), link) {
+		t.Error("a queue viewer without mod.view_ip has the IP link")
+	}
+	grant(3)
+	if strings.Contains(queue(), link) {
+		t.Error("a holder of mod.view_ip in another forum has the IP link")
+	}
+	grant(2)
+	if b := queue(); !strings.Contains(b, link) || !strings.Contains(b, `aria-label="IP address of this post">IP</a>`) {
+		t.Error("a holder of mod.view_ip in the forum of the post has no IP link")
+	}
+	// The link opens the page: the same rule as the queue.
+	if rec := getAs(t, h, "/p/3/ip", bob); rec.Code != http.StatusOK {
+		t.Errorf("GET /p/3/ip = %d, want 200", rec.Code)
+	}
+}

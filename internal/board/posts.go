@@ -485,6 +485,13 @@ type PostAddress struct {
 	IP string
 }
 
+// MayViewIP reports whether v may open the address page of a post in forum
+// forumID: a member with mod.view_ip there. [PostIP] applies it, and every IP
+// link on a page uses it, so a link shows only where the page opens.
+func MayViewIP(v Viewer, forumID int64) bool {
+	return v.UserID != 0 && v.Perms.Has("mod.view_ip", forumID)
+}
+
 // PostIP returns the address of the author of post postID, for v. Only a
 // member with mod.view_ip in the forum of the topic gets it. A guest, a member
 // without the right there, and a post or topic that v may not see all give
@@ -513,7 +520,7 @@ select p.id, p.topic_id, t.forum_id, t.title,
 	if err != nil {
 		return PostAddress{}, fmt.Errorf("board: read post %d: %w", postID, err)
 	}
-	if !v.Perms.Has("mod.view_ip", out.ForumID) {
+	if !MayViewIP(v, out.ForumID) {
 		return PostAddress{}, ErrNotFound
 	}
 	// The address is read only after the check, so a viewer without the right

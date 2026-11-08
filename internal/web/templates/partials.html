@@ -207,7 +207,7 @@
         <button type="submit" class="button-quiet">Approve</button>
       </form>
       {{- end}}
-      {{- if .Actions.IP}}<a class="button-quiet button-link" href="{{path "p" (printf "%d" .ID) "ip"}}" rel="nofollow" aria-label="IP address of this post">IP</a>{{end}}
+      {{- if .Actions.IP}}{{template "ip-link" .ID}}{{end}}
     </div>
     {{- end}}
   </div>
@@ -219,3 +219,8 @@
 {{end}}{{end}}
 
 {{define "mdhelp"}}Markdown works here: **bold**, *italic*, [link](https://example.com), &gt; quote.{{end}}
+
+{{/* ip-link is the link to the address page of a post; the dot is the post ID.
+     Show it only where board.MayViewIP holds. The topic page and the approval
+     queue both use it. */}}
+{{define "ip-link"}}<a class="button-quiet button-link" href="{{path "p" (printf "%d" .) "ip"}}" rel="nofollow" aria-label="IP address of this post">IP</a>{{end}}
