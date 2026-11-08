@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/evanwtf/gobb/internal/board"
+	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/internal/legacy"
 	"github.com/evanwtf/gobb/internal/login"
 	"github.com/evanwtf/gobb/internal/metrics"
@@ -88,7 +89,28 @@ type Options struct {
 	// host from it. Empty means the PublicURL of Mail, and with no Mail, the
 	// host of each request.
 	PublicURL string
+	// PoolWait is the longest time that a request waits for a database
+	// connection. A request that waits longer gets 503 with Retry-After. Zero
+	// means 1 s.
+	PoolWait time.Duration
+	// SearchPerSecond is the most searches that the whole board runs in any
+	// second. Zero means 5.
+	SearchPerSecond int
+	// SearchMaxRunning is the most searches that run at one time. Zero means 2.
+	SearchMaxRunning int
+	// RefuseSearch, when set, sees each search before the limits of search, and
+	// may refuse it with the page of a search over the limit, and a Retry-After
+	// of retry. Nil refuses nothing. It must not touch the database. Defensive
+	// Mode uses it to refuse the searches of guests.
+	RefuseSearch func(r *http.Request) (refuse bool, retry time.Duration)
 }
+
+// The defaults of Options.PoolWait, SearchPerSecond and SearchMaxRunning.
+const (
+	defaultPoolWait         = time.Second
+	defaultSearchPerSecond  = 5
+	defaultSearchMaxRunning = 2
+)
 
 // site holds what the handlers share: the pool, the options and the parsed
 // templates.
@@ -160,6 +182,8 @@ type site struct {
 	publicOrigin string
 	// sitemaps caches the sitemap ([site.sitemapFor]).
 	sitemaps sitemapCache
+	// searches holds the limits of search ([site.searchGate]).
+	searches searchLimits
 }
 
 // frame is what an error page needs of the board: the settings, for the board
@@ -194,7 +218,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	}
 	s := &site{pool: pool, opt: opt, login: login.NewWith(pool, lo), crossOrigin: http.NewCrossOriginProtection(), tries: newTries(), postLimits: newPostLimits(opt),
 		saves: newSaveLimits(opt), messageSends: newMessageSends(opt), resets: newResetLimits(opt.Mail), gate: lo.Gate, uploadSlots: make(chan struct{}, maxUploadsInFlight),
-		adminWrites: newAdminWrites(opt), mailTests: newMailTests()}
+		adminWrites: newAdminWrites(opt), mailTests: newMailTests(), searches: newSearchLimits(opt)}
 	s.crossOrigin.SetDenyHandler(http.HandlerFunc(s.denyCrossOrigin))
 	s.crossOriginPosting = http.NewCrossOriginProtection()
 	s.crossOriginPosting.SetDenyHandler(http.HandlerFunc(s.denyExpired))
@@ -206,6 +230,9 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	}
 	if s.opt.Now == nil {
 		s.opt.Now = time.Now
+	}
+	if s.opt.PoolWait <= 0 {
+		s.opt.PoolWait = defaultPoolWait
 	}
 	s.base = normalizeBase(opt.BasePath)
 	var err error
@@ -403,8 +430,11 @@ func normalizeBase(p string) string {
 var requestTimeout = 10 * time.Second
 
 // guard gives the request a deadline of requestTimeout, so that a slow query
-// cannot hold a connection for long. It answers 404 at once for a path that is not in its clean form, such as
-// one with a ".." element or an empty element. The mux would redirect such a
+// cannot hold a connection for long, and a limit of Options.PoolWait on each
+// wait for a connection ([db.WithPoolWait]). A request whose wait runs out gets
+// 503 with Retry-After ([site.serverError], [poolBusyWriter]). It answers 404
+// at once for a path that is not in its clean form, such as one with a ".."
+// element or an empty element. The mux would redirect such a
 // path to the clean one, and a redirect must not tell a visitor what a hidden
 // path would have been.
 func (s *site) guard(next http.Handler) http.Handler {
@@ -415,9 +445,38 @@ func (s *site) guard(next http.Handler) http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 		defer cancel()
-		next.ServeHTTP(w, r.WithContext(ctx))
+		ctx = db.WithPoolWait(ctx, s.opt.PoolWait)
+		next.ServeHTTP(&poolBusyWriter{ResponseWriter: w, ctx: ctx}, r.WithContext(ctx))
 	})
 }
+
+// poolBusyRetrySeconds is the Retry-After of a request that found no free
+// database connection in time.
+const poolBusyRetrySeconds = 2
+
+// poolBusyWriter answers a 500 or a 503 of a request that found no free
+// database connection in time with 503 and Retry-After. A Retry-After that the
+// handler set stays. [site.serverError] answers such a request with the 503 page
+// itself; this covers the handlers that answer a failed query with their own
+// status, such as the JSON answers of the forms ([failStatus] gives them 503
+// for a deadline, and the guard of a save gives 500).
+type poolBusyWriter struct {
+	http.ResponseWriter
+	ctx context.Context
+}
+
+func (w *poolBusyWriter) WriteHeader(code int) {
+	if (code == http.StatusInternalServerError || code == http.StatusServiceUnavailable) && db.PoolWaitTimedOut(w.ctx) {
+		if w.Header().Get("Retry-After") == "" {
+			w.Header().Set("Retry-After", strconv.Itoa(poolBusyRetrySeconds))
+		}
+		code = http.StatusServiceUnavailable
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap returns the writer below, for [http.NewResponseController].
+func (w *poolBusyWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // isCleanPath reports whether p is in its clean form, as the guard needs it:
 // no empty element and no "." or ".." element. One trailing slash is allowed.
@@ -986,21 +1045,28 @@ func (s *site) renderFailed(w http.ResponseWriter, status int) {
 func (s *site) writeFailure(w http.ResponseWriter, status int) {
 	d := failTexts[status]
 	d.Status = status
+	if !s.writeFrame(w, status, d) {
+		s.writeStatic(w, status)
+	}
+}
+
+// writeFrame writes the error page d with status, as the page of a guest from
+// the settings in memory ([site.framePage]): no database, no session, no csrf
+// token. It writes nothing and returns false when the error template fails.
+func (s *site) writeFrame(w http.ResponseWriter, status int, d errorData) bool {
 	p := s.framePage(nil, d.Heading)
 	p.Data = d
 	var buf bytes.Buffer
 	t, ok := s.pages["error.html"]
-	if ok {
-		if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
-			slog.Error("render: the error template failed", "err", err)
-			ok = false
-		}
-	}
 	if !ok {
-		s.writeStatic(w, status)
-		return
+		return false
+	}
+	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
+		slog.Error("render: the error template failed", "err", err)
+		return false
 	}
 	writeHTML(w, status, buf.Bytes())
+	return true
 }
 
 // writeStatic writes the themed page that New built for status: the 503 for
@@ -1060,7 +1126,21 @@ func (s *site) buildStaticErrors(f *frame) (map[int][]byte, error) {
 
 // serverError logs err and answers 500 with the layout. A database with no
 // board in it gets 503 and a hint, and one WARN line until a board appears.
+//
+// A request that found no free database connection in time gets 503 with
+// Retry-After, from the settings in memory: the page needs no connection. So
+// does an error that wraps [db.ErrPoolWait], such as a sitemap build of another
+// request that found the pool full. The db package writes the WARN line of
+// these requests ([db.Tracer]); serverError logs only an error that is not
+// the end of a wait or of a deadline, which the pool timeout did not explain.
 func (s *site) serverError(w http.ResponseWriter, r *http.Request, err error) {
+	if db.PoolWaitTimedOut(r.Context()) || errors.Is(err, db.ErrPoolWait) {
+		if !errors.Is(err, db.ErrPoolWait) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			slog.Error("request failed", "method", r.Method, "path", logPath(r), "err", err)
+		}
+		s.poolBusy(w)
+		return
+	}
 	if errors.Is(err, board.ErrNoSettings) {
 		if s.noDataLogged.CompareAndSwap(false, true) {
 			slog.Warn("the database holds no board; run gobb import")
@@ -1070,6 +1150,13 @@ func (s *site) serverError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	slog.Error("request failed", "method", r.Method, "path", logPath(r), "err", err)
 	s.fail(w, r, http.StatusInternalServerError, "Something went wrong", "The server could not build this page. Try again in a moment.")
+}
+
+// poolBusy answers a request that found no free database connection in time:
+// 503 with Retry-After, from the settings in memory.
+func (s *site) poolBusy(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(poolBusyRetrySeconds))
+	s.writeFailure(w, http.StatusServiceUnavailable)
 }
 
 // logPath returns the path of r for a log line. The path of a reset link holds

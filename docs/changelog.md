@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.16.0 (2026-11-08)
+
+- **Load protection, part one** (#2): the database pool and search.
+  - The pool size is a setting, `GOBB_DB_MAX_CONNS` (default 4).
+  - A request waits at most `GOBB_DB_POOL_WAIT` (default 1 s) for a connection,
+    then gets 503 with `Retry-After`. Only the wait is limited: a query that is
+    running is never cut short. The 503 page needs no connection. At most one
+    warning a minute reports the timeouts, with their count.
+  - Search has one limit for the whole board: `GOBB_SEARCH_PER_SECOND` (default
+    5), and at most `GOBB_SEARCH_MAX_RUNNING` searches at once (default 2, and
+    always below the pool size). A search over a limit gets a 429 page, "Search
+    functionality is currently disabled.", and touches no database.
+  - New metrics: `gobb_db_pool_wait_timeouts_total`, `gobb_search_busy_total`, and
+    the `search` rate limit. `gobb serve` logs the four limits at start.
+  - The defaults change nothing on a small board. compose.yaml passes the four
+    settings through; unset, they keep their defaults.
+
 ## 0.15.0 (2026-11-08)
 
 - **Reddit links embed again** (#5). A Reddit post or comment link alone on its line

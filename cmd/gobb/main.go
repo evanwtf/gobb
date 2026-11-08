@@ -434,7 +434,7 @@ func gateFor(m memlimit.Result) *login.Gate {
 // gate as the memory gate of the password checks. On an error it closes the
 // pool and returns it as nil.
 func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()) (*pgxpool.Pool, http.Handler, error) {
-	pool, err := db.Open(ctx, cfg.DSN)
+	pool, err := db.OpenSized(ctx, cfg.DSN, cfg.Load.DBMaxConns)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -449,7 +449,13 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, wake func()
 		CookieSecure:   cfg.CookieSecure,
 		LoginGate:      gate,
 		PublicURL:      cfg.PublicURL,
+
+		PoolWait:         cfg.Load.DBPoolWait,
+		SearchPerSecond:  cfg.Load.SearchPerSecond,
+		SearchMaxRunning: cfg.Load.SearchMaxRunning,
 	}
+	slog.Info("load limits", "db_max_conns", cfg.Load.DBMaxConns, "db_pool_wait", cfg.Load.DBPoolWait.String(),
+		"search_per_second", cfg.Load.SearchPerSecond, "search_max_running", cfg.Load.SearchMaxRunning)
 	// With no email settings, Mail stays nil and the reset pages are off.
 	if cfg.Mail != nil {
 		sender := mail.NewSMTP(*cfg.Mail)

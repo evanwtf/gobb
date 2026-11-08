@@ -17,13 +17,18 @@ import (
 )
 
 // newTestSite imports b into a test database and returns the handler of a site
-// on it, and the data directory. A zero BasePath means "/".
+// on it, and the data directory. A zero BasePath means "/". A zero
+// SearchPerSecond means 1,000, so a test that searches a lot does not meet the
+// limit of the board; loadguard_test.go tests the limit.
 func newTestSite(t *testing.T, b *bundletest.Board, opt Options) (http.Handler, string) {
 	t.Helper()
 	pool, dataDir := boardtest.Load(t, b)
 	opt.DataDir = dataDir
 	if opt.LoginFloor == 0 {
 		opt.LoginFloor = time.Millisecond
+	}
+	if opt.SearchPerSecond == 0 {
+		opt.SearchPerSecond = 1000
 	}
 	h, err := New(t.Context(), pool, opt)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -89,6 +91,10 @@ func TestMetricsEndpoint(t *testing.T) {
 		"\ngobb_memory_gate_holders 0\n",
 		"\ngobb_db_pool_conns ",
 		"\ngobb_db_pool_acquires_total ",
+		"\ngobb_db_pool_wait_timeouts_total ",
+		"\ngobb_search_busy_total ",
+		"\ngobb_db_pool_max_conns 4\n",
+		"\ngobb_rate_limit_max_events{limit=\"search\"} 5\n",
 		"\ngobb_signin_floor_seconds ",
 		"\ngo_goroutines ",
 		// The rate limits of the server, from the smallest table to the largest.
@@ -111,6 +117,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	if strings.Contains(out, "/t/999999") {
 		t.Error("a path value reached a label")
 	}
+	checkLimitCount(t, out)
 	if f := os.Getenv("GOBB_METRICS_SAMPLE"); f != "" {
 		if err := os.WriteFile(f, body, 0o644); err != nil {
 			t.Fatal(err)
@@ -179,5 +186,26 @@ func TestComposeMetricsLoopbackOnly(t *testing.T) {
 		if strings.Contains(line, ":9187\"") && !strings.Contains(line, "127.0.0.1:") {
 			t.Errorf("compose.metrics.yaml publishes off loopback: %q", line)
 		}
+	}
+}
+
+// checkLimitCount checks that the README gives the number of rate limits that
+// the scrape shows: one gobb_rate_limit_max_keys line per limit.
+func checkLimitCount(t *testing.T, scrape string) {
+	t.Helper()
+	names := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^gobb_rate_limit_max_keys\{limit="([^"]+)"\}`).FindAllStringSubmatch(scrape, -1) {
+		names[m[1]] = true
+	}
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`\((\d+) names, never a key\)`).FindSubmatch(readme)
+	if m == nil {
+		t.Fatal(`README.md has no "(N names, never a key)"`)
+	}
+	if got := string(m[1]); got != strconv.Itoa(len(names)) {
+		t.Errorf("README.md says %s rate limits; the scrape has %d: %v", got, len(names), names)
 	}
 }

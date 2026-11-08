@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/evanwtf/gobb/internal/board"
+	"github.com/evanwtf/gobb/internal/db"
 	"github.com/evanwtf/gobb/markup"
 )
 
@@ -294,6 +295,9 @@ type sitemapBuild struct {
 	urls []sitemapURL
 	mods []time.Time
 	err  error
+	// poolBusy is true when the build found no free database connection in
+	// time. The requests that wait for it then answer 503 too.
+	poolBusy bool
 }
 
 // sitemapCache holds the newest build of the sitemap for each origin.
@@ -305,7 +309,9 @@ type sitemapCache struct {
 // sitemapFor returns the sitemap for the origin of r: the cached build while it
 // is younger than sitemapTTL, and otherwise a new one. One request builds at a
 // time for each origin; the others wait for its result. A failed build is not
-// kept, so the next request tries again.
+// kept, so the next request tries again. A build that found no free database
+// connection in time gives every waiting request an error that wraps
+// [db.ErrPoolWait], so each one answers 503 ([site.serverError]).
 func (s *site) sitemapFor(r *http.Request) (*sitemapBuild, error) {
 	origin := s.origin(r)
 	now := s.opt.Now()
@@ -316,7 +322,7 @@ func (s *site) sitemapFor(r *http.Request) (*sitemapBuild, error) {
 	if b != nil {
 		select {
 		case <-b.done:
-			fresh = b.err == nil && now.Sub(b.at) < sitemapTTL
+			fresh = b.err == nil && !b.poolBusy && now.Sub(b.at) < sitemapTTL
 		default:
 			fresh = true // in flight: wait for it
 		}
@@ -332,6 +338,7 @@ func (s *site) sitemapFor(r *http.Request) (*sitemapBuild, error) {
 		// requests wait for it.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), requestTimeout)
 		b.urls, b.mods, b.err = s.buildSitemap(ctx, origin)
+		b.poolBusy = db.PoolWaitTimedOut(ctx)
 		cancel()
 		close(b.done)
 	} else {
@@ -341,6 +348,9 @@ func (s *site) sitemapFor(r *http.Request) (*sitemapBuild, error) {
 	case <-b.done:
 	case <-r.Context().Done():
 		return nil, r.Context().Err()
+	}
+	if b.poolBusy {
+		return nil, fmt.Errorf("web: build the sitemap: %w", db.ErrPoolWait)
 	}
 	if b.err != nil {
 		return nil, b.err

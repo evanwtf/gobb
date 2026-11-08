@@ -12,6 +12,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds the settings for one gobb process.
@@ -40,7 +41,40 @@ type Config struct {
 	// the canonical links use it. Empty means unset: the pages then take the host
 	// of each request.
 	PublicURL string
+	// Load holds the limits that keep a flood from filling the database pool.
+	Load Load
 }
+
+// Load holds the settings of the load protection of the database pool and of
+// search. Each one comes from a GOBB_ variable and has a default for a small
+// board on a 1 GB host.
+type Load struct {
+	// DBMaxConns is the most database connections that the pool opens, from
+	// GOBB_DB_MAX_CONNS. It replaces any pool_max_conns in GOBB_DSN.
+	DBMaxConns int
+	// DBPoolWait is the longest time that a request waits for a free
+	// connection before it gets 503, from GOBB_DB_POOL_WAIT.
+	DBPoolWait time.Duration
+	// SearchPerSecond is the most searches that the whole board runs in any
+	// second, from GOBB_SEARCH_PER_SECOND.
+	SearchPerSecond int
+	// SearchMaxRunning is the most searches that run at one time, from
+	// GOBB_SEARCH_MAX_RUNNING. It is at most DBMaxConns - 1, and at least 1.
+	SearchMaxRunning int
+}
+
+// The defaults and the bounds of the load settings. A request has 10 s for its
+// database work, so the pool wait stays well under that.
+const (
+	DefaultDBMaxConns       = 4
+	maxDBMaxConns           = 100
+	DefaultDBPoolWait       = time.Second
+	minDBPoolWait           = 10 * time.Millisecond
+	maxDBPoolWait           = 5 * time.Second
+	DefaultSearchPerSecond  = 5
+	maxSearchPerSecond      = 1000
+	DefaultSearchMaxRunning = 2
+)
 
 const (
 	defaultListen         = "127.0.0.1:8080"
@@ -102,7 +136,59 @@ func FromEnv(getenv func(string) string) (Config, error) {
 			return Config{}, errors.New("config: GOBB_METRICS_LISTEN is the same address as GOBB_LISTEN")
 		}
 	}
+	if c.Load, err = loadFromEnv(getenv); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+// loadFromEnv reads the load settings. An unset or empty variable takes its
+// default. GOBB_SEARCH_MAX_RUNNING may not be more than GOBB_DB_MAX_CONNS - 1
+// (1 for a pool of one); when it is unset, its default shrinks to fit a smaller
+// pool.
+func loadFromEnv(getenv func(string) string) (Load, error) {
+	get := func(key string) string { return strings.TrimSpace(getenv(key)) }
+	var l Load
+	var err error
+	if l.DBMaxConns, err = intSetting("GOBB_DB_MAX_CONNS", get("GOBB_DB_MAX_CONNS"), DefaultDBMaxConns, 1, maxDBMaxConns); err != nil {
+		return Load{}, err
+	}
+	l.DBPoolWait = DefaultDBPoolWait
+	if v := get("GOBB_DB_POOL_WAIT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < minDBPoolWait || d > maxDBPoolWait {
+			return Load{}, fmt.Errorf("config: GOBB_DB_POOL_WAIT: must be a duration from %s to %s, such as 1s or 500ms", minDBPoolWait, maxDBPoolWait)
+		}
+		l.DBPoolWait = d
+	}
+	if l.SearchPerSecond, err = intSetting("GOBB_SEARCH_PER_SECOND", get("GOBB_SEARCH_PER_SECOND"), DefaultSearchPerSecond, 1, maxSearchPerSecond); err != nil {
+		return Load{}, err
+	}
+	// Searches never hold the whole pool: one connection stays for the pages,
+	// except in a pool of one.
+	most := max(1, l.DBMaxConns-1)
+	l.SearchMaxRunning = min(DefaultSearchMaxRunning, most)
+	if v := get("GOBB_SEARCH_MAX_RUNNING"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > most {
+			return Load{}, fmt.Errorf("config: GOBB_SEARCH_MAX_RUNNING: must be a number from 1 to GOBB_DB_MAX_CONNS - 1 (%d)", most)
+		}
+		l.SearchMaxRunning = n
+	}
+	return l, nil
+}
+
+// intSetting reads one whole-number setting: def when v is empty, otherwise a
+// number from lo to hi.
+func intSetting(key, v string, def, lo, hi int) (int, error) {
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < lo || n > hi {
+		return 0, fmt.Errorf("config: %s: must be a number from %d to %d", key, lo, hi)
+	}
+	return n, nil
 }
 
 // checkListen checks that addr is host:port with a port from 1 to 65535. The
