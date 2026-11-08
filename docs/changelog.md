@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.17.0 (2026-11-08)
+
+- **Load protection, part two** (#2): the sign-in schedule, trusted addresses and
+  Defensive Mode. The old limits (10 failures per address in 15 minutes, 20 per
+  name in an hour) are gone.
+  - **Schedule (owner).** Counts are kept per address (IPv4, or IPv6 /64) and per
+    typed name. Two failures are free; after that the next try waits 15 s, 15 s,
+    60 s, 60 s and 60 s, then 900 s before every later try. A try made before its
+    wait ends gets 429 with `Retry-After` and the larger of the two waits; it runs
+    no password check, and no count moves. A good sign-in clears the name's count,
+    not the address's. A count clears after 24 hours with no failure. A completed
+    password reset clears the counts of the member's username and email address.
+  - **Trusted addresses.** A member's sign-in addresses are kept one year after the
+    last sign-in from each (`GOBB_ADDRESS_KEEP_DAYS`, was a fixed 90 days). They
+    count only while the member is active and not banned, and only for that
+    member's own name: the name's wait does not hold there, and a failure there
+    does not count against the name.
+  - **Defensive Mode (owner).** It turns on above 100 failed sign-ins in 60 s,
+    board-wide, and off 10 minutes after the rate falls below that. While it is on,
+    an untrusted address has no free failure and waits at least 5 s between tries,
+    and guests cannot search, even with a made-up session cookie. It logs one line
+    when it turns on and one when it turns off.
+  - **Enumeration.** A refused try costs one database statement whatever the name
+    (username, email, or neither), and repeats at the same name and address cost
+    none.
+  - **Bundles** may carry an optional `member_addresses.jsonl`. The import keeps
+    each address one year from the import, skips members under a user ban, and
+    refuses addresses that are not public unicast.
+  - **Settings:** `GOBB_SIGNIN_FREE_FAILURES`, `GOBB_SIGNIN_WAITS`,
+    `GOBB_SIGNIN_LAST_WAIT`, `GOBB_SIGNIN_RESET_AFTER`, `GOBB_SIGNIN_TABLE_KEYS`
+    (50,000), `GOBB_ADDRESS_KEEP_DAYS`, and `GOBB_DEFENSIVE_FAILURES`, `_WINDOW`,
+    `_QUIET` and `_GAP`. New metrics: `gobb_defensive_mode`,
+    `gobb_signin_refusals_total` and `gobb_signin_schedule_evictions_total`.
+  - **Migration 0018** adds an index on `user_ips` by address.
+
 ## 0.16.1 (2026-11-08)
 
 - **Container logs are capped.** compose.yaml keeps 3 files of 10 MB for each
