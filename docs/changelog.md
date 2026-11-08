@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.19.1 (2026-11-08)
+
+- **Restore** (#67): the README restore no longer drops the live database first.
+  It loads the dump into `gobb_new` with `--exit-on-error`, checks that
+  `schema_migrations` and `users` hold rows, prints the counts of users, topics and
+  posts for both databases, and swaps the names in one transaction. A dump that
+  fails partway leaves the board as it was; each failure says that gobb is stopped
+  and how to start it again (`restore-cleanup`).
+  - `gobb_old` keeps the database from before the restore. `restore-undo` swaps it
+    back (the data volume does not roll back), and `restore-drop-old` drops it once
+    the restored board works. A restore refuses to run while `gobb_old` exists, or
+    when the gobb container is missing.
+  - The files are restored by their own block, `restore-files`, which can be run
+    again alone (#79 tracks a staging dir for them).
+  - CI restores a truncated dump, an empty database and a migrated database with no
+    board, and checks that the live data survives each; then a good restore, an
+    undo, and a second restore.
+
 ## 0.19.0 (2026-11-08)
 
 - **Load protection, part four** (#2): a load test in CI, and the limits it showed
