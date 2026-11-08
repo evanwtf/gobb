@@ -379,30 +379,11 @@ jobs:
           # 20 names, two each, so every try runs a password check and none waits.
           # A missing name runs the same check as a real one.
           sh scripts/login-burst.sh "http://$port" 40 20 $(seq -f 'burst%g' 1 20) || status=$?
-          state=$(docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}}' "$cid")
-          echo "restarts and OOM kill: $state"
-          docker stats --no-stream --format 'docker stats now: {{.MemUsage}} ({{.MemPerc}})' "$cid"
-          [ "$state" = "0 false" ] || { echo "gobb restarted or the kernel killed it"; exit 1; }
+          # Restarts and the OOM flag of Docker, then the cgroup (v2): its peak
+          # must stay under the cap, and the kernel must have killed nothing.
+          sh scripts/memcap-check.sh "$cid" 268435456 || exit 1
           [ "$status" = 0 ] || exit 1
-          # The cgroup (v2) of the container: its peak must stay under the cap,
-          # and the kernel must have killed nothing. A restart makes a new
-          # cgroup, so the restart count above is the check that sees a kill.
-          id=$(docker inspect -f '{{.Id}}' "$cid")
-          dir=
-          for d in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
-            if [ -r "$d/memory.peak" ] && [ -r "$d/memory.events" ]; then
-              dir=$d
-              break
-            fi
-          done
-          [ -n "$dir" ] || { echo "cgroup memory.peak is not readable on this runner"; exit 1; }
-          peak=$(cat "$dir/memory.peak")
-          oom=$(awk '$1 == "oom_kill" { print $2 }' "$dir/memory.events")
-          echo "cgroup path used: $dir"
-          echo "memory.peak: $peak bytes ($((peak / 1048576)) MiB)"
-          echo "memory.events oom_kill: $oom"
-          [ "$oom" = 0 ] || { echo "the kernel killed a process in the container"; exit 1; }
-          [ "$peak" -lt 268435456 ] || { echo "memory.peak reached the 256 MiB cap"; exit 1; }
+
 
       # The backup and the restore of the README ("Back up and upgrade"). The step
       # runs the commands that the README shows: scripts/readme-block.sh takes each
