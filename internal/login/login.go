@@ -169,15 +169,6 @@ type Service struct {
 	// [DefaultGateWait]. A context from [WithWaitDeadline] shortens the wait to
 	// the time left before its deadline.
 	GateWait time.Duration
-	// Slots, when not nil, bounds the password checks and hashes under way. A
-	// sign-in takes a slot after the schedule passes it, without waiting, and
-	// holds it over the lookup of the name, the gate wait, the hash and finish;
-	// it gives it back before the floor. [Service.Hold] takes one for its gate
-	// wait and hash. A check that finds no slot gets [ErrBusy] and counts in
-	// gobb_in_flight_refusals_total{limit="signin"}. The server sets it to the
-	// semaphore of GOBB_MAX_SIGNIN_IN_FLIGHT, so the slot covers the password
-	// work and not the read of a slow request body.
-	Slots chan struct{}
 	// stored is the cost of the most costly stored hash, in KiB, that
 	// LoadCharge found. Zero until LoadCharge runs.
 	stored atomic.Uint64
@@ -387,26 +378,15 @@ func (s *Service) checkWith(ctx context.Context, name, pw string, ip netip.Addr,
 			s.end(st, now, false, false, false)
 		}
 	}()
-	var (
-		found     []int64
-		id, epoch int64
-	)
-	// The slot covers the lookup, the gate wait, the hash and finish. The
-	// floor below runs without it.
-	freeSlot, err := s.takeSlot()
-	if err == nil {
-		defer freeSlot()
-		held := context.WithValue(ctx, slotHeldKey{}, true)
-		id, epoch, err = s.check(held, c, name, pw, ip, now, &found)
-		if err == nil && finish != nil {
-			if err = finish(held, id, epoch); errors.Is(err, ErrStale) {
-				err = ErrWrong
-			}
-			if err != nil {
-				id = 0
-			}
+	var found []int64
+	id, epoch, err := s.check(ctx, c, name, pw, ip, now, &found)
+	if err == nil && finish != nil {
+		if err = finish(ctx, id, epoch); errors.Is(err, ErrStale) {
+			err = ErrWrong
 		}
-		freeSlot()
+		if err != nil {
+			id = 0
+		}
 	}
 	if err == nil {
 		end(false, false, true)
@@ -891,32 +871,14 @@ func (s *Service) acquire(ctx context.Context, kib uint64) (func(), error) {
 	if s.onAcquire != nil {
 		s.onAcquire(kib)
 	}
-	freeSlot := func() {}
-	if held, _ := ctx.Value(slotHeldKey{}).(bool); !held {
-		var err error
-		if freeSlot, err = s.takeSlot(); err != nil {
-			return nil, err
-		}
-	}
 	if s.opt.Gate == nil {
-		return freeSlot, nil
+		return func() {}, nil
 	}
 	wait := s.GateWait
 	if d, ok := ctx.Value(waitDeadlineKey{}).(time.Time); ok {
 		wait = max(0, min(wait, time.Until(d)))
 	}
-	release, err := s.opt.Gate.AcquireCollected(ctx, kib, wait)
-	if err != nil {
-		freeSlot()
-		return nil, err
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			release()
-			freeSlot()
-		})
-	}, nil
+	return s.opt.Gate.AcquireCollected(ctx, kib, wait)
 }
 
 type waitDeadlineKey struct{}
@@ -928,27 +890,6 @@ type waitDeadlineKey struct{}
 // waiting for the pool does not wait for the gate too.
 func WithWaitDeadline(ctx context.Context, deadline time.Time) context.Context {
 	return context.WithValue(ctx, waitDeadlineKey{}, deadline)
-}
-
-// slotHeldKey marks a context whose sign-in already holds a slot, so that
-// [Service.acquire] does not take a second one.
-type slotHeldKey struct{}
-
-// takeSlot takes a slot of Slots without waiting. With no free slot it counts
-// the refusal and returns [ErrBusy]. The release gives the slot back once. With
-// no Slots it takes nothing.
-func (s *Service) takeSlot() (release func(), err error) {
-	if s.Slots == nil {
-		return func() {}, nil
-	}
-	select {
-	case s.Slots <- struct{}{}:
-	default:
-		metrics.InFlightRefusals.Inc("signin")
-		return nil, ErrBusy
-	}
-	var once sync.Once
-	return func() { once.Do(func() { <-s.Slots }) }, nil
 }
 
 // check verifies pw for name (steps 1 to 8 of [Service.Check]). It puts the IDs

@@ -1,6 +1,8 @@
 package web
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,11 +25,11 @@ type inFlightLimits struct {
 	// all is taken by [limitInFlight] for every request but the cheap ones
 	// it exempts, the cached guest pages and the password POSTs.
 	all chan struct{}
-	// signin bounds the password checks and hashes under way. The login
-	// service takes a slot only around its wait for the memory gate and the
-	// password work ([login.Service.Slots]), not around the whole request: a
-	// slow request body then holds no slot, and the floor of a failed sign-in
-	// runs after the slot is free.
+	// signin is for the password POSTs ([isPasswordPost]) alone. A password
+	// POST takes its slot after [limitInFlight] has read its body, so a slow
+	// body holds none, and keeps it to the end of the request. A wrong
+	// password holds it for the floor of a failed sign-in and the gate wait,
+	// so a flood of them fills these slots and not the main ones.
 	signin chan struct{}
 }
 
@@ -65,7 +67,9 @@ func newInFlightLimits(opt Options) inFlightLimits {
 //   - a guest page in the page cache ([site.serveGuestHit]): no render and no
 //     database, and it is what most visitors ask for.
 //   - the password POSTs ([isPasswordPost]): they take a slot of
-//     GOBB_MAX_SIGNIN_IN_FLIGHT around the password work instead.
+//     GOBB_MAX_SIGNIN_IN_FLIGHT instead, once their body is read
+//     ([readPasswordBody]). One past that limit gets the same 503 at once and
+//     counts in gobb_in_flight_refusals_total{limit="signin"}.
 //
 // A slow request body or a slow reader holds its slot for as long as it
 // lasts. A reverse proxy that buffers the bodies (nginx does by default) keeps
@@ -138,22 +142,53 @@ func limitInFlight(l inFlightLimits, base string, refuse func(http.ResponseWrite
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if exempt(r, base) || isPasswordPost(r, base) {
+		if exempt(r, base) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if bypass != nil && bypass(w, r) {
+		slots, name := l.all, "all"
+		if isPasswordPost(r, base) {
+			if l.signin == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			readPasswordBody(r)
+			slots, name = l.signin, "signin"
+		} else if bypass != nil && bypass(w, r) {
 			return
 		}
-		slots := l.all
 		select {
 		case slots <- struct{}{}:
 		default:
-			metrics.InFlightRefusals.Inc("all")
+			metrics.InFlightRefusals.Inc(name)
 			refuse(w)
 			return
 		}
 		defer func() { <-slots }()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// maxPasswordBody is the most of a password POST that [readPasswordBody] reads
+// before the slot: the largest cap of those routes, and one byte more, so that
+// the cap of the route still sees a body that is too large.
+const maxPasswordBody = max(maxLoginBody, maxAccountBody) + 1
+
+// readPasswordBody reads up to maxPasswordBody bytes of the body of r into
+// memory and puts them back in front of the rest, so the handler reads the
+// same bytes. A slow client then holds no sign-in slot while it sends. The
+// handler's own cap and parse still judge the body; a read error comes back to
+// the handler from the rest of the body.
+//
+// The cost is the bytes of the bodies that are read at one time, at most
+// maxPasswordBody each; a sign-in form is a few hundred bytes.
+func readPasswordBody(r *http.Request) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return
+	}
+	buf, _ := io.ReadAll(io.LimitReader(r.Body, maxPasswordBody))
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(buf), r.Body), r.Body}
 }

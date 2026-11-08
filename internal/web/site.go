@@ -272,7 +272,6 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 		s.login.Floor = opt.LoginFloor
 	}
 	s.inFlight = newInFlightLimits(opt)
-	s.login.Slots = s.inFlight.signin
 	if opt.LoginGateWait != 0 {
 		s.login.GateWait = opt.LoginGateWait
 	}

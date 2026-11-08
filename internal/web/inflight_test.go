@@ -23,7 +23,7 @@ func TestInFlightLimitRefusesAtOnce(t *testing.T) {
 	t.Cleanup(func() { onNew = nil })
 	h, _ := siteAndPool(t, bundletest.Small(), Options{MaxInFlight: 2})
 	onNew = nil
-	if cap(s.inFlight.all) != 2 || cap(s.inFlight.signin) != 2 || s.login.Slots != s.inFlight.signin {
+	if cap(s.inFlight.all) != 2 || cap(s.inFlight.signin) != 2 {
 		t.Fatalf("the limits hold %d and %d slots, want 2 and 2 (the sign-in default of 32, cut to the main limit)",
 			cap(s.inFlight.all), cap(s.inFlight.signin))
 	}
@@ -198,25 +198,24 @@ func signinSite(t *testing.T) (http.Handler, *site) {
 	t.Cleanup(func() { onNew = nil })
 	h, _ := siteAndPool(t, bundletest.Small(), Options{MaxInFlight: 8, MaxSigninInFlight: 1})
 	onNew = nil
-	if s.login.Slots == nil || cap(s.login.Slots) != 1 {
-		t.Fatal("the login service has no sign-in slots of 1")
+	if cap(s.inFlight.signin) != 1 {
+		t.Fatal("the site has no sign-in slots of 1")
 	}
 	return h, s
 }
 
-// A sign-in that finds its slots full gets 503 with the busy answer, after the
-// floor and without a wait for the gate, and counts. Page views stay admitted
-// while the sign-in slots are full.
+// A sign-in that finds its slots full gets the busy page at once, and counts.
+// Page views stay admitted while the sign-in slots are full.
 func TestSigninPastItsLimit(t *testing.T) {
 	h, s := signinSite(t)
-	s.login.Slots <- struct{}{}
-	defer func() { <-s.login.Slots }()
+	s.inFlight.signin <- struct{}{}
+	defer func() { <-s.inFlight.signin }()
 	before := metrics.InFlightRefusals.Value("signin")
 	start := time.Now()
 	rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {"wrong"}})
 	took := time.Since(start)
-	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "5" {
-		t.Errorf("sign-in past its limit = %d, Retry-After %q; want 503 and 5", rec.Code, rec.Header().Get("Retry-After"))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "2" {
+		t.Errorf("sign-in past its limit = %d, Retry-After %q; want 503 and 2", rec.Code, rec.Header().Get("Retry-After"))
 	}
 	if took > 300*time.Millisecond {
 		t.Errorf("the refusal took %s; it must not wait for a slot or the gate", took)
@@ -231,9 +230,9 @@ func TestSigninPastItsLimit(t *testing.T) {
 	}
 }
 
-// A sign-in whose body has not all come holds no slot: the slot is taken only
-// around the password work, after the form is read. With a limit of one, a
-// stalled POST /login does not lock out the next sign-in.
+// A sign-in whose body has not all come holds no slot: the slot is taken after
+// the body is read. With a limit of one, a stalled POST /login does not lock
+// out the next sign-in.
 func TestSlowSigninBodyHoldsNoSlot(t *testing.T) {
 	h, s := signinSite(t)
 	pr, pw := io.Pipe()
@@ -250,7 +249,7 @@ func TestSlowSigninBodyHoldsNoSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if n, m := len(s.login.Slots), len(s.inFlight.all); n != 0 || m != 0 {
+	if n, m := len(s.inFlight.signin), len(s.inFlight.all); n != 0 || m != 0 {
 		t.Errorf("a stalled body holds %d sign-in and %d main slots, want 0 and 0", n, m)
 	}
 	rec, _ := postAs(t, h, "/login", nil, url.Values{"name": {"alice"}, "password": {"wrong"}})
@@ -259,10 +258,24 @@ func TestSlowSigninBodyHoldsNoSlot(t *testing.T) {
 	}
 	pw.CloseWithError(errors.New("client gone"))
 	<-done
-	if n := len(s.login.Slots); n != 0 {
+	if n := len(s.inFlight.signin); n != 0 {
 		t.Errorf("%d sign-in slots held at the end", n)
 	}
 }
 
 // refuse503 stands in for the busy page.
 func refuse503(w http.ResponseWriter) { w.WriteHeader(http.StatusServiceUnavailable) }
+
+// The body that readPasswordBody reads comes to the handler whole, and a body
+// over the cap still reaches the handler too large.
+func TestReadPasswordBodyKeepsTheBytes(t *testing.T) {
+	for _, n := range []int{0, 10, maxPasswordBody - 1, maxPasswordBody, 3 * maxPasswordBody} {
+		body := strings.Repeat("a", n)
+		r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
+		readPasswordBody(r)
+		got, err := io.ReadAll(r.Body)
+		if err != nil || string(got) != body {
+			t.Errorf("n=%d: read %d bytes, err %v", n, len(got), err)
+		}
+	}
+}
