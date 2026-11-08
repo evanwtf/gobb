@@ -378,6 +378,7 @@ func (s *site) resetComplete(w http.ResponseWriter, r *http.Request) {
 		s.resetError(w, err)
 		return
 	}
+	s.clearSigninCounts(r, id, acct.Username)
 	// CompleteReset deleted every session of the member id. Only a visitor who is
 	// that member holds a dead session cookie; the session of another member, or
 	// of nobody, is not touched.
@@ -385,4 +386,20 @@ func (s *site) resetComplete(w http.ResponseWriter, r *http.Request) {
 		s.setCookie(w, s.cookie(sessionCookie, "", -1))
 	}
 	http.Redirect(w, r, s.path("login")+"?reset=1", http.StatusSeeOther)
+}
+
+// clearSigninCounts clears the sign-in counts of the names of member id: the
+// username, and the email address read now. A member whom a stranger holds in
+// a wait at the name then signs in at once with the new password. The count of
+// the address stays. A failed read of the email clears the username only.
+func (s *site) clearSigninCounts(r *http.Request, id int64, username string) {
+	s.login.ClearName(username)
+	var email string
+	if err := s.pool.QueryRow(r.Context(), `select email from users where id = $1`, id).Scan(&email); err != nil {
+		slog.Warn("reset: cannot read the email address to clear its sign-in count", "user", id, "err", err)
+		return
+	}
+	if email != "" {
+		s.login.ClearName(email)
+	}
 }
