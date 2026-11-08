@@ -474,9 +474,12 @@ docker compose exec -T gobb gobb user ban "$NAME" -reason "spam run"
 docker compose exec -T gobb gobb user unban "$NAME"
 docker compose exec -T gobb gobb user activate "$NAME"
 docker compose exec -T gobb gobb user deactivate "$NAME"
+docker compose exec -T gobb gobb ban list
+export ID=2
+docker compose exec -T gobb gobb ban lift "$ID"
 ```
 
-Without Docker, run `./gobb user ...` with `GOBB_DSN` set, as for `gobb import`.
+Without Docker, run `./gobb user ...` or `./gobb ban ...` with `GOBB_DSN` set, as for `gobb import`.
 
 `<name>` is the username. Case and spacing do not matter, as at sign-in. A name that
 no member has exits 1 with `no member named <name>` on stderr, and changes nothing.
@@ -504,6 +507,16 @@ no member has exits 1 with `no member named <name>` on stderr, and changes nothi
   earlier stops working. The member list leaves the member out. The posts, the
   password and the email address stay, so `activate` gives the same sign-in back. An
   inactive account: the command exits 0 and says so on stderr.
+- **`ban list`** prints the bans in force of every kind (user, email and IP) to
+  stdout, newest first, as a table: `ID`, `KIND`, `TARGET` and `ENDS`. `ENDS` is the
+  end in UTC, or `never`. With no bans in force, it prints nothing to stdout and says
+  so on stderr. Use it to find the ID for `ban lift`.
+- **`ban lift <id>`** removes one ban of any kind, as the Bans page does. Use it when
+  an email ban or an IP-range ban locks out every administrator. An ID with no ban in
+  force (no such ban, a ban that has ended, or one lifted already) exits 1 with
+  `no ban in force with ID <id>` on stderr, and changes nothing. It writes the
+  moderation log row `ban.lift` with no actor, and the kind, the target and
+  `"via": "cli"` as details.
 
 Each command that changes something writes one row to the moderation log (`user.reset_password`,
 `user.ban`, `user.unban`, `user.activate`, `user.deactivate`) with no actor and `{"via":"cli"}` as details. Messages go to

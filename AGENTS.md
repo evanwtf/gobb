@@ -57,6 +57,8 @@ sh scripts/check-public.sh                                               # the p
 ./gobb user unban <name>                                                 # remove the member's bans that have not ended
 ./gobb user activate <name>                                              # make an inactive account active; bans stay
 ./gobb user deactivate <name>                                            # make the account inactive and end the sessions
+./gobb ban list                                                          # the bans in force of every kind: ID, kind, target, end
+./gobb ban lift <id>                                                     # lift one ban of any kind (user, email or IP)
 ./gobb messages thread [-dry-run]                                         # join old private-message replies to their conversations
 go run ./scripts/releasecheck vX.Y.Z                                       # the release gate: tag, changelog date, internal/version, notes; -dry-run for no tag
 ```

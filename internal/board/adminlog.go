@@ -49,17 +49,24 @@ func AdminWrite(ctx context.Context, pool *pgxpool.Pool, v Viewer, now time.Time
 		if err != nil {
 			return err
 		}
-		details := map[string]any{}
-		for k, val := range c.Details {
-			details[k] = val
-		}
-		details["via"] = "web"
-		b, err := json.Marshal(details)
-		if err != nil {
-			return fmt.Errorf("board: encode log details: %w", err)
-		}
-		return logMod(ctx, tx, v, c.Action, c.TargetType, c.TargetID, string(b), now)
+		return logChange(ctx, tx, v, c, "web", now)
 	})
+}
+
+// logChange writes the mod_log row of change c with v as the actor (none for the
+// zero Viewer). The details are those of c, with "via" set to via last, so a key
+// of c cannot replace it.
+func logChange(ctx context.Context, tx pgx.Tx, v Viewer, c Change, via string, now time.Time) error {
+	details := map[string]any{}
+	for k, val := range c.Details {
+		details[k] = val
+	}
+	details["via"] = via
+	b, err := json.Marshal(details)
+	if err != nil {
+		return fmt.Errorf("board: encode log details: %w", err)
+	}
+	return logMod(ctx, tx, v, c.Action, c.TargetType, c.TargetID, string(b), now)
 }
 
 // LogFilter narrows the log. A zero field matches every row.

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.0 (2026-11-08)
+
+- **`gobb ban list` and `gobb ban lift <id>`** (#46). `list` prints the bans in
+  force to stdout: ID, kind, target and end. `lift` lifts one ban of any kind (user,
+  email or IP) and logs `ban.lift` with `"via": "cli"`, the kind and the target, as
+  the Bans page does. An ID with no ban in force exits 1 and changes nothing. An
+  operator whom an email or range ban locks out of the admin pages can now recover
+  without SQL.
+
 ## 0.9.1 (2026-11-08)
 
 - **The header image keeps its shape.** Its height is fixed and its width
