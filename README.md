@@ -301,7 +301,7 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_DB_POOL_WAIT` | The longest time that a request waits for a free database connection, as a duration from `10ms` to `5s`. | `1s` |
 | `GOBB_SEARCH_PER_SECOND` | The most searches that the whole board runs in any second, from 1 to 1,000. | `5` |
 | `GOBB_SEARCH_MAX_RUNNING` | The most searches that run at one time, from 1 to `GOBB_DB_MAX_CONNS` − 1, so searches never hold the whole pool (a pool of one allows 1). | `2` (`1` when `GOBB_DB_MAX_CONNS` is 1 or 2) |
-| `GOBB_PAGE_CACHE_MIB` | The memory of the guest page cache, in MiB, from 0 to 1,024. `0` turns the cache off (see "Guest page cache"). | `16` |
+| `GOBB_PAGE_CACHE_MIB` | The memory of the guest page cache, in MiB, from 0 to 1,024. `0` turns the cache off. The server uses at most a quarter of the Go memory limit, or 64 MiB with no limit (see "Guest page cache"). | `16` |
 | `GOBB_PAGE_CACHE_WARM` | `true` or `false`. Render the guest pages into the cache at start, and again after a change drops them. | `true` |
 | `GOBB_WRITE_FLUSH_INTERVAL` | The time between two writes of the batched view counts, visit times and member addresses, from `1s` to `10m` (see "Batched writes"). | `30s` |
 | `GOBB_SIGNIN_FREE_FAILURES` | How many failed sign-ins of an address or a name leave no wait after them, from 0 to 100 (see "Sign-in limits"). | `2` |
@@ -704,27 +704,42 @@ A flood of guests then costs the database almost nothing.
 - The cache holds at most `GOBB_PAGE_CACHE_MIB` of pages (16 MiB unless set). Over
   the limit, the least recently used page goes. The first board's guests see about
   160 pages of at most 75 KB, so the default holds every one. `0` turns the cache off.
-- A page is kept by its path, its page number, the color scheme and the note of a
-  held post. Any other query parameter is left out of the key and of the page, so a
-  random query string cannot force a render. The page never holds the host of a
-  request.
+  The server caps the setting at a quarter of the Go memory limit (a quarter of 70%
+  of `GOBB_MEM_LIMIT` under Compose: 44 MiB at `256m`), or at 64 MiB when there is no
+  limit, and logs a warning when it cuts the setting. The count of an entry covers its
+  body and its bookkeeping, and is close to the real use of the heap.
+- A page is kept by its path, its page number and the color scheme. No scheme and the
+  board's default scheme share a page. The note of a held post (`?held=1`) is filled
+  in for each request. Any other query parameter is left out of the key and of the
+  page, so a random query string cannot force a render. The page never holds the host
+  of a request.
 - Each request fills in its own csrf token and the time in the build line. A cached
   page carries a weak `ETag`, and a request that sends it back in `If-None-Match` gets
   304. `Cache-Control` stays `private, no-cache`.
 - When many guests ask for a missing page at once, one request renders it and the
   others wait for that render. Only a page of status 200 is kept: an error page or a
   redirect is rendered for each request.
-- A write drops the pages it changes. A post, an edit, a delete, a restore, an
+- A write drops the pages it changes. A reply, an edit, a delete, a restore, an
   approval, a lock or a change of the topic type drops the pages of that topic, the
   index, every forum page, and the pages that show the author's posts. A new topic
-  drops the index and the forum pages. A change to a signature, an avatar or a
-  profile drops the pages that show that member's posts; a birthday drops the index
-  too. Every write in the admin area drops every page. A refused write drops nothing.
+  drops the index, the forum pages and the pages that show the author's posts. A new
+  post that waits for approval drops nothing: a guest does not see it. A change to a
+  signature, an avatar or a profile drops the pages that show that member's posts; a
+  birthday drops the index too.
+- Every write in the admin area drops every page, refused or not. Outside the admin
+  area, a write that the board refuses (bad input, no right, a locked topic, no such
+  post) drops nothing. A write that fails for any other reason (a timeout, a lost
+  connection) drops its pages at once, and once more 2 s later, since it may still
+  commit.
 - The commands that write from outside the server (`gobb user`, `gobb ban lift`,
   `gobb import`) set a mark in the database. The server reads it every 5 s and empties
   the cache when it changes.
+- A change made with SQL by hand reaches no cache. Restart the server after it, or
+  bump the mark: `update page_cache_epoch set value = value + 1`.
 - The index lists today's birthdays, so it ends at midnight in the board's time zone.
-  A topic page shows the view count of its render until a change drops it.
+  A topic page shows the view count of its render until a change drops it. The
+  download counts of its attachments are those of the render too; the server does not
+  change them, so only a change by hand makes them old.
 - At start, unless `GOBB_PAGE_CACHE_WARM` is `false`, a worker renders pages until the
   cache is full: the index, the first page of each forum, then every page of each
   topic, newest activity first. It renders one page at a time, and waits while all
