@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.1 (2026-11-08)
+
+- **The header image keeps its shape.** It is capped at the height of the header
+  row, and its width follows. It was stretched to the width of its box: on a wide
+  screen a 350x117 image showed at 662x44.
+- **Forum rows on a phone.** Every row of the index has the same compact layout. Only
+  the first row of a section had it; the others took the padding of the wide layout,
+  which pushed the counts apart and made each row 86-104px tall, not 57px.
+- **The last post of a forum on a phone** stays on one line and ends in an ellipsis.
+
 ## 0.9.0 (2026-11-01)
 
 ### Compact pages, mobile first (evanwtf/gobb#52)
