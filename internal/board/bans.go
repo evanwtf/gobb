@@ -2,6 +2,7 @@ package board
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -111,6 +112,24 @@ func ListBans(ctx context.Context, q db.Querier, page int, now time.Time) (BanPa
 	if page < 1 || page > out.Pages {
 		return BanPage{}, ErrNotFound
 	}
+	limit := banPerPage
+	entries, err := readBans(ctx, q, now, &limit, (page-1)*banPerPage)
+	if err != nil {
+		return BanPage{}, err
+	}
+	out.Entries = entries
+	return out, nil
+}
+
+// AllBans returns every ban that has not ended at now, newest first, in one
+// read. The command line uses it. It does not check a viewer.
+func AllBans(ctx context.Context, q db.Querier, now time.Time) ([]BanEntry, error) {
+	return readBans(ctx, q, now, nil, 0)
+}
+
+// readBans reads the bans that have not ended at now, newest first: limit of
+// them (nil for all) after the first offset.
+func readBans(ctx context.Context, q db.Querier, now time.Time, limit *int, offset int) ([]BanEntry, error) {
 	rows, err := q.Query(ctx, `
 select b.id, b.kind, coalesce(b.user_id, 0), coalesce(u.username, ''), coalesce(b.email, ''), coalesce(b.ip::text, ''),
        b.reason, b.reason_shown, b.created_at, b.ends_at, coalesce(b.created_by, 0), coalesce(c.username, '')
@@ -119,11 +138,12 @@ select b.id, b.kind, coalesce(b.user_id, 0), coalesce(u.username, ''), coalesce(
   left join users c on c.id = b.created_by
  where b.ends_at is null or b.ends_at > $1
  order by b.created_at desc, b.id desc
- limit $2 offset $3`, now, banPerPage, (page-1)*banPerPage)
+ limit $2 offset $3`, now, limit, offset)
 	if err != nil {
-		return BanPage{}, fmt.Errorf("board: read the bans: %w", err)
+		return nil, fmt.Errorf("board: read the bans: %w", err)
 	}
 	defer rows.Close()
+	var out []BanEntry
 	for rows.Next() {
 		var (
 			e    BanEntry
@@ -131,13 +151,13 @@ select b.id, b.kind, coalesce(b.user_id, 0), coalesce(u.username, ''), coalesce(
 		)
 		if err := rows.Scan(&e.ID, &e.Kind, &e.Member.ID, &e.Member.Name, &e.Email, &cidr, &e.Reason, &e.ReasonShown,
 			&e.CreatedAt, &e.EndsAt, &e.CreatedBy.ID, &e.CreatedBy.Name); err != nil {
-			return BanPage{}, fmt.Errorf("board: read the bans: %w", err)
+			return nil, fmt.Errorf("board: read the bans: %w", err)
 		}
 		e.Range = rangeText(cidr)
-		out.Entries = append(out.Entries, e)
+		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return BanPage{}, fmt.Errorf("board: read the bans: %w", err)
+		return nil, fmt.Errorf("board: read the bans: %w", err)
 	}
 	return out, nil
 }
@@ -386,41 +406,76 @@ values ('ip', $1::cidr, $2, $3, $4, $5, $6) returning id`,
 // ended, is [ErrNotFound], and nothing is written.
 func LiftBan(ctx context.Context, pool *pgxpool.Pool, v Viewer, banID int64, now time.Time) error {
 	return AdminWrite(ctx, pool, v, now, func(tx pgx.Tx) (Change, error) {
-		var userID int64
-		err := tx.QueryRow(ctx, `select coalesce(user_id, 0) from bans where id = $1`, banID).Scan(&userID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Change{}, ErrNotFound
-		}
+		return liftBanTx(ctx, tx, banID, now)
+	})
+}
+
+// LiftBanCLI is [LiftBan] for the command line: it removes ban banID of any kind
+// and writes the same mod_log row with a null actor and "via": "cli" in place of
+// "via": "web", in one transaction. It returns the kind and the target of the
+// ban. A ban that does not exist, or has ended, is [ErrNotFound], and nothing is
+// written.
+func LiftBanCLI(ctx context.Context, pool *pgxpool.Pool, banID int64, now time.Time) (kind, target string, err error) {
+	err = inTx(ctx, pool, func(tx pgx.Tx) error {
+		c, err := liftBanTx(ctx, tx, banID, now)
 		if err != nil {
-			return Change{}, fmt.Errorf("board: read ban %d: %w", banID, err)
+			return err
 		}
-		if userID != 0 {
-			if err := lockUser(ctx, tx, userID); err != nil {
-				return Change{}, err
-			}
+		kind, _ = c.Details["kind"].(string)
+		target, _ = c.Details["target"].(string)
+		details := map[string]any{"via": "cli"}
+		for k, val := range c.Details {
+			details[k] = val
 		}
-		var (
-			kind, username, email, cidr string
-		)
-		err = tx.QueryRow(ctx, `
+		b, err := json.Marshal(details)
+		if err != nil {
+			return fmt.Errorf("board: encode log details: %w", err)
+		}
+		return logMod(ctx, tx, Viewer{}, c.Action, c.TargetType, c.TargetID, string(b), now)
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return kind, target, nil
+}
+
+// liftBanTx is the one write of a lift, for the web and the command line. It
+// writes no mod_log row: it returns the [Change] for the caller to log.
+func liftBanTx(ctx context.Context, tx pgx.Tx, banID int64, now time.Time) (Change, error) {
+	var userID int64
+	err := tx.QueryRow(ctx, `select coalesce(user_id, 0) from bans where id = $1`, banID).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Change{}, ErrNotFound
+	}
+	if err != nil {
+		return Change{}, fmt.Errorf("board: read ban %d: %w", banID, err)
+	}
+	if userID != 0 {
+		if err := lockUser(ctx, tx, userID); err != nil {
+			return Change{}, err
+		}
+	}
+	var (
+		kind, username, email, cidr string
+	)
+	err = tx.QueryRow(ctx, `
 with gone as (
   delete from bans where id = $1 and (ends_at is null or ends_at > $2)
   returning kind, user_id, email, ip)
 select g.kind, coalesce(u.username, ''), coalesce(g.email, ''), coalesce(g.ip::text, '')
   from gone g left join users u on u.id = g.user_id`, banID, now).Scan(&kind, &username, &email, &cidr)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Change{}, ErrNotFound
-		}
-		if err != nil {
-			return Change{}, fmt.Errorf("board: lift ban %d: %w", banID, err)
-		}
-		target := username
-		switch kind {
-		case BanEmailKind:
-			target = email
-		case BanIPKind:
-			target = rangeText(cidr)
-		}
-		return banChange("ban.lift", banID, kind, target, nil), nil
-	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Change{}, ErrNotFound
+	}
+	if err != nil {
+		return Change{}, fmt.Errorf("board: lift ban %d: %w", banID, err)
+	}
+	target := username
+	switch kind {
+	case BanEmailKind:
+		target = email
+	case BanIPKind:
+		target = rangeText(cidr)
+	}
+	return banChange("ban.lift", banID, kind, target, nil), nil
 }

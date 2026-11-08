@@ -431,3 +431,23 @@ func TestUserBanKeepsAnAdmin(t *testing.T) {
 		t.Errorf("alice is banned: %d, %v", n, err)
 	}
 }
+
+// TestAllBans: the command line's list has every ban in force in one read, past
+// the 50 of one page, newest first.
+func TestAllBans(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	if _, err := pool.Exec(ctx, `
+insert into bans (kind, ip, created_at)
+select 'ip', ('198.51.100.' || g)::cidr, $1::timestamptz + g * interval '1 second' from generate_series(1, 60) g`, t0); err != nil {
+		t.Fatal(err)
+	}
+	all, err := board.AllBans(ctx, pool, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 60 ranges, and the import's email and range bans; its user ban has ended.
+	if len(all) != 62 || all[0].Target() != "198.51.100.60" || all[59].Target() != "198.51.100.1" {
+		t.Errorf("%d bans; first %+v", len(all), all[0])
+	}
+}

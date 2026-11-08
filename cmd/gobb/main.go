@@ -79,6 +79,7 @@ var commands = map[string]command{
 		fmt.Println("gobb " + version.Version)
 		return nil
 	},
+	"ban":         banCommand,
 	"import":      importBundle,
 	"mail":        mailCommand,
 	"messages":    messagesCommand,
