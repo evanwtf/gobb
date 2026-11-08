@@ -440,10 +440,10 @@ jobs:
           }
 
           # The Restore section sets BACKUP_DIR itself, because a new shell has none.
-          # That line is outside every block, so this step does not run it: it would
-          # replace the folder of this step.
+          # The line keeps a value that is set already. It is outside every block,
+          # so this step checks its text and does not run it.
           awk '/^### Restore/ { on = 1; next } /^##+ / { on = 0 } on' README.md \
-            | grep -F -x 'export BACKUP_DIR="$HOME/gobb-backups"' > /dev/null \
+            | grep -F -x 'export BACKUP_DIR="${BACKUP_DIR:-$HOME/gobb-backups}"' > /dev/null \
             || { echo "the Restore section of the README does not set BACKUP_DIR"; exit 1; }
 
           # 1. Back up.

@@ -1,5 +1,13 @@
 name: gobb
 
+# Docker keeps the container logs in json files. Cap them at 3 files of 10 MB
+# for each service, so the logs cannot fill the disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:18
@@ -19,6 +27,7 @@ services:
       retries: 10
     stop_grace_period: 30s
     restart: unless-stopped
+    logging: *logging
 
   gobb:
     # Pull the published image, or build it here with `docker compose build`.
@@ -70,6 +79,7 @@ services:
     memswap_limit: ${GOBB_MEM_LIMIT:-256m}
     stop_grace_period: 30s
     restart: unless-stopped
+    logging: *logging
 
 volumes:
   gobb-pg:
