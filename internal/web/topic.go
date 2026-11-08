@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -205,6 +207,57 @@ func (s *site) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirectToPost(w, r, p.Viewer, id)
+}
+
+// postIPData is the data of postip.html.
+type postIPData struct {
+	board.PostAddress
+	// PostHref is the link to the post on its topic page.
+	PostHref string
+	// BanHref is the link to the ban form with the address filled in. It is
+	// set for an admin only, and only when the post has an address.
+	BanHref string
+}
+
+// ipBanHref returns the link to the ban form, filled in with a ban of address
+// ip, or "" for no address. A v4-mapped address (::ffff:a.b.c.d) becomes the
+// plain IPv4 form, which is the form that the ban form takes.
+func (s *site) ipBanHref(ip string) string {
+	if ip == "" {
+		return ""
+	}
+	if a, err := netip.ParseAddr(ip); err == nil {
+		ip = a.Unmap().String()
+	}
+	return s.path("admin", "bans") + "?" + url.Values{"kind": {board.BanIPKind}, "target": {ip}}.Encode()
+}
+
+// postIP serves GET /p/{id}/ip: the address of the author of one post. Only a
+// holder of mod.view_ip in the forum of the post sees it. Every other viewer,
+// a guest too, gets the 404 of a missing post. The page is noindex, and no
+// cache keeps it.
+func (s *site) postIP(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		s.notFound(w, r)
+		return
+	}
+	p, err := s.begin(w, r, "IP address", "")
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	a, err := board.PostIP(r.Context(), s.pool, p.Viewer, id)
+	if err != nil {
+		s.postRedirectError(w, r, err)
+		return
+	}
+	d := postIPData{PostAddress: a, PostHref: s.path("p", strconv.FormatInt(a.PostID, 10))}
+	if p.Viewer.Perms.IsAdmin() {
+		d.BanHref = s.ipBanHref(a.IP)
+	}
+	p.Data = d
+	s.render(w, http.StatusOK, "postip.html", p)
 }
 
 // redirectToPost answers 302 to the page of the topic that holds post postID, as

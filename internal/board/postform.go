@@ -144,6 +144,9 @@ type PostButtons struct {
 	// Restore shows on a deleted post (mod.delete). Approve shows on a held post
 	// (mod.approve), and on the first post of a held topic.
 	Restore, Approve bool
+	// IP shows the link to the address page of the post (mod.view_ip). The
+	// topic page holds the link only, never the address.
+	IP bool
 }
 
 // pageButtons decides the buttons of each post of the page. canReply is the
@@ -168,6 +171,9 @@ func pageButtons(ctx context.Context, q db.Querier, v Viewer, out TopicPage, can
 		if v.UserID == 0 {
 			continue
 		}
+		// The rule of PostIP. A deleted post that the viewer sees has an address
+		// too.
+		b.IP = v.Perms.Has("mod.view_ip", forumID)
 		if p.Visibility == "deleted" {
 			// The rule of RestorePost. A deleted post offers nothing else.
 			b.Restore = v.Perms.Has("mod.delete", forumID)

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.0 (2026-11-08)
+
+- **Post addresses leave the topic page** (#31). The topic page no longer reads or
+  shows the address of a post's author, for anyone. A holder of `mod.view_ip` in
+  the forum gets an "IP" link on each post. It opens `GET /p/{id}/ip`, which shows
+  the address with `noindex` and `Cache-Control: private, no-store`, and gives every
+  other viewer the 404 of a missing post. An admin there gets a "Ban this address"
+  link to the ban form, filled in; a v4-mapped address goes in as plain IPv4.
+- **The importer drops `mod.view_ip` from roles.** A `yes` for it in a role is not
+  loaded. After the commit, the import logs each role that lost it, with the number
+  of grants that use the role, and each user or group grant that still gives the
+  right, so the log names every holder. `no` and `never` settings load as before.
+
 ## 0.13.0 (2026-11-08)
 
 - **Search engines and AI crawlers can index the public board** (#3).

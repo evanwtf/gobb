@@ -115,7 +115,7 @@ func TestHiddenForumNeverLeaks(t *testing.T) {
 				}
 			}
 			// The pages themselves answer like a missing page, headers included.
-			for hiddenPath, missingPath := range map[string]string{"/t/2": "/t/99", "/p/5": "/p/99", "/a/1": "/a/99", "/f/3": "/f/99", "/t/3": "/t/99"} {
+			for hiddenPath, missingPath := range map[string]string{"/t/2": "/t/99", "/p/5": "/p/99", "/p/5/ip": "/p/99/ip", "/a/1": "/a/99", "/f/3": "/f/99", "/t/3": "/t/99"} {
 				got, want := getAs(t, h, hiddenPath, who.cookies), getAs(t, h, missingPath, who.cookies)
 				if headerShape(got) != headerShape(want) || shape(bodyOf(t, got), hiddenPath) != shape(bodyOf(t, want), missingPath) {
 					t.Errorf("%s differs from %s in headers or body", hiddenPath, missingPath)

@@ -345,6 +345,14 @@ A role is a named set of option settings. A grant can give a whole role at once.
 Each option appears at most once in a role. A `forum` role holds forum options only. A
 `mod` role holds moderator options only. A `board` role holds board options only.
 
+The importer does not load a `yes` for `mod.view_ip` in a role. That right shows the
+address of the author of each post, and a role often reaches more people than the owner
+means. After the commit, the import logs one warning for each role that held it, with
+the name of the role and the number of grants that use the role. A `no` or a `never` for
+`mod.view_ip` in a role loads as usual. A grant of `mod.view_ip` to a user or a group
+(below) loads as usual, so the owner gives the right to named people that way. The
+import logs one line for each such grant of `yes`, so the log names every holder.
+
 ```json
 {"id":1,"name":"Read only","kind":"forum","description":"May list and read","position":1,"settings":[{"option":"forum.list","setting":"yes"},{"option":"forum.read","setting":"yes"}]}
 ```

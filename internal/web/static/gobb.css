@@ -869,7 +869,6 @@ iframe.embed.soundcloud { aspect-ratio: auto; height: 166px; max-width: 40rem; b
   overflow-wrap: anywhere;
 }
 .signature p { margin: 0; }
-.post-ip { margin-top: 0.6rem; color: var(--muted); font-size: 0.8rem; }
 
 /* ---- Phones: the four columns stack -------------------------------------- */
 

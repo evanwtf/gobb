@@ -144,7 +144,7 @@ func postBodies(page string) (bodies, problems []string) {
 					}
 				}
 				ok = after == 1 && (string(tn) == "section" && class == "attachments" ||
-					string(tn) == "p" && (class == "edit-note" || class == "post-ip") ||
+					string(tn) == "p" && class == "edit-note" ||
 					string(tn) == "div" && (class == "signature" || class == "post-actions"))
 				after = 0
 			case xhtml.EndTagToken:

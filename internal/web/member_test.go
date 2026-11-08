@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -119,22 +120,159 @@ func TestMemberTimeAndScheme(t *testing.T) {
 	}
 }
 
+// TestViewIP: the topic page never holds an author's address, not even for a
+// holder of mod.view_ip. A holder gets a link to the address page of each post,
+// and only a holder in the forum of the post may open it. Everyone else gets the
+// 404 of a missing post.
 func TestViewIP(t *testing.T) {
+	const addr = "192.0.2.41"
 	b := bundletest.Small()
-	group := int64(3)
-	yes := bundle.Yes
-	opt := "mod.view_ip"
-	b.Grants = append(b.Grants, bundle.Grant{GroupID: &group, ForumID: 0, Option: &opt, Setting: &yes})
-	h, _ := newTestSite(t, b, Options{})
-	bob := signIn(t, h, "bob", testPassword)
+	ip := addr
+	b.Posts[0].AuthorIP = &ip
+	h, pool := siteAndPool(t, b, Options{})
+	bob := signIn(t, h, "bob", testPassword) // a moderator: mod.edit, mod.approve
 	carol := signIn(t, h, "carol", testPassword)
-	if body := bodyOf(t, getAs(t, h, "/t/1", bob)); !strings.Contains(body, "10.0.0.5") {
-		t.Error("the moderator does not see the IP address of post 1")
-	}
-	for name, c := range map[string][]*http.Cookie{"guest": nil, "carol": carol} {
-		if body := bodyOf(t, getAs(t, h, "/t/1", c)); strings.Contains(body, "10.0.0.5") {
-			t.Errorf("%s sees an IP address", name)
+	grant := func(forum int64) {
+		t.Helper()
+		if _, err := pool.Exec(t.Context(), `delete from acl_group_grants where option = 'mod.view_ip'`); err != nil {
+			t.Fatal(err)
 		}
+		if forum < 0 {
+			return
+		}
+		if _, err := pool.Exec(t.Context(), `insert into acl_group_grants (group_id, forum_id, option, setting) values (3, $1, 'mod.view_ip', 3)`, forum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	noAddress := func(who, body string) {
+		t.Helper()
+		for _, a := range []string{addr, "10.0.0.", "2001:db8::7"} {
+			if strings.Contains(body, a) {
+				t.Errorf("%s: the topic page holds the address %s", who, a)
+			}
+		}
+	}
+	notFound := func(who string, c []*http.Cookie) {
+		t.Helper()
+		rec := getAs(t, h, "/p/1/ip", c)
+		if body := bodyOf(t, rec); rec.Code != http.StatusNotFound || strings.Contains(body, addr) {
+			t.Errorf("%s: GET /p/1/ip = %d, want 404 without the address", who, rec.Code)
+		}
+	}
+
+	// A moderator without the right: no address and no link.
+	grant(-1)
+	body := bodyOf(t, getAs(t, h, "/t/1", bob))
+	noAddress("moderator without mod.view_ip", body)
+	if strings.Contains(body, "/ip\"") {
+		t.Error("a moderator without mod.view_ip has an address link")
+	}
+	notFound("moderator without mod.view_ip", bob)
+
+	// A holder in another forum: the same.
+	grant(3)
+	body = bodyOf(t, getAs(t, h, "/t/1", bob))
+	noAddress("holder in forum 3", body)
+	if strings.Contains(body, "/ip\"") {
+		t.Error("a holder in another forum has an address link")
+	}
+	notFound("holder in forum 3", bob)
+
+	// A holder in the forum: the link, but still no address on the topic page.
+	grant(2)
+	body = bodyOf(t, getAs(t, h, "/t/1", bob))
+	noAddress("holder", body)
+	for _, id := range []int{1, 2, 3, 4} {
+		if !strings.Contains(article(t, body, id), fmt.Sprintf(`href="/p/%d/ip"`, id)) {
+			t.Errorf("post %d has no address link for the holder", id)
+		}
+	}
+	rec := getAs(t, h, "/p/1/ip", bob)
+	page := bodyOf(t, rec)
+	if rec.Code != http.StatusOK || !strings.Contains(page, "<code>"+addr+"</code>") {
+		t.Fatalf("holder: GET /p/1/ip = %d, address shown: %v", rec.Code, strings.Contains(page, addr))
+	}
+	if !strings.Contains(page, `<meta name="robots" content="noindex">`) {
+		t.Error("the address page lacks noindex")
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "private, no-store" {
+		t.Errorf("the address page: Cache-Control %q, want private, no-store", cc)
+	}
+	if !strings.Contains(page, `href="/p/1"`) {
+		t.Error("the address page has no link back to the post")
+	}
+	// A post with no stored address says so.
+	if _, err := pool.Exec(t.Context(), `update posts set author_ip = null where id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if page := bodyOf(t, getAs(t, h, "/p/2/ip", bob)); !strings.Contains(page, "no address for this post") {
+		t.Error("the address page of a post with no address does not say so")
+	}
+	// The rest still get 404, and so does a missing post.
+	notFound("guest", nil)
+	notFound("member", carol)
+	if rec := getAs(t, h, "/p/9999/ip", bob); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /p/9999/ip = %d, want 404", rec.Code)
+	}
+	for _, c := range []struct {
+		who string
+		c   []*http.Cookie
+	}{{"guest", nil}, {"member", carol}} {
+		body := bodyOf(t, getAs(t, h, "/t/1", c.c))
+		noAddress(c.who, body)
+		if strings.Contains(body, "/ip\"") {
+			t.Errorf("%s has an address link", c.who)
+		}
+	}
+
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(t.Context(), sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A holder who is not an admin gets no ban link.
+	if page := bodyOf(t, getAs(t, h, "/p/1/ip", bob)); strings.Contains(page, "/admin/bans") || strings.Contains(page, "Ban this address") {
+		t.Error("a holder who is not an admin has a ban link")
+	}
+	// An admin holder gets a ban link with the address filled in. A v4-mapped
+	// address goes to the form in its IPv4 form, which the form takes.
+	alice := signIn(t, h, "alice", testPassword)
+	exec(`insert into acl_group_grants (group_id, forum_id, option, setting) values (4, 2, 'mod.view_ip', 3)`)
+	page = bodyOf(t, getAs(t, h, "/p/1/ip", alice))
+	if want := `href="/admin/bans?kind=ip&amp;target=` + addr + `"`; !strings.Contains(page, want) {
+		t.Errorf("the admin's address page lacks %s", want)
+	}
+	exec(`update posts set author_ip = '::ffff:192.0.2.42' where id = 1`)
+	page = bodyOf(t, getAs(t, h, "/p/1/ip", alice))
+	if want := `href="/admin/bans?kind=ip&amp;target=192.0.2.42"`; !strings.Contains(page, want) {
+		t.Errorf("a v4-mapped address: the admin's address page lacks %s", want)
+	}
+	if page := bodyOf(t, getAs(t, h, "/p/2/ip", alice)); strings.Contains(page, "Ban this address") {
+		t.Error("a post with no address has a ban link")
+	}
+	exec(`delete from acl_group_grants where group_id = 4 and option = 'mod.view_ip'`)
+
+	// The guests group holds the right board-wide: a guest still gets the 404
+	// of a missing post, and no link.
+	exec(`insert into acl_group_grants (group_id, forum_id, option, setting) values (1, 0, 'mod.view_ip', 3)`)
+	got, want := get(t, h, "/p/1/ip"), get(t, h, "/p/99/ip")
+	if got.Code != http.StatusNotFound || headerShape(got) != headerShape(want) || shape(bodyOf(t, got), "/p/1/ip") != shape(bodyOf(t, want), "/p/99/ip") {
+		t.Errorf("guest holder: GET /p/1/ip = %d, want the 404 of a missing post", got.Code)
+	}
+	if body := bodyOf(t, get(t, h, "/t/1")); strings.Contains(body, "/ip\"") {
+		t.Error("a guest holder has an address link")
+	}
+	exec(`delete from acl_group_grants where group_id = 1 and option = 'mod.view_ip'`)
+
+	// A board-wide holder who may not read forum 3 gets 404 for post 5 there,
+	// and the page for post 1 in forum 2, which carol reads.
+	exec(`insert into acl_user_grants (user_id, forum_id, option, setting) values (3, 0, 'mod.view_ip', 3)`)
+	if rec := getAs(t, h, "/p/5/ip", carol); rec.Code != http.StatusNotFound {
+		t.Errorf("holder without forum.read: GET /p/5/ip = %d, want 404", rec.Code)
+	}
+	if rec := getAs(t, h, "/p/1/ip", carol); rec.Code != http.StatusOK {
+		t.Errorf("board-wide holder: GET /p/1/ip = %d, want 200", rec.Code)
 	}
 }
 

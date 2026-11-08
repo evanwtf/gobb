@@ -771,7 +771,7 @@ func signatureDivs(page string) (out, problems []string) {
 						class = string(v)
 					}
 				}
-				ok = after == 1 && (string(tn) == "p" && class == "post-ip" || string(tn) == "div" && class == "post-actions")
+				ok = after == 1 && string(tn) == "div" && class == "post-actions"
 				after = 0
 			case xhtml.EndTagToken:
 				tn, _ := z.TagName()
@@ -1128,7 +1128,6 @@ func TestSignatureOfAVanishedMember(t *testing.T) {
 // a stray end tag closes early leaves markup behind it that is not the template's.
 func TestSignatureDivsSeesAnEarlyClose(t *testing.T) {
 	const ok = `<article><div class="post-main"><div class="signature"><p>fine</p></div>
-<p class="post-ip">IP address: <code>10.0.0.1</code></p>
 <div class="post-actions"></div></div></article>`
 	if sigs, problems := signatureDivs(ok); len(sigs) != 1 || sigs[0] != "<p>fine</p>" || len(problems) != 0 {
 		t.Errorf("a well-formed tail: %q, %q", sigs, problems)
