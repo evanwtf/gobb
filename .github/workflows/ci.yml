@@ -386,7 +386,8 @@ jobs:
 
       # The load test of section 10 of the spec: about 60 s of guest pages, page
       # misses, guest searches, wrong passwords over many names and /64s, and
-      # the pages and searches of a member, 1024 requests at once. Every answer
+      # the pages and searches of a member, 512 requests at once: twice the
+      # default GOBB_MAX_IN_FLIGHT, so that limit refuses some. Every answer
       # must be allowed, every 429 and 503 must come within 2 s, and after the
       # load each page must answer 200 again with no restart. The step then
       # checks the memory of the cgroup as the burst step does. The counters show
@@ -398,10 +399,10 @@ jobs:
           cid=$(docker compose ps -q gobb)
           go build -o "$RUNNER_TEMP/loadtest" ./scripts/loadtest
           status=0
-          "$RUNNER_TEMP/loadtest" -duration 60s -c 1024 -search-forbidden \
+          "$RUNNER_TEMP/loadtest" -duration 60s -c 512 -search-forbidden \
             -member-name alice -member-password example-password "http://$port/" || status=$?
           rm -f "$RUNNER_TEMP/loadtest"
-          curl -fsS "http://$mport/metrics" | grep -E '^gobb_(page_cache_(hits|misses)_total|db_pool_wait_timeouts_total|search_busy_total|rate_limited_total[{]limit="search"[}]|defensive_mode|signin_refusals_total|signin_attempts_total[{]result="(wrong|busy|limited)"[}])[ {]' || true
+          curl -fsS "http://$mport/metrics" | grep -E '^gobb_(page_cache_(hits|misses)_total|db_pool_wait_timeouts_total|search_busy_total|in_flight_refusals_total|rate_limited_total[{]limit="search"[}]|defensive_mode|signin_refusals_total|signin_attempts_total[{]result="(wrong|busy|limited)"[}])[ {]' || true
           sh scripts/memcap-check.sh "$cid" 268435456 || status=1
           curl -fsS -o /dev/null -w 'healthz after the load: %{http_code}\n' "http://$port/healthz" || status=1
           exit "$status"
