@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.1 (2026-11-08)
+
+- **Container logs are capped.** compose.yaml keeps 3 files of 10 MB for each
+  container, so the logs cannot fill the disk. The next `docker compose up -d`
+  recreates both containers to apply it.
+- **A refused reset form no longer shows the reset token** in the page; its form
+  points back to `/reset`.
+- **The restore keeps a `BACKUP_DIR` that is set already,** and prints the backup
+  stamp it picks, so the operator can check it.
+- The docs and the `user ban` log line say that a ban also removes the member's
+  trusted addresses.
+
 ## 0.16.0 (2026-11-08)
 
 - **Load protection, part one** (#2): the database pool and search.
