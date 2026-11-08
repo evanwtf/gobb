@@ -139,8 +139,14 @@ func TestDropDuringARenderKeepsItOut(t *testing.T) {
 		})
 		got <- res
 	}()
-	if res := <-got; res.Entry.Value != "new" || !fresh.Load() {
-		t.Errorf("a request after the drop got %v", res.Entry.Value)
+	select {
+	case res := <-got:
+		if res.Entry.Value != "new" || !fresh.Load() {
+			t.Errorf("a request after the drop got %v", res.Entry.Value)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("a request after the drop waited for the render before it")
 	}
 	close(release)
 	if res := <-done; res.Entry.Value != "old" {

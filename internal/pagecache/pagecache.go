@@ -23,12 +23,20 @@
 // solves this: the check at the end reads every drop since the start, the drops
 // of members among them, against the members that the page shows.
 //
+// A result that may not be stored (a 404, a redirect) can depend on more than
+// its entry names: a topic page that answered 404 before the topic existed
+// names no member, and the new topic drops only the listings. So for such a
+// result every drop counts as one that reaches it.
+//
 // The requests that waited for a render get its result when they came before
 // the first drop that reaches it: the drop had not happened for them. A request
 // that comes after such a drop does not get the old result. When the drop
 // reaches the scope known at the start, the request starts a new render at
 // once. When it reaches a member, which the cache learns only at the end, the
-// request waits for the render, then asks again.
+// request waits for the render, then asks again. On that second ask it joins a
+// render only when no drop since its start reaches what the stale result
+// depended on. After a second stale result it renders on its own, so a request
+// waits for at most three renders.
 //
 // The record holds the last [historySize] drops, so its memory is fixed, however
 // many topics and members the drops name. A render that began before the
@@ -141,8 +149,9 @@ type dropRec struct {
 }
 
 // deps is what a page depends on: a drop reaches the page when it reaches one
-// of these.
+// of these, or any drop when all is true.
 type deps struct {
+	all bool
 	// topics are the topic of the scope and the topic of the entry; 0 is none.
 	topics  [2]int64
 	listing bool
@@ -155,6 +164,9 @@ func depsOf(sc Scope, e Entry) deps {
 
 // reaches reports whether the drop r reaches a page that depends on d.
 func (r dropRec) reaches(d deps) bool {
+	if d.all {
+		return true
+	}
 	switch r.kind {
 	case dropTopic:
 		return d.listing || (r.id != 0 && (d.topics[0] == r.id || d.topics[1] == r.id))
@@ -176,10 +188,20 @@ type flight struct {
 	scope Scope
 	res   Result
 	err   error
-	// stale is the generation of the first drop after start that reaches the
-	// page, or 0 when there is none.
+	// deps is what the result depends on: the scope, the entry, and all drops
+	// for a result that may not be stored. stale is the generation of the first
+	// drop after start that reaches deps, or 0 when there is none.
+	deps  deps
 	stale uint64
 }
+
+// maxStale is the number of stale results that a request takes from the renders
+// of others. After that, it renders on its own.
+const maxStale = 2
+
+// joinHook, when set, runs each time a request joins a render in progress. A
+// test sets it.
+var joinHook func(key string)
 
 // New returns a cache that holds at most limit bytes of entries. now gives the
 // time for the expiry of the entries; nil means time.Now.
@@ -270,12 +292,21 @@ func (c *Cache) Peek(key string) (Entry, bool) {
 //
 // A request never gets a render that began before a drop that reaches the page
 // and came before the request. It starts a new render instead, or, when only
-// the result shows that the drop reaches the page (a member), it asks again.
+// the result shows that the drop reaches the page (a member, or a result that
+// may not be stored), it asks again. It waits for at most three renders.
 //
 // A request whose ctx ends while it waits gets ctx.Err(). The render goes on for
 // the others: render must not depend on the context of one request.
 func (c *Cache) Do(ctx context.Context, key string, sc Scope, render func() (Result, error)) (res Result, hit bool, err error) {
+	// prev is what the last stale result depended on; stale counts them.
+	var prev *deps
+	stale := 0
 	for first := true; ; first = false {
+		if !first {
+			if err := ctx.Err(); err != nil {
+				return Result{}, false, err
+			}
+		}
 		c.mu.Lock()
 		if e, ok := c.getLocked(key); ok {
 			c.mu.Unlock()
@@ -289,10 +320,16 @@ func (c *Cache) Do(ctx context.Context, key string, sc Scope, render func() (Res
 		}
 		arrived := c.gen
 		// Join the render in progress unless a drop since it began reaches the
-		// scope it was given. A drop of a member cannot be matched yet; the
-		// check after the wait covers it.
-		if f, ok := c.flights[key]; ok && c.firstDropLocked(f.start, depsOf(f.scope, Entry{})) == 0 {
+		// scope it was given, or what the last stale result depended on. A drop
+		// of a member cannot be matched before the render ends; the check after
+		// the wait covers it.
+		if f, ok := c.flights[key]; ok && stale < maxStale &&
+			c.firstDropLocked(f.start, depsOf(f.scope, Entry{})) == 0 &&
+			(prev == nil || c.firstDropLocked(f.start, *prev) == 0) {
 			c.mu.Unlock()
+			if joinHook != nil {
+				joinHook(key)
+			}
 			select {
 			case <-f.done:
 			case <-ctx.Done():
@@ -300,6 +337,9 @@ func (c *Cache) Do(ctx context.Context, key string, sc Scope, render func() (Res
 			}
 			if f.err == nil && f.stale != 0 && f.stale <= arrived {
 				// A drop that reaches the page came before this request.
+				d := f.deps
+				prev = &d
+				stale++
 				continue
 			}
 			return f.res, false, f.err
@@ -318,7 +358,9 @@ func (c *Cache) Do(ctx context.Context, key string, sc Scope, render func() (Res
 			delete(c.flights, key)
 		}
 		if f.err == nil {
-			f.stale = c.firstDropLocked(f.start, depsOf(sc, f.res.Entry))
+			f.deps = depsOf(sc, f.res.Entry)
+			f.deps.all = !f.res.Store
+			f.stale = c.firstDropLocked(f.start, f.deps)
 			if f.res.Store && f.stale == 0 {
 				c.putLocked(key, f.res.Entry)
 			}

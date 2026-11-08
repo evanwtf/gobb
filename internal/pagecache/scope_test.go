@@ -14,9 +14,15 @@ type inflight struct {
 	renders *atomic.Int32
 }
 
-// startRender starts a Do of key in a goroutine whose render gives e, and
-// returns once the render runs.
+// startRender starts a Do of key in a goroutine whose render gives e, to be
+// stored, and returns once the render runs.
 func startRender(t *testing.T, c *Cache, key string, sc Scope, e Entry) *inflight {
+	t.Helper()
+	return startResult(t, c, key, sc, Result{Entry: e, Store: true})
+}
+
+// startResult is startRender for a render that gives res.
+func startResult(t *testing.T, c *Cache, key string, sc Scope, res Result) *inflight {
 	t.Helper()
 	f := &inflight{release: make(chan struct{}), done: make(chan Result, 1), renders: &atomic.Int32{}}
 	started := make(chan struct{})
@@ -25,7 +31,7 @@ func startRender(t *testing.T, c *Cache, key string, sc Scope, e Entry) *infligh
 			f.renders.Add(1)
 			close(started)
 			<-f.release
-			return Result{Entry: e, Store: true}, nil
+			return res, nil
 		})
 		if err != nil {
 			t.Error(err)
@@ -218,8 +224,9 @@ func TestDropRecordIsBounded(t *testing.T) {
 	if n != historySize || cp > 2*historySize {
 		t.Errorf("the record holds %d drops (capacity %d), want %d", n, cp, historySize)
 	}
-	// The drop of topic 1 that reaches t1 is not in the record, but the render
-	// began before the oldest drop in it: the safe side is no store.
+	// No drop in the record reaches t1, but the render began before the oldest
+	// drop in it, and a drop that the record lost may have: the safe side is no
+	// store.
 	old.finish()
 	if stored(c, "t1") {
 		t.Error("a render older than the record of drops was stored")
@@ -274,5 +281,136 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("timed out")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// The record holds exactly historySize drops. A render that began just before
+// them is checked against all of them; one drop more and it is too old.
+func TestDropRecordBoundary(t *testing.T) {
+	c := New(1<<20, nil)
+	r := startRender(t, c, "t1", Scope{Topic: 1}, Entry{Size: 1, Topic: 1})
+	for i := range int64(historySize) {
+		c.DropUser(1000 + i)
+	}
+	r.finish()
+	if !stored(c, "t1") {
+		t.Error("a render followed by historySize drops that do not reach it was not stored")
+	}
+
+	c = New(1<<20, nil)
+	r = startRender(t, c, "t1", Scope{Topic: 1}, Entry{Size: 1, Topic: 1})
+	c.DropTopic(1)
+	for i := range int64(historySize) {
+		c.DropUser(1000 + i)
+	}
+	r.finish()
+	if stored(c, "t1") {
+		t.Error("a render reached by a drop that left the record was stored")
+	}
+}
+
+// A listing request after a drop of the listings does not wait for the render
+// that began before: it renders at once.
+func TestListingRequestAfterADropRendersAtOnce(t *testing.T) {
+	c := New(1<<20, nil)
+	old := startRender(t, c, "f1", Scope{Listing: true}, Entry{Value: "old", Size: 1, Listing: true})
+	defer old.finish()
+	c.DropListings()
+	got := make(chan Result, 1)
+	go func() {
+		res, _, _ := c.Do(context.Background(), "f1", Scope{Listing: true}, func() (Result, error) {
+			return Result{Entry: Entry{Value: "new", Size: 1, Listing: true}, Store: true}, nil
+		})
+		got <- res
+	}()
+	select {
+	case res := <-got:
+		if res.Entry.Value != "new" {
+			t.Errorf("the request after the drop got %v", res.Entry.Value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the request after the drop waited for the render before it")
+	}
+}
+
+// A result that may not be stored (a 404) depends on more than its entry
+// names. A request that came after any drop does not get it: it asks again. A
+// new topic drops only the listings, and its page must not stay a 404.
+func TestNoStoreResultIsStaleAfterAnyDrop(t *testing.T) {
+	c := New(1<<20, nil)
+	old := startResult(t, c, "t5", Scope{Topic: 5}, Result{Entry: Entry{Value: "404", Size: 1, Topic: 5}})
+	c.DropListings()
+	got := make(chan Result, 1)
+	go func() {
+		res, _, _ := c.Do(context.Background(), "t5", Scope{Topic: 5}, func() (Result, error) {
+			return Result{Entry: Entry{Value: "200", Size: 1, Topic: 5}, Store: true}, nil
+		})
+		got <- res
+	}()
+	waitFor(t, func() bool { return c.Stats().Misses == 2 })
+	if res := old.finish(); res.Entry.Value != "404" {
+		t.Errorf("the caller of the old render got %v", res.Entry.Value)
+	}
+	if res := <-got; res.Entry.Value != "200" {
+		t.Errorf("a request after the drop got %v, want a new render", res.Entry.Value)
+	}
+	// With no drop, the waiters share a result that is not stored.
+	old = startResult(t, c, "t6", Scope{Topic: 6}, Result{Entry: Entry{Value: "404", Size: 1, Topic: 6}})
+	go func() {
+		res, _, _ := c.Do(context.Background(), "t6", Scope{Topic: 6}, func() (Result, error) {
+			t.Error("a second render with no drop")
+			return Result{}, nil
+		})
+		got <- res
+	}()
+	waitFor(t, func() bool { return c.Stats().Misses == 4 })
+	old.finish()
+	if res := <-got; res.Entry.Value != "404" {
+		t.Errorf("a waiter with no drop got %v", res.Entry.Value)
+	}
+}
+
+// Under drops of members that reach each render it joins, a request takes two
+// stale results at most, then renders on its own: it does not join a third.
+func TestRetryIsBounded(t *testing.T) {
+	c := New(1<<20, nil)
+	joined := make(chan struct{}, 8)
+	joinHook = func(string) { joined <- struct{}{} }
+	t.Cleanup(func() { joinHook = nil })
+	sc := Scope{Topic: 1}
+	f1 := startRender(t, c, "t1", sc, Entry{Value: "f1", Size: 1, Topic: 1, Users: []int64{7}})
+	c.DropUser(7)
+	got := make(chan Result, 1)
+	var own atomic.Int32
+	go func() {
+		res, _, err := c.Do(context.Background(), "t1", sc, func() (Result, error) {
+			own.Add(1)
+			return Result{Entry: Entry{Value: "own", Size: 1, Topic: 1}, Store: true}, nil
+		})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- res
+	}()
+	<-joined // the request waits for f1, which a drop of member 7 reached
+	// A drop of the topic makes the next request start f2, not join f1.
+	c.DropTopic(1)
+	f2 := startRender(t, c, "t1", sc, Entry{Value: "f2", Size: 1, Topic: 1, Users: []int64{8}})
+	c.DropUser(8)
+	f1.finish()
+	<-joined // the request asks again and joins f2: no drop since f2 began reaches member 7
+	c.DropTopic(1)
+	f3 := startRender(t, c, "t1", sc, Entry{Value: "f3", Size: 1, Topic: 1})
+	defer f3.finish()
+	f2.finish()
+	select {
+	case res := <-got:
+		if res.Entry.Value != "own" || own.Load() != 1 {
+			t.Errorf("after two stale results the request got %v (%d own renders), want its own render", res.Entry.Value, own.Load())
+		}
+	case <-joined:
+		t.Fatal("the request joined a third render")
+	case <-time.After(time.Second):
+		t.Fatal("the request did not render on its own")
 	}
 }
