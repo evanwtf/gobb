@@ -210,19 +210,22 @@ that are in the dump, so a table that a newer migration added would stay, and th
 upgrade would try to create it again. The restore then empties the data volume and
 unpacks the archive.
 
-Set the folder of the backups first. This is the line of the backup section. Change it
-if your backups live in another folder, because a new shell does not keep it:
+Set the folder of the backups first. The line keeps a `BACKUP_DIR` that this shell
+already has, and otherwise uses the folder of the backup section. A new shell does not
+keep it, so set it again if your backups live in another folder:
 
 ```sh
-export BACKUP_DIR="$HOME/gobb-backups"
+export BACKUP_DIR="${BACKUP_DIR:-$HOME/gobb-backups}"
 ```
 
-The first command picks the newest stamp for which both files exist and are not empty.
-To restore an older backup, set `STAMP` to its date.
+The first command picks the newest stamp for which both files exist and are not empty,
+and prints it. Check that it is the backup you want. To restore an older backup, set
+`STAMP` to its date.
 
 <!-- block: restore-pick -->
 ```sh
 export STAMP=$(ls "$BACKUP_DIR" | sed -n 's/^gobb-\([0-9]*-[0-9]*\)\.dump$/\1/p' | while read -r s; do [ -s "$BACKUP_DIR/gobb-$s.dump" ] && [ -s "$BACKUP_DIR/gobb-data-$s.tar.gz" ] && echo "$s"; done | tail -n 1)
+echo "STAMP=$STAMP"
 ```
 
 The second command is one chain, and the first failure stops it. Nothing is stopped or
