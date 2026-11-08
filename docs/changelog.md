@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.18.0 (2026-11-08)
+
+- **Load protection, part three** (#2): the guest page cache and batched writes.
+  - **Guest page cache (owner: in-process).** Guests get the index, forum, topic
+    and static pages from memory (`GOBB_PAGE_CACHE_MIB`, 16 MiB, capped at a
+    quarter of the Go memory limit, or 64 MiB with none). Members always get live
+    pages. The key is the canonical path, page number and scheme: other query
+    parameters and the Host header never reach the stored page. The CSRF token,
+    the build line and the held note are filled in for each request. One render
+    serves every request that misses the same page, and an ETag answers
+    `If-None-Match` with 304.
+  - **Drops.** A write drops the pages it changes: a reply, edit, delete or
+    approval drops its topic, the listings and the author's pages; a held post
+    drops nothing; every admin write drops everything. `gobb user`, `gobb ban
+    lift` and `gobb import` mark a new epoch (migration 0019), which the server
+    reads every 5 s. A write that ends in an error drops again 2 s later.
+  - **Warm-up.** At start a worker renders the pages a guest may read, newest
+    first, one at a time, and waits while the pool is busy
+    (`GOBB_PAGE_CACHE_WARM`). A render that panics gives one 500, or is skipped
+    by the warm-up, and does not stop the server.
+  - **Batched writes.** View counts, visit times and the addresses of signed-in
+    visits go to the database every 30 s (`GOBB_WRITE_FLUSH_INTERVAL`) and at
+    shutdown, so a page view does not write. Each signed-in visit now keeps the
+    member's address trusted. Addresses are grouped per IPv6 /64.
+  - A forged session cookie costs one lookup and no delete.
+  - New metrics for cache hits, misses, bytes, entries, evictions, warm-up
+    progress, and flushes and their errors.
+
 ## 0.17.1 (2026-11-08)
 
 - **Import:** two `--replace` runs in the same second no longer collide. The second
