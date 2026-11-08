@@ -215,3 +215,49 @@ func TestFailuresFeedDefense(t *testing.T) {
 		t.Error("off after 4 failures, with a trigger of 3")
 	}
 }
+
+// A steady tail under the trigger does not hold Defensive Mode on: it turns off
+// 10 minutes after the count last stood over the trigger, about 11 minutes
+// after a burst. A second burst in the tail keeps it on 10 minutes past that.
+func TestDefenseOffUnderASteadyTail(t *testing.T) {
+	captureLog(t)
+	d := login.NewDefense(login.DefaultDefense())
+	for range 101 {
+		d.Record(now)
+	}
+	// 50 failures a minute, one every 1.2 s, for 30 minutes.
+	tail := func(from, to time.Duration, check func(at time.Duration)) {
+		for at := from; at < to; at += 1200 * time.Millisecond {
+			d.Record(now.Add(at))
+			check(at)
+		}
+	}
+	offAt := time.Duration(-1)
+	tail(1200*time.Millisecond, 30*time.Minute, func(at time.Duration) {
+		if offAt < 0 && !d.On(now.Add(at)) {
+			offAt = at
+		}
+	})
+	if offAt < 11*time.Minute || offAt > 11*time.Minute+2*time.Second {
+		t.Errorf("Defensive Mode turned off at +%v, want about +11m (60 s window + 10 quiet minutes)", offAt)
+	}
+
+	// A second burst at +40 m, during a new tail: on until 10 minutes past
+	// the last moment over the trigger, +41 m.
+	burst := now.Add(40 * time.Minute)
+	for range 101 {
+		d.Record(burst)
+	}
+	if !d.On(burst) {
+		t.Fatal("the second burst did not turn it on")
+	}
+	offAt = -1
+	tail(40*time.Minute+1200*time.Millisecond, 70*time.Minute, func(at time.Duration) {
+		if offAt < 0 && !d.On(now.Add(at)) {
+			offAt = at
+		}
+	})
+	if offAt < 51*time.Minute || offAt > 51*time.Minute+2*time.Second {
+		t.Errorf("after the second burst it turned off at +%v, want about +51m", offAt)
+	}
+}

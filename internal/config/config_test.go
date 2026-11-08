@@ -641,7 +641,7 @@ func TestFromEnvSigninDefaults(t *testing.T) {
 	s := c.Signin
 	if s.FreeFailures != 2 || !slices.Equal(s.Waits, []time.Duration{15 * time.Second, 15 * time.Second, time.Minute, time.Minute, time.Minute}) ||
 		s.LastWait != 900*time.Second || s.ResetAfter != 24*time.Hour || s.AddressKeep != 365*24*time.Hour ||
-		s.DefensiveFailures != 100 || s.DefensiveWindow != time.Minute || s.DefensiveQuiet != 10*time.Minute || s.DefensiveGap != 5*time.Second {
+		s.DefensiveFailures != 100 || s.DefensiveWindow != time.Minute || s.DefensiveQuiet != 10*time.Minute || s.DefensiveGap != 5*time.Second || s.TableKeys != 50000 {
 		t.Errorf("Signin = %+v, want the owner's defaults", s)
 	}
 }
@@ -650,7 +650,7 @@ func TestFromEnvSigninValues(t *testing.T) {
 	c, err := config.FromEnv(env(map[string]string{
 		"GOBB_DSN": "postgres://x", "GOBB_SIGNIN_FREE_FAILURES": "0", "GOBB_SIGNIN_WAITS": " 1s, 2m ",
 		"GOBB_SIGNIN_LAST_WAIT": "1h", "GOBB_SIGNIN_RESET_AFTER": "48h", "GOBB_ADDRESS_KEEP_DAYS": "30",
-		"GOBB_DEFENSIVE_FAILURES": "50", "GOBB_DEFENSIVE_WINDOW": "30s", "GOBB_DEFENSIVE_QUIET": "1m", "GOBB_DEFENSIVE_GAP": "0s",
+		"GOBB_DEFENSIVE_FAILURES": "50", "GOBB_DEFENSIVE_WINDOW": "30s", "GOBB_DEFENSIVE_QUIET": "1m", "GOBB_DEFENSIVE_GAP": "0s", "GOBB_SIGNIN_TABLE_KEYS": "1000",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -658,7 +658,7 @@ func TestFromEnvSigninValues(t *testing.T) {
 	s := c.Signin
 	if s.FreeFailures != 0 || !slices.Equal(s.Waits, []time.Duration{time.Second, 2 * time.Minute}) ||
 		s.LastWait != time.Hour || s.ResetAfter != 48*time.Hour || s.AddressKeep != 30*24*time.Hour ||
-		s.DefensiveFailures != 50 || s.DefensiveWindow != 30*time.Second || s.DefensiveQuiet != time.Minute || s.DefensiveGap != 0 {
+		s.DefensiveFailures != 50 || s.DefensiveWindow != 30*time.Second || s.DefensiveQuiet != time.Minute || s.DefensiveGap != 0 || s.TableKeys != 1000 {
 		t.Errorf("Signin = %+v", s)
 	}
 }
@@ -685,6 +685,8 @@ func TestFromEnvSigninInvalid(t *testing.T) {
 		{"GOBB_DEFENSIVE_QUIET", "soon"},
 		{"GOBB_DEFENSIVE_GAP", "-1s"},
 		{"GOBB_DEFENSIVE_GAP", "2h"},
+		{"GOBB_SIGNIN_TABLE_KEYS", "999"},
+		{"GOBB_SIGNIN_TABLE_KEYS", "1000001"},
 	} {
 		_, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", c.key: c.value}))
 		if err == nil || !strings.Contains(err.Error(), c.key) {
@@ -694,5 +696,22 @@ func TestFromEnvSigninInvalid(t *testing.T) {
 	// Twenty waits are allowed.
 	if _, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_SIGNIN_WAITS": strings.Repeat("1s,", 19) + "1s"})); err != nil {
 		t.Errorf("20 waits: %v", err)
+	}
+}
+
+// A count may not clear before its longest wait ends.
+func TestFromEnvSigninResetCoversTheWaits(t *testing.T) {
+	for _, c := range []map[string]string{
+		{"GOBB_SIGNIN_RESET_AFTER": "10m"}, // under the default 900 s
+		{"GOBB_SIGNIN_RESET_AFTER": "2h", "GOBB_SIGNIN_WAITS": "15s,3h", "GOBB_SIGNIN_LAST_WAIT": "1m"},
+	} {
+		c["GOBB_DSN"] = "postgres://x"
+		_, err := config.FromEnv(env(c))
+		if err == nil || !strings.Contains(err.Error(), "GOBB_SIGNIN_RESET_AFTER") {
+			t.Errorf("%v: err = %v, want an error that names GOBB_SIGNIN_RESET_AFTER", c, err)
+		}
+	}
+	if _, err := config.FromEnv(env(map[string]string{"GOBB_DSN": "postgres://x", "GOBB_SIGNIN_RESET_AFTER": "15m"})); err != nil {
+		t.Errorf("a reset equal to the longest wait: %v", err)
 	}
 }

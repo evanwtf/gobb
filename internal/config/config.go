@@ -79,6 +79,9 @@ type Signin struct {
 	// DefensiveGap is the least time between two tries of an untrusted address
 	// while Defensive Mode is on, from GOBB_DEFENSIVE_GAP. Zero means none.
 	DefensiveGap time.Duration
+	// TableKeys is the most counts in each of the two tables of the schedule
+	// (addresses, names), from GOBB_SIGNIN_TABLE_KEYS.
+	TableKeys int
 }
 
 // The defaults of the sign-in settings. (owner)
@@ -92,11 +95,14 @@ const (
 	DefaultDefensiveWindow    = 60 * time.Second
 	DefaultDefensiveQuiet     = 10 * time.Minute
 	DefaultDefensiveGap       = 5 * time.Second
+	DefaultSigninTableKeys    = 50000
 
 	maxSigninFreeFailures = 100
 	maxSigninWaits        = 20
 	maxAddressKeepDays    = 3650
 	maxDefensiveFailures  = 10000
+	minSigninTableKeys    = 1000
+	maxSigninTableKeys    = 1000000
 )
 
 // Load holds the settings of the load protection of the database pool and of
@@ -244,6 +250,18 @@ func signinFromEnv(getenv func(string) string) (Signin, error) {
 	s.AddressKeep = time.Duration(days) * 24 * time.Hour
 	if s.DefensiveFailures, err = intSetting("GOBB_DEFENSIVE_FAILURES", get("GOBB_DEFENSIVE_FAILURES"), DefaultDefensiveFailures, 1, maxDefensiveFailures); err != nil {
 		return Signin{}, err
+	}
+	if s.TableKeys, err = intSetting("GOBB_SIGNIN_TABLE_KEYS", get("GOBB_SIGNIN_TABLE_KEYS"), DefaultSigninTableKeys, minSigninTableKeys, maxSigninTableKeys); err != nil {
+		return Signin{}, err
+	}
+	// A count that clears before its wait ends would let the next try pass
+	// with no wait at all.
+	longest := s.LastWait
+	for _, w := range s.Waits {
+		longest = max(longest, w)
+	}
+	if s.ResetAfter < longest {
+		return Signin{}, fmt.Errorf("config: GOBB_SIGNIN_RESET_AFTER: must be at least the longest wait (%s) of GOBB_SIGNIN_WAITS and GOBB_SIGNIN_LAST_WAIT", longest)
 	}
 	return s, nil
 }

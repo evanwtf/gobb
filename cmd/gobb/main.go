@@ -487,7 +487,8 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *lo
 		"last_wait", cfg.Signin.LastWait.String(), "reset_after", cfg.Signin.ResetAfter.String(),
 		"address_keep_days", int(cfg.Signin.AddressKeep/(24*time.Hour)),
 		"defensive_failures", cfg.Signin.DefensiveFailures, "defensive_window", cfg.Signin.DefensiveWindow.String(),
-		"defensive_quiet", cfg.Signin.DefensiveQuiet.String(), "defensive_gap", cfg.Signin.DefensiveGap.String())
+		"defensive_quiet", cfg.Signin.DefensiveQuiet.String(), "defensive_gap", cfg.Signin.DefensiveGap.String(),
+		"table_keys", cfg.Signin.TableKeys)
 	slog.Info("load limits", "db_max_conns", cfg.Load.DBMaxConns, "db_pool_wait", cfg.Load.DBPoolWait.String(),
 		"search_per_second", cfg.Load.SearchPerSecond, "search_max_running", cfg.Load.SearchMaxRunning)
 	// With no email settings, Mail stays nil and the reset pages are off.
@@ -507,7 +508,7 @@ func setup(ctx context.Context, cfg config.Config, gate *login.Gate, defense *lo
 // scheduleConfig returns the sign-in schedule of the settings s.
 func scheduleConfig(s config.Signin) *login.ScheduleConfig {
 	return &login.ScheduleConfig{FreeFailures: s.FreeFailures, Waits: s.Waits, LastWait: s.LastWait,
-		ResetAfter: s.ResetAfter, MaxKeys: login.DefaultMaxKeys}
+		ResetAfter: s.ResetAfter, MaxKeys: s.TableKeys}
 }
 
 // defenseConfig returns the settings of Defensive Mode of the settings s.

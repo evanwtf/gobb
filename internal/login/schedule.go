@@ -20,9 +20,10 @@ const (
 	// DefaultResetAfter is the time with no failure that clears a count.
 	DefaultResetAfter = 24 * time.Hour
 	// DefaultMaxKeys is the most counts that each table of the schedule holds:
-	// one table for the addresses, one for the names. An entry is about 100
-	// bytes, so a full table holds about 10 MB.
-	DefaultMaxKeys = 100000
+	// one table for the addresses, one for the names. An entry costs about 145
+	// bytes with its share of the map, so a full table holds about 7 MiB and
+	// the two tables about 14 MiB.
+	DefaultMaxKeys = 50000
 )
 
 // DefaultWaits returns the waits after the failures that follow the free
@@ -135,38 +136,64 @@ func (t *table[K]) get(k K, now time.Time, resetAfter, gap time.Duration) *entry
 }
 
 // put returns the entry of k, and adds one when there is none. A full table
-// first drops the entries that hold nothing more, then the eighth of the
-// entries that changed least recently and have no try in progress.
-func (t *table[K]) put(k K, now time.Time, limit int, resetAfter, gap time.Duration) *entry {
+// first drops the entries that hold nothing more. When that frees less than an
+// eighth of the table, it evicts entries until an eighth is free, so the next
+// new keys do not sweep the table again. It evicts the entries with no try in
+// progress in this order: first those not in a wait, then those in a wait;
+// within each, the fewest failures first, then the least recently changed. An
+// attacker who sprays new keys with one failure each therefore evicts his own
+// keys before a count that holds a wait.
+func (t *table[K]) put(k K, now time.Time, c ScheduleConfig, gap time.Duration) *entry {
 	if e := t.m[k]; e != nil {
 		return e
 	}
+	limit := c.MaxKeys
 	if len(t.m) >= limit {
 		for key := range t.m {
-			t.get(key, now, resetAfter, gap)
+			t.get(key, now, c.ResetAfter, gap)
 		}
 	}
-	if len(t.m) >= limit {
-		type aged struct {
-			k K
-			t time.Time
-		}
-		all := make([]aged, 0, len(t.m))
-		for key, e := range t.m {
-			if e.pending == 0 {
-				all = append(all, aged{key, e.active()})
-			}
-		}
-		slices.SortFunc(all, func(a, b aged) int { return a.t.Compare(b.t) })
-		drop := max(1, len(t.m)/8)
-		for _, a := range all[:min(drop, len(all))] {
-			delete(t.m, a.k)
-		}
-		metrics.SigninScheduleEvictions.Add(uint64(min(drop, len(all))), t.name)
+	if keep := limit - max(1, limit/8); len(t.m) > keep {
+		t.evict(len(t.m)-keep, now, c)
 	}
 	e := &entry{}
 	t.m[k] = e
 	return e
+}
+
+// evict drops n entries with no try in progress, in the order of put.
+func (t *table[K]) evict(n int, now time.Time, c ScheduleConfig) {
+	type rank struct {
+		k      K
+		waits  bool
+		fails  int
+		active time.Time
+	}
+	all := make([]rank, 0, len(t.m))
+	for key, e := range t.m {
+		if e.pending > 0 {
+			continue
+		}
+		f, from := e.count()
+		all = append(all, rank{key, from.Add(c.WaitAfter(f, c.FreeFailures)).After(now), e.fails, e.active()})
+	}
+	slices.SortFunc(all, func(a, b rank) int {
+		switch {
+		case a.waits != b.waits:
+			if a.waits {
+				return 1
+			}
+			return -1
+		case a.fails != b.fails:
+			return a.fails - b.fails
+		}
+		return a.active.Compare(b.active)
+	})
+	n = min(n, len(all))
+	for _, r := range all[:n] {
+		delete(t.m, r.k)
+	}
+	metrics.SigninScheduleEvictions.Add(uint64(n), t.name)
 }
 
 // nameKey is the key of a cleaned name: its SHA-256, cut to 16 bytes, so that
@@ -188,6 +215,9 @@ type Schedule struct {
 	mu    sync.Mutex
 	addrs table[netip.Prefix]
 	names table[nameKey]
+	// trust caches the answers about trusted addresses that refused tries
+	// asked ([Schedule.remember]).
+	trust map[trustKey]trustAnswer
 }
 
 // NewSchedule returns an empty Schedule with the waits of cfg. A zero LastWait,
@@ -208,6 +238,7 @@ func NewSchedule(cfg ScheduleConfig) *Schedule {
 		cfg:   cfg,
 		addrs: table[netip.Prefix]{name: "address", m: map[netip.Prefix]*entry{}},
 		names: table[nameKey]{name: "name", m: map[nameKey]*entry{}},
+		trust: map[trustKey]trustAnswer{},
 	}
 }
 
@@ -284,13 +315,36 @@ func (s *Schedule) try(st *tryState, now time.Time, r rules) {
 	c := s.cfg
 	gap := r.gap
 
+	// The wait of the name, and whether it holds this address. A trust answer
+	// that a refused try already asked stays good while the wait lasts.
+	nameWait := time.Duration(0)
+	if st.hasName && st.nameTrust != trusted {
+		if e := s.names.get(st.name, now, c.ResetAfter, 0); e != nil {
+			n, from := e.count()
+			nameWait = max(0, from.Add(c.WaitAfter(n, c.FreeFailures)).Sub(now))
+		}
+		if nameWait > 0 && st.nameTrust == unknown {
+			if t, ok := s.trust[trustKey{st.name, st.addr}]; ok && now.Before(t.until) {
+				st.nameTrust = t.answer
+			}
+		}
+		if st.nameTrust == trusted {
+			nameWait = 0
+		}
+	}
+	// refuse refuses the try with the larger of wait and the wait of the name,
+	// so that the answer names the moment that a try can pass.
+	refuse := func(reason string, wait time.Duration) {
+		st.refused, st.reason, st.wait = true, reason, max(wait, nameWait)
+	}
+
 	// The address. In Defensive Mode an untrusted address has no free failure,
 	// and waits at least gap after its last try.
 	if a := s.addrs.get(st.addr, now, c.ResetAfter, gap); a != nil {
 		n, from := a.count()
 		normal := from.Add(c.WaitAfter(n, c.FreeFailures)).Sub(now)
 		if normal > 0 {
-			st.refused, st.reason, st.wait = true, ReasonAddress, normal
+			refuse(ReasonAddress, normal)
 			return
 		}
 		if r.on && st.addrTrust != trusted {
@@ -300,7 +354,7 @@ func (s *Schedule) try(st *tryState, now time.Time, r rules) {
 					st.need = needAddrTrust
 					return
 				}
-				st.refused, st.reason, st.wait = true, ReasonDefensive, strict
+				refuse(ReasonDefensive, strict)
 				return
 			}
 		}
@@ -308,29 +362,92 @@ func (s *Schedule) try(st *tryState, now time.Time, r rules) {
 
 	// The name. Its wait does not hold an address that is one of the member's
 	// trusted addresses.
-	if st.hasName && st.nameTrust != trusted {
-		if e := s.names.get(st.name, now, c.ResetAfter, 0); e != nil {
-			n, from := e.count()
-			if w := from.Add(c.WaitAfter(n, c.FreeFailures)).Sub(now); w > 0 {
-				if st.nameTrust == unknown {
-					st.need = needNameTrust
-					return
-				}
-				st.refused, st.reason, st.wait = true, ReasonName, w
-				return
-			}
+	if nameWait > 0 {
+		if st.nameTrust == unknown {
+			st.need = needNameTrust
+			return
 		}
+		refuse(ReasonName, nameWait)
+		return
 	}
 
-	a := s.addrs.put(st.addr, now, c.MaxKeys, c.ResetAfter, gap)
+	a := s.addrs.put(st.addr, now, c, gap)
 	a.pending++
 	a.pendingAt, a.lastTry = now, now
 	st.heldAddr = true
 	if st.hasName && st.nameTrust != trusted {
-		e := s.names.put(st.name, now, c.MaxKeys, c.ResetAfter, 0)
+		e := s.names.put(st.name, now, c, 0)
 		e.pending++
 		e.pendingAt = now
 		st.heldName = true
+	}
+}
+
+// trustKey names one answer of the trust cache: a name and a client range.
+type trustKey struct {
+	name nameKey
+	addr netip.Prefix
+}
+
+// trustAnswer is one answer of the trust cache, good until until.
+type trustAnswer struct {
+	answer trust
+	until  time.Time
+}
+
+// remember keeps the answer "not trusted" that the database gave about the
+// address of st and its name, while the wait of the name lasts. Later tries in that wait then decide with no database work, so the
+// refused tries at a locked name cost the same for every name: one query for
+// the first, none after it. A full cache drops its expired answers, and all of
+// them when none has expired.
+func (s *Schedule) remember(st *tryState, now time.Time) {
+	// Only a "no" is kept. A "yes" lets the try through to the password check,
+	// so keeping it saves nothing, and a ban in that wait must end the trust at
+	// once.
+	if st.nameTrust != untrusted || !st.hasName {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.names.m[st.name]
+	if e == nil {
+		return
+	}
+	n, from := e.count()
+	until := from.Add(s.cfg.WaitAfter(n, s.cfg.FreeFailures))
+	if !until.After(now) {
+		return
+	}
+	if len(s.trust) >= s.cfg.MaxKeys {
+		for k, t := range s.trust {
+			if !now.Before(t.until) {
+				delete(s.trust, k)
+			}
+		}
+		if len(s.trust) >= s.cfg.MaxKeys {
+			clear(s.trust)
+		}
+	}
+	s.trust[trustKey{st.name, st.addr}] = trustAnswer{st.nameTrust, until}
+}
+
+// ClearName clears the count of the cleaned name clean, and the trust answers
+// of the name. A completed password reset calls it, so that a member whom a
+// stranger holds in a wait can sign in again at once.
+func (s *Schedule) ClearName(clean string) {
+	k := keyOfName(clean)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.names.m[k]; e != nil {
+		e.fails, e.lastFail = 0, time.Time{}
+		if e.pending == 0 {
+			delete(s.names.m, k)
+		}
+	}
+	for tk := range s.trust {
+		if tk.name == k {
+			delete(s.trust, tk)
+		}
 	}
 }
 

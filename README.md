@@ -304,11 +304,12 @@ The server reads these variables. Docker Compose reads the last one:
 | `GOBB_SIGNIN_FREE_FAILURES` | How many failed sign-ins of an address or a name leave no wait after them, from 0 to 100 (see "Sign-in limits"). | `2` |
 | `GOBB_SIGNIN_WAITS` | The waits after the failures that follow the free ones, in order: 1 to 20 durations from `1s` to `24h`, separated by commas. | `15s,15s,60s,60s,60s` |
 | `GOBB_SIGNIN_LAST_WAIT` | The wait after every later failure, from `1s` to `24h`. | `900s` |
-| `GOBB_SIGNIN_RESET_AFTER` | The time with no failure that clears a count, from `1m` to `720h`. | `24h` |
+| `GOBB_SIGNIN_RESET_AFTER` | The time with no failure that clears a count, from `1m` to `720h`, and at least the longest wait. | `24h` |
 | `GOBB_ADDRESS_KEEP_DAYS` | How many days gobb keeps a member's address after the last sign-in from it, from 1 to 3,650. An imported address counts from the import. | `365` |
 | `GOBB_DEFENSIVE_FAILURES` | Defensive Mode turns on above this many failed sign-ins of the whole board in `GOBB_DEFENSIVE_WINDOW`, from 1 to 10,000. | `100` |
 | `GOBB_DEFENSIVE_WINDOW` | The window of that count, from `1s` to `1h`. | `60s` |
 | `GOBB_DEFENSIVE_QUIET` | How long the rate stays at or below the trigger before Defensive Mode turns off, from `1s` to `24h`. | `10m` |
+| `GOBB_SIGNIN_TABLE_KEYS` | The most counts in each of the two tables of the sign-in schedule (addresses and names), from 1,000 to 1,000,000. A full table is about 145 bytes per entry. | `50000` |
 | `GOBB_DEFENSIVE_GAP` | The least time between two tries of an untrusted address while Defensive Mode is on, from `0s` (none) to `1h`. | `5s` |
 | `GOMEMLIMIT` | The Go memory limit, such as `180MiB`. Unset, gobb sets 70% of the cgroup memory limit (see "Memory"). | unset |
 | `GOBB_MEM_LIMIT` | Compose only: the memory cap of the gobb container, with no swap on top. | `256m` |
@@ -582,11 +583,22 @@ first two failures of a count are free. After that, the next try must wait 15 s,
 15 s, 60 s, 60 s and 60 s, then 900 s before every later try. A try made before its
 wait ends gets 429 with `Retry-After` and "Too many sign-in attempts. Try again in N
 seconds." on the sign-in page. It runs no password check, and the count does not
-advance. Notes for the operator:
+advance. The wait it reports is the larger of the waits of the address and of the
+name.
+
+For example, with the defaults: a stranger who guesses at one name from one address
+makes three tries at once, all wrong. The fourth try waits 15 s, the fifth 15 s more,
+then 60 s three times, then 900 s each time. With `GOBB_SIGNIN_FREE_FAILURES=1`, the
+third try waits 15 s instead.
+
+Notes for the operator:
 
 - A good sign-in clears the count of the name. It does not clear the count of the
   address, so one account of one's own cannot reset an address that guesses at other
-  names. A count clears after 24 hours with no failure.
+  names. A count clears after 24 hours with no failure (`GOBB_SIGNIN_RESET_AFTER`,
+  which must be at least the longest wait). A completed password reset clears the
+  counts of the member's username and email address, so a member whom a stranger
+  holds in a wait can get back in through a reset.
 - The name count counts the name as typed, after cleaning. A username and an email
   address for one account are two names, so that account has two counts.
 - A member's *trusted addresses* are the addresses that the member signed in from,
@@ -594,22 +606,49 @@ advance. Notes for the operator:
   address is trusted only while its member is active and not banned. A ban and the
   Spammer action remove the member's addresses. A failure from one of the member's
   trusted addresses does not count against the name, and the wait of the name does
-  not hold there. The count of the address still applies.
+  not hold there. The count of the address still applies. At a locked name, one
+  database query decides whether the address is trusted, and costs the same whether
+  or not the name has an account. The answer stays in memory while the wait lasts,
+  so later refused tries cost no database work.
 - **Defensive Mode** turns on when the whole board counts more than 100 failed
   sign-ins in 60 s (`GOBB_DEFENSIVE_FAILURES`, `GOBB_DEFENSIVE_WINDOW`). It turns
-  off 10 minutes after the rate falls back (`GOBB_DEFENSIVE_QUIET`). While it is on,
+  off 10 minutes after the rate last stood above that (`GOBB_DEFENSIVE_QUIET`),
+  however many failures still trickle in below it. While it is on,
   an address that is no member's trusted address has no free failure, and waits at
   least 5 s between two tries (`GOBB_DEFENSIVE_GAP`); a trusted address keeps the
   normal schedule. Guests cannot search: they get the page of a search over the
   limit, with `Retry-After: 60`. gobb writes one WARN line `defensive mode on` and one
   INFO line `defensive mode off`, with counts and no address.
 - The counts and Defensive Mode live in memory. A restart sets them to zero. Each of
-  the two tables of counts holds at most 100,000 entries; a full table drops the
-  eighth that changed least recently (`gobb_signin_schedule_evictions_total`).
+  the two tables of counts (addresses, names) holds at most 50,000 entries
+  (`GOBB_SIGNIN_TABLE_KEYS`), about 7 MiB when full. A full table first drops the
+  counts that hold nothing; when that frees less than an eighth, it evicts down to
+  seven eighths full: first the counts not in a wait, then the counts with the
+  fewest failures, then the oldest. So a spray of new names does not flush a count
+  that holds a wait. `gobb_signin_schedule_evictions_total` counts the evictions.
 - Behind a reverse proxy, `GOBB_TRUSTED_PROXIES` must name the proxy. Without it,
   every visitor has the address of the proxy and shares one count. The same mistake
   makes the proxy's address a trusted address for every member who signs in.
 - The start-up log line `sign-in schedule` gives the values of the settings.
+- A failed sign-in takes at least the floor, even when the client closes its end of
+  the connection early. This holds for every failure after the schedule lets the try in: a wrong
+  password, a busy server, an inactive account and a ban. The floor counts from the
+  start of the sign-in, moved forward by the time that it waits for the memory gate.
+  So a wait for the gate adds the same delay to every name, and the floor still
+  hides the lookup and the hash after it. The server sets the floor at start:
+  2 × K × T, but at least 400 ms, rounded up to a whole 50 ms. A hash shape is the
+  format of a stored hash and its cost parameters. T is the time of a password
+  check for the slowest hash shape. The server times five checks of each hash
+  shape, in rounds of one check per hash shape, and keeps the lowest time of each.
+  Each check uses a wrong password of 4,096 bytes (the longest that a check reads;
+  a chain check takes longer for a longer password). K is the most accounts that
+  share one email address, because a sign-in by that address checks each of them.
+  The start-up log line `login: sign-in floor` gives `floor_ms` (the floor),
+  `t_ms` (T), `k` (K), `shapes` (the number of hash shapes) and `samples` (the
+  checks per hash shape). The floor hides the time of the hash while the host runs
+  a check within twice that lowest time. Two checks at once on one CPU already take
+  about twice as long, so heavier CPU load can still show the time. If `floor_ms`
+  is high after a start on a busy host, restart the server when the host is quiet.
 - A sign-in holds the memory gate once, for all of its checks. So a busy server
   answers alike for a shared email address, a unique one and an unknown name.
 - Password checks share a memory gate of 128 MiB, or less under a low memory limit

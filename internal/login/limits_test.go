@@ -568,8 +568,9 @@ func (q *querySpy) QueryRow(ctx context.Context, sql string, args ...any) pgx.Ro
 	return q.Querier.QueryRow(ctx, sql, args...)
 }
 
-// Outside Defensive Mode, the user_ips query runs only when the wait of the name
-// would refuse the try, or after a failure that counts against the name.
+// Outside Defensive Mode, a trust query runs only when the wait of the name
+// would refuse the try, or after a failure at a valid name. A failure runs it
+// whether or not the name has an account.
 func TestKnownAddressQueryOnlyWhenNeeded(t *testing.T) {
 	_, pool := newService(t)
 	spy := &querySpy{Querier: pool}
@@ -580,15 +581,16 @@ func TestKnownAddressQueryOnlyWhenNeeded(t *testing.T) {
 	if id, err := svc.Check(ctx, "alice", "right", addr(1), now); err != nil || id != 1 {
 		t.Fatal(id, err)
 	}
-	_, _ = svc.Check(ctx, "nobody", "wrong", addr(2), now)
 	_, _ = svc.Check(ctx, "\xff", "wrong", addr(3), now)
 	if n := spy.userIPs.Load(); n != 0 {
-		t.Errorf("the user_ips query ran %d times for a success and failures with no account", n)
+		t.Errorf("the user_ips query ran %d times for a success and an invalid name", n)
 	}
-	// A failure at an account asks once, inside the floor.
-	_, _ = svc.Check(ctx, "alice", "wrong", addr(4), now)
-	if n := spy.userIPs.Load(); n != 1 {
-		t.Errorf("the user_ips query ran %d times for one failure at an account, want 1", n)
+	for i, name := range []string{"nobody", "alice", "alice@example.com"} {
+		spy.userIPs.Store(0)
+		_, _ = svc.Check(ctx, name, "wrong", addr(40+i), now.Add(time.Hour))
+		if n := spy.userIPs.Load(); n != 1 {
+			t.Errorf("a failure at %q ran the user_ips query %d times, want 1", name, n)
+		}
 	}
 	_, _ = svc.Check(ctx, "alice", "wrong", addr(5), now)
 	spy.userIPs.Store(0)

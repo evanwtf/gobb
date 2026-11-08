@@ -55,16 +55,19 @@ func (e *BannedError) Error() string {
 
 // LimitedError means that the sign-in schedule refuses the try: its wait has
 // not ended (see [Service.Check]). Check returns it before any password check,
-// and the try changes no count. When only the wait of the name holds, a lookup
-// of the name and one query on user_ips run first, to see whether the address
-// is one of the member's trusted addresses; the same two run whether or not an
-// account has the name. While Defensive Mode is on, one query on user_ips may
-// run first to see whether the address is any member's trusted address. No
-// password hash runs.
+// and the try changes no count. When the wait of the name would refuse the
+// try, one query runs first: it finds the accounts of the name and asks whether
+// the address is one of their trusted addresses, in one statement, so it costs
+// the same whether or not an account has the name. The answer stays in memory
+// while the wait lasts, so later refused tries in that wait run no query. While
+// Defensive Mode is on, one query on user_ips may run first to see whether the
+// address is any member's trusted address. No password hash runs. RetryAfter is
+// the larger of the waits of the address and of the name.
 type LimitedError struct {
-	// RetryAfter is how long until the wait that refused the try ends.
+	// RetryAfter is how long until a try can pass: the larger of the wait of
+	// the address and the wait of the name.
 	RetryAfter time.Duration
-	// Reason is the wait that refused the try: [ReasonAddress], [ReasonName] or
+	// Reason is the first wait that refused the try: [ReasonAddress], [ReasonName] or
 	// [ReasonDefensive].
 	Reason string
 }
@@ -248,10 +251,13 @@ type candidate struct {
 // trusted addresses: an address in user_ips of an account that the name finds,
 // whose member is in good standing (active and not banned). A failure from such
 // an address does not count against the name either, so a stranger who
-// hammers a name cannot lock the member out at home. The lookup that decides
-// runs when the wait of the name would refuse the try, for every name, with or
-// without an account, so a stranger sees the same answer either way. For a
-// failure, it runs after the password check, inside the floor.
+// hammers a name cannot lock the member out at home. When the wait of the name
+// would refuse the try, one SQL statement decides: it finds the accounts of the
+// name (username, else email) and checks their trusted addresses together, so
+// an existing username, an email address and a name with no account cost the
+// same one round trip. The answer is kept while the wait lasts, so the refused
+// tries after it cost no database work and give a stranger nothing to time.
+// For a failure, the check runs after the password check, inside the floor.
 //
 // While Defensive Mode is on ([Defense]), an address that is no member's
 // trusted address has no free failure, and waits at least Gap between two tries
@@ -357,6 +363,18 @@ func (s *Service) checkWith(ctx context.Context, name, pw string, ip netip.Addr,
 	if err != nil {
 		return 0, err
 	}
+	// The pending tries end exactly once. A panic past this point gives them
+	// back, so it cannot hold a count in a wait for ever.
+	ended := false
+	end := func(failed, nameCounts, clearName bool) {
+		ended = true
+		s.end(st, now, failed, nameCounts, clearName)
+	}
+	defer func() {
+		if !ended {
+			s.end(st, now, false, false, false)
+		}
+	}()
 	var found []int64
 	id, epoch, err := s.check(ctx, c, name, pw, ip, now, &found)
 	if err == nil && finish != nil {
@@ -368,7 +386,7 @@ func (s *Service) checkWith(ctx context.Context, name, pw string, ip netip.Addr,
 		}
 	}
 	if err == nil {
-		s.end(st, now, false, false, true)
+		end(false, false, true)
 		return id, nil
 	}
 	// Every failure that follows the reservation takes the floor. A wrong
@@ -384,7 +402,7 @@ func (s *Service) checkWith(ctx context.Context, name, pw string, ip netip.Addr,
 			nameCounts = false
 		}
 	}
-	s.end(st, now, failed, nameCounts, false)
+	end(failed, nameCounts, false)
 	if failed && s.opt.Defense != nil {
 		s.opt.Defense.Record(now)
 	}
@@ -399,6 +417,8 @@ type limitKeys struct {
 	// address is not valid.
 	prefix netip.Prefix
 	name   string
+	// raw is the name as typed. The trust lookup cleans it as an email address.
+	raw string
 	// nameOK is false for a name that is not valid UTF-8 or is too long. Such a
 	// name has no count, and the try counts against the address only.
 	nameOK bool
@@ -418,7 +438,7 @@ func (s *Service) keys(name string, ip netip.Addr) limitKeys {
 		k.prefix = netip.PrefixFrom(ip, bits).Masked()
 	}
 	if utf8.ValidString(name) && len(name) <= maxName {
-		k.name, k.nameOK = account.CleanUsername(name), true
+		k.name, k.raw, k.nameOK = account.CleanUsername(name), name, true
 	}
 	return k
 }
@@ -458,13 +478,14 @@ func (s *Service) reserve(ctx context.Context, name string, k limitKeys, now tim
 			}
 			continue
 		case needNameTrust:
-			if ok, err = s.knownAddress(ctx, name, k, now); err != nil {
+			if ok, err = s.knownAddress(ctx, k, now); err != nil {
 				return nil, err
 			}
 			st.nameTrust = untrusted
 			if ok {
 				st.nameTrust = trusted
 			}
+			s.opt.Schedule.remember(st, now)
 			continue
 		}
 		break
@@ -491,40 +512,51 @@ const goodStanding = `u.state = 'active' and not exists (select 1 from bans b
  where b.kind = 'user' and b.user_id = u.id and (b.ends_at is null or b.ends_at > $2))`
 
 // knownAddress reports whether the client range is one of the trusted
-// addresses of an account that name finds: a row of user_ips of that account,
-// whose member is in good standing. It looks the name up even when no account
-// has it, and runs the query for the addresses with an empty list of accounts,
-// so the work does not tell a stranger whether the name exists. The unspecified
-// address (0.0.0.0 or ::) is never known: it stands for every client whose
-// address could not be read.
-func (s *Service) knownAddress(ctx context.Context, name string, k limitKeys, now time.Time) (bool, error) {
-	users, err := s.find(ctx, name)
+// addresses of an account that the name of k finds: a row of user_ips of that
+// account, whose member is in good standing. One statement finds the accounts
+// (the username, else the email address, as [Service.find] does) and checks
+// the addresses, so an existing username, an email address and a name with no
+// account each cost one round trip. The unspecified address (0.0.0.0 or ::)
+// stands for every client whose address could not be read: the statement runs
+// with no range, and finds nothing.
+func (s *Service) knownAddress(ctx context.Context, k limitKeys, now time.Time) (bool, error) {
+	var prefix any
+	if k.prefix.IsValid() && !k.prefix.Addr().IsUnspecified() {
+		prefix = k.prefix
+	}
+	email := account.CleanEmail(k.raw)
+	var known bool
+	err := s.q.QueryRow(ctx, `with named as (
+select id from users where username_clean = $1
+union all
+select id from users
+ where $3 <> '' and email_clean = $3
+   and not exists (select 1 from users where username_clean = $1))
+select exists (
+select 1 from user_ips ui join users u on u.id = ui.user_id
+ where ui.user_id in (select id from named) and ui.ip <<= $4::inet and `+goodStanding+`)`,
+		k.name, now, email, prefix).Scan(&known)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("login: known address: %w", err)
 	}
-	if k.prefix.IsValid() && k.prefix.Addr().IsUnspecified() {
-		return false, nil
-	}
-	ids := make([]int64, 0, len(users))
-	for _, u := range users {
-		ids = append(ids, u.id)
-	}
-	return s.trustedQuery(ctx, ids, k, now)
+	return known, nil
 }
 
-// trustedFor is [Service.knownAddress] for the accounts ids that a check has
-// already found.
+// trustedFor reports whether the client range is a trusted address of one of
+// the accounts ids that a check has found. It runs its query even with no
+// account, so that a failure costs the same queries for every name.
 func (s *Service) trustedFor(ctx context.Context, ids []int64, k limitKeys, now time.Time) (bool, error) {
-	if len(ids) == 0 || !k.prefix.IsValid() || k.prefix.Addr().IsUnspecified() {
-		return false, nil
+	if ids == nil {
+		ids = []int64{}
 	}
 	return s.trustedQuery(ctx, ids, k, now)
 }
 
-// trustedQuery runs the query of knownAddress and trustedFor.
+// trustedQuery runs the query of trustedFor. The unspecified address finds
+// nothing.
 func (s *Service) trustedQuery(ctx context.Context, ids []int64, k limitKeys, now time.Time) (bool, error) {
 	var prefix any
-	if k.prefix.IsValid() {
+	if k.prefix.IsValid() && !k.prefix.Addr().IsUnspecified() {
 		prefix = k.prefix
 	}
 	var known bool
@@ -1022,6 +1054,17 @@ update users set password_hash = $2, password_scheme = 'gobb'
 	if err != nil {
 		slog.Warn("login: cannot store a rehashed password", "user", u.id, "err", err)
 	}
+}
+
+// ClearName clears the count of failed sign-ins of name, as a username and as
+// an email address are cleaned for the schedule. A completed password reset
+// calls it for the member's username and email address, so that a member whom
+// a stranger holds in a wait can sign in at once with the new password.
+func (s *Service) ClearName(name string) {
+	if s.opt.Schedule == nil || !utf8.ValidString(name) || len(name) > maxName || name == "" {
+		return
+	}
+	s.opt.Schedule.ClearName(account.CleanUsername(name))
 }
 
 // Hold takes the share of the gate that one new gobb hash needs, for the code

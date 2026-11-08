@@ -55,9 +55,11 @@ func DefaultDefense() DefenseConfig {
 // caller.
 //
 // It turns on at the failure that makes more than Failures in the Window up
-// to it. It turns off at the first call (Record, On or Refresh) at or after
-// Quiet past the moment that the rate fell back to Failures or fewer. Each
-// change writes one log line, with counts and no address, and sets the gauge
+// to it. It records the latest moment that the count stays over the trigger
+// (overUntil). It turns off at the first call (Record, On or Refresh) at or
+// after Quiet past that moment, while the count is not over the trigger. A
+// steady trickle under the trigger therefore does not hold it on. Each change
+// writes one log line, with counts and no address, and sets the gauge
 // gobb_defensive_mode.
 type Defense struct {
 	cfg DefenseConfig
@@ -73,6 +75,9 @@ type Defense struct {
 	// since then.
 	since  time.Time
 	during int64
+	// overUntil is the latest moment at which the count in the window is over
+	// the trigger, as the failures recorded so far make it.
+	overUntil time.Time
 }
 
 // NewDefense returns Defensive Mode, off, with cfg.
@@ -125,6 +130,13 @@ func (d *Defense) Record(now time.Time) {
 	if d.on {
 		d.during++
 	}
+	// While more than Failures fall in the window, the count stays over the
+	// trigger until the oldest of the latest Failures+1 leaves it.
+	if t, ok := d.oldest(); ok && d.over(now) {
+		if end := t.Add(d.cfg.Window); end.After(d.overUntil) {
+			d.overUntil = end
+		}
+	}
 	d.refresh(now)
 }
 
@@ -154,16 +166,10 @@ func (d *Defense) refresh(now time.Time) {
 		metrics.DefensiveMode.Set(1)
 		slog.Warn("defensive mode on", "failed_signins", d.cfg.Failures+1,
 			"window_seconds", d.cfg.Window.Seconds(), "trigger", d.cfg.Failures)
-	case d.on && !d.over(now):
-		// The latest moment with more than Failures in the window is the
-		// oldest failure in the ring plus the window. Any earlier moment over
-		// the trigger ends sooner, so this never turns off early.
-		t, _ := d.oldest()
-		if below := t.Add(d.cfg.Window); !now.Before(below.Add(d.cfg.Quiet)) {
-			d.on = false
-			metrics.DefensiveMode.Set(0)
-			slog.Info("defensive mode off", "on_seconds", int64(now.Sub(d.since)/time.Second),
-				"failed_signins", d.during, "quiet_seconds", d.cfg.Quiet.Seconds())
-		}
+	case d.on && !d.over(now) && !now.Before(d.overUntil.Add(d.cfg.Quiet)):
+		d.on = false
+		metrics.DefensiveMode.Set(0)
+		slog.Info("defensive mode off", "on_seconds", int64(now.Sub(d.since)/time.Second),
+			"failed_signins", d.during, "quiet_seconds", d.cfg.Quiet.Seconds())
 	}
 }
