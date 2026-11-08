@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.1 (2026-11-08)
+
+- **The sign-in floor no longer depends on how busy the host was at start** (#12).
+  The server times each hash shape 5 times, in rounds, and keeps the lowest time of
+  each. T is the slowest of those lows, and the floor is still max(400 ms, 2 x K x
+  T), rounded up to 50 ms. A start on a busy host set the floor more than twice too
+  high until the next restart. The `login: sign-in floor` line now gives
+  `samples=5`. The timing takes about five times as long, so a start takes a few
+  seconds more; a stop signal during it ends the start.
+
 ## 0.10.0 (2026-11-08)
 
 - **`gobb ban list` and `gobb ban lift <id>`** (#46). `list` prints the bans in
