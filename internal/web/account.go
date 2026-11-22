@@ -26,8 +26,8 @@ import (
 // address, and a 3-byte character percent-encodes to 9 bytes.
 const maxAccountBody = 48 << 10
 
-// doneNotices are the three notices that /account?done=... can show. Any other
-// value shows nothing.
+// doneNotices are the notices that /account?done=... and
+// /account/preferences?done=... can show. Any other value shows nothing.
 var doneNotices = map[string]string{
 	"password":       "Your password is changed.",
 	"email":          "Your email address is changed.",
@@ -102,7 +102,7 @@ type settingsErr struct {
 	Birthday, Avatar                                       string
 }
 
-// accountData is the data of account.html.
+// accountData is the data of account.html and preferences.html.
 //
 // The embedded AccountPage holds the stored settings. On a failed POST of "About
 // you", the values that the member sent replace them. The time zone and the date
@@ -200,10 +200,33 @@ func (d accountData) SelectedInAll(zone string) bool {
 	return zone == d.Timezone && !d.InCommon(zone)
 }
 
+// accountNav is the nav key of one of the two pages of the account: "Your
+// account" or "Preferences". The key of the page that a settings handler starts
+// picks the page that its answers show ([site.renderAccount],
+// [site.accountPath]). The handlers name the key by its constant only.
+type accountNav string
+
+// The nav keys of the two pages of the account.
+const (
+	navAccount     accountNav = "account"
+	navPreferences accountNav = "preferences"
+)
+
 // account serves GET /account: a guest goes to sign in and comes back here; a
-// member sees the three forms.
+// member sees the forms of the account.
 func (s *site) account(w http.ResponseWriter, r *http.Request) {
-	p, err := s.begin(w, r, "Account", "account")
+	s.showAccount(w, r, navAccount)
+}
+
+// preferences serves GET /account/preferences: the time zone and the date
+// format. A guest goes to sign in and comes back here.
+func (s *site) preferences(w http.ResponseWriter, r *http.Request) {
+	s.showAccount(w, r, navPreferences)
+}
+
+// showAccount serves the page of the account with the nav key nav.
+func (s *site) showAccount(w http.ResponseWriter, r *http.Request, nav accountNav) {
+	p, err := s.begin(w, r, "Account", string(nav))
 	if err != nil {
 		s.serverError(w, r, err)
 		return
@@ -212,7 +235,7 @@ func (s *site) account(w http.ResponseWriter, r *http.Request) {
 		// The redirect is not a page, so the robots meta element has no place on
 		// it; the header says the same.
 		w.Header().Set("X-Robots-Tag", "noindex")
-		http.Redirect(w, r, s.loginHref(s.path("account")), http.StatusFound)
+		http.Redirect(w, r, s.loginHref(s.accountPath(p)), http.StatusFound)
 		return
 	}
 	d, err := s.accountData(r, p)
@@ -258,12 +281,27 @@ func zoneCity(zone string) string {
 	return strings.ReplaceAll(city, "_", " ")
 }
 
-// renderAccount writes the account page. The forms of the layout return to the
-// account page, not to the address of a POST.
+// accountPath is the site path of the page of the account that p belongs to:
+// /account/preferences for the Preferences page, /account for any other.
+func (s *site) accountPath(p *page) string {
+	if p.navKey == string(navPreferences) {
+		return s.path("account", "preferences")
+	}
+	return s.path("account")
+}
+
+// renderAccount writes the page of the account that p belongs to: the
+// Preferences page, or the account page. The forms of the layout return to that
+// page, not to the address of a POST.
 func (s *site) renderAccount(w http.ResponseWriter, status int, p *page, d accountData) {
-	p.Return = s.path("account")
-	p.Title = "Account"
+	p.Return = s.accountPath(p)
 	p.Data = d
+	if p.navKey == string(navPreferences) {
+		p.Title = "Preferences"
+		s.render(w, status, "preferences.html", p)
+		return
+	}
+	p.Title = "Account"
 	s.render(w, status, "account.html", p)
 }
 
@@ -271,7 +309,7 @@ func (s *site) renderAccount(w http.ResponseWriter, status int, p *page, d accou
 // and the data, or answers and reports false. A guest, and a member who lacks
 // option, get 403 before any check of a password or any hash.
 func (s *site) accountMember(w http.ResponseWriter, r *http.Request, option, action string) (*page, accountData, bool) {
-	p, err := s.begin(w, r, "Account", "account")
+	p, err := s.begin(w, r, "Account", string(navAccount))
 	if err != nil {
 		s.serverError(w, r, err)
 		return nil, accountData{}, false
@@ -538,10 +576,10 @@ func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 	// The signature counts as a save, whether it comes from gobb.js or from a form.
 	// The try is counted first, as every other setting counts it, before any read
 	// of the database for the page.
-	if !s.takeSave(w, r, s.saves.saves, msgTooManySaves, func(d *accountData) { d.Signature = text }) {
+	if !s.takeSave(w, r, navAccount, s.saves.saves, msgTooManySaves, func(d *accountData) { d.Signature = text }) {
 		return
 	}
-	p, err := s.begin(w, r, "Account", "account")
+	p, err := s.begin(w, r, "Account", string(navAccount))
 	if err != nil {
 		slog.Error("account: page", "path", r.URL.Path, "err", err)
 		s.bareForm(w, r, nil, failStatus(r, err), msgSignatureFail, text)

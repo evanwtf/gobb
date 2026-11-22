@@ -194,6 +194,10 @@ func TestHeaderUser(t *testing.T) {
 	if !strings.Contains(menu, `<a href="/account">Your account</a>`) {
 		t.Errorf("the menu has no link to the account page, or it is current on the index:\n%s", menu)
 	}
+	// Preferences comes right after Your account.
+	if !regexp.MustCompile(`<li><a href="/account">Your account</a></li>\s*<li><a href="/account/preferences">Preferences</a></li>`).MatchString(menu) {
+		t.Errorf("the menu has no Preferences link right after Your account, or it is current on the index:\n%s", menu)
+	}
 	if !strings.Contains(menu, `action="/logout"`) || !strings.Contains(menu, `name="csrf"`) || !strings.Contains(menu, ">Sign out</button>") {
 		t.Errorf("the Sign out form is not in the menu:\n%s", menu)
 	}
@@ -223,8 +227,15 @@ func TestHeaderUser(t *testing.T) {
 
 	// On the account page the account link is the current page.
 	top, _ = headerParts(t, bodyOf(t, getAs(t, h, "/account", cookies)))
-	if !strings.Contains(menuOf(top), `<a href="/account" aria-current="page">Your account</a>`) {
-		t.Errorf("the account link lacks aria-current on /account:\n%s", top)
+	if !strings.Contains(menuOf(top), `<a href="/account" aria-current="page">Your account</a>`) ||
+		!strings.Contains(menuOf(top), `<a href="/account/preferences">Preferences</a>`) {
+		t.Errorf("the account link lacks aria-current on /account, or Preferences has it:\n%s", top)
+	}
+	// On the Preferences page the Preferences link is the current page.
+	top, _ = headerParts(t, bodyOf(t, getAs(t, h, "/account/preferences", cookies)))
+	if !strings.Contains(menuOf(top), `<a href="/account/preferences" aria-current="page">Preferences</a>`) ||
+		!strings.Contains(menuOf(top), `<a href="/account">Your account</a>`) {
+		t.Errorf("the Preferences link lacks aria-current on /account/preferences, or Your account has it:\n%s", top)
 	}
 
 	// A guest: a Sign in link and no menu. Team stays in the nav on every screen,

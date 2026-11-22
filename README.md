@@ -1,8 +1,8 @@
 # gobb
 
 A small forum server in Go. Members read and write topics, keep their own settings on
-the account page (time zone, date format, avatar, "About you", birthday, signature), and
-send each other private messages.
+the account page (avatar, "About you", birthday, signature) and the Preferences page
+(time zone, date format), and send each other private messages.
 
 ## Bootstrap
 

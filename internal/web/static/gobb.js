@@ -35,7 +35,7 @@
   });
 })();
 
-// ---- Auto-save of the account page -------------------------------------------
+// ---- Auto-save of the account and Preferences pages --------------------------
 // A form with data-autosave saves each field when its change event fires, and a
 // text box also saves when the member stops typing for TYPE_QUIET ms. The
 // field goes to the form's own address with fetch, plus the csrf token of the

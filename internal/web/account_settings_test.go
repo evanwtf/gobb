@@ -202,21 +202,23 @@ func TestAccountSettingsNoScript(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
 
+	// The time zone and the date format live on the Preferences page, so their
+	// no-script answers go there; "About you" stays on the account page.
 	for _, tc := range []struct {
-		name, target, done string
-		form               url.Values
-		col, want          string
+		name, target, page, done string
+		form                     url.Values
+		col, want                string
 	}{
-		{"time zone", "/account/timezone", "timezone", url.Values{"timezone": {"Europe/London"}}, "timezone", "Europe/London"},
-		{"date format", "/account/dateformat", "dateformat", url.Values{"dateformat": {"iso"}}, "date_format", "iso"},
-		{"about you", "/account/about", "about", url.Values{
+		{"time zone", "/account/timezone", "/account/preferences", "timezone", url.Values{"timezone": {"Europe/London"}}, "timezone", "Europe/London"},
+		{"date format", "/account/dateformat", "/account/preferences", "dateformat", url.Values{"dateformat": {"iso"}}, "date_format", "iso"},
+		{"about you", "/account/about", "/account", "about", url.Values{
 			"location": {"Lake Placid, NY"}, "occupation": {"Ski instructor"}, "interests": {"Old radios"},
 			"website": {"https://example.com/sample"}, "bday": {"14"}, "bmonth": {"3"}, "byear": {"1984"},
 		}, "location", "Lake Placid, NY"},
 	} {
 		rec := postWith(t, h, tc.target, a, tc.form, nil)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/account?done="+tc.done {
-			t.Errorf("%s: %d %q, want 303 /account?done=%s\n%s", tc.name, rec.Code, rec.Header().Get("Location"), tc.done, bodyOf(t, rec))
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.page+"?done="+tc.done {
+			t.Errorf("%s: %d %q, want 303 %s?done=%s\n%s", tc.name, rec.Code, rec.Header().Get("Location"), tc.page, tc.done, bodyOf(t, rec))
 		}
 		if got := userCol(t, pool, 1, tc.col); got != tc.want {
 			t.Errorf("%s: %s = %q, want %q", tc.name, tc.col, got, tc.want)
@@ -647,15 +649,16 @@ func TestAvatarNeedsTheRight(t *testing.T) {
 	if avatarOf(t, pool, 1) != "avatars/1.png" || !fileExists(filepath.Join(dataDir, "avatars/1.png")) {
 		t.Error("a refused change touched the avatar")
 	}
-	// The page shows neither section, and still shows the time zone.
+	// The account page shows neither section, and the Preferences page still
+	// shows the time zone.
 	page := bodyOf(t, getAs(t, h, "/account", a))
 	for _, absent := range []string{`name="avatar"`, `name="location"`} {
 		if strings.Contains(page, absent) {
 			t.Errorf("the page still holds %s", absent)
 		}
 	}
-	if !strings.Contains(page, `name="timezone"`) {
-		t.Error("the page lacks the time zone")
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/account/preferences", a)), `name="timezone"`) {
+		t.Error("the Preferences page lacks the time zone")
 	}
 }
 
@@ -728,14 +731,14 @@ func TestSaveRateLimit(t *testing.T) {
 	}
 }
 
-func TestAccountPageUnknownStoredZone(t *testing.T) {
+func TestPreferencesPageUnknownStoredZone(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
 	exec(t, pool, `update users set timezone = 'Asia/Old_Name' where id = 1`)
-	rec := getAs(t, h, "/account", a)
+	rec := getAs(t, h, "/account/preferences", a)
 	page := bodyOf(t, rec)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /account = %d", rec.Code)
+		t.Fatalf("GET /account/preferences = %d", rec.Code)
 	}
 	if !regexp.MustCompile(`<option value="Asia/Old_Name" selected>Asia/Old_Name \(your current setting\)</option>`).MatchString(page) {
 		t.Errorf("the page lacks the stored zone as the selected first option")
@@ -759,11 +762,9 @@ func TestAccountPageSettingsSections(t *testing.T) {
 		birth_day = 14, birth_month = 3, birth_year = 1984 where id = 1`)
 	page := bodyOf(t, getAs(t, h, "/account", a))
 	for _, want := range []string{
-		`action="/account/timezone"`, `action="/account/dateformat"`, `action="/account/about"`,
+		`<h1>Your account</h1>`, `action="/account/about"`,
 		`action="/account/avatar"`, `action="/account/avatar/remove"`, `enctype="multipart/form-data"`,
-		`<optgroup label="Common">`, `<optgroup label="All zones">`,
-		`<option value="Europe/London" selected>`,
-		`id="timezone-status"`, `id="dateformat-status"`, `id="location-status"`, `id="website-status"`,
+		`id="location-status"`, `id="website-status"`,
 		`id="birthday-status"`, `id="avatar-status"`, `id="signature-status"`,
 		`role="status" aria-live="polite"`, `save-fallback`, `data-autosave`,
 		`<span class="save-auto">Changes save as you make them.</span>`,
@@ -771,18 +772,24 @@ func TestAccountPageSettingsSections(t *testing.T) {
 		`<option value="3" selected>March</option>`, `<option value="1984" selected>1984</option>`,
 		"Leave out the year if you don't want your age shown.",
 		"A PNG, JPEG or GIF of at most 1 MB.",
-		"Right now it is",
+		`<a href="/account/preferences">Preferences: time zone and date format</a>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the account page lacks %s", want)
 		}
 	}
+	// The time zone and the date format are on the Preferences page only.
+	for _, gone := range []string{
+		`action="/account/timezone"`, `action="/account/dateformat"`, `id="timezone"`, `name="dateformat"`,
+		`id="timezone-status"`, `id="dateformat-status"`, `<optgroup label="Common">`, "Right now it is",
+		">Time zone</h2>", ">Date format</h2>",
+	} {
+		if strings.Contains(page, gone) {
+			t.Errorf("the account page still holds %s", gone)
+		}
+	}
 	if got, _ := inputValue(page, "location"); got != "Lake Placid" {
 		t.Errorf("location box = %q", got)
-	}
-	if !regexp.MustCompile(`name="dateformat" id="[^"]*" value="relative" checked`).MatchString(page) &&
-		!regexp.MustCompile(`value="relative" checked`).MatchString(page) {
-		t.Error("the relative format is not checked")
 	}
 	// The latest year is now - 19 and the list ends at 1900.
 	latest := regexp.MustCompile(`<select[^>]*name="byear"[^>]*>(?s:(.*?))</select>`).FindStringSubmatch(page)
@@ -809,6 +816,130 @@ func TestAccountPageSettingsSections(t *testing.T) {
 	}
 }
 
+func TestPreferencesPageSections(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	exec(t, pool, `update users set timezone = 'Europe/London', date_format = 'relative' where id = 1`)
+	rec := getAs(t, h, "/account/preferences", a)
+	page := bodyOf(t, rec)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /account/preferences = %d", rec.Code)
+	}
+	for _, want := range []string{
+		`<title>Preferences`, `<h1>Preferences</h1>`,
+		`action="/account/timezone"`, `action="/account/dateformat"`,
+		`<optgroup label="Common">`, `<optgroup label="All zones">`,
+		`<option value="Europe/London" selected>`,
+		`id="timezone-status"`, `id="dateformat-status"`,
+		`role="status" aria-live="polite"`, `save-fallback`,
+		`<span class="save-auto">Changes save as you make them.</span>`,
+		`<span class="save-manual">Save each section with its button.</span>`,
+		">Save time zone</button>", ">Save date format</button>",
+		`<a href="/account">Your account</a>`,
+		"Right now it is",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the Preferences page lacks %s", want)
+		}
+	}
+	// Both forms save as the member makes a change.
+	for _, action := range []string{"timezone", "dateformat"} {
+		form := regexp.MustCompile(`<form[^>]*action="/account/` + action + `"[^>]*>`).FindString(page)
+		if !strings.Contains(form, "data-autosave") {
+			t.Errorf("the %s form is not auto-saved: %s", action, form)
+		}
+	}
+	if !regexp.MustCompile(`id="dateformat-relative" value="relative" checked`).MatchString(page) {
+		t.Error("the relative format is not checked")
+	}
+	// The other forms of the account are not on this page.
+	for _, gone := range []string{`action="/account/about"`, `action="/account/avatar"`, `action="/account/signature"`,
+		`action="/account/password"`, `action="/account/email"`} {
+		if strings.Contains(page, gone) {
+			t.Errorf("the Preferences page holds %s", gone)
+		}
+	}
+	// The notice of a save shows here.
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/account/preferences?done=timezone", a)), "Your time zone is saved.") {
+		t.Error("the Preferences page lacks the notice of the time zone save")
+	}
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/account/preferences?done=dateformat", a)), "Your date format is saved.") {
+		t.Error("the Preferences page lacks the notice of the date format save")
+	}
+	// No inline script, style attribute or style element.
+	if strings.Contains(page, " style=") || strings.Contains(page, "<style") || strings.Contains(page, "<script>") {
+		t.Error("the Preferences page holds inline script or style")
+	}
+}
+
+// A member with none of the rights of the account page sees no save line there,
+// one sentence that there is nothing to change, and the link to Preferences.
+func TestAccountPageWithNoRights(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	for _, option := range []string{"account.profile", "account.avatar", "account.signature", "account.password", "account.email"} {
+		exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (1, 0, '`+option+`', 2)`)
+	}
+	page := bodyOf(t, getAs(t, h, "/account", a))
+	for _, gone := range []string{"Changes save as you make them.", "Save each section with its button.",
+		`action="/account/about"`, `action="/account/avatar"`, `action="/account/signature"`, `action="/account/password"`, `action="/account/email"`} {
+		if strings.Contains(page, gone) {
+			t.Errorf("the account page with no rights holds %s", gone)
+		}
+	}
+	for _, want := range []string{`<p class="page-sub">You have nothing to change on this page.</p>`,
+		`<a href="/account/preferences">Preferences: time zone and date format</a>`, `href="/u/1"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the account page with no rights lacks %s", want)
+		}
+	}
+	// With one right the save line is back and the sentence is gone.
+	exec(t, pool, `delete from acl_user_grants where user_id = 1 and option = 'account.signature'`)
+	page = bodyOf(t, getAs(t, h, "/account", a))
+	if !strings.Contains(page, "Changes save as you make them.") || strings.Contains(page, "nothing to change") {
+		t.Error("with the signature right the page lacks the save line, or still says there is nothing to change")
+	}
+}
+
+// A refused time zone or date format without script answers with the Preferences
+// page and the message beside the field, not with the account page.
+func TestPreferencesRefusalShowsThePreferencesPage(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	for _, tc := range []struct {
+		target   string
+		form     url.Values
+		errID    string
+		errText  string
+		original string
+	}{
+		{"/account/timezone", url.Values{"timezone": {"Mars/Base"}}, `id="timezone-error"`, "Pick a time zone from the list.", "timezone"},
+		{"/account/dateformat", url.Values{"dateformat": {"fancy"}}, `id="dateformat-error"`, "Pick one of the three formats.", "date_format"},
+	} {
+		before := userCol(t, pool, 1, tc.original)
+		rec := postWith(t, h, tc.target, a, tc.form, nil)
+		page := bodyOf(t, rec)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", tc.target, rec.Code)
+		}
+		for _, want := range []string{`<h1>Preferences</h1>`, tc.errID, tc.errText} {
+			if !strings.Contains(page, want) {
+				t.Errorf("%s: the refusal page lacks %s", tc.target, want)
+			}
+		}
+		if strings.Contains(page, `<h1>Your account</h1>`) || strings.Contains(page, `action="/account/about"`) {
+			t.Errorf("%s: the refusal is the account page", tc.target)
+		}
+		// The menu marks the Preferences page as current.
+		if !strings.Contains(page, `<a href="/account/preferences" aria-current="page">Preferences</a>`) {
+			t.Errorf("%s: the menu does not mark Preferences as current", tc.target)
+		}
+		if got := userCol(t, pool, 1, tc.original); got != before {
+			t.Errorf("%s: a refusal stored %q", tc.target, got)
+		}
+	}
+}
+
 func TestAccountGuest(t *testing.T) {
 	h, _ := siteWithPool(t, postingBoard(), Options{})
 	rec := get(t, h, "/account")
@@ -817,6 +948,14 @@ func TestAccountGuest(t *testing.T) {
 	}
 	if rec.Header().Get("X-Robots-Tag") != "noindex" {
 		t.Errorf("the guest redirect lacks X-Robots-Tag: noindex")
+	}
+	// The Preferences page sends a guest to sign in and back to itself.
+	rec = get(t, h, "/account/preferences")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login?next=%2Faccount%2Fpreferences" {
+		t.Errorf("guest GET /account/preferences = %d %q, want 302 to /login?next=%%2Faccount%%2Fpreferences", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec.Header().Get("X-Robots-Tag") != "noindex" {
+		t.Errorf("the guest redirect of /account/preferences lacks X-Robots-Tag: noindex")
 	}
 	for _, target := range []string{"/account/timezone", "/account/dateformat", "/account/about", "/account/avatar",
 		"/account/avatar/remove", "/account/signature", "/account/password", "/account/email"} {
@@ -843,10 +982,12 @@ func TestAccountGuest(t *testing.T) {
 	}
 	// A member's page carries noindex and no-store.
 	a := signIn(t, h, "alice", testPassword)
-	rec = getAs(t, h, "/account", a)
-	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "private, no-store" ||
-		!strings.Contains(bodyOf(t, rec), `<meta name="robots" content="noindex`) {
-		t.Errorf("member /account: %d, Cache-Control %q", rec.Code, rec.Header().Get("Cache-Control"))
+	for _, target := range []string{"/account", "/account/preferences"} {
+		rec = getAs(t, h, target, a)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "private, no-store" ||
+			!strings.Contains(bodyOf(t, rec), `<meta name="robots" content="noindex`) {
+			t.Errorf("member %s: %d, Cache-Control %q", target, rec.Code, rec.Header().Get("Cache-Control"))
+		}
 	}
 }
 
@@ -1375,7 +1516,7 @@ func TestAccountZoneHint(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{Now: func() time.Time { return now }})
 	a := signIn(t, h, "alice", testPassword)
 	exec(t, pool, `update users set timezone = 'America/Los_Angeles' where id = 1`)
-	page := bodyOf(t, getAs(t, h, "/account", a))
+	page := bodyOf(t, getAs(t, h, "/account/preferences", a))
 	want := `Right now it is <span id="timezone-now">Oct 25, 2026, 1:44 pm</span> in <span id="timezone-city">Los Angeles</span>.`
 	if !strings.Contains(page, want) {
 		t.Errorf("the hint is not %q", want)
@@ -1739,6 +1880,9 @@ func TestZoneAndFormat429ShowTheSentValue(t *testing.T) {
 	page := bodyOf(t, rec)
 	if rec.Code != http.StatusTooManyRequests || !strings.Contains(page, msgTooManySaves) {
 		t.Fatalf("time zone over the limit = %d", rec.Code)
+	}
+	if !strings.Contains(page, `<h1>Preferences</h1>`) {
+		t.Error("the 429 page of the time zone is not the Preferences page")
 	}
 	if !strings.Contains(page, `<option value="Asia/Tokyo" selected>`) {
 		t.Error("the page does not select the time zone that was sent")

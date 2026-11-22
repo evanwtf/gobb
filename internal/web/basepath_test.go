@@ -220,11 +220,30 @@ func TestBasePathEverywhere(t *testing.T) {
 	account := bodyOf(t, rec)
 	checkBasePath(t, "alice /forum/account", account, "/forum/")
 	for _, want := range []string{`action="/forum/account/password"`, `action="/forum/account/email"`, `action="/forum/account/signature"`,
-		`action="/forum/account/timezone"`, `action="/forum/account/dateformat"`, `action="/forum/account/about"`,
-		`action="/forum/account/avatar"`, `action="/forum/account/avatar/remove"`} {
+		`action="/forum/account/about"`, `action="/forum/account/avatar"`, `action="/forum/account/avatar/remove"`,
+		`href="/forum/account/preferences"`} {
 		if !strings.Contains(account, want) {
 			t.Errorf("/forum/account lacks %s", want)
 		}
+	}
+	// The Preferences page: the same under the prefix, and its two forms.
+	if rec := get(t, h, "/forum/account/preferences"); rec.Header().Get("Location") != "/forum/login?next=%2Fforum%2Faccount%2Fpreferences" {
+		t.Errorf("guest /forum/account/preferences = %q", rec.Header().Get("Location"))
+	}
+	rec = getAs(t, h, "/forum/account/preferences", alice)
+	if rec.Code != http.StatusOK {
+		t.Errorf("alice /forum/account/preferences = %d", rec.Code)
+	}
+	prefs := bodyOf(t, rec)
+	checkBasePath(t, "alice /forum/account/preferences", prefs, "/forum/")
+	for _, want := range []string{`action="/forum/account/timezone"`, `action="/forum/account/dateformat"`, `href="/forum/account"`} {
+		if !strings.Contains(prefs, want) {
+			t.Errorf("/forum/account/preferences lacks %s", want)
+		}
+	}
+	if rec := postWith(t, h, "/forum/account/timezone", alice, url.Values{"timezone": {"Europe/Paris"}, "csrf": {formToken(t, prefs)}}, nil); rec.Code != http.StatusSeeOther ||
+		rec.Header().Get("Location") != "/forum/account/preferences?done=timezone" {
+		t.Errorf("POST /forum/account/timezone = %d %q, want 303 /forum/account/preferences?done=timezone", rec.Code, rec.Header().Get("Location"))
 	}
 	// The three POST routes exist only under the prefix.
 	for _, p := range []string{"/account/password", "/account/email", "/account/signature", "/account/timezone",
