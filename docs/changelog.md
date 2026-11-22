@@ -9,6 +9,8 @@
   saved yet." while the member types, then "Saved ✓" in the accent color. Leaving
   the box, Enter, and closing the page still save at once. The Save buttons stay
   the form for browsers without script.
+- **Go 1.27.4.** It fixes GO-2026-6859 in `net/http`, which govulncheck found
+  reachable from gobb on Go 1.27.3.
 
 ## 0.19.2 (2026-11-08)
 
