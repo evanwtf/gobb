@@ -144,7 +144,7 @@
         {{- if .Data.Sig.Text}} aria-invalid="true"{{end}}>{{textareaValue .Data.Signature}}</textarea>
       <p class="save-status" id="signature-status" role="status" aria-live="polite"></p>
       {{- if .Data.Sig.Text}}<p class="field-error" id="sig-error" role="alert">{{.Data.Sig.Text}}</p>{{end}}
-      <p class="hint" id="sig-hint">At most 2,000 bytes. Markdown works here: **bold**, *italic*, [link](https://example.com). Leave it empty for no signature. It saves when you leave the box.</p>
+      <p class="hint" id="sig-hint">At most 2,000 bytes. Markdown works here: **bold**, *italic*, [link](https://example.com). Leave it empty for no signature. It saves when you stop typing.</p>
     </div>
     <div class="form-actions save-fallback">
       <button class="button button-inline" type="submit">Save signature</button>

@@ -905,7 +905,8 @@ func TestScriptHasNoHTMLSinks(t *testing.T) {
 			t.Errorf("gobb.js holds %s", sink)
 		}
 	}
-	for _, want := range []string{"X-Gobb-Save", "credentials", "keepalive", "pagehide", "data-autosave", "SELECT_QUIET = 400"} {
+	for _, want := range []string{"X-Gobb-Save", "credentials", "keepalive", "pagehide", "data-autosave", "SELECT_QUIET = 400", "TYPE_QUIET = 1500",
+		`form.addEventListener("input"`, `"Not saved yet."`, `"Saved ✓"`, "save-ok"} {
 		if !bytes.Contains(src, []byte(want)) {
 			t.Errorf("gobb.js lacks %s", want)
 		}

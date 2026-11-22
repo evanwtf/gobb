@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.3 (2026-11-22)
+
+- **Account page: saves while you type** (#82). A text box (the signature, the
+  About you fields) saved only when the member left it, so a member on a phone who
+  never left the signature box saw no save and no Save button. A text box now
+  saves when the member stops typing for 1.5 seconds. Its status line says "Not
+  saved yet." while the member types, then "Saved ✓" in the accent color. Leaving
+  the box, Enter, and closing the page still save at once. The Save buttons stay
+  the form for browsers without script.
+- **Go 1.27.4.** It fixes GO-2026-6859 in `net/http`, which govulncheck found
+  reachable from gobb on Go 1.27.3.
+
 ## 0.19.2 (2026-11-08)
 
 - **Guest page cache** (#75): a drop discards only what it reaches, including
