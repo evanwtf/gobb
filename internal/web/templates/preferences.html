@@ -55,4 +55,19 @@
     <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save date format</button></div>
   </form>
 </section>
+
+<section class="account-section" aria-labelledby="scheme-title">
+  <h2 id="scheme-title">Color scheme</h2>
+  <form class="post-form" method="post" action="{{path "account" "scheme"}}" data-autosave>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <fieldset class="field"><legend>Show the board in</legend>
+      {{- range .Data.Schemes}}
+      <p class="field-check"><input type="radio" name="scheme" id="scheme-{{.Value}}" value="{{.Value}}"{{if .Current}} checked{{end}}> <label for="scheme-{{.Value}}">{{.Label}}</label></p>
+      {{- end}}
+      <p class="save-status" id="scheme-status" role="status" aria-live="polite"></p>
+      {{- if .Data.Err.Scheme}}<p class="field-error" id="scheme-error" role="alert">{{.Data.Err.Scheme}}</p>{{end}}
+    </fieldset>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save color scheme</button></div>
+  </form>
+</section>
 {{end}}

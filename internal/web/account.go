@@ -34,6 +34,7 @@ var doneNotices = map[string]string{
 	"signature":      "Your signature is saved.",
 	"timezone":       "Your time zone is saved.",
 	"dateformat":     "Your date format is saved.",
+	"scheme":         "Your color scheme is saved.",
 	"about":          "Your changes are saved.",
 	"avatar":         "Your avatar is saved.",
 	"avatar-removed": "Your avatar is removed.",
@@ -97,16 +98,16 @@ type signatureErr struct{ Text string }
 // settingsErr holds the messages that sit beside the fields of the settings
 // forms. Notice is for the whole page.
 type settingsErr struct {
-	Notice                                                 string
-	Zone, Format, Location, Occupation, Interests, Website string
-	Birthday, Avatar                                       string
+	Notice                                                         string
+	Zone, Format, Scheme, Location, Occupation, Interests, Website string
+	Birthday, Avatar                                               string
 }
 
 // accountData is the data of account.html and preferences.html.
 //
 // The embedded AccountPage holds the stored settings. On a failed POST of "About
-// you", the values that the member sent replace them. The time zone and the date
-// format keep the stored value.
+// you", the values that the member sent replace them. The time zone, the date
+// format and the color scheme keep the stored value.
 type accountData struct {
 	board.AccountPage
 	// Done is the fixed notice of a change that succeeded, or empty.
@@ -130,6 +131,8 @@ type accountData struct {
 	// Common and Zones are the choices of the time zone list.
 	Common []tz.Choice
 	Zones  []string
+	// Schemes are the choices of the color scheme, with the stored one marked.
+	Schemes []schemeChoice
 }
 
 // dateSamples are the samples that the date format choices show.
@@ -218,8 +221,8 @@ func (s *site) account(w http.ResponseWriter, r *http.Request) {
 	s.showAccount(w, r, navAccount)
 }
 
-// preferences serves GET /account/preferences: the time zone and the date
-// format. A guest goes to sign in and comes back here.
+// preferences serves GET /account/preferences: the time zone, the date format
+// and the color scheme. A guest goes to sign in and comes back here.
 func (s *site) preferences(w http.ResponseWriter, r *http.Request) {
 	s.showAccount(w, r, navPreferences)
 }
@@ -258,7 +261,8 @@ func (s *site) accountData(r *http.Request, p *page) (accountData, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
-	d := accountData{AccountPage: ap, Email: ap.Email, Signature: ap.Signature, Common: tz.Common, Zones: tz.Zones}
+	d := accountData{AccountPage: ap, Email: ap.Email, Signature: ap.Signature, Common: tz.Common, Zones: tz.Zones,
+		Schemes: choices(p.Viewer.Scheme)}
 	d.LatestYear = now.UTC().Year() - account.MinAge
 	d.NowText = now.In(loc).Format(timeLayout)
 	d.NowCity = zoneCity(loc.String())

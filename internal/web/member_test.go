@@ -352,6 +352,28 @@ func TestSchemePicker(t *testing.T) {
 	}
 }
 
+// A member picks the color scheme on the Preferences page, so a member's footer
+// has no picker. A guest's footer keeps it.
+func TestSchemePickerIsForGuests(t *testing.T) {
+	h, _ := siteAndPool(t, bundletest.Small(), Options{})
+	bob := signIn(t, h, "bob", testPassword)
+	for _, target := range []string{"/", "/t/1", "/account", "/account/preferences"} {
+		page := bodyOf(t, getAs(t, h, target, bob))
+		if strings.Contains(page, `class="scheme-picker"`) || strings.Contains(page, `action="/scheme"`) {
+			t.Errorf("member %s: the footer holds the scheme picker", target)
+		}
+		if !strings.Contains(page, `action="/logout"`) {
+			t.Errorf("member %s: the page lacks the sign-out form", target)
+		}
+	}
+	for _, target := range []string{"/", "/t/1"} {
+		page := bodyOf(t, get(t, h, target))
+		if !strings.Contains(page, `class="scheme-picker"`) || !strings.Contains(page, `action="/scheme"`) {
+			t.Errorf("guest %s: the footer lacks the scheme picker", target)
+		}
+	}
+}
+
 // A forum the viewer may list but not read has a lock. A guest is told that the
 // forum is for members; a member is told there is no access.
 func TestLockLabel(t *testing.T) {
@@ -423,10 +445,12 @@ func TestBasePathCookies(t *testing.T) {
 		}
 	}
 	body := bodyOf(t, getAs(t, h, "/forum/", cookies))
-	for _, want := range []string{`action="/forum/logout"`, `action="/forum/scheme"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the page lacks %s", want)
-		}
+	if !strings.Contains(body, `action="/forum/logout"`) {
+		t.Error("the page lacks the sign-out form under the prefix")
+	}
+	// The footer picker is for guests; a guest's page has it under the prefix.
+	if guest := bodyOf(t, getAs(t, h, "/forum/", nil)); !strings.Contains(guest, `action="/forum/scheme"`) {
+		t.Error("the guest page lacks the picker under the prefix")
 	}
 	checkBasePath(t, "/forum/ as alice", body, "/forum/")
 	rec, _ = postAsAt(t, h, "/forum/", "/forum/logout", cookies, url.Values{})

@@ -407,6 +407,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.Handle("POST /account/signature", s.protectPosting(maxPostingBody, s.changeSignature))
 	inner.Handle("POST /account/timezone", s.protect(maxPostBody, s.setTimezone))
 	inner.Handle("POST /account/dateformat", s.protect(maxPostBody, s.setDateFormat))
+	inner.Handle("POST /account/scheme", s.protect(maxPostBody, s.setAccountScheme))
 	inner.Handle("POST /account/about", s.protect(maxAccountBody, s.setAbout))
 	inner.Handle("POST /account/avatar", s.protectUpload(maxAvatarBody, s.uploadAvatar))
 	inner.Handle("POST /account/avatar/remove", s.protect(maxPostBody, s.removeAvatar))
@@ -610,7 +611,9 @@ type page struct {
 	// HeaderSrc is the site path of the header image, or empty.
 	HeaderSrc string
 	// Controls is true for a page that carries the forms of the layout: sign out
-	// and the scheme picker. render then gives it a csrf token.
+	// and the scheme picker. render then gives it a csrf token. The layout shows
+	// the scheme picker to a guest only: a member picks the scheme on the
+	// Preferences page.
 	Controls bool
 	// CSRF is the token for the forms of the page. render fills it in.
 	CSRF string

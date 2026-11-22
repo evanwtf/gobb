@@ -21,8 +21,8 @@ import (
 	"github.com/evanwtf/gobb/internal/tz"
 )
 
-// The settings of the account: the time zone and the date format (on the
-// Preferences page), "About you" and the avatar (on the account page). Each one
+// The settings of the account: the time zone, the date format and the color
+// scheme (on the Preferences page), "About you" and the avatar (on the account page). Each one
 // is a POST through site.protect (the upload through site.protectUpload). A
 // browser without script posts the form and gets a 303 to the page of the form,
 // or that page again with 400 and the message beside the field.
@@ -54,6 +54,7 @@ const (
 	msgBirthdayForm   = "Pick a day, a month and a year from the lists."
 	msgNoRight        = "You cannot make this change."
 	msgNotSaved       = "Not saved. Reload the page and try again."
+	msgSchemeUnknown  = "Pick one of the color schemes."
 )
 
 // maxAvatarBody is the cap of the body of an upload: the largest file and 64 KiB
@@ -307,6 +308,32 @@ func (s *site) setDateFormat(w http.ResponseWriter, r *http.Request) {
 	err := board.SetDateFormat(r.Context(), s.pool, p.Viewer, r.PostForm.Get("dateformat"))
 	s.settingResult(w, r, p, []error{err}, "dateformat", "dateformat", action, echo,
 		func(d *accountData, in *board.InputError) { d.Err.Format = in.Message })
+}
+
+// setAccountScheme serves POST /account/scheme: the color scheme of a member, from
+// the Preferences page. A guest picks a scheme with POST /scheme instead.
+func (s *site) setAccountScheme(w http.ResponseWriter, r *http.Request) {
+	const action = "change your color scheme"
+	// The sent scheme goes back into the radio buttons only when it is one of them.
+	echo := func(d *accountData) {
+		if sc := r.PostForm.Get("scheme"); board.ValidScheme(sc) {
+			d.Schemes = choices(sc)
+		}
+	}
+	p, ok := s.settingsStart(w, r, navPreferences, "", action, s.saves.saves, msgTooManySaves, echo)
+	if !ok {
+		return
+	}
+	var err error
+	if scheme := r.PostForm.Get("scheme"); !board.ValidScheme(scheme) {
+		err = &board.InputError{Field: "scheme", Message: msgSchemeUnknown}
+	} else if saved, werr := board.SetScheme(r.Context(), s.pool, p.Viewer.UserID, scheme); werr != nil {
+		err = werr
+	} else if !saved {
+		err = board.ErrNotFound
+	}
+	s.settingResult(w, r, p, []error{err}, "scheme", "scheme", action, echo,
+		func(d *accountData, in *board.InputError) { d.Err.Scheme = in.Message })
 }
 
 // aboutFields are the four text boxes of "About you".

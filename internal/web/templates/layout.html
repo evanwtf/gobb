@@ -95,7 +95,7 @@
     </nav>
     {{- end}}
     <p id="footer-zone">Times are shown in {{.Viewer.Loc}}.</p>
-    {{- if .Controls}}
+    {{- if and .Controls (not .Viewer.UserID)}}
     <form class="scheme-picker" method="post" action="{{path "scheme"}}" aria-label="Color scheme">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="next" value="{{.Return}}">

@@ -321,6 +321,7 @@ var bodyCaps = []struct {
 	{"/account/signature", "/account/signature", maxPostingBody},
 	{"/account/timezone", "/account/timezone", maxPostBody},
 	{"/account/dateformat", "/account/dateformat", maxPostBody},
+	{"/account/scheme", "/account/scheme", maxPostBody},
 	{"/account/about", "/account/about", maxAccountBody},
 	{"/account/avatar", "/account/avatar", maxAvatarBody},
 	{"/account/avatar/remove", "/account/avatar/remove", maxPostBody},

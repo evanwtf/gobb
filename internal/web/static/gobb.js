@@ -68,8 +68,8 @@
       (el instanceof HTMLInputElement && ["text", "search", "url", "email"].indexOf(el.type) >= 0);
   }
 
-  // unitOf returns what one save covers: the birthday's three lists, the date
-  // format's three choices, or one field.
+  // unitOf returns what one save covers: the birthday's three lists, the radio
+  // buttons of one fieldset (the date format, the color scheme), or one field.
   function unitOf(el) {
     var birthday = el.closest("[data-birthday]");
     if (birthday) {
@@ -154,6 +154,7 @@
         return {skip: true};
       }
       params.append(chosen.name, chosen.value);
+      return {body: params.toString(), text: true, value: chosen.value};
     } else if (unit.type === "file") {
       var file = unit.files[0];
       if (!file) {
@@ -246,9 +247,13 @@
     }
   }
 
-  // saved runs after the server accepted a unit.
-  function saved(unit, data) {
-    if (unit.name === "timezone") {
+  // saved runs after the server accepted a unit. sent is what the save sent.
+  function saved(unit, data, sent) {
+    if (unitName(unit) === "scheme" && sent.value) {
+      // The page takes the new colors at once: the stylesheet keys on the
+      // data-scheme attribute of <html>.
+      document.documentElement.dataset.scheme = sent.value;
+    } else if (unit.name === "timezone") {
       var line = document.getElementById("footer-zone");
       if (line) {
         line.textContent = "Times are shown in " + unit.value + ".";
@@ -281,11 +286,11 @@
 
   // finish runs when a save ends. A change that came in meanwhile goes next, with
   // its latest value only.
-  function finish(unit, res) {
+  function finish(unit, res, sent) {
     var st = stateOf(unit);
     st.busy = false;
     if (res.ok) {
-      saved(unit, res.data);
+      saved(unit, res.data, sent);
       show(unit, "Saved ✓", false, true);
     } else {
       show(unit, res.data.message || "Not saved. Try again in a moment.", true);
@@ -323,9 +328,9 @@
     }
     show(unit, "Saving…", false);
     post(form.action, req).then(function (res) {
-      finish(unit, res);
+      finish(unit, res, req);
     }, function () {
-      finish(unit, {ok: false, data: {message: "Not saved: the server could not be reached. Try again."}});
+      finish(unit, {ok: false, data: {message: "Not saved: the server could not be reached. Try again."}}, req);
     });
   }
 
