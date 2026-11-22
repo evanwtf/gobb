@@ -22,10 +22,11 @@ import (
 )
 
 // The settings of the account: the time zone, the date format and the color
-// scheme (on the Preferences page), "About you" and the avatar (on the account page). Each one
-// is a POST through site.protect (the upload through site.protectUpload). A
-// browser without script posts the form and gets a 303 to the page of the form,
-// or that page again with 400 and the message beside the field.
+// scheme (on the Preferences page), "About you" and the avatar (on the account
+// page). Each one is a POST through site.protect (the upload through
+// site.protectUpload). A browser without script posts the form and gets a 303 to
+// the page of the form, or that page again with 400 and the message beside the
+// field.
 // gobb.js sends the same POST with the header X-Gobb-Save: 1 and gets 204, or
 // JSON (see [saveAnswer]).
 
@@ -54,7 +55,6 @@ const (
 	msgBirthdayForm   = "Pick a day, a month and a year from the lists."
 	msgNoRight        = "You cannot make this change."
 	msgNotSaved       = "Not saved. Reload the page and try again."
-	msgSchemeUnknown  = "Pick one of the color schemes."
 )
 
 // maxAvatarBody is the cap of the body of an upload: the largest file and 64 KiB
@@ -324,14 +324,7 @@ func (s *site) setAccountScheme(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var err error
-	if scheme := r.PostForm.Get("scheme"); !board.ValidScheme(scheme) {
-		err = &board.InputError{Field: "scheme", Message: msgSchemeUnknown}
-	} else if saved, werr := board.SetScheme(r.Context(), s.pool, p.Viewer.UserID, scheme); werr != nil {
-		err = werr
-	} else if !saved {
-		err = board.ErrNotFound
-	}
+	err := board.SetMemberScheme(r.Context(), s.pool, p.Viewer, r.PostForm.Get("scheme"))
 	s.settingResult(w, r, p, []error{err}, "scheme", "scheme", action, echo,
 		func(d *accountData, in *board.InputError) { d.Err.Scheme = in.Message })
 }

@@ -59,6 +59,19 @@ func SetDateFormat(ctx context.Context, pool *pgxpool.Pool, v Viewer, format str
 	return updateOwnRow(ctx, pool, v, `update users set date_format = $2 where id = $1 and state = 'active'`, format)
 }
 
+// SetMemberScheme stores scheme as the color scheme of member v. A guest gets
+// [ErrForbidden]. A scheme that is not one of [Schemes] is an [*InputError] on
+// the field "scheme". A member who is not active gets [ErrNotFound].
+func SetMemberScheme(ctx context.Context, pool *pgxpool.Pool, v Viewer, scheme string) error {
+	if v.UserID == 0 {
+		return ErrForbidden
+	}
+	if !ValidScheme(scheme) {
+		return inputError("scheme", msgSchemeFault)
+	}
+	return updateOwnRow(ctx, pool, v, `update users set color_scheme = $2 where id = $1 and state = 'active'`, scheme)
+}
+
 // updateOwnRow runs a one-row update of the own row of v and gives [ErrNotFound]
 // when no active row matched.
 func updateOwnRow(ctx context.Context, pool *pgxpool.Pool, v Viewer, query string, args ...any) error {

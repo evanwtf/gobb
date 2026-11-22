@@ -202,8 +202,9 @@ func TestAccountSettingsNoScript(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
 
-	// The time zone and the date format live on the Preferences page, so their
-	// no-script answers go there; "About you" stays on the account page.
+	// The time zone, the date format and the color scheme live on the Preferences
+	// page, so their no-script answers go there; "About you" stays on the account
+	// page.
 	for _, tc := range []struct {
 		name, target, page, done string
 		form                     url.Values
@@ -716,6 +717,8 @@ func TestAvatarUploadRateLimit(t *testing.T) {
 func TestSaveRateLimit(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
+	// A known start value, so that a refused scheme save shows as a change.
+	exec(t, pool, `update users set color_scheme = 'slate' where id = 1`)
 	token := accountToken(t, h, a)
 	zones := []string{"Europe/Berlin", "Asia/Tokyo"}
 	for i := range 120 {
@@ -742,8 +745,8 @@ func TestSaveRateLimit(t *testing.T) {
 	if got := userCol(t, pool, 1, "date_format"); got != "standard" {
 		t.Errorf("a refused save stored the format %q", got)
 	}
-	if got := userCol(t, pool, 1, "color_scheme"); got == "slate-deep" {
-		t.Errorf("a refused save stored the scheme %q", got)
+	if got := userCol(t, pool, 1, "color_scheme"); got != "slate" {
+		t.Errorf("a refused save stored the scheme %q, want slate", got)
 	}
 	// Without script the answer is the page, with the message.
 	rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Pacific/Auckland"}, "csrf": {token}}, nil)
@@ -804,11 +807,12 @@ func TestAccountPageSettingsSections(t *testing.T) {
 			t.Errorf("the account page lacks %s", want)
 		}
 	}
-	// The time zone and the date format are on the Preferences page only.
+	// The time zone, the date format and the color scheme are on the Preferences
+	// page only.
 	for _, gone := range []string{
 		`action="/account/timezone"`, `action="/account/dateformat"`, `id="timezone"`, `name="dateformat"`,
 		`id="timezone-status"`, `id="dateformat-status"`, `<optgroup label="Common">`, "Right now it is",
-		">Time zone</h2>", ">Date format</h2>",
+		">Time zone</h2>", ">Date format</h2>", `action="/account/scheme"`, ">Color scheme</h2>",
 	} {
 		if strings.Contains(page, gone) {
 			t.Errorf("the account page still holds %s", gone)
@@ -886,6 +890,14 @@ func TestPreferencesPageSections(t *testing.T) {
 	}
 	if strings.Count(page, `name="scheme"`) != strings.Count(page, `type="radio" name="scheme"`) {
 		t.Error("the page holds a scheme control that is not a radio button")
+	}
+	// A ?scheme= preview colors the page, but the radios show the stored scheme.
+	preview := bodyOf(t, getAs(t, h, "/account/preferences?scheme=slate-light", a))
+	if !strings.Contains(preview, `<html data-scheme="slate-light"`) {
+		t.Error("the preview does not color the page")
+	}
+	if !strings.Contains(preview, `id="scheme-slate-deep" value="slate-deep" checked>`) || strings.Contains(preview, `value="slate-light" checked`) {
+		t.Error("the preview changed the checked scheme; want the stored slate-deep")
 	}
 	// The section follows the date format.
 	if strings.Index(page, `id="scheme-title"`) < strings.Index(page, `id="dateformat-title"`) {
@@ -1721,6 +1733,28 @@ func TestRefusalPagesForAMemberWhoIsGone(t *testing.T) {
 		rec := uploadWithToken(t, h, a, token, png8(t), nil) // avatar.Make refuses it
 		if rec.Code != http.StatusNotFound || !strings.Contains(bodyOf(t, rec), msgNotSaved) {
 			t.Errorf("refused upload of a member who is gone = %d, want 404 with the neutral text", rec.Code)
+		}
+	})
+
+	t.Run("scheme", func(t *testing.T) {
+		h, pool := siteWithPool(t, postingBoard(), Options{})
+		a := signIn(t, h, "alice", testPassword)
+		token := accountToken(t, h, a)
+		exec(t, pool, `update users set color_scheme = 'slate' where id = 1`)
+		afterBegin = gone(pool)
+		rec := postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"slate-deep"}, "csrf": {token}}, saveHeader)
+		if got := answerJSON(t, rec); rec.Code != http.StatusNotFound || got["message"] != msgNotSaved {
+			t.Errorf("scheme save of a member who is gone = %d %v, want 404 JSON with the neutral text", rec.Code, got)
+		}
+		// The member is back for the sign-in of the next request, and gone again
+		// after its page begins.
+		exec(t, pool, `update users set state = 'active' where id = 1`)
+		rec = postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"slate-deep"}, "csrf": {token}}, nil)
+		if rec.Code != http.StatusNotFound || !strings.Contains(bodyOf(t, rec), msgNotSaved) {
+			t.Errorf("no-script scheme save of a member who is gone = %d, want 404 with the neutral text", rec.Code)
+		}
+		if got := userCol(t, pool, 1, "color_scheme"); got != "slate" {
+			t.Errorf("a member who is gone stored the scheme %q, want slate", got)
 		}
 	})
 

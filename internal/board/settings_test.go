@@ -80,6 +80,45 @@ func TestSetDateFormat(t *testing.T) {
 	}
 }
 
+func TestSetMemberScheme(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := boardtest.Load(t, bundletest.Small())
+	c := viewerFor(t, pool, carol)
+	scheme := func() string {
+		var s string
+		if err := pool.QueryRow(ctx, `select color_scheme from users where id = $1`, carol).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	for _, sc := range board.Schemes {
+		if err := board.SetMemberScheme(ctx, pool, c, sc); err != nil {
+			t.Fatalf("%s: %v", sc, err)
+		}
+		if got := scheme(); got != sc {
+			t.Errorf("color_scheme = %q, want %q", got, sc)
+		}
+	}
+	if err := board.SetMemberScheme(ctx, pool, c, "slate-deep"); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"neon", "", "Slate", "slate "} {
+		wantInput(t, board.SetMemberScheme(ctx, pool, c, bad), "scheme", "Pick one of the color schemes.")
+	}
+	if got := scheme(); got != "slate-deep" {
+		t.Errorf("a refused scheme changed color_scheme to %q", got)
+	}
+	// A member who is no longer active: not found, and no change.
+	if _, err := pool.Exec(ctx, `update users set state = 'inactive' where id = $1`, carol); err != nil {
+		t.Fatal(err)
+	}
+	wantIs(t, board.SetMemberScheme(ctx, pool, c, "slate-light"), board.ErrNotFound, "SetMemberScheme of an inactive member")
+	if got := scheme(); got != "slate-deep" {
+		t.Errorf("an inactive member's scheme changed to %q", got)
+	}
+}
+
 func TestSetAboutPartial(t *testing.T) {
 	ctx := context.Background()
 	pool, _ := boardtest.Load(t, bundletest.Small())
@@ -303,6 +342,7 @@ func TestSettingsRights(t *testing.T) {
 		g := asGuest(t, pool)
 		wantIs(t, board.SetTimezone(ctx, pool, g, "America/Chicago"), board.ErrForbidden, "SetTimezone by a guest")
 		wantIs(t, board.SetDateFormat(ctx, pool, g, "iso"), board.ErrForbidden, "SetDateFormat by a guest")
+		wantIs(t, board.SetMemberScheme(ctx, pool, g, "slate-deep"), board.ErrForbidden, "SetMemberScheme by a guest")
 		wantIs(t, board.SetAbout(ctx, pool, g, board.AboutChange{Location: ptr("x")}), board.ErrForbidden, "SetAbout by a guest")
 		wantIs(t, board.SetBirthday(ctx, pool, g, board.Birthday{Day: 1, Month: 1}, now), board.ErrForbidden, "SetBirthday by a guest")
 		_, err := board.SetAvatar(ctx, pool, g, "avatars/u1-0123456789abcdef.png")
