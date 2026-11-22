@@ -238,7 +238,7 @@ var onNew func(*site)
 
 // pageFiles are the page templates. Each one defines "content" and runs inside
 // layout.html.
-var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html", "queue.html", "postip.html",
+var pageFiles = []string{"index.html", "forum.html", "topic.html", "new.html", "login.html", "error.html", "postform.html", "confirm.html", "profile.html", "members.html", "team.html", "page.html", "search.html", "account.html", "preferences.html", "messages.html", "message.html", "message-new.html", "reset.html", "reset-link.html", "queue.html", "postip.html",
 	"admin.html", "admin-bans.html", "admin-confirm.html", "admin-delete.html", "admin-forum.html", "admin-forums.html", "admin-group.html", "admin-groups.html", "admin-grid.html", "admin-log.html", "admin-member.html", "admin-members.html", "admin-page.html", "admin-pages.html", "admin-perms.html", "admin-rank.html", "admin-ranks.html", "admin-role.html", "admin-roles.html", "admin-settings.html", "admin-smiley.html", "admin-smilies.html", "admin-spammer.html", "admin-user-grants.html"}
 
 // New returns the handler of the whole server. It serves /healthz at the host
@@ -378,6 +378,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opt Options) (http.Handler, er
 	inner.HandleFunc("GET /team", s.team)
 	inner.HandleFunc("GET /pages/{slug}", s.cached(cacheStatic, s.staticPage))
 	inner.HandleFunc("GET /account", s.account)
+	inner.HandleFunc("GET /account/preferences", s.preferences)
 	inner.HandleFunc("GET /messages", s.messageList(true))
 	inner.HandleFunc("GET /messages/sent", s.messageList(false))
 	inner.HandleFunc("GET /messages/new", s.messageNew)
@@ -629,6 +630,10 @@ type page struct {
 	// in the header links. AccountCurrent is true on that page.
 	AccountHref    string
 	AccountCurrent bool
+	// PreferencesHref is the site path of the Preferences page, the next link of
+	// the account menu. PreferencesCurrent is true on that page.
+	PreferencesHref    string
+	PreferencesCurrent bool
 	// Pages are the static pages that the footer lists. render fills them in.
 	Pages []board.StaticPage
 	// Data holds the data of the page template.
@@ -764,24 +769,26 @@ func (s *site) begin(w http.ResponseWriter, r *http.Request, title string, nav s
 	}
 	ret := s.returnPath(r)
 	p := &page{
-		Title:          title,
-		Scheme:         scheme,
-		Settings:       settings,
-		Viewer:         v,
-		Clock:          clock{Loc: v.Loc, Format: v.DateFormat, Now: s.opt.Now()},
-		CSS:            s.path("static", "gobb.css") + "?v=" + s.assetVersion,
-		JS:             s.path("static", "gobb.js") + "?v=" + s.assetVersion,
-		Icon:           s.path("static", "icon.svg") + "?v=" + s.assetVersion,
-		Home:           s.path(),
-		AccountHref:    s.path("account"),
-		AccountCurrent: nav == "account",
-		Nav:            []navLink{{Label: "Index", Href: s.path(), Current: nav == "index"}},
-		Controls:       true,
-		Return:         ret,
-		Schemes:        choices(scheme),
-		csrfSecret:     id.secret(),
-		ctx:            ctx,
-		navKey:         nav,
+		Title:              title,
+		Scheme:             scheme,
+		Settings:           settings,
+		Viewer:             v,
+		Clock:              clock{Loc: v.Loc, Format: v.DateFormat, Now: s.opt.Now()},
+		CSS:                s.path("static", "gobb.css") + "?v=" + s.assetVersion,
+		JS:                 s.path("static", "gobb.js") + "?v=" + s.assetVersion,
+		Icon:               s.path("static", "icon.svg") + "?v=" + s.assetVersion,
+		Home:               s.path(),
+		AccountHref:        s.path("account"),
+		AccountCurrent:     nav == "account",
+		PreferencesHref:    s.path("account", "preferences"),
+		PreferencesCurrent: nav == "preferences",
+		Nav:                []navLink{{Label: "Index", Href: s.path(), Current: nav == "index"}},
+		Controls:           true,
+		Return:             ret,
+		Schemes:            choices(scheme),
+		csrfSecret:         id.secret(),
+		ctx:                ctx,
+		navKey:             nav,
 	}
 	if id.token == "" && nav != "login" {
 		p.LoginHref = s.loginHref(ret)

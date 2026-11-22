@@ -21,10 +21,11 @@ import (
 	"github.com/evanwtf/gobb/internal/tz"
 )
 
-// The settings of the account page: the time zone, the date format, "About you"
-// and the avatar. Each one is a POST through site.protect (the upload through
-// site.protectUpload). A browser without script posts the form and gets a 303 to
-// the account page, or the page again with 400 and the message beside the field.
+// The settings of the account: the time zone and the date format (on the
+// Preferences page), "About you" and the avatar (on the account page). Each one
+// is a POST through site.protect (the upload through site.protectUpload). A
+// browser without script posts the form and gets a 303 to the page of the form,
+// or that page again with 400 and the message beside the field.
 // gobb.js sends the same POST with the header X-Gobb-Save: 1 and gets 204, or
 // JSON (see [saveAnswer]).
 
@@ -124,16 +125,16 @@ func deniedText(p *page, action string) string {
 }
 
 // tooMany answers a request that is over its limit: 429 with Retry-After, as JSON
-// for gobb.js and as the account page with a notice for any other. echo, when
-// set, puts the values that the member sent into the page, as the other refusals
-// of a form do.
-func (s *site) tooMany(w http.ResponseWriter, r *http.Request, wait time.Duration, msg string, echo func(*accountData)) {
+// for gobb.js and as the page of the account with the nav key nav, with a
+// notice, for any other. echo, when set, puts the values that the member sent
+// into the page, as the other refusals of a form do.
+func (s *site) tooMany(w http.ResponseWriter, r *http.Request, nav string, wait time.Duration, msg string, echo func(*accountData)) {
 	w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(wait)))
 	if saveRequested(r) {
 		saveMessage(w, http.StatusTooManyRequests, msg)
 		return
 	}
-	p, err := s.begin(w, r, "Account", "account")
+	p, err := s.begin(w, r, "Account", nav)
 	if err == nil {
 		if afterBegin != nil {
 			afterBegin()
@@ -167,8 +168,8 @@ func (s *site) pageFailed(w http.ResponseWriter, r *http.Request, err error) {
 // database, and answers 429 when the member is over it. It reports whether the
 // request may go on. The try is never given back: a refusal costs as much as a
 // success. A visitor with no session is not counted here; the checks of the
-// handler refuse the visitor.
-func (s *site) takeSave(w http.ResponseWriter, r *http.Request, lim *ratelimit.Limiter, msg string, echo func(*accountData)) bool {
+// handler refuse the visitor. nav is the nav key of the page of the form.
+func (s *site) takeSave(w http.ResponseWriter, r *http.Request, nav string, lim *ratelimit.Limiter, msg string, echo func(*accountData)) bool {
 	id, err := s.identify(w, r)
 	if err != nil {
 		s.identifyFailed(w, r, err)
@@ -178,7 +179,7 @@ func (s *site) takeSave(w http.ResponseWriter, r *http.Request, lim *ratelimit.L
 		return true
 	}
 	if ok, wait := lim.Take(strconv.FormatInt(id.sess.UserID, 10), s.opt.Now()); !ok {
-		s.tooMany(w, r, wait, msg, echo)
+		s.tooMany(w, r, nav, wait, msg, echo)
 		return false
 	}
 	return true
@@ -189,13 +190,14 @@ func (s *site) takeSave(w http.ResponseWriter, r *http.Request, lim *ratelimit.L
 // a guest, for a member who lacks option ("" asks for none), and for a page that
 // cannot be built. Otherwise it returns the page. A request from gobb.js gets
 // JSON; any other gets the page, and echo puts the values that the member sent
-// into the 429 page. The data of the account page is read only when
-// the answer is a page ([site.settingResult]).
-func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, option, action string, lim *ratelimit.Limiter, msg string, echo func(*accountData)) (*page, bool) {
-	if !s.takeSave(w, r, lim, msg, echo) {
+// into the 429 page. nav is the nav key of the page of the form (navAccount or
+// navPreferences): every page answer of the POST is that page. The data of the
+// page is read only when the answer is a page ([site.settingResult]).
+func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, nav, option, action string, lim *ratelimit.Limiter, msg string, echo func(*accountData)) (*page, bool) {
+	if !s.takeSave(w, r, nav, lim, msg, echo) {
 		return nil, false
 	}
-	p, err := s.begin(w, r, "Account", "account")
+	p, err := s.begin(w, r, "Account", nav)
 	if err != nil {
 		if saveRequested(r) {
 			slog.Error("account: page", "path", r.URL.Path, "err", err)
@@ -221,8 +223,8 @@ func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, option, act
 
 // settingResult ends a settings POST for the results errs of its writes. For a
 // request from gobb.js it answers 204 or JSON for the first error. For any other
-// it redirects to the account page with the notice done, or answers the refusals
-// with the page: every input error puts its message beside its field (field), and
+// it redirects to the page of the form (the account page or the Preferences page)
+// with the notice done, or answers the refusals with that page: every input error puts its message beside its field (field), and
 // echo puts the values that the member sent back into the form.
 func (s *site) settingResult(w http.ResponseWriter, r *http.Request, p *page, errs []error, jsonField, done, action string,
 	echo func(*accountData), field func(*accountData, *board.InputError)) {
@@ -237,7 +239,7 @@ func (s *site) settingResult(w http.ResponseWriter, r *http.Request, p *page, er
 		return
 	}
 	if first == nil {
-		http.Redirect(w, r, s.path("account")+"?done="+done, http.StatusSeeOther)
+		http.Redirect(w, r, s.accountPath(p)+"?done="+done, http.StatusSeeOther)
 		return
 	}
 	d, err := s.accountData(r, p)
@@ -278,7 +280,7 @@ func (s *site) setTimezone(w http.ResponseWriter, r *http.Request) {
 			d.Timezone = zone
 		}
 	}
-	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, echo)
+	p, ok := s.settingsStart(w, r, navPreferences, "", action, s.saves.saves, msgTooManySaves, echo)
 	if !ok {
 		return
 	}
@@ -297,7 +299,7 @@ func (s *site) setDateFormat(w http.ResponseWriter, r *http.Request) {
 			d.DateFormat = f
 		}
 	}
-	p, ok := s.settingsStart(w, r, "", action, s.saves.saves, msgTooManySaves, echo)
+	p, ok := s.settingsStart(w, r, navPreferences, "", action, s.saves.saves, msgTooManySaves, echo)
 	if !ok {
 		return
 	}
@@ -336,7 +338,7 @@ func (s *site) setAbout(w http.ResponseWriter, r *http.Request) {
 			d.BirthDay, d.BirthMonth, d.BirthYear = b.Day, b.Month, b.Year
 		}
 	}
-	p, ok := s.settingsStart(w, r, "account.profile", action, s.saves.saves, msgTooManySaves, echo)
+	p, ok := s.settingsStart(w, r, navAccount, "account.profile", action, s.saves.saves, msgTooManySaves, echo)
 	if !ok {
 		return
 	}
@@ -413,7 +415,7 @@ var beforeSetAvatar func()
 // removeAvatar serves POST /account/avatar/remove.
 func (s *site) removeAvatar(w http.ResponseWriter, r *http.Request) {
 	const action = "change your avatar"
-	p, ok := s.settingsStart(w, r, "account.avatar", action, s.saves.saves, msgTooManySaves, nil)
+	p, ok := s.settingsStart(w, r, navAccount, "account.avatar", action, s.saves.saves, msgTooManySaves, nil)
 	if !ok {
 		return
 	}
@@ -441,7 +443,7 @@ func (s *site) removeAvatar(w http.ResponseWriter, r *http.Request) {
 // A request from gobb.js gets 200 and {"src": the site path of the new file}.
 func (s *site) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 	const action = "change your avatar"
-	p, ok := s.settingsStart(w, r, "account.avatar", action, s.saves.uploads, msgTooManyUploads, nil)
+	p, ok := s.settingsStart(w, r, navAccount, "account.avatar", action, s.saves.uploads, msgTooManyUploads, nil)
 	if !ok {
 		return
 	}
@@ -595,7 +597,7 @@ func (s *site) deleteAvatarFile(userID int64, path string) {
 // [site.changeSignature], with a JSON answer.
 func (s *site) saveSignature(w http.ResponseWriter, r *http.Request) {
 	const action = "change your signature"
-	p, ok := s.settingsStart(w, r, "account.signature", action, s.saves.saves, msgTooManySaves, nil)
+	p, ok := s.settingsStart(w, r, navAccount, "account.signature", action, s.saves.saves, msgTooManySaves, nil)
 	if !ok {
 		return
 	}

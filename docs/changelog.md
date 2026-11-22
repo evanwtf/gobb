@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.0 (2026-11-22)
+
+- **Preferences page** (#84). The time zone and the date format move off "Your
+  account" to a new page, `/account/preferences`. They keep their auto-save,
+  their status lines and their Save buttons for browsers without script. Without
+  script, a save of either one returns to `/account/preferences?done=…`, and a
+  refused value shows the Preferences page with the message beside the field.
+  The account menu lists "Preferences" right after "Your account", and each page
+  links to the other. "Your account" keeps About you, the avatar, the signature,
+  the password and the email address.
+
 ## 0.19.3 (2026-11-22)
 
 - **Account page: saves while you type** (#82). A text box (the signature, the
