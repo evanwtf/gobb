@@ -36,13 +36,14 @@
 })();
 
 // ---- Auto-save of the account page -------------------------------------------
-// A form with data-autosave saves each field when its change event fires. The
+// A form with data-autosave saves each field when its change event fires, and a
+// text box also saves when the member stops typing for TYPE_QUIET ms. The
 // field goes to the form's own address with fetch, plus the csrf token of the
 // form, and the header X-Gobb-Save: 1, which asks for 204 or JSON as the answer.
-// The status line of the field (id "{name}-status") says "Saving…", then "Saved.",
-// or the message of the server. Every piece of text is written with textContent,
-// and no markup is built from a string. Each section also shows its Save button,
-// with or without this script: the server answers a form post with a redirect.
+// The status line of the field (id "{name}-status") says "Not saved yet." while
+// the member types, "Saving…", then "Saved ✓", or the message of the server. Every piece of text is written with textContent,
+// and no markup is built from a string. Without this script, the Save buttons of
+// the forms work: the server answers a form post with a redirect.
 (function () {
   "use strict";
 
@@ -106,11 +107,12 @@
 
   // show writes the status of a unit. A refused unit keeps its value and gets
   // aria-invalid.
-  function show(unit, text, bad) {
+  function show(unit, text, bad, ok) {
     var line = document.getElementById(unitName(unit) + "-status");
     if (line) {
       line.textContent = text;
       line.classList.toggle("field-error", bad);
+      line.classList.toggle("save-ok", !!ok);
     }
     Array.prototype.forEach.call(controlsOf(unit), function (c) {
       if (bad) {
@@ -284,7 +286,7 @@
     st.busy = false;
     if (res.ok) {
       saved(unit, res.data);
-      show(unit, "Saved.", false);
+      show(unit, "Saved ✓", false, true);
     } else {
       show(unit, res.data.message || "Not saved. Try again in a moment.", true);
     }
@@ -328,20 +330,29 @@
   }
 
   // A closed list fires change on each arrow-key step in some browsers. A list
-  // waits until it is quiet for SELECT_QUIET ms, so one save goes out. A radio
-  // button, a check box, a file and a text box save at once. pending holds the
-  // units that wait, so that leaving the page can send them.
+  // waits until it is quiet for SELECT_QUIET ms, so one save goes out. A text box
+  // saves when the member stops typing for TYPE_QUIET ms, so a member who never
+  // leaves the box (a phone) still gets a save. A radio button, a check box and a
+  // file save at once. pending holds the units that wait, so that leaving the page
+  // can send them.
   var SELECT_QUIET = 400;
+  var TYPE_QUIET = 1500;
   var timers = new WeakMap();
   var pending = new Set();
 
-  function saveSoon(unit) {
+  function saveSoon(unit, quiet) {
     clearTimeout(timers.get(unit));
     pending.add(unit);
     timers.set(unit, setTimeout(function () {
       pending.delete(unit);
       save(unit, false);
-    }, SELECT_QUIET));
+    }, quiet));
+  }
+
+  // cancelSoon drops the wait of a unit that saves now by another path.
+  function cancelSoon(unit) {
+    clearTimeout(timers.get(unit));
+    pending.delete(unit);
   }
 
   // flushPending sends every unit that waits, at once.
@@ -363,22 +374,37 @@
       var el = event.target;
       if (el instanceof HTMLElement && (el.name || el.type === "file") && el.name !== "csrf") {
         if (el instanceof HTMLSelectElement) {
-          saveSoon(unitOf(el));
+          saveSoon(unitOf(el), SELECT_QUIET);
+        } else if (isText(el)) {
+          // The pause in typing may have sent this value already.
+          cancelSoon(el);
+          if (el.value !== lastSent.get(el)) {
+            save(el, false);
+          }
         } else {
           save(unitOf(el), false);
         }
       }
     });
-    // Enter in a one-line box saves that box. It does not send the whole form.
-    // A click on the Save button of the section sends the whole form as a normal
-    // post, and the page comes back with the saved notice.
-    form.addEventListener("submit", function (event) {
-      var el = document.activeElement;
-      if (el && form.contains(el) && isText(el)) {
-        event.preventDefault();
-        if (el.value !== lastSent.get(el)) {
-          save(unitOf(el), false);
+    form.addEventListener("input", function (event) {
+      var el = event.target;
+      if (isText(el) && el.name) {
+        if (el.value === lastSent.get(el)) {
+          cancelSoon(el);
+          show(el, "Saved ✓", false, true);
+          return;
         }
+        show(el, "Not saved yet.", false);
+        saveSoon(el, TYPE_QUIET);
+      }
+    });
+    // Enter in a one-line box saves that box. It does not send the whole form.
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var el = document.activeElement;
+      if (el && form.contains(el) && isText(el) && el.value !== lastSent.get(el)) {
+        cancelSoon(el);
+        save(unitOf(el), false);
       }
     });
   });

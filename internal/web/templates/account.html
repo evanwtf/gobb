@@ -1,7 +1,7 @@
 {{define "content"}}
 <header class="page-head">
   <h1>Your account</h1>
-  <p class="page-sub">Changes save as you make them. Each section also has a Save button. <a href="{{path "u" (printf "%d" .Viewer.UserID)}}">Your public profile</a></p>
+  <p class="page-sub"><span class="save-auto">Changes save as you make them.</span><span class="save-manual">Save each section with its button.</span> <a href="{{path "u" (printf "%d" .Viewer.UserID)}}">Your public profile</a></p>
 </header>
 
 {{- with .Data.Done}}
@@ -37,7 +37,7 @@
       {{- if .Data.Err.Zone}}<p class="field-error" id="timezone-error" role="alert">{{.Data.Err.Zone}}</p>{{end}}
       <p class="hint" id="timezone-hint">Every time on the board shows in this zone, with daylight saving time where the city has it. Right now it is <span id="timezone-now">{{.Data.NowText}}</span> in <span id="timezone-city">{{.Data.NowCity}}</span>.</p>
     </div>
-    <div class="form-actions"><button class="button button-inline" type="submit">Save time zone</button></div>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save time zone</button></div>
   </form>
 </section>
 
@@ -52,7 +52,7 @@
       <p class="save-status" id="dateformat-status" role="status" aria-live="polite"></p>
       {{- if .Data.Err.Format}}<p class="field-error" id="dateformat-error" role="alert">{{.Data.Err.Format}}</p>{{end}}
     </fieldset>
-    <div class="form-actions"><button class="button button-inline" type="submit">Save date format</button></div>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save date format</button></div>
   </form>
 </section>
 
@@ -102,7 +102,7 @@
       {{- if .Data.Err.Birthday}}<p class="field-error" id="birthday-error" role="alert">{{.Data.Err.Birthday}}</p>{{end}}
       <p class="hint">Leave out the year if you don't want your age shown. The latest year you can pick is {{.Data.LatestYear}}. The birthday saves when it has both a day and a month, or neither.</p>
     </fieldset>
-    <div class="form-actions"><button class="button button-inline" type="submit">Save About you</button></div>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Save About you</button></div>
   </form>
 </section>
 {{- end}}
@@ -124,7 +124,7 @@
       {{- if .Data.Err.Avatar}}<p class="field-error" id="avatar-error" role="alert">{{.Data.Err.Avatar}}</p>{{end}}
       <p class="hint" id="avatar-hint">A PNG, JPEG or GIF of at most 1 MB. It uploads as soon as you pick it. gobb checks the file, stores a fresh copy at 128 &times; 128 pixels, and drops everything else in the file.</p>
     </div>
-    <div class="form-actions"><button class="button button-inline" type="submit">Upload avatar</button></div>
+    <div class="form-actions save-fallback"><button class="button button-inline" type="submit">Upload avatar</button></div>
   </form>
   <form class="post-form" id="avatar-remove" method="post" action="{{path "account" "avatar" "remove"}}"{{if not .Data.AvatarPath}} hidden{{end}}>
     <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -144,9 +144,9 @@
         {{- if .Data.Sig.Text}} aria-invalid="true"{{end}}>{{textareaValue .Data.Signature}}</textarea>
       <p class="save-status" id="signature-status" role="status" aria-live="polite"></p>
       {{- if .Data.Sig.Text}}<p class="field-error" id="sig-error" role="alert">{{.Data.Sig.Text}}</p>{{end}}
-      <p class="hint" id="sig-hint">At most 2,000 bytes. Markdown works here: **bold**, *italic*, [link](https://example.com). Leave it empty for no signature. It saves when you leave the box, or with Save signature.</p>
+      <p class="hint" id="sig-hint">At most 2,000 bytes. Markdown works here: **bold**, *italic*, [link](https://example.com). Leave it empty for no signature. It saves when you stop typing.</p>
     </div>
-    <div class="form-actions">
+    <div class="form-actions save-fallback">
       <button class="button button-inline" type="submit">Save signature</button>
     </div>
   </form>

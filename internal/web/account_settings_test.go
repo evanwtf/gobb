@@ -765,8 +765,9 @@ func TestAccountPageSettingsSections(t *testing.T) {
 		`<option value="Europe/London" selected>`,
 		`id="timezone-status"`, `id="dateformat-status"`, `id="location-status"`, `id="website-status"`,
 		`id="birthday-status"`, `id="avatar-status"`, `id="signature-status"`,
-		`role="status" aria-live="polite"`, `data-autosave`,
-		`Changes save as you make them. Each section also has a Save button.`, `href="/u/1"`,
+		`role="status" aria-live="polite"`, `save-fallback`, `data-autosave`,
+		`<span class="save-auto">Changes save as you make them.</span>`,
+		`<span class="save-manual">Save each section with its button.</span>`, `href="/u/1"`,
 		`<option value="3" selected>March</option>`, `<option value="1984" selected>1984</option>`,
 		"Leave out the year if you don't want your age shown.",
 		"A PNG, JPEG or GIF of at most 1 MB.",
@@ -849,53 +850,48 @@ func TestAccountGuest(t *testing.T) {
 	}
 }
 
-// Every section that saves as the member types also shows its Save button, with
-// or without script (#82). Nothing in the page, the stylesheet or the script hides
-// the button, and a click on it sends the form as a normal post.
-func TestAccountSaveButtonsShow(t *testing.T) {
+// The line "Changes save as you make them." needs script, so without script the page
+// shows "Save each section with its button." instead. Both are plain classes: the
+// stylesheet hides the first by default and shows it under .js, and hides the second
+// under .js. The line and its text carry no inline style.
+func TestAccountSaveLineNeedsScript(t *testing.T) {
 	h, _ := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
 	page := bodyOf(t, getAs(t, h, "/account", a))
-	forms := regexp.MustCompile(`(?s)<form[^>]*data-autosave[^>]*>.*?</form>`).FindAllString(page, -1)
-	if len(forms) != 5 {
-		t.Fatalf("the account page has %d auto-saved forms, want 5", len(forms))
-	}
-	for _, want := range []string{"Save time zone", "Save date format", "Save About you", "Upload avatar", "Save signature"} {
-		found := false
-		for _, form := range forms {
-			if regexp.MustCompile(`<div class="form-actions">\s*<button class="button button-inline" type="submit">` + want + `</button>`).MatchString(form) {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("no auto-saved form shows the button %q", want)
+	for _, want := range []string{
+		`<span class="save-auto">Changes save as you make them.</span>`,
+		`<span class="save-manual">Save each section with its button.</span>`,
+	} {
+		if strings.Count(page, want) != 1 {
+			t.Errorf("the account page does not hold %s once", want)
 		}
 	}
-	for _, hidden := range []string{"save-fallback", "save-auto", "save-manual"} {
-		if strings.Contains(page, hidden) {
-			t.Errorf("the account page still holds %s", hidden)
-		}
+	// "Changes save as you make them." sits only inside .save-auto.
+	if strings.Count(page, "Changes save as you make them.") != 1 {
+		t.Error("the save line appears outside .save-auto")
 	}
+	head := page[strings.Index(page, `class="page-head"`):]
+	head = head[:strings.Index(head, "</header>")]
+	if strings.Contains(head, "style=") {
+		t.Errorf("the page head carries an inline style:\n%s", head)
+	}
+
 	css, err := fs.ReadFile(staticFS, "static/gobb.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, rule := range []string{"save-fallback", "save-auto", "save-manual"} {
-		if bytes.Contains(css, []byte(rule)) {
-			t.Errorf("gobb.css still has a rule for %s", rule)
+	for _, rule := range []string{
+		".save-auto { display: none; }",
+		".js .save-auto { display: inline; }",
+		".js .save-manual { display: none; }",
+	} {
+		if !bytes.Contains(css, []byte(rule)) {
+			t.Errorf("gobb.css lacks %q", rule)
 		}
 	}
-	// The submit handler stops the post only for Enter in a text box.
-	js, err := fs.ReadFile(staticFS, "static/gobb.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := regexp.MustCompile(`(?s)form\.addEventListener\("submit", function \(event\) \{(.*?)\n    \}\);`).FindSubmatch(js)
-	if handler == nil {
-		t.Fatal("gobb.js has no submit handler for the auto-saved forms")
-	}
-	if !regexp.MustCompile(`(?s)if \(el && form\.contains\(el\) && isText\(el\)\) \{\s*event\.preventDefault\(\);`).Match(handler[1]) {
-		t.Errorf("the submit handler stops more than Enter in a text box:\n%s", handler[1])
+	if bytes.Contains(css, []byte(".save-manual { display: none; }")) &&
+		!bytes.Contains(css, []byte(".js .save-manual { display: none; }")) {
+		t.Error("the manual line is hidden without script")
 	}
 }
 
@@ -909,7 +905,8 @@ func TestScriptHasNoHTMLSinks(t *testing.T) {
 			t.Errorf("gobb.js holds %s", sink)
 		}
 	}
-	for _, want := range []string{"X-Gobb-Save", "credentials", "keepalive", "pagehide", "data-autosave", "SELECT_QUIET = 400"} {
+	for _, want := range []string{"X-Gobb-Save", "credentials", "keepalive", "pagehide", "data-autosave", "SELECT_QUIET = 400", "TYPE_QUIET = 1500",
+		`form.addEventListener("input"`, `"Not saved yet."`, `"Saved ✓"`, "save-ok"} {
 		if !bytes.Contains(src, []byte(want)) {
 			t.Errorf("gobb.js lacks %s", want)
 		}

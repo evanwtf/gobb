@@ -2,13 +2,13 @@
 
 ## 0.19.3 (2026-11-22)
 
-- **Account page: Save buttons show** (#82). The sections that save as you change
-  them (time zone, date format, About you, avatar, signature) hid their Save
-  buttons when script ran, so a member who edited a signature saw no way to save
-  it. Every section now shows its button. A click sends the section as a normal
-  form post, and the page comes back with the saved notice. Enter in a one-line box
-  still saves that box only. The `.save-fallback`, `.save-auto` and `.save-manual`
-  rules are gone.
+- **Account page: saves while you type** (#82). A text box (the signature, the
+  About you fields) saved only when the member left it, so a member on a phone who
+  never left the signature box saw no save and no Save button. A text box now
+  saves when the member stops typing for 1.5 seconds. Its status line says "Not
+  saved yet." while the member types, then "Saved ✓" in the accent color. Leaving
+  the box, Enter, and closing the page still save at once. The Save buttons stay
+  the form for browsers without script.
 
 ## 0.19.2 (2026-11-08)
 
