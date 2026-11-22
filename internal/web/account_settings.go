@@ -21,11 +21,12 @@ import (
 	"github.com/evanwtf/gobb/internal/tz"
 )
 
-// The settings of the account: the time zone and the date format (on the
-// Preferences page), "About you" and the avatar (on the account page). Each one
-// is a POST through site.protect (the upload through site.protectUpload). A
-// browser without script posts the form and gets a 303 to the page of the form,
-// or that page again with 400 and the message beside the field.
+// The settings of the account: the time zone, the date format and the color
+// scheme (on the Preferences page), "About you" and the avatar (on the account
+// page). Each one is a POST through site.protect (the upload through
+// site.protectUpload). A browser without script posts the form and gets a 303 to
+// the page of the form, or that page again with 400 and the message beside the
+// field.
 // gobb.js sends the same POST with the header X-Gobb-Save: 1 and gets 204, or
 // JSON (see [saveAnswer]).
 
@@ -307,6 +308,25 @@ func (s *site) setDateFormat(w http.ResponseWriter, r *http.Request) {
 	err := board.SetDateFormat(r.Context(), s.pool, p.Viewer, r.PostForm.Get("dateformat"))
 	s.settingResult(w, r, p, []error{err}, "dateformat", "dateformat", action, echo,
 		func(d *accountData, in *board.InputError) { d.Err.Format = in.Message })
+}
+
+// setAccountScheme serves POST /account/scheme: the color scheme of a member, from
+// the Preferences page. A guest picks a scheme with POST /scheme instead.
+func (s *site) setAccountScheme(w http.ResponseWriter, r *http.Request) {
+	const action = "change your color scheme"
+	// The sent scheme goes back into the radio buttons only when it is one of them.
+	echo := func(d *accountData) {
+		if sc := r.PostForm.Get("scheme"); board.ValidScheme(sc) {
+			d.Schemes = choices(sc)
+		}
+	}
+	p, ok := s.settingsStart(w, r, navPreferences, "", action, s.saves.saves, msgTooManySaves, echo)
+	if !ok {
+		return
+	}
+	err := board.SetMemberScheme(r.Context(), s.pool, p.Viewer, r.PostForm.Get("scheme"))
+	s.settingResult(w, r, p, []error{err}, "scheme", "scheme", action, echo,
+		func(d *accountData, in *board.InputError) { d.Err.Scheme = in.Message })
 }
 
 // aboutFields are the four text boxes of "About you".

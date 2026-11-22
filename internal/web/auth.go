@@ -423,8 +423,12 @@ func (s *site) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // setScheme serves POST /scheme. A member's choice goes into the member's row;
-// a guest's goes into a cookie for a year.
+// a guest's goes into a cookie for a year. A member's try counts against the
+// limit of the settings saves, as POST /account/scheme does; a guest's does not.
 func (s *site) setScheme(w http.ResponseWriter, r *http.Request) {
+	if !s.takeSave(w, r, navPreferences, s.saves.saves, msgTooManySaves, nil) {
+		return
+	}
 	scheme := r.PostForm.Get("scheme")
 	if !board.ValidScheme(scheme) {
 		s.fail(w, r, http.StatusBadRequest, "Bad request", "That color scheme does not exist.")

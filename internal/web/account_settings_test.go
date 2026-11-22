@@ -202,8 +202,9 @@ func TestAccountSettingsNoScript(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
 
-	// The time zone and the date format live on the Preferences page, so their
-	// no-script answers go there; "About you" stays on the account page.
+	// The time zone, the date format and the color scheme live on the Preferences
+	// page, so their no-script answers go there; "About you" stays on the account
+	// page.
 	for _, tc := range []struct {
 		name, target, page, done string
 		form                     url.Values
@@ -211,6 +212,7 @@ func TestAccountSettingsNoScript(t *testing.T) {
 	}{
 		{"time zone", "/account/timezone", "/account/preferences", "timezone", url.Values{"timezone": {"Europe/London"}}, "timezone", "Europe/London"},
 		{"date format", "/account/dateformat", "/account/preferences", "dateformat", url.Values{"dateformat": {"iso"}}, "date_format", "iso"},
+		{"color scheme", "/account/scheme", "/account/preferences", "scheme", url.Values{"scheme": {"slate-deep"}}, "color_scheme", "slate-deep"},
 		{"about you", "/account/about", "/account", "about", url.Values{
 			"location": {"Lake Placid, NY"}, "occupation": {"Ski instructor"}, "interests": {"Old radios"},
 			"website": {"https://example.com/sample"}, "bday": {"14"}, "bmonth": {"3"}, "byear": {"1984"},
@@ -281,6 +283,13 @@ func TestAccountSettingsNoScript(t *testing.T) {
 		!strings.Contains(bodyOf(t, rec), "Pick one of the three formats.") {
 		t.Errorf("bad format = %d", rec.Code)
 	}
+	if rec := postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"neon"}}, nil); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(bodyOf(t, rec), "Pick one of the color schemes.") {
+		t.Errorf("bad scheme = %d", rec.Code)
+	}
+	if got := userCol(t, pool, 1, "color_scheme"); got != "slate-deep" {
+		t.Errorf("a refused scheme stored %q", got)
+	}
 }
 
 func TestAutoSaveAnswers(t *testing.T) {
@@ -297,6 +306,21 @@ func TestAutoSaveAnswers(t *testing.T) {
 	rec = postWith(t, h, "/account/dateformat", a, url.Values{"dateformat": {"relative"}}, saveHeader)
 	if rec.Code != http.StatusNoContent {
 		t.Errorf("good format = %d, want 204", rec.Code)
+	}
+	rec = postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"slate-light"}}, saveHeader)
+	if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
+		t.Errorf("good scheme = %d with %d bytes, want 204 and no body", rec.Code, rec.Body.Len())
+	}
+	if got := userCol(t, pool, 1, "color_scheme"); got != "slate-light" {
+		t.Errorf("color_scheme = %q, want slate-light", got)
+	}
+	// A scheme that does not exist: 400 on "scheme", and the row keeps its value.
+	rec = postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"neon"}}, saveHeader)
+	if got := answerJSON(t, rec); rec.Code != http.StatusBadRequest || got["field"] != "scheme" || got["message"] != "Pick one of the color schemes." {
+		t.Errorf("bad scheme = %d %v", rec.Code, got)
+	}
+	if got := userCol(t, pool, 1, "color_scheme"); got != "slate-light" {
+		t.Errorf("a refused scheme changed color_scheme to %q", got)
 	}
 	rec = postWith(t, h, "/account/about", a, url.Values{"website": {"example.com"}}, saveHeader)
 	if rec.Code != http.StatusBadRequest {
@@ -321,10 +345,10 @@ func TestAutoSaveAnswers(t *testing.T) {
 	}
 
 	// A guest gets 403 JSON, with a guest token and with none.
-	for _, target := range []string{"/account/timezone", "/account/dateformat", "/account/about", "/account/avatar/remove", "/account/signature"} {
+	for _, target := range []string{"/account/timezone", "/account/dateformat", "/account/scheme", "/account/about", "/account/avatar/remove", "/account/signature"} {
 		page := getAs(t, h, "/", nil)
 		guest := jar(nil, page)
-		rec := postWith(t, h, target, guest, url.Values{"csrf": {formToken(t, bodyOf(t, page))}, "timezone": {"Asia/Tokyo"}}, saveHeader)
+		rec := postWith(t, h, target, guest, url.Values{"csrf": {formToken(t, bodyOf(t, page))}, "timezone": {"Asia/Tokyo"}, "scheme": {"slate-deep"}}, saveHeader)
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("guest POST %s = %d, want 403", target, rec.Code)
 			continue
@@ -693,6 +717,8 @@ func TestAvatarUploadRateLimit(t *testing.T) {
 func TestSaveRateLimit(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
+	// A known start value, so that a refused scheme save shows as a change.
+	exec(t, pool, `update users set color_scheme = 'slate' where id = 1`)
 	token := accountToken(t, h, a)
 	zones := []string{"Europe/Berlin", "Asia/Tokyo"}
 	for i := range 120 {
@@ -704,8 +730,8 @@ func TestSaveRateLimit(t *testing.T) {
 	if got := userCol(t, pool, 1, "timezone"); got != "Asia/Tokyo" {
 		t.Fatalf("timezone after 120 saves = %q", got)
 	}
-	for _, target := range []string{"/account/timezone", "/account/dateformat", "/account/about", "/account/avatar/remove", "/account/signature"} {
-		rec := postWith(t, h, target, a, url.Values{"timezone": {"Pacific/Auckland"}, "dateformat": {"iso"}, "location": {"x"}, "signature": {"x"}, "csrf": {token}}, saveHeader)
+	for _, target := range []string{"/account/timezone", "/account/dateformat", "/account/scheme", "/account/about", "/account/avatar/remove", "/account/signature"} {
+		rec := postWith(t, h, target, a, url.Values{"timezone": {"Pacific/Auckland"}, "dateformat": {"iso"}, "scheme": {"slate-deep"}, "location": {"x"}, "signature": {"x"}, "csrf": {token}}, saveHeader)
 		if got := answerJSON(t, rec); rec.Code != http.StatusTooManyRequests || got["message"] != "Too many changes. Wait a few minutes and try again." {
 			t.Errorf("save over the limit on %s = %d %v", target, rec.Code, got)
 		}
@@ -718,6 +744,9 @@ func TestSaveRateLimit(t *testing.T) {
 	}
 	if got := userCol(t, pool, 1, "date_format"); got != "standard" {
 		t.Errorf("a refused save stored the format %q", got)
+	}
+	if got := userCol(t, pool, 1, "color_scheme"); got != "slate" {
+		t.Errorf("a refused save stored the scheme %q, want slate", got)
 	}
 	// Without script the answer is the page, with the message.
 	rec := postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Pacific/Auckland"}, "csrf": {token}}, nil)
@@ -772,17 +801,18 @@ func TestAccountPageSettingsSections(t *testing.T) {
 		`<option value="3" selected>March</option>`, `<option value="1984" selected>1984</option>`,
 		"Leave out the year if you don't want your age shown.",
 		"A PNG, JPEG or GIF of at most 1 MB.",
-		`<a href="/account/preferences">Preferences: time zone and date format</a>`,
+		`<a href="/account/preferences">Preferences: time zone, date format and color scheme</a>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the account page lacks %s", want)
 		}
 	}
-	// The time zone and the date format are on the Preferences page only.
+	// The time zone, the date format and the color scheme are on the Preferences
+	// page only.
 	for _, gone := range []string{
 		`action="/account/timezone"`, `action="/account/dateformat"`, `id="timezone"`, `name="dateformat"`,
 		`id="timezone-status"`, `id="dateformat-status"`, `<optgroup label="Common">`, "Right now it is",
-		">Time zone</h2>", ">Date format</h2>",
+		">Time zone</h2>", ">Date format</h2>", `action="/account/scheme"`, ">Color scheme</h2>",
 	} {
 		if strings.Contains(page, gone) {
 			t.Errorf("the account page still holds %s", gone)
@@ -819,7 +849,7 @@ func TestAccountPageSettingsSections(t *testing.T) {
 func TestPreferencesPageSections(t *testing.T) {
 	h, pool := siteWithPool(t, postingBoard(), Options{})
 	a := signIn(t, h, "alice", testPassword)
-	exec(t, pool, `update users set timezone = 'Europe/London', date_format = 'relative' where id = 1`)
+	exec(t, pool, `update users set timezone = 'Europe/London', date_format = 'relative', color_scheme = 'slate-deep' where id = 1`)
 	rec := getAs(t, h, "/account/preferences", a)
 	page := bodyOf(t, rec)
 	if rec.Code != http.StatusOK {
@@ -827,7 +857,10 @@ func TestPreferencesPageSections(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<title>Preferences`, `<h1>Preferences</h1>`,
-		`action="/account/timezone"`, `action="/account/dateformat"`,
+		`action="/account/timezone"`, `action="/account/dateformat"`, `action="/account/scheme"`,
+		`<h2 id="scheme-title">Color scheme</h2>`, `id="scheme-status"`, ">Save color scheme</button>",
+		`id="scheme-slate" value="slate">`, `id="scheme-slate-deep" value="slate-deep" checked>`, `id="scheme-slate-light" value="slate-light">`,
+		`<label for="scheme-slate">Slate</label>`, `<label for="scheme-slate-deep">Slate deep</label>`, `<label for="scheme-slate-light">Slate light</label>`,
 		`<optgroup label="Common">`, `<optgroup label="All zones">`,
 		`<option value="Europe/London" selected>`,
 		`id="timezone-status"`, `id="dateformat-status"`,
@@ -843,7 +876,7 @@ func TestPreferencesPageSections(t *testing.T) {
 		}
 	}
 	// Both forms save as the member makes a change.
-	for _, action := range []string{"timezone", "dateformat"} {
+	for _, action := range []string{"timezone", "dateformat", "scheme"} {
 		form := regexp.MustCompile(`<form[^>]*action="/account/` + action + `"[^>]*>`).FindString(page)
 		if !strings.Contains(form, "data-autosave") {
 			t.Errorf("the %s form is not auto-saved: %s", action, form)
@@ -851,6 +884,24 @@ func TestPreferencesPageSections(t *testing.T) {
 	}
 	if !regexp.MustCompile(`id="dateformat-relative" value="relative" checked`).MatchString(page) {
 		t.Error("the relative format is not checked")
+	}
+	if n := strings.Count(page, `name="scheme"`); n != 3 {
+		t.Errorf("the page holds %d scheme choices, want 3 (and no footer picker)", n)
+	}
+	if strings.Count(page, `name="scheme"`) != strings.Count(page, `type="radio" name="scheme"`) {
+		t.Error("the page holds a scheme control that is not a radio button")
+	}
+	// A ?scheme= preview colors the page, but the radios show the stored scheme.
+	preview := bodyOf(t, getAs(t, h, "/account/preferences?scheme=slate-light", a))
+	if !strings.Contains(preview, `<html data-scheme="slate-light"`) {
+		t.Error("the preview does not color the page")
+	}
+	if !strings.Contains(preview, `id="scheme-slate-deep" value="slate-deep" checked>`) || strings.Contains(preview, `value="slate-light" checked`) {
+		t.Error("the preview changed the checked scheme; want the stored slate-deep")
+	}
+	// The section follows the date format.
+	if strings.Index(page, `id="scheme-title"`) < strings.Index(page, `id="dateformat-title"`) {
+		t.Error("the color scheme section comes before the date format")
 	}
 	// The other forms of the account are not on this page.
 	for _, gone := range []string{`action="/account/about"`, `action="/account/avatar"`, `action="/account/signature"`,
@@ -865,6 +916,9 @@ func TestPreferencesPageSections(t *testing.T) {
 	}
 	if !strings.Contains(bodyOf(t, getAs(t, h, "/account/preferences?done=dateformat", a)), "Your date format is saved.") {
 		t.Error("the Preferences page lacks the notice of the date format save")
+	}
+	if !strings.Contains(bodyOf(t, getAs(t, h, "/account/preferences?done=scheme", a)), "Your color scheme is saved.") {
+		t.Error("the Preferences page lacks the notice of the color scheme save")
 	}
 	// No inline script, style attribute or style element.
 	if strings.Contains(page, " style=") || strings.Contains(page, "<style") || strings.Contains(page, "<script>") {
@@ -888,7 +942,7 @@ func TestAccountPageWithNoRights(t *testing.T) {
 		}
 	}
 	for _, want := range []string{`<p class="page-sub">You have nothing to change on this page.</p>`,
-		`<a href="/account/preferences">Preferences: time zone and date format</a>`, `href="/u/1"`} {
+		`<a href="/account/preferences">Preferences: time zone, date format and color scheme</a>`, `href="/u/1"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the account page with no rights lacks %s", want)
 		}
@@ -915,6 +969,7 @@ func TestPreferencesRefusalShowsThePreferencesPage(t *testing.T) {
 	}{
 		{"/account/timezone", url.Values{"timezone": {"Mars/Base"}}, `id="timezone-error"`, "Pick a time zone from the list.", "timezone"},
 		{"/account/dateformat", url.Values{"dateformat": {"fancy"}}, `id="dateformat-error"`, "Pick one of the three formats.", "date_format"},
+		{"/account/scheme", url.Values{"scheme": {"neon"}}, `id="scheme-error"`, "Pick one of the color schemes.", "color_scheme"},
 	} {
 		before := userCol(t, pool, 1, tc.original)
 		rec := postWith(t, h, tc.target, a, tc.form, nil)
@@ -957,11 +1012,11 @@ func TestAccountGuest(t *testing.T) {
 	if rec.Header().Get("X-Robots-Tag") != "noindex" {
 		t.Errorf("the guest redirect of /account/preferences lacks X-Robots-Tag: noindex")
 	}
-	for _, target := range []string{"/account/timezone", "/account/dateformat", "/account/about", "/account/avatar",
+	for _, target := range []string{"/account/timezone", "/account/dateformat", "/account/scheme", "/account/about", "/account/avatar",
 		"/account/avatar/remove", "/account/signature", "/account/password", "/account/email"} {
 		page := getAs(t, h, "/", nil)
 		guest := jar(nil, page)
-		form := url.Values{"csrf": {formToken(t, bodyOf(t, page))}, "timezone": {"Asia/Tokyo"}, "dateformat": {"iso"},
+		form := url.Values{"csrf": {formToken(t, bodyOf(t, page))}, "timezone": {"Asia/Tokyo"}, "dateformat": {"iso"}, "scheme": {"slate-deep"},
 			"location": {"x"}, "signature": {"x"}, "current": {"x"}, "next": {"x"}, "email": {"a@example.com"}}
 		var rec *httptest.ResponseRecorder
 		if target == "/account/avatar" {
@@ -1047,7 +1102,8 @@ func TestScriptHasNoHTMLSinks(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"X-Gobb-Save", "credentials", "keepalive", "pagehide", "data-autosave", "SELECT_QUIET = 400", "TYPE_QUIET = 1500",
-		`form.addEventListener("input"`, `"Not saved yet."`, `"Saved ✓"`, "save-ok"} {
+		`form.addEventListener("input"`, `"Not saved yet."`, `"Saved ✓"`, "save-ok",
+		`unitName(unit) === "scheme"`, "document.documentElement.dataset.scheme = sent.value"} {
 		if !bytes.Contains(src, []byte(want)) {
 			t.Errorf("gobb.js lacks %s", want)
 		}
@@ -1466,6 +1522,7 @@ func TestAccountPostAnswersCSP(t *testing.T) {
 	for _, tc := range []req{
 		{"timezone", form("/account/timezone", url.Values{"timezone": {"UTC"}})},
 		{"dateformat", form("/account/dateformat", url.Values{"dateformat": {"fancy"}})},
+		{"scheme", form("/account/scheme", url.Values{"scheme": {"neon"}})},
 		{"about", form("/account/about", url.Values{"website": {"nope"}})},
 		{"signature", form("/account/signature", url.Values{"signature": {strings.Repeat("x", 2001)}})},
 		{"avatar remove", form("/account/avatar/remove", url.Values{})},
@@ -1676,6 +1733,28 @@ func TestRefusalPagesForAMemberWhoIsGone(t *testing.T) {
 		rec := uploadWithToken(t, h, a, token, png8(t), nil) // avatar.Make refuses it
 		if rec.Code != http.StatusNotFound || !strings.Contains(bodyOf(t, rec), msgNotSaved) {
 			t.Errorf("refused upload of a member who is gone = %d, want 404 with the neutral text", rec.Code)
+		}
+	})
+
+	t.Run("scheme", func(t *testing.T) {
+		h, pool := siteWithPool(t, postingBoard(), Options{})
+		a := signIn(t, h, "alice", testPassword)
+		token := accountToken(t, h, a)
+		exec(t, pool, `update users set color_scheme = 'slate' where id = 1`)
+		afterBegin = gone(pool)
+		rec := postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"slate-deep"}, "csrf": {token}}, saveHeader)
+		if got := answerJSON(t, rec); rec.Code != http.StatusNotFound || got["message"] != msgNotSaved {
+			t.Errorf("scheme save of a member who is gone = %d %v, want 404 JSON with the neutral text", rec.Code, got)
+		}
+		// The member is back for the sign-in of the next request, and gone again
+		// after its page begins.
+		exec(t, pool, `update users set state = 'active' where id = 1`)
+		rec = postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"slate-deep"}, "csrf": {token}}, nil)
+		if rec.Code != http.StatusNotFound || !strings.Contains(bodyOf(t, rec), msgNotSaved) {
+			t.Errorf("no-script scheme save of a member who is gone = %d, want 404 with the neutral text", rec.Code)
+		}
+		if got := userCol(t, pool, 1, "color_scheme"); got != "slate" {
+			t.Errorf("a member who is gone stored the scheme %q, want slate", got)
 		}
 	})
 
@@ -1894,6 +1973,14 @@ func TestZoneAndFormat429ShowTheSentValue(t *testing.T) {
 	}
 	if !strings.Contains(page, `id="dateformat-relative" value="relative" checked`) || strings.Contains(page, `value="iso" checked`) {
 		t.Error("the page does not check the date format that was sent")
+	}
+	rec = postWith(t, h, "/account/scheme", a, url.Values{"scheme": {"slate-light"}, "csrf": {token}}, nil)
+	page = bodyOf(t, rec)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("color scheme over the limit = %d", rec.Code)
+	}
+	if !strings.Contains(page, `id="scheme-slate-light" value="slate-light" checked`) || strings.Contains(page, `value="slate" checked`) {
+		t.Error("the page does not check the color scheme that was sent")
 	}
 	// A value that the list does not offer is not shown as a choice.
 	rec = postWith(t, h, "/account/timezone", a, url.Values{"timezone": {"Mars/Base"}, "csrf": {token}}, nil)

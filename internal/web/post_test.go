@@ -740,6 +740,7 @@ var tokenRows = []tokenRow{
 	{"/account/signature", "alice", url.Values{"signature": {"No token."}}, ""},
 	{"/account/timezone", "alice", url.Values{"timezone": {"Asia/Tokyo"}}, ""},
 	{"/account/dateformat", "alice", url.Values{"dateformat": {"iso"}}, ""},
+	{"/account/scheme", "alice", url.Values{"scheme": {"slate-deep"}}, ""},
 	{"/account/about", "alice", url.Values{"location": {"No token."}}, ""},
 	{"/account/avatar", "alice", url.Values{}, ""},
 	{"/account/avatar/remove", "alice", url.Values{}, ""},

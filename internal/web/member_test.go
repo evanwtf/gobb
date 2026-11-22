@@ -279,7 +279,7 @@ func TestViewIP(t *testing.T) {
 func TestSchemePicker(t *testing.T) {
 	h, pool := siteAndPool(t, bundletest.Small(), Options{})
 
-	// The footer holds the picker on every page, and marks the current scheme.
+	// The footer holds the picker on every guest page, and marks the current scheme.
 	body := bodyOf(t, get(t, h, "/t/1"))
 	for _, want := range []string{`action="/scheme"`, `name="scheme" value="slate"`, `name="scheme" value="slate-deep"`, `name="scheme" value="slate-light"`, `aria-pressed="true"`} {
 		if !strings.Contains(body, want) {
@@ -349,6 +349,58 @@ func TestSchemePicker(t *testing.T) {
 	both := append(append([]*http.Cookie(nil), bob...), &http.Cookie{Name: "gobb_scheme", Value: "slate-deep"})
 	if page := bodyOf(t, getAs(t, h, "/", both)); !strings.Contains(page, `data-scheme="slate-light"`) {
 		t.Error("the guest cookie beats a member's choice")
+	}
+}
+
+// POST /scheme counts a member's try against the limit of the settings saves, so
+// the old route cannot pass the limit of POST /account/scheme. A guest has no
+// such count.
+func TestSchemeRouteCountsMemberSaves(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{MemberSaves: 1})
+	a := signIn(t, h, "alice", testPassword)
+	token := accountToken(t, h, a)
+	exec(t, pool, `update users set color_scheme = 'slate' where id = 1`)
+	if rec := postWith(t, h, "/account/dateformat", a, url.Values{"dateformat": {"iso"}, "csrf": {token}}, saveHeader); rec.Code != http.StatusNoContent {
+		t.Fatalf("the one save = %d", rec.Code)
+	}
+	rec := postWith(t, h, "/scheme", a, url.Values{"scheme": {"slate-deep"}, "csrf": {token}}, nil)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" ||
+		!strings.Contains(bodyOf(t, rec), msgTooManySaves) {
+		t.Errorf("member POST /scheme over the limit = %d, want 429 with Retry-After and the message", rec.Code)
+	}
+	if got := userCol(t, pool, 1, "color_scheme"); got != "slate" {
+		t.Errorf("a refused POST /scheme stored %q, want slate", got)
+	}
+	// A guest is not counted: many tries all go through.
+	for i := range 3 {
+		page := getAs(t, h, "/", nil)
+		guest := jar(nil, page)
+		rec := postWith(t, h, "/scheme", guest, url.Values{"scheme": {"slate-light"}, "csrf": {formToken(t, bodyOf(t, page))}}, nil)
+		if rec.Code != http.StatusSeeOther {
+			t.Errorf("guest POST /scheme %d = %d, want 303", i+1, rec.Code)
+		}
+	}
+}
+
+// A member picks the color scheme on the Preferences page, so a member's footer
+// has no picker. A guest's footer keeps it.
+func TestSchemePickerIsForGuests(t *testing.T) {
+	h, _ := siteAndPool(t, bundletest.Small(), Options{})
+	bob := signIn(t, h, "bob", testPassword)
+	for _, target := range []string{"/", "/t/1", "/account", "/account/preferences"} {
+		page := bodyOf(t, getAs(t, h, target, bob))
+		if strings.Contains(page, `class="scheme-picker"`) || strings.Contains(page, `action="/scheme"`) {
+			t.Errorf("member %s: the footer holds the scheme picker", target)
+		}
+		if !strings.Contains(page, `action="/logout"`) {
+			t.Errorf("member %s: the page lacks the sign-out form", target)
+		}
+	}
+	for _, target := range []string{"/", "/t/1"} {
+		page := bodyOf(t, get(t, h, target))
+		if !strings.Contains(page, `class="scheme-picker"`) || !strings.Contains(page, `action="/scheme"`) {
+			t.Errorf("guest %s: the footer lacks the scheme picker", target)
+		}
 	}
 }
 
@@ -423,10 +475,12 @@ func TestBasePathCookies(t *testing.T) {
 		}
 	}
 	body := bodyOf(t, getAs(t, h, "/forum/", cookies))
-	for _, want := range []string{`action="/forum/logout"`, `action="/forum/scheme"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the page lacks %s", want)
-		}
+	if !strings.Contains(body, `action="/forum/logout"`) {
+		t.Error("the page lacks the sign-out form under the prefix")
+	}
+	// The footer picker is for guests; a guest's page has it under the prefix.
+	if guest := bodyOf(t, getAs(t, h, "/forum/", nil)); !strings.Contains(guest, `action="/forum/scheme"`) {
+		t.Error("the guest page lacks the picker under the prefix")
 	}
 	checkBasePath(t, "/forum/ as alice", body, "/forum/")
 	rec, _ = postAsAt(t, h, "/forum/", "/forum/logout", cookies, url.Values{})

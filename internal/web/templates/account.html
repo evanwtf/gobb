@@ -7,7 +7,7 @@
   {{- if not (or .Data.CanProfile .Data.CanAvatar .Data.CanSignature .Data.CanPassword .Data.CanEmail)}}
   <p class="page-sub">You have nothing to change on this page.</p>
   {{- end}}
-  <p class="page-sub"><a href="{{path "account" "preferences"}}">Preferences: time zone and date format</a></p>
+  <p class="page-sub"><a href="{{path "account" "preferences"}}">Preferences: time zone, date format and color scheme</a></p>
 </header>
 
 {{- with .Data.Done}}

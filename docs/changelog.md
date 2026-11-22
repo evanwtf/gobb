@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.0 (2026-11-22)
+
+- **Color scheme on the Preferences page.** A member now picks the color scheme
+  on `/account/preferences`, in a third section after the date format. It saves
+  as the member picks, like the other two, and the page takes the new colors at
+  once. Without script, the Save button posts the form and returns to
+  `/account/preferences?done=scheme`. The scheme picker in the footer now shows
+  for guests only, and it works for them as before. The link on "Your account"
+  now reads "Preferences: time zone, date format and color scheme".
+
 ## 0.20.0 (2026-11-22)
 
 - **Preferences page** (#84). The time zone and the date format move off "Your
