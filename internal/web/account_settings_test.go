@@ -772,7 +772,7 @@ func TestAccountPageSettingsSections(t *testing.T) {
 		`<option value="3" selected>March</option>`, `<option value="1984" selected>1984</option>`,
 		"Leave out the year if you don't want your age shown.",
 		"A PNG, JPEG or GIF of at most 1 MB.",
-		`<a href="/account/preferences">Display preferences: time zone and date format</a>`,
+		`<a href="/account/preferences">Preferences: time zone and date format</a>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the account page lacks %s", want)
@@ -869,6 +869,35 @@ func TestPreferencesPageSections(t *testing.T) {
 	// No inline script, style attribute or style element.
 	if strings.Contains(page, " style=") || strings.Contains(page, "<style") || strings.Contains(page, "<script>") {
 		t.Error("the Preferences page holds inline script or style")
+	}
+}
+
+// A member with none of the rights of the account page sees no save line there,
+// one sentence that there is nothing to change, and the link to Preferences.
+func TestAccountPageWithNoRights(t *testing.T) {
+	h, pool := siteWithPool(t, postingBoard(), Options{})
+	a := signIn(t, h, "alice", testPassword)
+	for _, option := range []string{"account.profile", "account.avatar", "account.signature", "account.password", "account.email"} {
+		exec(t, pool, `insert into acl_user_grants (user_id, forum_id, option, setting) values (1, 0, '`+option+`', 2)`)
+	}
+	page := bodyOf(t, getAs(t, h, "/account", a))
+	for _, gone := range []string{"Changes save as you make them.", "Save each section with its button.",
+		`action="/account/about"`, `action="/account/avatar"`, `action="/account/signature"`, `action="/account/password"`, `action="/account/email"`} {
+		if strings.Contains(page, gone) {
+			t.Errorf("the account page with no rights holds %s", gone)
+		}
+	}
+	for _, want := range []string{`<p class="page-sub">You have nothing to change on this page.</p>`,
+		`<a href="/account/preferences">Preferences: time zone and date format</a>`, `href="/u/1"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the account page with no rights lacks %s", want)
+		}
+	}
+	// With one right the save line is back and the sentence is gone.
+	exec(t, pool, `delete from acl_user_grants where user_id = 1 and option = 'account.signature'`)
+	page = bodyOf(t, getAs(t, h, "/account", a))
+	if !strings.Contains(page, "Changes save as you make them.") || strings.Contains(page, "nothing to change") {
+		t.Error("with the signature right the page lacks the save line, or still says there is nothing to change")
 	}
 }
 

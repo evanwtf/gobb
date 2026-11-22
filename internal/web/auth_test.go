@@ -195,8 +195,7 @@ func TestHeaderUser(t *testing.T) {
 		t.Errorf("the menu has no link to the account page, or it is current on the index:\n%s", menu)
 	}
 	// Preferences comes right after Your account.
-	if !strings.Contains(menu, `<li><a href="/account">Your account</a></li>
-        <li><a href="/account/preferences">Preferences</a></li>`) {
+	if !regexp.MustCompile(`<li><a href="/account">Your account</a></li>\s*<li><a href="/account/preferences">Preferences</a></li>`).MatchString(menu) {
 		t.Errorf("the menu has no Preferences link right after Your account, or it is current on the index:\n%s", menu)
 	}
 	if !strings.Contains(menu, `action="/logout"`) || !strings.Contains(menu, `name="csrf"`) || !strings.Contains(menu, ">Sign out</button>") {

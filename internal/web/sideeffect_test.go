@@ -45,6 +45,8 @@ var getPaths = []string{
 	"/team",
 	"/pages/about",
 	"/account",
+	"/account/preferences",
+	"/account/preferences?done=password",
 	"/messages",
 	"/messages?page=2",
 	"/messages/sent",

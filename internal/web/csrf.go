@@ -160,8 +160,8 @@ type guard struct {
 // then 204 or JSON, never a page.
 const saveHeaderName = "X-Gobb-Save"
 
-// saveRequested reports whether r comes from the script of the account page,
-// which wants a JSON answer.
+// saveRequested reports whether r comes from the script of the account and
+// Preferences pages, which wants a JSON answer.
 func saveRequested(r *http.Request) bool { return r.Header.Get(saveHeaderName) == "1" }
 
 // writeJSON writes v as the JSON answer of a request from gobb.js.

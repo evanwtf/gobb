@@ -158,13 +158,15 @@ func TestAccountDoneNotices(t *testing.T) {
 			t.Errorf("done=%s: the page lacks %q", code, want)
 		}
 	}
-	for _, code := range []string{"", "other", "Password", "password%20", "%3Cscript%3Ealert(1)%3C%2Fscript%3E", "password%26done%3Demail"} {
-		page := bodyOf(t, getAs(t, h, "/account?done="+code, a))
-		if strings.Contains(page, marker) || strings.Contains(page, "is changed.") || strings.Contains(page, "is saved.") {
-			t.Errorf("done=%q shows a notice", code)
-		}
-		if strings.Contains(page, "<script>alert") || strings.Contains(page, "alert(1)") {
-			t.Errorf("done=%q is echoed", code)
+	for _, target := range []string{"/account", "/account/preferences"} {
+		for _, code := range []string{"", "other", "Password", "password%20", "%3Cscript%3Ealert(1)%3C%2Fscript%3E", "password%26done%3Demail"} {
+			page := bodyOf(t, getAs(t, h, target+"?done="+code, a))
+			if strings.Contains(page, marker) || strings.Contains(page, "is changed.") || strings.Contains(page, "is saved.") {
+				t.Errorf("%s done=%q shows a notice", target, code)
+			}
+			if strings.Contains(page, "<script>alert") || strings.Contains(page, "alert(1)") {
+				t.Errorf("%s done=%q is echoed", target, code)
+			}
 		}
 	}
 }

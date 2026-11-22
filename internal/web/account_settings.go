@@ -128,13 +128,13 @@ func deniedText(p *page, action string) string {
 // for gobb.js and as the page of the account with the nav key nav, with a
 // notice, for any other. echo, when set, puts the values that the member sent
 // into the page, as the other refusals of a form do.
-func (s *site) tooMany(w http.ResponseWriter, r *http.Request, nav string, wait time.Duration, msg string, echo func(*accountData)) {
+func (s *site) tooMany(w http.ResponseWriter, r *http.Request, nav accountNav, wait time.Duration, msg string, echo func(*accountData)) {
 	w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(wait)))
 	if saveRequested(r) {
 		saveMessage(w, http.StatusTooManyRequests, msg)
 		return
 	}
-	p, err := s.begin(w, r, "Account", nav)
+	p, err := s.begin(w, r, "Account", string(nav))
 	if err == nil {
 		if afterBegin != nil {
 			afterBegin()
@@ -169,7 +169,7 @@ func (s *site) pageFailed(w http.ResponseWriter, r *http.Request, err error) {
 // request may go on. The try is never given back: a refusal costs as much as a
 // success. A visitor with no session is not counted here; the checks of the
 // handler refuse the visitor. nav is the nav key of the page of the form.
-func (s *site) takeSave(w http.ResponseWriter, r *http.Request, nav string, lim *ratelimit.Limiter, msg string, echo func(*accountData)) bool {
+func (s *site) takeSave(w http.ResponseWriter, r *http.Request, nav accountNav, lim *ratelimit.Limiter, msg string, echo func(*accountData)) bool {
 	id, err := s.identify(w, r)
 	if err != nil {
 		s.identifyFailed(w, r, err)
@@ -193,11 +193,11 @@ func (s *site) takeSave(w http.ResponseWriter, r *http.Request, nav string, lim 
 // into the 429 page. nav is the nav key of the page of the form (navAccount or
 // navPreferences): every page answer of the POST is that page. The data of the
 // page is read only when the answer is a page ([site.settingResult]).
-func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, nav, option, action string, lim *ratelimit.Limiter, msg string, echo func(*accountData)) (*page, bool) {
+func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, nav accountNav, option, action string, lim *ratelimit.Limiter, msg string, echo func(*accountData)) (*page, bool) {
 	if !s.takeSave(w, r, nav, lim, msg, echo) {
 		return nil, false
 	}
-	p, err := s.begin(w, r, "Account", nav)
+	p, err := s.begin(w, r, "Account", string(nav))
 	if err != nil {
 		if saveRequested(r) {
 			slog.Error("account: page", "path", r.URL.Path, "err", err)
@@ -222,10 +222,11 @@ func (s *site) settingsStart(w http.ResponseWriter, r *http.Request, nav, option
 }
 
 // settingResult ends a settings POST for the results errs of its writes. For a
-// request from gobb.js it answers 204 or JSON for the first error. For any other
-// it redirects to the page of the form (the account page or the Preferences page)
-// with the notice done, or answers the refusals with that page: every input error puts its message beside its field (field), and
-// echo puts the values that the member sent back into the form.
+// request from gobb.js it answers 204 or JSON for the first error. For any
+// other it redirects to the page of the form (the account page or the
+// Preferences page) with the notice done, or answers the refusals with that
+// page: every input error puts its message beside its field (field), and echo
+// puts the values that the member sent back into the form.
 func (s *site) settingResult(w http.ResponseWriter, r *http.Request, p *page, errs []error, jsonField, done, action string,
 	echo func(*accountData), field func(*accountData, *board.InputError)) {
 	var first error

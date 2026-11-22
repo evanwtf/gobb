@@ -200,12 +200,16 @@ func (d accountData) SelectedInAll(zone string) bool {
 	return zone == d.Timezone && !d.InCommon(zone)
 }
 
-// The nav keys of the two pages of the account: "Your account" and
-// "Preferences". The key of the page that a settings handler starts picks the
-// page that its answers show ([site.renderAccount], [site.accountPath]).
+// accountNav is the nav key of one of the two pages of the account: "Your
+// account" or "Preferences". The key of the page that a settings handler starts
+// picks the page that its answers show ([site.renderAccount],
+// [site.accountPath]). The handlers name the key by its constant only.
+type accountNav string
+
+// The nav keys of the two pages of the account.
 const (
-	navAccount     = "account"
-	navPreferences = "preferences"
+	navAccount     accountNav = "account"
+	navPreferences accountNav = "preferences"
 )
 
 // account serves GET /account: a guest goes to sign in and comes back here; a
@@ -221,8 +225,8 @@ func (s *site) preferences(w http.ResponseWriter, r *http.Request) {
 }
 
 // showAccount serves the page of the account with the nav key nav.
-func (s *site) showAccount(w http.ResponseWriter, r *http.Request, nav string) {
-	p, err := s.begin(w, r, "Account", nav)
+func (s *site) showAccount(w http.ResponseWriter, r *http.Request, nav accountNav) {
+	p, err := s.begin(w, r, "Account", string(nav))
 	if err != nil {
 		s.serverError(w, r, err)
 		return
@@ -280,7 +284,7 @@ func zoneCity(zone string) string {
 // accountPath is the site path of the page of the account that p belongs to:
 // /account/preferences for the Preferences page, /account for any other.
 func (s *site) accountPath(p *page) string {
-	if p.navKey == navPreferences {
+	if p.navKey == string(navPreferences) {
 		return s.path("account", "preferences")
 	}
 	return s.path("account")
@@ -292,7 +296,7 @@ func (s *site) accountPath(p *page) string {
 func (s *site) renderAccount(w http.ResponseWriter, status int, p *page, d accountData) {
 	p.Return = s.accountPath(p)
 	p.Data = d
-	if p.navKey == navPreferences {
+	if p.navKey == string(navPreferences) {
 		p.Title = "Preferences"
 		s.render(w, status, "preferences.html", p)
 		return
@@ -305,7 +309,7 @@ func (s *site) renderAccount(w http.ResponseWriter, status int, p *page, d accou
 // and the data, or answers and reports false. A guest, and a member who lacks
 // option, get 403 before any check of a password or any hash.
 func (s *site) accountMember(w http.ResponseWriter, r *http.Request, option, action string) (*page, accountData, bool) {
-	p, err := s.begin(w, r, "Account", navAccount)
+	p, err := s.begin(w, r, "Account", string(navAccount))
 	if err != nil {
 		s.serverError(w, r, err)
 		return nil, accountData{}, false
@@ -575,7 +579,7 @@ func (s *site) changeSignature(w http.ResponseWriter, r *http.Request) {
 	if !s.takeSave(w, r, navAccount, s.saves.saves, msgTooManySaves, func(d *accountData) { d.Signature = text }) {
 		return
 	}
-	p, err := s.begin(w, r, "Account", navAccount)
+	p, err := s.begin(w, r, "Account", string(navAccount))
 	if err != nil {
 		slog.Error("account: page", "path", r.URL.Path, "err", err)
 		s.bareForm(w, r, nil, failStatus(r, err), msgSignatureFail, text)
