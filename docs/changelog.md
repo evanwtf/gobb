@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.3 (2026-11-22)
+
+- **Account page: Save buttons show** (#82). The sections that save as you change
+  them (time zone, date format, About you, avatar, signature) hid their Save
+  buttons when script ran, so a member who edited a signature saw no way to save
+  it. Every section now shows its button. A click sends the section as a normal
+  form post, and the page comes back with the saved notice. Enter in a one-line box
+  still saves that box only. The `.save-fallback`, `.save-auto` and `.save-manual`
+  rules are gone.
+
 ## 0.19.2 (2026-11-08)
 
 - **Guest page cache** (#75): a drop discards only what it reaches, including

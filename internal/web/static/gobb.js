@@ -41,8 +41,8 @@
 // form, and the header X-Gobb-Save: 1, which asks for 204 or JSON as the answer.
 // The status line of the field (id "{name}-status") says "Saving…", then "Saved.",
 // or the message of the server. Every piece of text is written with textContent,
-// and no markup is built from a string. Without this script, the Save buttons of
-// the forms work: the server answers a form post with a redirect.
+// and no markup is built from a string. Each section also shows its Save button,
+// with or without this script: the server answers a form post with a redirect.
 (function () {
   "use strict";
 
@@ -370,11 +370,15 @@
       }
     });
     // Enter in a one-line box saves that box. It does not send the whole form.
+    // A click on the Save button of the section sends the whole form as a normal
+    // post, and the page comes back with the saved notice.
     form.addEventListener("submit", function (event) {
-      event.preventDefault();
       var el = document.activeElement;
-      if (el && form.contains(el) && isText(el) && el.value !== lastSent.get(el)) {
-        save(unitOf(el), false);
+      if (el && form.contains(el) && isText(el)) {
+        event.preventDefault();
+        if (el.value !== lastSent.get(el)) {
+          save(unitOf(el), false);
+        }
       }
     });
   });
